@@ -16,7 +16,7 @@
 1. 启动桥接服务器 `python skills/server.py &`
 2. 写入卡片路径到 `skills/styles/.card_path`
 3. 按 CLAUDE.md「自动启动流程」步骤 1-6 完整执行（导入管线 → 服务器 → 上下文 → ScheduleWakeup 输入监听 → 开局交付）
-4. 告知用户：「前端已就绪，打开 http://localhost:8765」「在输入框打字，点提交即可」
+4. 告知用户：「前端已就绪，本机打开 http://localhost:8765；同一局域网设备打开启动输出 urls 中的 http://<本机局域网IP>:8765」「在输入框打字，点提交即可」
 
 ### 情况 B — 有 chat_log.json + memory/（老卡续玩）
 

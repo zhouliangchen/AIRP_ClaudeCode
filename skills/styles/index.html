@@ -1597,7 +1597,7 @@ function renderOptions(container, opts) {
   });
 }
 
-const BRIDGE = 'http://localhost:8765';
+const BRIDGE = window.location.origin;
 let bridgeOk = false;
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══

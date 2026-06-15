@@ -11,7 +11,7 @@
 3. 在项目根目录下新建一个卡片/故事文件夹，例如 `我的角色/`。
 4. 可选：把 SillyTavern PNG 角色卡、世界书 `.json` 或小说 `.txt` 放进该文件夹。没有素材也可以启动空白模式。
 5. 进入该文件夹，启动 `claude`，然后输入 `/rp`。
-6. 打开 `http://localhost:8765`，在浏览器里提交行动或指令。
+6. 本机打开 `http://localhost:8765`，在浏览器里提交行动或指令。局域网设备可打开启动输出中的 `http://<本机局域网IP>:8765`。
 
 再次游玩同一存档时，仍从同一文件夹启动 `claude` 并运行 `/rp`。系统会读取 `chat_log.json` 和 `memory/` 继续剧情。
 
@@ -21,7 +21,7 @@
 AIRP_ClaudeCode/
 ├─ .claude/                 # Claude Code 命令和技能配置
 ├─ skills/                  # 后端、MVU、导入和回合管线
-│  ├─ server.py             # 浏览器桥接服务，默认端口 8765
+│  ├─ server.py             # 浏览器桥接服务，默认监听 0.0.0.0:8765
 │  ├─ start_server.py       # 启动 server.py 与 MVU 服务
 │  ├─ import_prepare.py     # 启动/导入管线
 │  ├─ round_prepare.py      # 每轮上下文收集
@@ -49,6 +49,8 @@ AIRP_ClaudeCode/
 桌面端会显示正文、插图、行动选项、输入框和侧栏配置。移动端默认只保留基础背景、对话历史、插图、下一步行动选择题和自定义输入框；右上角设置按钮会展开覆盖式侧边栏，用于调整文风、NSFW、人称、字数、玩家角色名、当前目标等进阶选项。
 
 前端会轮询并重新加载 `content.js`，因此正文、状态 UI 和图片资产可以在不手动刷新的情况下更新。Claude Code 针对具体剧本生成的热更新 UI 不受移动端简化布局限制，可以按剧情需要插入到合适位置。
+
+默认服务会监听所有网卡，便于手机、平板等同一局域网设备访问。如果只想允许本机访问，可在启动前设置 `$env:AIRP_HOST="127.0.0.1"`。若局域网地址仍打不开，请确认设备在同一网络，并允许 Windows 防火墙中的 Python 入站连接；也可用管理员 PowerShell 执行 `New-NetFirewallRule -DisplayName "AIRP ClaudeCode Frontend 8765" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8765 -Profile Private,Domain`。
 
 ## 图片与 UI 热更新
 
@@ -80,7 +82,7 @@ python -m py_compile skills/<file>.py
 cd skills; npm install
 ```
 
-`npm install` 只用于安装 MVU 服务依赖 `zod`。当前没有真实自动化测试套件，`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 文件后至少运行 `python -m py_compile`；修改前端后请启动本地服务并在 `http://localhost:8765` 做一次桌面和移动端浏览器检查。
+`npm install` 只用于安装 MVU 服务依赖 `zod`。当前没有真实自动化测试套件，`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 文件后至少运行 `python -m py_compile`；修改前端后请启动本地服务并在 `http://localhost:8765` 和局域网 URL 各做一次浏览器检查。
 
 ## 数据与安全
 

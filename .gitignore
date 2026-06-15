@@ -48,3 +48,5 @@ skills/image_config.local.json
 !.claude/skills/**
 !.claude/settings.local.json
 !skills/
+!tests/
+!tests/**

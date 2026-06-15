@@ -20,12 +20,12 @@ There is currently no real automated test command in this repository. `skills/pa
 
 ## Architecture overview
 
-This project turns Claude Code into the orchestration layer for a local role-playing engine. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765`.
+This project turns Claude Code into the orchestration layer for a local role-playing engine. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765` on the host machine or `http://<host-LAN-IP>:8765` from devices on the same LAN.
 
 The core runtime is a Python standard-library bridge plus a small Node validation service:
 
-- `skills/server.py` serves the frontend, accepts browser input, writes `skills/styles/input.txt`, and uses `.pending` as the signal Claude Code waits on. It also exposes reroll, delete-turn, settings, opening, and session-init APIs.
-- `skills/start_server.py` is the safe launcher for `server.py`; it checks port `8765`, clears stale Python/Node processes when needed, and waits for readiness. The MVU service uses port `8766`.
+- `skills/server.py` serves the frontend, accepts browser input, writes `skills/styles/input.txt`, and uses `.pending` as the signal Claude Code waits on. It binds to `0.0.0.0:8765` by default for LAN access; set `AIRP_HOST=127.0.0.1` to restrict it to local-only mode. It also exposes reroll, delete-turn, settings, opening, and session-init APIs.
+- `skills/start_server.py` is the safe launcher for `server.py`; it checks port `8765`, clears stale Python/Node processes when needed, waits for readiness, and returns local/LAN frontend URLs. The MVU service uses port `8766`.
 - `skills/import_prepare.py` is the startup pipeline. It cleans stale runtime state, delegates card/world import to `import_card.py`, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt` as the single startup context file for Claude.
 - `skills/round_prepare.py` is the per-turn context pipeline. It reads user input, settings, recent memory, worldbook indexes, injection rules, and MVU state, then writes `skills/styles/round_context.txt`. Keep stable/static context near the file prefix and dynamic turn data near the suffix to preserve prompt-cache locality.
 - Claude Code writes narrative output to `skills/styles/response.txt` using the tag contract described below. `skills/round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
@@ -84,7 +84,7 @@ Important data flow: browser submit → `server.py` writes `input.txt` + `.pendi
 - `python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"` — 回合预处理管线
 - `python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"` — 回合后处理管线
 - `python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"` — 导入/启动预处理管线
-- `python "{ROOT}/skills/start_server.py" "{ROOT}"` — 启动桥接服务器
+- `python "{ROOT}/skills/start_server.py" "{ROOT}"` — 启动桥接服务器，默认允许同一局域网设备通过 `http://<本机局域网IP>:8765` 访问
 - `python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." [--kind scene|ui_background|portrait] [--target ...]` — 图片生成资产适配器（默认 gpt-image-2；需 OPENAI_API_KEY）
 - `python -c "..."` — 临时诊断（编码修复、JSON 检查、进程管理等非生产流程）
 
@@ -119,7 +119,9 @@ python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"
 ```
 python "{ROOT}/skills/start_server.py" "{ROOT}"
 ```
-此脚本自动完成：检查服务器是否已在运行 → 若未运行则清理残留进程 → 后台启动 server.py + mvu_server.js → 轮询等待就绪（最多 15 秒）→ 打印确认。
+此脚本自动完成：检查服务器是否已在运行 → 若未运行则清理残留进程 → 后台启动 server.py + mvu_server.js → 轮询等待就绪（最多 15 秒）→ 打印确认，并在 JSON 输出中返回 `urls`（本机和可能的局域网前端地址）。
+
+> 默认监听 `0.0.0.0:8765` 以允许局域网访问。若用户只想本机可访问，可在启动前设置 `AIRP_HOST=127.0.0.1`。如果局域网设备仍打不开，提示用户确认同一网络与 Windows 防火墙 Python 入站权限。
 
 > `.card_path` 已在步骤 1 中写入，server.py 启动时可直接读取卡片文件夹路径。
 

@@ -8,6 +8,7 @@ import json
 import os
 import random
 import signal
+import socket
 import subprocess
 import sys
 import urllib.parse
@@ -15,6 +16,7 @@ import mimetypes
 from pathlib import Path
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+HOST = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("AIRP_HOST", "0.0.0.0")).strip() or "0.0.0.0"
 SKILLS = Path(__file__).parent
 ROOT = SKILLS / "styles"
 PROFILES_DIR = ROOT / "profiles"
@@ -50,6 +52,26 @@ def _safe_decode(data):
         except (UnicodeDecodeError, LookupError):
             continue
     return data.decode("utf-8", errors="replace")
+
+
+def _lan_frontend_urls():
+    """Return likely frontend URLs for the current bind host."""
+    urls = [f"http://localhost:{PORT}"]
+    if HOST in ("0.0.0.0", "::"):
+        candidates = set()
+        try:
+            hostname = socket.gethostname()
+            for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                ip = info[4][0]
+                if ip and not ip.startswith("127."):
+                    candidates.add(ip)
+        except OSError:
+            pass
+        for ip in sorted(candidates):
+            urls.append(f"http://{ip}:{PORT}")
+    elif HOST not in ("127.0.0.1", "localhost"):
+        urls.append(f"http://{HOST}:{PORT}")
+    return urls
 
 
 def _card_folder():
@@ -490,10 +512,15 @@ if __name__ == "__main__":
         print(f"[server] mvu_server.js 不存在: {mvu_script}")
 
     print(f"\n  RP Bridge Server")
-    print(f"  Frontend → http://localhost:{PORT}")
+    print(f"  Listening → {HOST}:{PORT}")
+    for idx, url in enumerate(_lan_frontend_urls()):
+        label = "Local frontend" if idx == 0 else "LAN frontend"
+        print(f"  {label} → {url}")
     print(f"  Input file → {INPUT_FILE}")
+    if HOST in ("0.0.0.0", "::"):
+        print("  LAN access requires the device to be on the same network and Windows Firewall to allow Python.")
     print(f"  Ctrl+C to stop\n")
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = http.server.ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
