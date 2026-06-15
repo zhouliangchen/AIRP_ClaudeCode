@@ -81,6 +81,39 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
+#reply-progress {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  min-width: 190px;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 0.78em;
+}
+#reply-progress.show { display: flex; }
+#reply-progress-bar {
+  width: 92px;
+  height: 5px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#reply-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: var(--accent2);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+#reply-progress.indeterminate #reply-progress-fill {
+  width: 45%;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(240%); }
+}
 #mobile-settings-toggle {
   display: none;
   width: 28px;
@@ -146,6 +179,48 @@ body {
 }
 .turn-ai .turn-text content {
   display: block;
+}
+.character-dialogues {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.character-dialogue-card {
+  position: relative;
+  padding: 10px 13px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.05);
+}
+.character-dialogue-name {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent2);
+  margin-bottom: 4px;
+}
+.character-dialogue-line {
+  font-size: 0.92em;
+  line-height: 1.65;
+  color: var(--text);
+}
+.character-dialogue-aside {
+  margin-top: 5px;
+  font-size: 0.78em;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.turn-pending {
+  opacity: 0.86;
+}
+.turn-pending-ai .turn-text {
+  color: var(--muted);
+  font-style: italic;
+}
+.pending-reply {
+  margin: 0;
 }
 
 /* ═══ SIDEBAR ═══ */
@@ -284,6 +359,53 @@ body {
 .turn-wrap { position: relative; }
 .btn-turn-del:hover { background: #b0624a; color: #fff; border-color: #b0624a; }
 .btn-turn-del.confirming { background: #b0624a; color: #fff; opacity: 1; }
+.btn-turn-edit {
+  position: absolute; top: 4px; right: 92px;
+  font-size: 0.7em; padding: 2px 7px; border: 1px solid transparent;
+  border-radius: 3px; background: transparent; cursor: pointer;
+  color: var(--muted); opacity: 0; transition: opacity 0.15s, background 0.15s;
+}
+.turn-wrap:hover .btn-turn-edit { opacity: 1; }
+.btn-turn-edit:hover { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+.player-input-editor-backdrop {
+  position: fixed; inset: 0; z-index: 220;
+  display: none; align-items: center; justify-content: center;
+  padding: 18px; background: rgba(0,0,0,.34);
+}
+.player-input-editor {
+  width: min(94vw, 640px); max-height: min(86vh, 680px);
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.24);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.player-input-editor header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.player-input-editor h3 { font-size: 0.95em; color: var(--accent); margin: 0; }
+.player-input-editor-close {
+  border: 1px solid var(--border); background: var(--input-bg);
+  color: var(--muted); border-radius: 5px; padding: 2px 8px; cursor: pointer;
+}
+.player-input-editor textarea {
+  margin: 14px; min-height: 220px; resize: vertical;
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: var(--font-ui); font-size: 0.9em;
+  line-height: 1.55; outline: none;
+}
+.player-input-editor textarea:focus { border-color: var(--accent2); }
+.player-input-editor-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 0 14px 14px;
+}
+.player-input-editor-actions button {
+  border: none; border-radius: 7px; padding: 8px 12px;
+  font-size: 0.82em; font-weight: 600; cursor: pointer;
+}
+.btn-edit-update { background: var(--border); color: var(--text); }
+.btn-edit-branch { background: var(--accent2); color: #fff; }
 #input-panel .meta-row {
   display: flex; gap: 12px; align-items: center; margin-top: 6px;
   font-size: 0.75em; color: var(--muted);
@@ -314,6 +436,13 @@ body {
     padding: 6px 48px 6px 10px;
     line-height: 1.35;
   }
+  #reply-progress {
+    min-width: 86px;
+    max-width: 120px;
+    gap: 5px;
+  }
+  #reply-progress-bar { width: 46px; }
+  #reply-progress-text { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #topbar .spacer { display: none; }
   #topbar .sep { display: none; }
   #theme-toggle {
@@ -426,6 +555,9 @@ body {
   .turn-user .turn-text { padding: 10px 12px; }
   .turn-ai .turn-text { line-height: 1.75; }
   .generated-asset-strip { grid-template-columns: 1fr; }
+  .btn-turn-edit { right: 78px; }
+  .player-input-editor-actions { flex-direction: column; }
+  .player-input-editor-actions button { width: 100%; }
 }
 
 	/* ═══ GENERATED ASSETS ═══ */
@@ -1010,6 +1142,10 @@ body {
   <span class="dim" id="tb-time">—</span>
   <span class="sep">|</span>
   <span class="dim" id="tb-location">—</span>
+  <div id="reply-progress" aria-live="polite">
+    <span id="reply-progress-text">等待中</span>
+    <span id="reply-progress-bar"><span id="reply-progress-fill"></span></span>
+  </div>
   <span class="spacer"></span>
   <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
@@ -1137,6 +1273,20 @@ body {
   <img id="beautify-modal-img" src="" alt="立绘放大" style="max-width:95%;max-height:95vh;border:2px solid #8b6b4a;box-shadow:0 0 20px #000;border-radius:4px;object-fit:contain;">
 </div>
 
+<div id="player-input-editor-backdrop" class="player-input-editor-backdrop" role="dialog" aria-modal="true" aria-labelledby="player-input-editor-title" onclick="closePlayerInputEditor()">
+  <div class="player-input-editor" onclick="event.stopPropagation()">
+    <header>
+      <h3 id="player-input-editor-title">编辑玩家输入</h3>
+      <button class="player-input-editor-close" type="button" onclick="closePlayerInputEditor()" aria-label="关闭">×</button>
+    </header>
+    <textarea id="player-input-editor-text" spellcheck="false"></textarea>
+    <div class="player-input-editor-actions">
+      <button class="btn-edit-update" type="button" onclick="submitPlayerInputEdit('update_only')">仅更新</button>
+      <button class="btn-edit-branch" type="button" onclick="submitPlayerInputEdit('branch_submit')">更新并提交</button>
+    </div>
+  </div>
+</div>
+
 <script src="_st_shims.js?v=2"></script>
 <script>
 // ═══ Dynamic script reloader (no page flash) ═══
@@ -1147,6 +1297,7 @@ let lastContentMtime = 0;
 let _prevContentHtml = '';  // cache to avoid spurious innerHTML resets
 let _prevBeautifyHtml = '';  // separate cache for beautify panel
 let _prevAssetSig = '';      // generated asset manifest cache
+let activePlayerInputId = null;
 
 var _consecutiveFailures = 0;
 
@@ -1543,9 +1694,24 @@ function injectTurnButtons() {
   const doc = document.getElementById('doc');
   const turns = doc.querySelectorAll('.turn-wrap');
   turns.forEach(function(turn, i) {
-    // Remove existing btn if any
-    const old = turn.querySelector('.btn-turn-del');
-    if (old) old.remove();
+    const oldDel = turn.querySelector('.btn-turn-del');
+    if (oldDel) oldDel.remove();
+    const oldEdit = turn.querySelector('.btn-turn-edit');
+    if (oldEdit) oldEdit.remove();
+
+    const userDiv = turn.querySelector('.turn-user[data-player-input-id]');
+    if (userDiv && !turn.classList.contains('turn-pending')) {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-turn-edit';
+      editBtn.textContent = '编辑输入';
+      editBtn.title = '编辑此轮玩家原始输入';
+      editBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        openPlayerInputEditor(userDiv.getAttribute('data-player-input-id'));
+      });
+      turn.appendChild(editBtn);
+    }
+
     // Don't add delete on first opening turn (index 0) if we want to keep the opener
     const btn = document.createElement('button');
     btn.className = 'btn-turn-del';
@@ -1599,6 +1765,7 @@ function renderOptions(container, opts) {
 
 const BRIDGE = window.location.origin;
 let bridgeOk = false;
+let progressHideTimer = null;
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
 // 卡内嵌脚本使用 SillyTavern 标准元素 ID:
@@ -1697,6 +1864,66 @@ async function doDeleteFrom(index) {
   }
 }
 
+function findPlayerInput(inputId) {
+  const inputs = window.PLAYER_INPUTS || [];
+  for (let i = 0; i < inputs.length; i++) {
+    if (inputs[i] && inputs[i].id === inputId) return inputs[i];
+  }
+  return null;
+}
+
+function openPlayerInputEditor(inputId) {
+  const item = findPlayerInput(inputId);
+  if (!item) {
+    showError('未找到玩家输入记录');
+    return;
+  }
+  activePlayerInputId = inputId;
+  const textarea = document.getElementById('player-input-editor-text');
+  const backdrop = document.getElementById('player-input-editor-backdrop');
+  textarea.value = item.raw_text || item.display_text || '';
+  backdrop.style.display = 'flex';
+  setTimeout(function() { textarea.focus(); }, 30);
+}
+
+function closePlayerInputEditor() {
+  activePlayerInputId = null;
+  const backdrop = document.getElementById('player-input-editor-backdrop');
+  if (backdrop) backdrop.style.display = 'none';
+}
+
+async function submitPlayerInputEdit(mode) {
+  if (!activePlayerInputId) return;
+  const textarea = document.getElementById('player-input-editor-text');
+  const newText = textarea.value;
+  if (newText === '') {
+    showError('玩家输入不能为空');
+    return;
+  }
+  try {
+    const r = await fetch(BRIDGE + '/api/player_inputs/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activePlayerInputId, new_text: newText, mode: mode })
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      showError('编辑失败: ' + (data.error || '未知错误'));
+      return;
+    }
+    closePlayerInputEditor();
+    if (mode === 'branch_submit') {
+      setProgressVisible({ stage: 'received', label: '已从历史输入开启分支', percent: 10 });
+      showToast('已更新并提交，等待 Claude Code 从该处继续');
+    } else {
+      showToast('已更新玩家输入，Claude Code 将评估影响');
+    }
+    reloadData();
+  } catch(e) {
+    showError('无法连接服务器');
+  }
+}
+
 async function checkBridge() {
   try {
     const r = await fetch(BRIDGE + '/api/pending');
@@ -1706,6 +1933,55 @@ async function checkBridge() {
   }
   document.getElementById('conn-dot').className = bridgeOk ? 'dot green' : 'dot red';
   document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请运行 python skills/server.py';
+}
+
+function setProgressVisible(progress) {
+  const box = document.getElementById('reply-progress');
+  const text = document.getElementById('reply-progress-text');
+  const fill = document.getElementById('reply-progress-fill');
+  if (!box || !text || !fill) return;
+
+  const stage = progress && progress.stage;
+  const activeStages = ['received', 'preparing', 'generating', 'delivering', 'finalizing', 'retry', 'error'];
+  const isActive = activeStages.indexOf(stage) >= 0;
+  const isComplete = stage === 'complete';
+  if (progressHideTimer) {
+    clearTimeout(progressHideTimer);
+    progressHideTimer = null;
+  }
+
+  if (!isActive && !isComplete) {
+    box.classList.remove('show', 'indeterminate');
+    return;
+  }
+
+  text.textContent = progress.label || '处理中';
+  const pct = Number(progress.percent);
+  if (Number.isFinite(pct)) {
+    box.classList.remove('indeterminate');
+    fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  } else {
+    box.classList.add('indeterminate');
+    fill.style.width = '';
+  }
+  box.classList.add('show');
+
+  if (isComplete) {
+    progressHideTimer = setTimeout(function() {
+      box.classList.remove('show', 'indeterminate');
+    }, 2200);
+  }
+}
+
+async function loadProgress() {
+  try {
+    const r = await fetch(BRIDGE + '/api/progress');
+    if (!r.ok) return;
+    const progress = await r.json();
+    setProgressVisible(progress);
+  } catch(e) {
+    // Progress is optional; leave the rest of the UI usable.
+  }
 }
 
 async function doSubmit() {
@@ -1726,6 +2002,8 @@ async function doSubmit() {
     });
     const data = await r.json();
     if (data.ok) {
+      setProgressVisible({ stage: 'received', label: '已发送，等待处理', percent: 10 });
+      reloadData();
       document.getElementById('user-input').value = '';
       const toast = document.getElementById('toast');
       toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
@@ -1957,10 +2235,12 @@ function initMobileSettingsToggle() {
 initMobileSettingsToggle();
 reloadData();
 checkBridge();
+loadProgress();
 loadSettings();
 loadOpenings();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
+setInterval(loadProgress, 1500);
 setInterval(loadStyleProfiles, 15000);
 
 // ═══ Dark Mode Toggle ═══

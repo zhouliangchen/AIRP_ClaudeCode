@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from handler import write_progress
 from io_utils import read_file, read_json
 
 
@@ -39,13 +40,16 @@ def main():
     root = sys.argv[2]
     styles_dir = Path(root) / "skills" / "styles"
     response_path = styles_dir / "response.txt"
+    write_progress("delivering", "正在质检回复", percent=75)
 
     if not response_path.exists():
+        write_progress("error", "未找到 response.txt", percent=0)
         print(json.dumps({"ok": False, "error": "response.txt not found"}))
         sys.exit(1)
 
     response_text = read_file(response_path)
     if not response_text:
+        write_progress("error", "response.txt 为空", percent=0)
         print(json.dumps({"ok": False, "error": "response.txt is empty"}))
         sys.exit(1)
 
@@ -103,6 +107,7 @@ def main():
 
     if chinese_count < threshold:
         # Word count failed — signal retry (do NOT save checkpoint)
+        write_progress("retry", "回复未达字数要求，等待重写", percent=65)
         print(json.dumps({
             "action": "retry",
             "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
@@ -119,6 +124,7 @@ def main():
             f.write("\n" + token_block)
 
     # ── 4. Deliver to Frontend ──
+    write_progress("delivering", "正在交付到前端", percent=85)
     handler_ok = False
     try:
         result = subprocess.run(
@@ -131,6 +137,7 @@ def main():
         handler_output = str(e)
 
     if not handler_ok:
+        write_progress("error", "前端交付失败", percent=0, detail=handler_output[:500])
         print(json.dumps({
             "ok": False,
             "error": "handler.py failed",
@@ -142,6 +149,7 @@ def main():
     token_stats.save_checkpoint(card_folder, delta=delta, label="round")
 
     # ── 5. Memory Update ──
+    write_progress("finalizing", "正在更新记忆", percent=95)
     memory_ok = False
     try:
         result = subprocess.run(
@@ -168,6 +176,8 @@ def main():
     summary_match = re.search(r"<summary>(.*?)</summary>", response_text, re.DOTALL)
     if summary_match:
         summary_text = re.sub(r"<[^>]+>", "", summary_match.group(1)).strip()[:200]
+
+    write_progress("complete", "回复已完成", percent=100)
 
     print(json.dumps({
         "action": "done",

@@ -141,17 +141,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except json.JSONDecodeError:
                 data = {"text": body}
 
-            text = data.get("text", "").strip()
+            text = data.get("text", "")
+            if text is None:
+                text = ""
+            if not isinstance(text, str):
+                text = str(text)
             char_name = data.get("charName", "").strip()
 
-            if text:
+            if text.strip():
                 # Write input for Claude Code
                 full = f"【{char_name}】{text}" if char_name else text
                 INPUT_FILE.write_text(full, encoding="utf-8")
+                card = _card_folder()
+                player_entry = None
+                if card:
+                    player_entry = handler.record_player_input(card, text, full)
+                    handler.write_pending_user_turn(
+                        card,
+                        full,
+                        raw_text=text,
+                        input_id=player_entry.get("id"),
+                    )
+                    handler.write_content_js(card)
+                handler.write_progress("received", "已接收玩家输入", percent=10)
                 PENDING_FILE.touch()
-                self._json({"ok": True, "text": full})
+                self._json({"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None})
             else:
                 self._json({"ok": False, "error": "empty input"})
+
+        elif parsed.path == "/api/player_inputs/edit":
+            card = _card_folder()
+            if not card:
+                self._json({"ok": False, "error": "no card path configured"}, 400)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = _safe_decode(self.rfile.read(length))
+            try:
+                data = json.loads(body)
+                input_id = data.get("id") or data.get("input_id")
+                new_text = data.get("new_text", data.get("text"))
+                mode = data.get("mode", "update_only")
+                if not input_id:
+                    self._json({"ok": False, "error": "missing input id"}, 400)
+                    return
+                if not isinstance(new_text, str) or new_text == "":
+                    self._json({"ok": False, "error": "empty input"}, 400)
+                    return
+                result = handler.edit_player_input(card, input_id, new_text, mode)
+                self._json({"ok": True, "edit": result})
+            except json.JSONDecodeError:
+                self._json({"ok": False, "error": "invalid json"}, 400)
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._json({"ok": False, "error": str(e)}, 500)
 
         elif parsed.path == "/api/settings":
             length = int(self.headers.get("Content-Length", 0))
@@ -224,9 +269,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", 0))
                 body = _safe_decode(self.rfile.read(length))
                 data = json.loads(body)
-                message = data.get("message", "").strip()
+                message = data.get("message", "")
+                if message is None:
+                    message = ""
+                if not isinstance(message, str):
+                    message = str(message)
                 config = data.get("config", {})
-                if not message:
+                if not message.strip():
                     self._json({"ok": False, "error": "empty message"}, 400)
                     return
 
@@ -250,6 +299,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # Card has its own variable structure from tavern_helper Zod schema.
                     # Don't overwrite it — just write the user message and mark session active.
                     INPUT_FILE.write_text(message, encoding="utf-8")
+                    if card:
+                        player_entry = handler.record_player_input(card, message, message)
+                        handler.write_pending_user_turn(
+                            card,
+                            message,
+                            raw_text=message,
+                            input_id=player_entry.get("id"),
+                        )
+                        handler.write_content_js(card)
+                    handler.write_progress("received", "已接收玩家开局设定", percent=10)
                     PENDING_FILE.touch()
                     SESSION_FILE.touch()
                     self._json({"ok": True, "card_initvar_used": True})
@@ -303,6 +362,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     card_initvar.write_text(json.dumps(initvar, ensure_ascii=False, indent=2), encoding="utf-8")
                 # Write user message to input.txt
                 INPUT_FILE.write_text(message, encoding="utf-8")
+                if card:
+                    player_entry = handler.record_player_input(card, message, message)
+                    handler.write_pending_user_turn(
+                        card,
+                        message,
+                        raw_text=message,
+                        input_id=player_entry.get("id"),
+                    )
+                    handler.write_content_js(card)
+                handler.write_progress("received", "已接收玩家开局设定", percent=10)
                 PENDING_FILE.touch()
                 SESSION_FILE.touch()
                 self._json({"ok": True})
@@ -410,6 +479,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             self._json(settings)
+            return
+
+        # API: current response progress, if available
+        if parsed.path == "/api/progress":
+            self._json(handler.read_progress())
+            return
+
+        # API: player-authored input log for editing UI.
+        if parsed.path == "/api/player_inputs":
+            card = _card_folder()
+            if not card:
+                self._json({"ok": False, "error": "no card path configured"}, 400)
+                return
+            self._json({"ok": True, "inputs": handler.read_player_inputs(card)})
             return
 
         # API: serve generated/card-local assets safely from the active card folder

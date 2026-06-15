@@ -5,6 +5,7 @@ and handler.py / write_memory.py / round_deliver.py. Centralizing the parsing
 prevents drift between these consumers.
 """
 import re
+import json
 
 
 def parse_tokens(raw):
@@ -33,15 +34,25 @@ def parse_tokens(raw):
 def parse_response(text):
     """Parse response.txt into structured parts.
 
-    Returns a dict with any of: polished_input, content, summary, options, tokens.
+    Returns a dict with any of: polished_input, content, character_dialogues,
+    summary, options, tokens.
     The tokens value is a parsed dict; others are stripped strings.
     """
     result = {}
-    for tag in ("polished_input", "content", "summary", "options", "tokens"):
+    for tag in ("polished_input", "content", "character_dialogues", "summary", "options", "tokens"):
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
         if m:
             raw = m.group(1).strip()
-            result[tag] = parse_tokens(raw) if tag == "tokens" else raw
+            if tag == "tokens":
+                result[tag] = parse_tokens(raw)
+            elif tag == "character_dialogues":
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = []
+                result[tag] = parsed if isinstance(parsed, list) else []
+            else:
+                result[tag] = raw
     return result
 
 

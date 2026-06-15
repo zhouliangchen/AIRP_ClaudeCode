@@ -20,7 +20,7 @@ from pathlib import Path
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
 import match_worldbook
 import mvu_check
-from handler import apply_injections
+from handler import apply_injections, write_progress
 from io_utils import read_file, read_json, walk_paths
 
 
@@ -54,6 +54,46 @@ def _load_reference_sections(card_folder):
     if current_title is not None:
         sections[current_title] = "\n".join(current_lines)
     return sections
+
+
+def _load_player_input_history(card_folder, limit=20):
+    path = Path(card_folder) / ".player_inputs.jsonl"
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    items = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _load_player_input_edits(card_folder, limit=20, processed=False):
+    path = Path(card_folder) / ".player_input_edits.jsonl"
+    if not path.exists():
+        return []
+    items = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        if processed is not None and bool(item.get("processed", False)) is not bool(processed):
+            continue
+        items.append(item)
+    return items
 
 
 def grep_reference_section(sections, section_title):
@@ -183,6 +223,7 @@ def main():
     card_folder = sys.argv[1]
     root = sys.argv[2]
     styles_dir = Path(root) / "skills" / "styles"
+    write_progress("preparing", "正在整理回合上下文", percent=30)
 
     # ── Token delta capture (retroactively fixes previous turn) ──
     pending_tokens = {}
@@ -291,6 +332,8 @@ def main():
 
     chat_log_path = Path(card_folder) / "chat_log.json"
     chat_log = read_json(chat_log_path) or []
+    player_input_history = _load_player_input_history(card_folder)
+    player_input_edits = _load_player_input_edits(card_folder, processed=False)
 
     # Load reference.md once for O(1) section lookups this round
     ref_sections = _load_reference_sections(card_folder)
@@ -340,6 +383,39 @@ def main():
 
     dynamic_parts.append("=== USER_INPUT ===")
     dynamic_parts.append(user_text)
+
+    dynamic_parts.append("\n=== PLAYER_AUTHORITY_RULES ===")
+    dynamic_parts.append("- 玩家历次输入是唯一权威事实源；不得改写、润色或删除 .player_inputs.jsonl 中的 raw_text/display_text。")
+    dynamic_parts.append("- 不得擅自编辑、裁剪、合并或摘要玩家输入；response.txt 中的 <polished_input> 仅可作为内部解释，不可覆盖玩家原文。")
+    dynamic_parts.append("- 若新玩家输入与既有 AI 叙事、角色资料、变量、记忆或世界设定冲突，以玩家新输入为准。")
+    dynamic_parts.append("- 可修正或重写 AI 生成内容、摘要、memory、角色状态、变量和派生设定，使其服从玩家输入。")
+
+    dynamic_parts.append("\n=== PLAYER_INPUT_INTERPRETATION ===")
+    dynamic_parts.append("- ACTION: 玩家以第一人称给出下一步行动时，先简短复述该行动，再自然推进剧情。")
+    dynamic_parts.append("- SYNOPSIS: 玩家以第一人称给出接下来剧情梗概时，先结合既有数据扩写该梗概，再视情况继续推进。")
+    dynamic_parts.append("- OMNISCIENT_SETTING: 玩家以上帝视角给出设定时，将其视为权威事实，并更新/修正所有相关派生文件。")
+    dynamic_parts.append("- MIXED: 输入混合以上类型时，逐项识别处理；冲突处永远以玩家最新原文为准。")
+
+    if player_input_history:
+        dynamic_parts.append("\n=== PLAYER_INPUT_HISTORY (authoritative, recent) ===")
+        for item in player_input_history:
+            stamp = item.get("created_at", "")
+            raw = item.get("raw_text", "")
+            display = item.get("display_text", raw)
+            dynamic_parts.append(f"  - {stamp} [{item.get('id', '?')}] raw={raw[:300]!r} display={display[:300]!r}")
+
+    if player_input_edits:
+        dynamic_parts.append("\n=== PLAYER_INPUT_EDITS_PENDING ===")
+        dynamic_parts.append("These player-authored edits may require repairing AI narrative, memory, variables, character files, or derived UI. Do not change the edited player text.")
+        for item in player_input_edits:
+            dynamic_parts.append(
+                "  - "
+                f"{item.get('created_at', '')} [{item.get('id', '?')}] "
+                f"mode={item.get('mode', '')} input_id={item.get('input_id', '')} "
+                f"branch_from_index={item.get('branch_from_index', '')} "
+                f"old={item.get('old_raw_text', '')[:220]!r} "
+                f"new={item.get('new_raw_text', '')[:220]!r}"
+            )
 
     # Pending token delta from previous round's generation
     if pending_tokens:
@@ -441,6 +517,8 @@ def main():
     character_contexts_path = styles_dir / "character_contexts.json"
     with open(character_contexts_path, "w", encoding="utf-8") as f:
         json.dump(character_contexts, f, ensure_ascii=False, indent=2)
+
+    write_progress("generating", "Claude Code 正在生成回复", percent=60)
 
     print(json.dumps({
         "ok": True,

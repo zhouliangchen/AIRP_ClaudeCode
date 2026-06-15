@@ -6,10 +6,13 @@ Usage:
   python handler.py <card_folder> --opening # first turn, no user input
 """
 import json
+import html
 import os
 import re
 import sys
+import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 from mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
@@ -42,6 +45,235 @@ def write_chat_log(card_folder, log):
         json.dump(log, f, ensure_ascii=False, indent=2)
 
 
+def _utc_timestamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _pending_user_turn_path(card_folder):
+    return Path(card_folder) / ".pending_user_turn.json"
+
+
+def _player_input_log_path(card_folder):
+    return Path(card_folder) / ".player_inputs.jsonl"
+
+
+def _player_input_edit_log_path(card_folder):
+    return Path(card_folder) / ".player_input_edits.jsonl"
+
+
+def _player_branch_archive_path(card_folder):
+    return Path(card_folder) / ".player_input_branches.jsonl"
+
+
+def _progress_path():
+    return STYLES / "progress.json"
+
+
+def _read_jsonl(path):
+    path = Path(path)
+    if not path.exists():
+        return []
+    items = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _write_jsonl(path, items):
+    path = Path(path)
+    with open(path, "w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def _append_jsonl(path, entry):
+    path = Path(path)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def record_player_input(card_folder, raw_text, display_text=None):
+    """Append an immutable player-authored input entry.
+
+    This log is the authority source for player wording. Claude Code may revise
+    generated narrative or derived memory, but should not mutate this file.
+    """
+    entry = {
+        "id": uuid.uuid4().hex,
+        "created_at": _utc_timestamp(),
+        "source": "player",
+        "raw_text": raw_text or "",
+        "display_text": display_text if display_text is not None else (raw_text or ""),
+    }
+    path = _player_input_log_path(card_folder)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def read_player_inputs(card_folder):
+    return _read_jsonl(_player_input_log_path(card_folder))
+
+
+def _write_player_inputs(card_folder, items):
+    _write_jsonl(_player_input_log_path(card_folder), items)
+
+
+def read_player_input_edits(card_folder, processed=None):
+    items = _read_jsonl(_player_input_edit_log_path(card_folder))
+    if processed is None:
+        return items
+    return [item for item in items if bool(item.get("processed", False)) is bool(processed)]
+
+
+def write_pending_user_turn(card_folder, display_text, raw_text=None, input_id=None):
+    entry = {
+        "id": input_id or uuid.uuid4().hex,
+        "created_at": _utc_timestamp(),
+        "raw_text": raw_text if raw_text is not None else display_text,
+        "display_text": display_text or raw_text or "",
+    }
+    _write_json_file(_pending_user_turn_path(card_folder), entry)
+    return entry
+
+
+def read_pending_user_turn(card_folder):
+    data = _read_json_file(_pending_user_turn_path(card_folder), None)
+    return data if isinstance(data, dict) else None
+
+
+def clear_pending_user_turn(card_folder):
+    _pending_user_turn_path(card_folder).unlink(missing_ok=True)
+
+
+def _find_player_input_turn_index(log, player_inputs, input_id):
+    for i, turn in enumerate(log or []):
+        if turn.get("player_input_id") == input_id:
+            return i
+
+    input_pos = None
+    for i, item in enumerate(player_inputs or []):
+        if item.get("id") == input_id:
+            input_pos = i
+            break
+    if input_pos is None:
+        return None
+
+    user_turns = [i for i, turn in enumerate(log or []) if turn.get("user")]
+    if input_pos < len(user_turns):
+        return user_turns[input_pos]
+    return None
+
+
+def edit_player_input(card_folder, input_id, new_text, mode="update_only"):
+    """Apply a player-authored edit to a historical input.
+
+    The edited text is written exactly as provided by the browser. The edit is
+    audited separately so Claude Code can later evaluate and repair derived
+    AI state without treating generated text as authoritative.
+    """
+    if mode not in ("update_only", "branch_submit"):
+        raise ValueError("mode must be update_only or branch_submit")
+    if not isinstance(new_text, str):
+        raise ValueError("new_text must be a string")
+
+    player_inputs = read_player_inputs(card_folder)
+    input_entry = None
+    for item in player_inputs:
+        if item.get("id") == input_id:
+            input_entry = item
+            break
+    if input_entry is None:
+        raise ValueError("player input not found")
+
+    now = _utc_timestamp()
+    old_raw = input_entry.get("raw_text", "")
+    old_display = input_entry.get("display_text", old_raw)
+    input_entry["raw_text"] = new_text
+    input_entry["display_text"] = new_text
+    input_entry["updated_at"] = now
+    input_entry["edit_count"] = int(input_entry.get("edit_count", 0) or 0) + 1
+    _write_player_inputs(card_folder, player_inputs)
+
+    log = read_chat_log(card_folder)
+    turn_index = _find_player_input_turn_index(log, player_inputs, input_id)
+    branch_from_index = turn_index
+    if mode == "branch_submit" and branch_from_index is None:
+        branch_from_index = len(log)
+
+    if turn_index is not None and 0 <= turn_index < len(log):
+        log[turn_index]["user"] = new_text
+        log[turn_index]["player_input_id"] = input_id
+        log[turn_index]["player_input_edited_at"] = now
+
+    edit_event = {
+        "id": uuid.uuid4().hex,
+        "created_at": now,
+        "source": "player",
+        "input_id": input_id,
+        "mode": mode,
+        "old_raw_text": old_raw,
+        "old_display_text": old_display,
+        "new_raw_text": new_text,
+        "new_display_text": new_text,
+        "branch_from_index": branch_from_index,
+        "processed": False,
+        "status": "pending_impact_review",
+    }
+    _append_jsonl(_player_input_edit_log_path(card_folder), edit_event)
+
+    if mode == "branch_submit":
+        archived_turns = log[branch_from_index:] if branch_from_index < len(log) else []
+        if archived_turns:
+            _append_jsonl(_player_branch_archive_path(card_folder), {
+                "id": uuid.uuid4().hex,
+                "created_at": now,
+                "input_id": input_id,
+                "edit_id": edit_event["id"],
+                "branch_from_index": branch_from_index,
+                "archived_turns": archived_turns,
+            })
+        write_chat_log(card_folder, log[:branch_from_index])
+        write_pending_user_turn(card_folder, new_text, raw_text=new_text, input_id=input_id)
+        (STYLES / "input.txt").write_text(new_text, encoding="utf-8")
+        (STYLES / ".pending").touch()
+        write_progress("received", "已接收历史输入分支", percent=10)
+    else:
+        write_chat_log(card_folder, log)
+
+    write_content_js(card_folder)
+    return edit_event
+
+
+def write_progress(stage, label, percent=None, detail=None):
+    data = {
+        "stage": stage,
+        "label": label,
+        "percent": percent,
+        "detail": detail or "",
+        "updated_at": _utc_timestamp(),
+    }
+    if isinstance(percent, (int, float)):
+        data["percent"] = max(0, min(100, int(percent)))
+    _write_json_file(_progress_path(), data)
+    return data
+
+
+def read_progress():
+    data = _read_json_file(_progress_path(), None)
+    if isinstance(data, dict):
+        return data
+    return {"stage": "idle", "label": "", "percent": None, "detail": ""}
+
+
 def read_state():
     path = STYLES / "state.js"
     if not path.exists():
@@ -70,6 +302,58 @@ def write_state(js, card_folder=None):
 def _strip_html(text):
     text = re.sub(r"<[^>]+>", "", text or "")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_character_dialogues(dialogues):
+    if isinstance(dialogues, str):
+        try:
+            dialogues = json.loads(dialogues)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(dialogues, list):
+        return []
+
+    normalized = []
+    for item in dialogues:
+        if not isinstance(item, dict):
+            continue
+        if item.get("source") != "subagent":
+            continue
+        name = str(item.get("name", "") or "").strip()
+        line = str(item.get("line", "") or "").strip()
+        aside = str(item.get("aside", "") or "").strip()
+        if not name or not line:
+            continue
+        entry = {
+            "name": name[:80],
+            "source": "subagent",
+            "line": line[:1000],
+        }
+        if aside:
+            entry["aside"] = aside[:500]
+        normalized.append(entry)
+        if len(normalized) >= 6:
+            break
+    return normalized
+
+
+def _render_character_dialogues(dialogues):
+    dialogues = _normalize_character_dialogues(dialogues)
+    if not dialogues:
+        return ""
+    parts = ['<div class="character-dialogues" aria-label="重要角色对话">']
+    for item in dialogues:
+        name = html.escape(item.get("name", ""))
+        line = html.escape(item.get("line", "")).replace("\n", "<br>")
+        aside = html.escape(item.get("aside", "")).replace("\n", "<br>")
+        parts.append('<div class="character-dialogue-card">')
+        parts.append('<div class="character-dialogue-name">' + name + '</div>')
+        parts.append('<div class="character-dialogue-line">' + line + '</div>')
+        if aside:
+            parts.append('<div class="character-dialogue-aside">' + aside + '</div>')
+        parts.append('</div>')
+    parts.append('</div>')
+    return "".join(parts)
 
 
 def _shorten(text, limit=600):
@@ -493,9 +777,12 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
 def write_content_js(card_folder):
     """Rebuild content.js from chat_log.json. Exposes TURN_TOKENS for per-turn token display."""
     log = read_chat_log(card_folder)
+    pending_turn = read_pending_user_turn(card_folder)
+    player_inputs = read_player_inputs(card_folder)
 
     html_parts = []
     turn_tokens = {}  # { "N": {"in": X, "out": Y, "total": Z}, ... }
+    user_turn_seq = 0
 
     for turn in log:
         ai_raw = turn.get("ai", "")
@@ -506,6 +793,7 @@ def write_content_js(card_folder):
         ai_display = _strip_tags(ai_raw, "options")
         ai_display = _strip_tags(ai_display, "summary")
         ai_display = _strip_tags(ai_display, "tokens")
+        ai_display = _strip_tags(ai_display, "character_dialogues")
         ai_display = _strip_mvu_commands(ai_display)
         # Strip hardcoded text colors from inline styles
         ai_display = re.sub(
@@ -520,8 +808,26 @@ def write_content_js(card_folder):
 
         wrap = '<div class="turn-wrap">'
         if user_raw:
-            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
+            input_id = turn.get("player_input_id")
+            if not input_id and user_turn_seq < len(player_inputs):
+                input_id = player_inputs[user_turn_seq].get("id")
+            attrs = ' data-player-input-id="' + _escape_attr(input_id) + '"' if input_id else ""
+            user_display = html.escape(user_raw).replace("\n", "<br>")
+            wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + user_display + '</div></div>'
+            user_turn_seq += 1
+        wrap += _render_character_dialogues(turn.get("character_dialogues", []))
         wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
+        wrap += '</div>'
+        html_parts.append(wrap)
+
+    if pending_turn:
+        pending_text = pending_turn.get("display_text") or pending_turn.get("raw_text") or ""
+        pending_html = html.escape(pending_text).replace("\n", "<br>")
+        pending_id = pending_turn.get("id")
+        attrs = ' data-player-input-id="' + _escape_attr(pending_id) + '"' if pending_id else ""
+        wrap = '<div class="turn-wrap turn-pending">'
+        wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + pending_html + '</div></div>'
+        wrap += '<div class="turn-ai turn-pending-ai"><div class="turn-role">叙事</div><div class="turn-text"><p class="pending-reply">等待 Claude Code 回复...</p></div></div>'
         wrap += '</div>'
         html_parts.append(wrap)
 
@@ -632,6 +938,7 @@ def write_content_js(card_folder):
         "window.TURN_OPTIONS = " + json.dumps(options, ensure_ascii=False) + ";\n"
         "window.TURN_TOKENS = " + json.dumps(turn_tokens, ensure_ascii=False) + ";\n"
         "window.STARTUP_COST = " + json.dumps(startup_cost, ensure_ascii=False) + ";\n"
+        "window.PLAYER_INPUTS = " + json.dumps(player_inputs, ensure_ascii=False) + ";\n"
         "window.MVU_VARIABLES = " + json.dumps(_get_latest_variables(log), ensure_ascii=False) + ";\n"
         "window.MVU_DELTA = " + json.dumps(_get_latest_delta(log), ensure_ascii=False) + ";\n"
         "window.TURN_VARIABLES = " + json.dumps(_get_turn_variables(log), ensure_ascii=False) + ";\n"
@@ -952,10 +1259,11 @@ def _dict_to_schema_node(d):
     return schema
 
 
-def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text=""):
+def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text="", character_dialogues=None):
     """Append a new turn to chat_log and rebuild content.js."""
     log = read_chat_log(card_folder)
     next_index = len(log)
+    pending_user_turn = read_pending_user_turn(card_folder)
 
     # ── MVU: Compute current variables ──
     prev_vars = compute_current_variables(log)
@@ -1014,8 +1322,20 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         ai_text += "\n\n<options>\n" + options + "\n</options>"
 
     entry = {"index": next_index, "ai": ai_text, "summary": summary}
-    if not is_opening and polished_input:
-        entry["user"] = polished_input
+    normalized_dialogues = _normalize_character_dialogues(character_dialogues)
+    if normalized_dialogues:
+        entry["character_dialogues"] = normalized_dialogues
+    if not is_opening:
+        if pending_user_turn:
+            pending_display = pending_user_turn.get("display_text") or pending_user_turn.get("raw_text") or ""
+            if pending_display:
+                entry["user"] = pending_display
+            if pending_user_turn.get("id"):
+                entry["player_input_id"] = pending_user_turn.get("id")
+        elif polished_input:
+            entry["user"] = polished_input
+        if polished_input:
+            entry["polished_input"] = polished_input
     if tokens:
         entry["tokens"] = tokens
     # Store variables if any exist or were changed
@@ -1029,12 +1349,14 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
 
     log.append(entry)
     write_chat_log(card_folder, log)
+    if pending_user_turn:
+        clear_pending_user_turn(card_folder)
 
     try:
         evolve_blank_profile(
             card_folder,
             next_index,
-            polished_input or "",
+            entry.get("user", ""),
             ai_text,
             summary,
             new_vars or prev_vars or {},
@@ -1334,6 +1656,7 @@ if __name__ == "__main__":
     # Read response.txt
     resp_path = STYLES / "response.txt"
     if not resp_path.exists():
+        write_progress("error", "未找到 response.txt", percent=0)
         print("[handler] No response.txt found")
         sys.exit(1)
 
@@ -1343,6 +1666,7 @@ if __name__ == "__main__":
     content = parts.get("content", response_text)
     summary = parts.get("summary", "")
     options = parts.get("options", "")
+    character_dialogues = parts.get("character_dialogues", [])
     polished_input = parts.get("polished_input", "")
     tokens = parts.get("tokens", None)
 
@@ -1373,6 +1697,7 @@ if __name__ == "__main__":
         content=content,
         summary=summary,
         options=options,
+        character_dialogues=character_dialogues,
         is_opening=is_opening,
         tokens=tokens,
         full_text=response_text,
@@ -1381,5 +1706,6 @@ if __name__ == "__main__":
     # Clean up
     resp_path.unlink(missing_ok=True)
     bridge_done()
+    write_progress("complete", "回复已完成", percent=100)
 
     print(f"[handler] Turn {idx} saved. content.js rebuilt.")

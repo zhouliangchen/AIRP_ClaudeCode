@@ -40,7 +40,9 @@ AIRP_ClaudeCode/
 
 有素材的新卡：`import_prepare.py` 会解析 PNG/JSON/TXT，初始化 `chat_log.json`、`memory/`、变量状态和前端数据。
 
-旧存档：检测到 `chat_log.json` 与 `memory/` 后，系统会恢复最近剧情、角色状态和用户偏好。
+旧存档：检测到 `chat_log.json` 与 `memory/` 后，系统会恢复最近剧情、角色状态和用户偏好。玩家输入会额外记录到 `.player_inputs.jsonl`，这是玩家原文的权威日志；Claude Code 可以重写 AI 派生叙事、角色资料、变量和记忆来服从玩家新设定，但不得改写、裁剪或摘要玩家原始输入。
+
+玩家输入可以是第一人称行动、第一人称剧情梗概、第三人称上帝视角设定，或三者混合。行动会被简短复述后推进；剧情梗概会先扩写再推进；上帝视角设定会作为权威事实用于修正相关派生文件。
 
 空白启动：当前文件夹没有 PNG/JSON/TXT 时，会创建 `.card_data.json`、`.initvar.json`、`memory/characters/_self/` 和 `ui_manifest.json`。系统不会自动生成 AI 开场，而是等待你在浏览器输入第一轮设定，之后逐轮沉淀角色卡、变量和记忆。
 
@@ -48,7 +50,9 @@ AIRP_ClaudeCode/
 
 桌面端会显示正文、插图、行动选项、输入框和侧栏配置。移动端默认只保留基础背景、对话历史、插图、下一步行动选择题和自定义输入框；右上角设置按钮会展开覆盖式侧边栏，用于调整文风、NSFW、人称、字数、玩家角色名、当前目标等进阶选项。
 
-前端会轮询并重新加载 `content.js`，因此正文、状态 UI 和图片资产可以在不手动刷新的情况下更新。Claude Code 针对具体剧本生成的热更新 UI 不受移动端简化布局限制，可以按剧情需要插入到合适位置。
+玩家提交输入后，本轮输入会先作为“等待 Claude Code 回复”的 pending 回合显示在前端；AI 回复交付后，pending 回合会被正式回合替换。前端会轮询并重新加载 `content.js`，因此正文、状态 UI 和图片资产可以在不手动刷新的情况下更新。可用时，顶部会显示回复进度条，例如已接收、整理上下文、生成中、交付中和完成。
+
+每个已交付的玩家回合可点击“编辑输入”。“仅更新”只修改权威输入日志和当前显示，并把影响记录到 `.player_input_edits.jsonl`，等待后续回合评估；“更新并提交”会从该回合截断旧分支，将修订后的输入重新提交为 pending 回合。Claude Code 针对具体剧本生成的热更新 UI 不受移动端简化布局限制，可以按剧情需要插入到合适位置。
 
 默认服务会监听所有网卡，便于手机、平板等同一局域网设备访问。如果只想允许本机访问，可在启动前设置 `$env:AIRP_HOST="127.0.0.1"`。若局域网地址仍打不开，请确认设备在同一网络，并允许 Windows 防火墙中的 Python 入站连接；也可用管理员 PowerShell 执行 `New-NetFirewallRule -DisplayName "AIRP ClaudeCode Frontend 8765" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8765 -Profile Private,Domain`。
 
@@ -69,7 +73,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 `round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，汇总核心角色的私有记忆、目标、近况和变量切片。Claude Code 工作流会在场景强相关时最多并行调用 2 个核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。
 
-subagent 不直接写 `response.txt`，也不直接交付前端；最终叙事仍由主代理整合。如果当前 Claude Code 环境不可用 subagent，会退回主代理兼任，但仍应参考 `CHARACTER_CONTEXTS` 保持角色独立性。
+subagent 不直接写 `response.txt`，也不直接交付前端；最终叙事仍由主代理整合。若某个重要角色本轮确实使用了 subagent，主代理可在 `response.txt` 的 `<character_dialogues>` JSON 数组中登记该角色台词，前端会在主叙事前以独立对话框显示。如果当前 Claude Code 环境不可用 subagent，会退回主代理兼任，但仍应参考 `CHARACTER_CONTEXTS` 保持角色独立性。
 
 ## 常用开发命令
 
@@ -82,7 +86,7 @@ python -m py_compile skills/<file>.py
 cd skills; npm install
 ```
 
-`npm install` 只用于安装 MVU 服务依赖 `zod`。当前没有真实自动化测试套件，`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 文件后至少运行 `python -m py_compile`；修改前端后请启动本地服务并在 `http://localhost:8765` 和局域网 URL 各做一次浏览器检查。
+`npm install` 只用于安装 MVU 服务依赖 `zod`。`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 或前端桥接逻辑后优先运行 `python -m unittest tests.test_turn_state tests.test_lan_access`，并对改动过的 Python 文件运行 `python -m py_compile`。修改前端后请启动本地服务并在 `http://localhost:8765` 和局域网 URL 各做一次浏览器检查。
 
 ## 数据与安全
 
@@ -99,6 +103,11 @@ skills/image_config.local.json
 skills/styles/content.js
 skills/styles/state.js
 skills/styles/.pending
+skills/styles/progress.json
+.pending_user_turn.json
+.player_inputs.jsonl
+.player_input_edits.jsonl
+.player_input_branches.jsonl
 ```
 
 仓库内的主要源代码是 `skills/`、`.claude/`、`CLAUDE.md`、`README.md` 和相关参考文档；用户运行产生的存档数据应只留在本机。

@@ -24,9 +24,20 @@ skills/styles/.session_init
 # Runtime context files
 skills/styles/round_context.txt
 skills/styles/import_context.txt
+skills/styles/progress.json
 
 # Card-specific openings (runtime, changes per card import)
 skills/styles/openings.json
+
+# Card runtime authority/pending files
+.pending_user_turn.json
+.player_inputs.jsonl
+.player_input_edits.jsonl
+.player_input_branches.jsonl
+**/.pending_user_turn.json
+**/.player_inputs.jsonl
+**/.player_input_edits.jsonl
+**/.player_input_branches.jsonl
 
 # Lock files
 *.lock
@@ -50,3 +61,5 @@ skills/image_config.local.json
 !skills/
 !tests/
 !tests/**
+tests/__pycache__/
+tests/*.pyc
