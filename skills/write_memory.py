@@ -17,18 +17,17 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from io_utils import read_json as _read_json
+from response_parser import parse_response
+
 
 CST = timezone(timedelta(hours=8))
 
 
 def _extract_parts(response_text: str) -> dict:
-    """Parse response.txt tags."""
-    result = {}
-    for tag in ("polished_input", "content", "summary"):
-        m = re.search(rf"<{tag}>(.*?)</{tag}>", response_text, re.DOTALL)
-        if m:
-            result[tag] = m.group(1).strip()
-    return result
+    """Parse response.txt tags (content/summary/polished_input)."""
+    parts = parse_response(response_text)
+    return {k: parts[k] for k in ("polished_input", "content", "summary") if k in parts}
 
 
 def _get_last_n_turns(card_folder: Path, n: int = 3) -> list[dict]:
@@ -39,6 +38,56 @@ def _get_last_n_turns(card_folder: Path, n: int = 3) -> list[dict]:
     with open(log_path, "r", encoding="utf-8") as f:
         log = json.load(f)
     return log[-n:] if len(log) > n else log
+
+
+def _write_character_memory(card: Path, date_str: str, summary: str, recent_turns: list[dict]) -> list[str]:
+    """Maintain lightweight per-character memory files for blank/subagent contexts."""
+    updated = []
+    card_data = _read_json(card / ".card_data.json", {}) or {}
+    memory_dir = card / "memory" / "characters"
+
+    targets = []
+    if card_data.get("mode") == "blank_bootstrap" or card_data.get("source_type") == "blank":
+        targets.append("_self")
+
+    orchestration = card_data.get("character_orchestration", {})
+    for name in orchestration.get("major", []) or []:
+        if isinstance(name, str) and name.strip():
+            safe = re.sub(r'[\\/:*?"<>|]+', "_", name.strip())
+            if safe not in targets:
+                targets.append(safe)
+
+    if not targets:
+        return updated
+
+    last = recent_turns[-1] if recent_turns else {}
+    stat_data = last.get("variables", {}).get("stat_data", {}) if isinstance(last.get("variables"), dict) else {}
+
+    for target in targets:
+        char_dir = memory_dir / target
+        char_dir.mkdir(parents=True, exist_ok=True)
+        recent_path = char_dir / "recent.md"
+        existing = recent_path.read_text(encoding="utf-8") if recent_path.exists() else "# 近期角色沉淀\n"
+        line = f"\n- {date_str}: {summary}\n"
+        recent_path.write_text((existing.rstrip() + line)[-6000:], encoding="utf-8")
+
+        goals_path = char_dir / "goals.md"
+        if not goals_path.exists():
+            goals_path.write_text("# 角色目标\n\n待后续剧情或 subagent 反馈沉淀。\n", encoding="utf-8")
+
+        profile_path = char_dir / "profile.md"
+        if not profile_path.exists():
+            profile_path.write_text("# 角色档案\n\n待后续剧情沉淀。\n", encoding="utf-8")
+
+        state_path = char_dir / "state.json"
+        state = _read_json(state_path, {}) or {}
+        state["last_updated"] = date_str
+        state["last_summary"] = summary
+        if stat_data:
+            state["latest_shared_stat_keys"] = list(stat_data.keys())[:20]
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        updated.append(target)
+    return updated
 
 
 def write_memory(card_folder: str) -> dict:
@@ -126,7 +175,10 @@ def write_memory(card_folder: str) -> dict:
     new_content = existing.rstrip() + "\n" + entry + "\n"
     project_path.write_text(new_content, encoding="utf-8")
 
-    # 6. Update MEMORY.md index (update the project.md line)
+    # 6. Update per-character memory for blank-card and subagent contexts
+    character_memory_updated = _write_character_memory(card, date_str, summary, recent_turns)
+
+    # 7. Update MEMORY.md index (update the project.md line)
     index_updated = False
     if mem_index_path.exists():
         index_text = mem_index_path.read_text(encoding="utf-8")
@@ -148,6 +200,7 @@ def write_memory(card_folder: str) -> dict:
         "summary": summary[:80],
         "project_md_size": len(new_content),
         "index_updated": index_updated,
+        "character_memory_updated": character_memory_updated,
     }
 
 

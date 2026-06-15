@@ -25,15 +25,7 @@ from pathlib import Path
 # Both files live in skills/, so direct import works (same as server.py imports handler).
 # import_card.run_import() has no stdout side effects after refactoring.
 from import_card import run_import
-
-
-def read_json(path):
-    """Safe JSON file read, returns None on failure."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+from io_utils import read_json, walk_paths as _walk_vars
 
 
 # ─── Phase 0: Cleanup ────────────────────────────────────────
@@ -130,14 +122,15 @@ def init_state_js(styles_dir: Path, card_name: str, world_name: str,
     card_state.write_text(js, encoding="utf-8")
 
 
-def init_content_js(styles_dir: Path, card_folder: str) -> None:
+def init_content_js(styles_dir: Path, card_folder: str, message: str = "正在生成开场...") -> None:
     """Write placeholder content.js.
 
     handler.py's write_content_js() will rebuild this when the first
-    turn is appended via handler.py --opening.
+    turn is appended via handler.py --opening or a normal user turn.
     """
+    safe_message = message.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
     js = (
-        "window.CONTENT_HTML = '<div style=\"padding:60px;text-align:center;color:#999;\">正在生成开场...</div>';\n"
+        f"window.CONTENT_HTML = '<div style=\"padding:60px;text-align:center;color:#999;\">{safe_message}</div>';\n"
         "window.BEAUTIFY_HTML = '';\n"
         "window.SUMMARY_TEXT = '';\n"
         "window.TURN_OPTIONS = [];\n"
@@ -147,6 +140,8 @@ def init_content_js(styles_dir: Path, card_folder: str) -> None:
         "window.TURN_VARIABLES = [];\n"
         "window.BEAUTIFY_DATA = {};\n"
         "window.REGEX_SCRIPTS = [];\n"
+        "window.UI_MANIFEST = {};\n"
+        "window.CARD_ASSETS = {images: []};\n"
     )
     (styles_dir / "content.js").write_text(js, encoding="utf-8")
     card_content = Path(card_folder) / "content.js"
@@ -166,23 +161,6 @@ def init_chat_log(card_folder: str) -> bool:
 
 
 # ─── Phase 3: Import Context File ────────────────────────────
-
-def _walk_vars(obj, prefix=""):
-    """Recursively list all leaf paths with values for context display."""
-    lines = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            lines.extend(_walk_vars(v, f"{prefix}/{k}"))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            lines.extend(_walk_vars(v, f"{prefix}/{i}"))
-    else:
-        val_str = json.dumps(obj, ensure_ascii=False)
-        if len(val_str) > 80:
-            val_str = val_str[:80] + "..."
-        lines.append(f"  {prefix} = {val_str}")
-    return lines
-
 
 def build_import_context(card_folder: str, styles_dir: Path,
                          import_result: dict) -> tuple:
@@ -207,6 +185,8 @@ def build_import_context(card_folder: str, styles_dir: Path,
     parts.append(f"  Name: {card_name}")
     parts.append(f"  World: {world_name}")
     parts.append(f"  Source: {source_type}")
+    if import_result.get("blank_bootstrap") or import_result.get("status") == "blank_bootstrap":
+        parts.append("  Mode: blank_bootstrap — no source material found; a temporary evolving role card was created")
     if source_file:
         parts.append(f"  File: {source_file}")
     if import_result.get("merged_worldbooks"):
@@ -358,7 +338,9 @@ def main():
     # ══ Phase 2: Session Initialization ══
     card_path_abs = write_card_path(card_folder, styles_dir)
     init_state_js(styles_dir, card_name, world_name, card_folder)
-    init_content_js(styles_dir, card_folder)
+    blank_bootstrap = import_result.get("status") == "blank_bootstrap"
+    placeholder = "等待你的开局输入..." if blank_bootstrap else "正在生成开场..."
+    init_content_js(styles_dir, card_folder, placeholder)
     chat_log_created = init_chat_log(card_folder)
 
     # Pass chat_log status through to context builder
@@ -381,7 +363,7 @@ def main():
     # ══ Phase 4: JSON Summary ══
     summary = {
         "ok": True,
-        "action": "imported" if import_result.get("status") == "ok" else "partial",
+        "action": "blank_bootstrap" if import_result.get("status") == "blank_bootstrap" else ("imported" if import_result.get("status") == "ok" else "partial"),
         "card_dir": card_folder,
         "card_name": card_name,
         "world_name": world_name,
@@ -416,13 +398,14 @@ def main():
         if key in import_result:
             summary[key] = import_result[key]
 
-    # Cards with no detectable data
-    if import_result.get("status") == "no_card_found":
+    # Blank bootstrap is a supported startup mode, not an error.
+    if import_result.get("status") == "blank_bootstrap":
         summary.update({
             "ok": True,
-            "action": "no_card_data",
-            "warning": "No recognizable card data found (no PNG/JSON/TXT with card format)",
+            "action": "blank_bootstrap",
+            "message": "No source material found; created a temporary evolving role card.",
             "files_scanned": import_result.get("files_scanned", {}),
+            "blank_bootstrap": True,
         })
 
     # Output (with Windows encoding safety)

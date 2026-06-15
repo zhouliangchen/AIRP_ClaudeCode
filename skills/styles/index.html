@@ -81,6 +81,29 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
+#mobile-settings-toggle {
+  display: none;
+  width: 28px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  line-height: 1;
+}
+#mobile-settings-toggle.is-open {
+  background: var(--accent2);
+  border-color: var(--accent2);
+  color: #fff;
+}
+#mobile-settings-backdrop,
+#mobile-actions-card {
+  display: none;
+}
 
 /* ═══ MAIN ═══ */
 #main {
@@ -134,6 +157,11 @@ body {
   display: flex; flex-direction: column; gap: 8px;
   font-size: 0.82em;
 }
+#mobile-settings-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .side-card {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -176,6 +204,27 @@ body {
   cursor: pointer; outline: none; width: 130px;
 }
 .setting-row select:focus { border-color: var(--accent2); }
+.settings-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: center;
+  font-size: 0.82em;
+  color: var(--muted);
+}
+.settings-meta-row input {
+  flex: 1 1 120px;
+  min-width: 0;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 0.95em;
+  font-family: var(--font-ui);
+  outline: none;
+}
+.settings-meta-row input:focus { border-color: var(--accent2); }
 .toggle-switch { position: relative; width: 40px; height: 20px; flex-shrink: 0; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; }
 .toggle-slider {
@@ -254,6 +303,159 @@ body {
   pointer-events: none; z-index: 100;
 }
 #toast.show { opacity: 1; }
+
+/* ═══ RESPONSIVE LAYOUT ═══ */
+@media (max-width: 720px) {
+  html, body { height: 100dvh; }
+  #topbar {
+    position: relative;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    padding: 6px 48px 6px 10px;
+    line-height: 1.35;
+  }
+  #topbar .spacer { display: none; }
+  #topbar .sep { display: none; }
+  #theme-toggle {
+    margin-left: auto;
+    margin-right: 34px;
+  }
+  #mobile-settings-toggle {
+    display: inline-flex;
+    position: absolute;
+    top: 6px;
+    right: 10px;
+    z-index: 135;
+  }
+  #tb-wordcount,
+  #tb-tokens {
+    display: none;
+  }
+  #topbar .dim,
+  #topbar #tb-stage,
+  #topbar #conn-label,
+  #topbar #conn-status {
+    font-size: 0.72em;
+  }
+  #main {
+    flex-direction: column;
+    min-height: 0;
+  }
+  #content-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 14px 12px;
+    align-items: stretch;
+  }
+  #mobile-actions-card {
+    display: block;
+    flex: 0 0 auto;
+    margin: 0 8px 8px;
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  #content-panel #doc,
+  #beautify-container,
+  .beautify-panel-inline {
+    max-width: none;
+  }
+  #sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(86vw, 360px);
+    height: 100dvh;
+    max-height: none;
+    border-left: 1px solid var(--border);
+    border-top: none;
+    padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+    flex: none;
+    font-size: 0.8em;
+    z-index: 120;
+    box-shadow: -12px 0 24px rgba(0,0,0,.18);
+    transform: translateX(104%);
+    transition: transform 0.22s ease;
+  }
+  body.mobile-settings-open #sidebar { transform: translateX(0); }
+  #mobile-settings-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.28);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 110;
+    transition: opacity 0.22s ease;
+  }
+  body.mobile-settings-open #mobile-settings-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  #mobile-settings-drawer { display: flex; }
+  #sidebar #actions-card { display: none !important; }
+  .side-card { padding: 8px 10px; }
+  .chip-action {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  #input-panel { padding: 8px 10px; }
+  #input-panel .input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  #input-panel textarea {
+    min-height: 48px;
+    max-height: 88px;
+  }
+  .btn-group { width: 100%; }
+  #input-panel button { flex: 1; }
+  #input-panel .meta-row {
+    display: none;
+  }
+}
+
+@media (min-width: 721px) {
+  #mobile-actions-card { display: none !important; }
+}
+
+@media (max-width: 420px) {
+  #sidebar { width: min(90vw, 360px); }
+  .turn-wrap { margin-bottom: 16px; }
+  .turn-user .turn-text { padding: 10px 12px; }
+  .turn-ai .turn-text { line-height: 1.75; }
+  .generated-asset-strip { grid-template-columns: 1fr; }
+}
+
+	/* ═══ GENERATED ASSETS ═══ */
+	.generated-asset-strip {
+	  margin: 10px 0 18px;
+	  display: grid;
+	  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	  gap: 10px;
+	}
+	.generated-asset-card {
+	  background: var(--surface);
+	  border: 1px solid var(--border);
+	  border-radius: var(--radius-md);
+	  overflow: hidden;
+	  box-shadow: 0 1px 6px rgba(0,0,0,.08);
+	}
+	.generated-asset-card img {
+	  display: block;
+	  width: 100%;
+	  max-height: 320px;
+	  object-fit: cover;
+	  cursor: zoom-in;
+	}
+	.generated-asset-caption {
+	  padding: 7px 9px;
+	  font-size: 0.72em;
+	  color: var(--muted);
+	  line-height: 1.4;
+	}
+	.generated-asset-caption b { color: var(--accent); }
 
 /* ═══ DARK MODE OVERRIDES ═══ */
 [data-theme="dark"] .turn-ai .turn-text {
@@ -818,6 +1020,7 @@ body {
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
+  <button id="mobile-settings-toggle" type="button" title="设置" aria-label="设置" aria-controls="mobile-settings-drawer" aria-expanded="false">⚙</button>
 </div>
 
 <div id="main">
@@ -826,11 +1029,17 @@ body {
     <div id="beautify-container"></div>
   </div>
 
+  <div class="side-card" id="mobile-actions-card" style="display:none;">
+    <h4 id="mobile-actions-title">下一步行动</h4>
+    <div id="mobile-actions"></div>
+  </div>
+
   <div id="sidebar">
     <div class="side-card" id="actions-card" style="display:none;">
       <h4>📂 可选项</h4>
       <div id="sb-actions"></div>
     </div>
+    <div id="mobile-settings-drawer">
     <div class="side-card">
       <h4>⚙️ 预设配置 <span id="settings-saved" style="margin-left:4px;">已保存</span></h4>
       <div class="setting-row">
@@ -869,6 +1078,14 @@ body {
         </label>
       </div>
     </div>
+    <div class="side-card" id="player-settings-card">
+      <h4>玩家设置</h4>
+      <div class="settings-meta-row">
+        <span>你的角色名:</span>
+        <input id="player-name-input" placeholder="可选" value="" oninput="onPlayerNameChange();">
+        <span id="last-action" style="font-style:italic;"></span>
+      </div>
+    </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
       <div style="color:var(--accent2);" id="sb-quest">—</div>
@@ -894,8 +1111,11 @@ body {
       <h4>📋 剧情摘要</h4>
       <div class="summary-text" id="sb-summary">暂无</div>
     </div>
+    </div>
   </div>
 </div>
+
+<div id="mobile-settings-backdrop" onclick="setMobileSettingsOpen(false)" aria-hidden="true"></div>
 
 <div id="input-panel">
   <div class="input-row">
@@ -907,12 +1127,6 @@ body {
       <button class="btn-submit" onclick="doSubmit()">▶ 提交</button>
       <button class="btn-secondary" onclick="doClear()">清空</button>
     </div>
-  </div>
-  <div class="meta-row">
-    <span>你的角色名:</span>
-    <input id="player-name-input" placeholder="可选" value="" oninput="onPlayerNameChange();">
-    <span style="flex:1;"></span>
-    <span id="last-action" style="font-style:italic;"></span>
   </div>
 </div>
 
@@ -932,6 +1146,7 @@ let lastStateMtime = 0;
 let lastContentMtime = 0;
 let _prevContentHtml = '';  // cache to avoid spurious innerHTML resets
 let _prevBeautifyHtml = '';  // separate cache for beautify panel
+let _prevAssetSig = '';      // generated asset manifest cache
 
 var _consecutiveFailures = 0;
 
@@ -1055,19 +1270,6 @@ function replaceUser(s) {
   return s;
 }
 
-function applyBeautifyCSS() {
-  var beautifyData = window.BEAUTIFY_DATA || {};
-  var cssSource = beautifyData.panel_css || beautifyData.panel_inline_css || '';
-  var oldStyle = document.getElementById('_beautify_css');
-  if (oldStyle) oldStyle.remove();
-  if (cssSource) {
-    var style = document.createElement('style');
-    style.id = '_beautify_css';
-    style.textContent = cssSource;
-    document.head.appendChild(style);
-  }
-}
-
 // ═══ Client-side macro resolver — mirrors MVU engine display-time resolution ═══
 // In the real MVU pipeline, {{format_message_variable::stat_data.XXX}} macros
 // are resolved dynamically at render time against the live stat_data tree.
@@ -1169,9 +1371,12 @@ function render() {
     window.registerRegexScripts(regexScripts);
     newContent = window.getRegexedString(newContent, 2 /* AI_OUTPUT */, { isMarkdown: true });
   }
-  if (_prevContentHtml !== newContent) {
+  var assetSig = JSON.stringify((window.CARD_ASSETS && window.CARD_ASSETS.images) || []);
+  if (_prevContentHtml !== newContent || _prevAssetSig !== assetSig) {
     _prevContentHtml = newContent;
+    _prevAssetSig = assetSig;
     contentEl.innerHTML = newContent;
+    renderGeneratedAssets(contentEl);
     // Re-execute embedded <script> tags (innerHTML doesn't run them).
     // The _st_shims.js globals are already loaded, so card-author
     // beautify scripts find their expected ST/MVU APIs.
@@ -1228,18 +1433,33 @@ function render() {
   // Actions — prefer per-turn TURN_OPTIONS, fall back to static S.actions
   const actionsCard = document.getElementById('actions-card');
   const turnOpts = window.TURN_OPTIONS;
-  const actionsH4 = actionsCard.querySelector('h4');
+  const mobileActionsCard = document.getElementById('mobile-actions-card');
   const actionsDiv = document.getElementById('sb-actions');
+  const mobileActionsDiv = document.getElementById('mobile-actions');
+  const actionTargets = [
+    { card: actionsCard, title: actionsCard ? actionsCard.querySelector('h4') : null, body: actionsDiv },
+    { card: mobileActionsCard, title: document.getElementById('mobile-actions-title'), body: mobileActionsDiv }
+  ];
+  function setActionTargets(titleHtml, opts) {
+    actionTargets.forEach(function(target) {
+      if (!target.card || !target.body) return;
+      target.card.style.display = '';
+      if (target.title) target.title.innerHTML = titleHtml;
+      renderOptions(target.body, opts);
+    });
+  }
+  function hideActionTargets() {
+    actionTargets.forEach(function(target) {
+      if (target.card) target.card.style.display = 'none';
+      if (target.body) target.body.innerHTML = '';
+    });
+  }
   if (turnOpts && turnOpts.length > 0) {
-    actionsCard.style.display = '';
-    if (actionsH4) actionsH4.innerHTML = '🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
-    renderOptions(actionsDiv, turnOpts);
+    setActionTargets('🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''), turnOpts);
   } else if (S.actions && S.actions.length > 0) {
-    actionsCard.style.display = '';
-    if (actionsH4) actionsH4.innerHTML = '📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
-    renderOptions(actionsDiv, S.actions);
+    setActionTargets('📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''), S.actions);
   } else {
-    actionsCard.style.display = 'none';
+    hideActionTargets();
   }
 
 
@@ -1280,6 +1500,32 @@ function render() {
   if (window.eventEmit && window.Mvu) {
     window.eventEmit(window.Mvu.events.VARIABLE_UPDATE_ENDED);
   }
+}
+
+function renderGeneratedAssets(contentEl) {
+  var assets = (window.CARD_ASSETS && window.CARD_ASSETS.images) || [];
+  if (!contentEl || !assets.length) return;
+  var display = assets.filter(function(a) {
+    return a && a.url && (a.kind === 'scene' || a.kind === 'scene_illustration' || a.target === 'scene_illustration');
+  }).slice(-3);
+  if (!display.length) return;
+  var strip = document.createElement('div');
+  strip.className = 'generated-asset-strip';
+  display.forEach(function(a) {
+    var card = document.createElement('div');
+    card.className = 'generated-asset-card';
+    var img = document.createElement('img');
+    img.src = a.url;
+    img.alt = a.kind || 'generated image';
+    img.onclick = function() { zoomPortrait(a.url); };
+    var cap = document.createElement('div');
+    cap.className = 'generated-asset-caption';
+    cap.innerHTML = '<b>' + escHtml(a.kind || 'image') + '</b> · ' + escHtml(a.target || '') + '<br>' + escHtml((a.prompt || '').slice(0, 90));
+    card.appendChild(img);
+    card.appendChild(cap);
+    strip.appendChild(card);
+  });
+  contentEl.appendChild(strip);
 }
 
 function updateOpeningsCard(S) {
@@ -1349,15 +1595,6 @@ function renderOptions(container, opts) {
     });
     container.appendChild(span);
   });
-}
-
-function pickAction(action) {
-  const ta = document.getElementById('user-input');
-  const tmp = document.createElement('div');
-  tmp.innerHTML = action;
-  const plainText = (tmp.textContent || tmp.innerText || action).trim();
-  ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
-  ta.focus();
 }
 
 const BRIDGE = 'http://localhost:8765';
@@ -1664,319 +1901,21 @@ function renderMvuVars() {
   if (card) card.style.display = 'none';
 }
 
-function _renderMvuTree(data, delta, pathPrefix) {
-  if (data === null || data === undefined) return '<span class="mvu-null">null</span>';
-
-  var type = Array.isArray(data) ? 'array' : typeof data;
-
-  if (type === 'string' || type === 'number' || type === 'boolean') {
-    var valClass = type === 'string' ? 'mvu-str' : (type === 'number' ? 'mvu-num' : 'mvu-bool');
-    var fullPath = pathPrefix;
-    var isDelta = delta.hasOwnProperty(fullPath) || delta.hasOwnProperty(fullPath.replace(/^\./, ''));
-    return '<span class="' + valClass + (isDelta ? ' mvu-delta' : '') + '">' + String(data) + '</span>';
-  }
-
-  if (type === 'object') {
-    var keys = Object.keys(data);
-    if (keys.length === 0) return '<span class="mvu-empty">(empty)</span>';
-
-    var html = '<details' + (keys.length <= 3 ? ' open' : '') + '><summary>' + (Array.isArray(data) ? '[' + keys.length + ']' : '{' + keys.length + ' keys}') + '</summary>';
-    for (var i = 0; i < keys.length; i++) {
-      var k = keys[i];
-      if (k.indexOf('$') === 0) continue; // Skip $meta / $internal
-      var v = data[k];
-      var childPath = pathPrefix + '.' + k;
-      var entryClass = '';
-      if (delta) {
-        for (var dk in delta) {
-          if (dk === childPath || dk.indexOf(childPath + '.') === 0 || dk.indexOf(childPath + '[') === 0) {
-            entryClass = ' mvu-delta';
-            break;
-          }
-        }
-      }
-      html += '<div class="mvu-entry' + entryClass + '"><span class="mvu-key">' + k + ':</span> ';
-      if (v !== null && (typeof v === 'object')) {
-        html += _renderMvuTree(v, delta, childPath);
-      } else {
-        html += _renderMvuTree(v, delta, childPath);
-      }
-      html += '</div>';
-    }
-    html += '</details>';
-    return html;
-  }
-
-  return '<span>' + String(data) + '</span>';
-}
-
 function formatNum(n) {
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
   return String(n);
 }
 
-// ═══ Generic Status Panel (driven by card's initvar) ═══
-// Detects initvar structure and renders appropriately:
-//   - Tabbed sections for objects containing similar sub-objects (e.g., NPCs)
-//   - Key-value lists for flat/simple objects
-//   - Portraits if BEAUTIFY_PORTRAITS is populated for matching keys
+// ═══ Status Panel (server-rendered) ═══
+// The beautify/status panel is built server-side in handler.py
+// (window.BEAUTIFY_HTML) and rendered in #beautify-container.
 
 function renderBeautify() {
-  // Beautify dashboard now rendered server-side in inline panel
+  // Beautify dashboard is rendered server-side in the inline panel.
+  // The sidebar card is hidden; client-side rendering is no longer used.
   var card = document.getElementById('beautify-card');
   if (card) card.style.display = 'none';
-  return;
-
-  // ── Discover tabs from variable structure ──
-  var topKeys = Object.keys(vars);
-  // Group: flat objects/scalars → "概况" tab; objects-with-subobjects → individual tabs
-  var overviewItems = [];
-  var subTabs = []; // [{key, subKeys, isRecord: bool}]
-  for (var i = 0; i < topKeys.length; i++) {
-    var k = topKeys[i];
-    var v = vars[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      var childKeys = Object.keys(v);
-      var hasNestedObj = false;
-      for (var ci = 0; ci < childKeys.length; ci++) {
-        var cv = v[childKeys[ci]];
-        if (cv && typeof cv === 'object' && !Array.isArray(cv)) { hasNestedObj = true; break; }
-      }
-      if (hasNestedObj && childKeys.length > 0) {
-        // Object containing sub-objects → individual tabs per sub-key
-        for (var ci2 = 0; ci2 < childKeys.length; ci2++) {
-          subTabs.push({topKey: k, subKey: childKeys[ci2], parent: k});
-        }
-      } else {
-        // Flat object (or empty record) → overview + its own tab
-        subTabs.push({topKey: k, subKey: null, parent: null});
-      }
-    } else {
-      // Scalar/array at top level → overview
-      overviewItems.push(k);
-    }
-  }
-
-  // Active tab persistence
-  if (!window._beautifyActiveTab) window._beautifyActiveTab = '_overview';
-  var activeTab = window._beautifyActiveTab;
-  // Validate active tab still exists
-  var validTabs = ['_overview'];
-  for (var ti = 0; ti < subTabs.length; ti++) {
-    validTabs.push(subTabs[ti].topKey + (subTabs[ti].subKey ? '|||' + subTabs[ti].subKey : ''));
-  }
-  if (validTabs.indexOf(activeTab) < 0) {
-    activeTab = '_overview';
-    window._beautifyActiveTab = '_overview';
-  }
-
-  var S = window.STATE || {};
-  var beautifyData = window.BEAUTIFY_DATA || {};
-
-  // ── Dynamic title ──
-  var panelTitle = beautifyData.panel_title || (S.world ? S.world + ' · 状态栏' : 'MVU · 状态栏');
-  var panelKicker = beautifyData.panel_kicker || '变量追踪 · MVU';
-
-  var html = '<div class="beautify-dashboard">';
-
-  // ── Header ──
-  html += '<div class="beautify-header">';
-  html += '<div class="beautify-header-kicker">' + escHtml(panelKicker) + '</div>';
-  html += '<div class="beautify-header-title">' + escHtml(panelTitle) + '</div>';
-  html += '<div class="beautify-meta-chips">';
-  html += '<span class="beautify-meta-chip">' + escHtml(S.time || '—') + '</span>';
-  html += '<span class="beautify-meta-chip">' + escHtml(S.world || '—') + '</span>';
-  html += '</div></div>';
-
-  // ── Tabs ──
-  html += '<div class="beautify-tabs">';
-  html += '<div class="beautify-tab-btn' + (activeTab === '_overview' ? ' active' : '') + '" data-tab="_overview">概况</div>';
-  for (var ti2 = 0; ti2 < subTabs.length; ti2++) {
-    var st = subTabs[ti2];
-    var tabId = st.topKey + (st.subKey ? '|||' + st.subKey : '');
-    var tabLabel = st.subKey || st.topKey;
-    html += '<div class="beautify-tab-btn' + (activeTab === tabId ? ' active' : '') + '" data-tab="' + escHtml(tabId) + '">' + escHtml(tabLabel) + '</div>';
-  }
-  html += '</div>';
-
-  // ── Body ──
-  html += '<div class="beautify-body">';
-
-  if (activeTab === '_overview') {
-    // Overview: show all top-level scalar values + flat object summaries
-    html += '<div class="beautify-info-grid">';
-    for (var oi = 0; oi < topKeys.length; oi++) {
-      var ok = topKeys[oi];
-      var ov = vars[ok];
-      if (ov === null || ov === undefined) {
-        html += _biCard(ok, '—');
-      } else if (typeof ov === 'object' && !Array.isArray(ov)) {
-        var childCount = Object.keys(ov).length;
-        if (childCount === 0) {
-          html += _biCard(ok, '(空)');
-        } else {
-          // Show first few keys as summary
-          var previewKeys = Object.keys(ov).slice(0, 3);
-          var preview = previewKeys.map(function(pk) { return pk + ': ' + _fmtScalar(ov[pk]); }).join(' / ');
-          if (childCount > 3) preview += ' ... (+' + (childCount - 3) + ')';
-          html += _biCard(ok, preview);
-        }
-      } else if (Array.isArray(ov)) {
-        html += _biCard(ok, '[' + ov.length + ' 项]');
-      } else {
-        html += _biCard(ok, _fmtScalar(ov));
-      }
-    }
-    html += '</div>';
-  } else {
-    // Find the active sub-tab
-    var activeParts = activeTab.split('|||');
-    var activeTopKey = activeParts[0];
-    var activeSubKey = activeParts.length > 1 ? activeParts[1] : null;
-    var activeData = vars[activeTopKey];
-
-    if (activeSubKey && activeData && activeData[activeSubKey] && typeof activeData[activeSubKey] === 'object') {
-      // Sub-object detail
-      var detail = activeData[activeSubKey];
-      html += '<div class="beautify-partner-header">';
-      // Portrait thumbnail if available
-      var portrait = BEAUTIFY_PORTRAITS[activeSubKey];
-      if (portrait && portrait.normal && portrait.normal.length > 0) {
-        var pidx = (window._beautifyPortraitIdx && window._beautifyPortraitIdx[activeSubKey]) || 0;
-        html += '<img class="beautify-portrait-thumb" src="' + escHtml(portrait.normal[pidx]) + '" onclick="event.stopPropagation();zoomPortrait(\'' + escHtml(portrait.normal[pidx]) + '\')" title="点击放大">';
-      }
-      html += '<span class="beautify-partner-name">' + escHtml(activeSubKey) + '</span>';
-      html += '</div>';
-      html += '<div class="beautify-detail-grid">';
-      var detailKeys = Object.keys(detail);
-      for (var dk = 0; dk < detailKeys.length; dk++) {
-        var dkk = detailKeys[dk];
-        var dv = detail[dkk];
-        if (dv && typeof dv === 'object' && !Array.isArray(dv)) {
-          // Nested sub-object: render inline
-          html += '<div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin:8px 0 4px;">' + escHtml(dkk) + '</div>';
-          var nestedKeys = Object.keys(dv);
-          for (var nk = 0; nk < nestedKeys.length; nk++) {
-            html += _bdItem(nestedKeys[nk], _fmtScalar(dv[nestedKeys[nk]]));
-          }
-        } else {
-          html += _bdItem(dkk, _fmtScalar(dv));
-        }
-      }
-      html += '</div>';
-    } else if (activeData && typeof activeData === 'object' && !Array.isArray(activeData)) {
-      // Flat object detail
-      var flatKeys = Object.keys(activeData);
-      if (flatKeys.length === 0) {
-        html += '<div class="beautify-empty">暂无数据</div>';
-      } else {
-        html += '<div class="beautify-info-grid">';
-        for (var fk = 0; fk < flatKeys.length; fk++) {
-          var fkk = flatKeys[fk];
-          html += _biCard(fkk, _fmtScalar(activeData[fkk]));
-        }
-        html += '</div>';
-      }
-    } else {
-      html += '<div class="beautify-empty">暂无数据</div>';
-    }
-  }
-
-  html += '</div>'; // close beautify-body
-  html += '</div>'; // close beautify-dashboard
-  div.innerHTML = html;
-
-  // Re-bind tab clicks
-  var tabs = div.querySelectorAll('.beautify-tab-btn');
-  for (var j = 0; j < tabs.length; j++) {
-    tabs[j].addEventListener('click', function() {
-      window._beautifyActiveTab = this.getAttribute('data-tab');
-      renderBeautify();
-    });
-  }
 }
-
-function _fmtScalar(v) {
-  if (v === null || v === undefined) return '—';
-  if (typeof v === 'boolean') return v ? '是' : '否';
-  if (typeof v === 'number') return String(v);
-  return String(v);
-}
-
-function _biCard(label, value) {
-  var num = parseFloat(value);
-  if (!isNaN(num) && num >= 0) {
-    return '<div class="beautify-info-card">' +
-      '<div class="beautify-info-label">' + escHtml(label) + '</div>' +
-      '<div style="display:flex;align-items:center;gap:5px;flex:1;">' +
-      '<div class="tv-stat-bar-bg" style="flex:1;"><div class="tv-stat-bar-fill" style="width:' + Math.min(num, _statMaxGuess(num)) / _statMaxGuess(num) * 100 + '%;background:' + _statColor(label) + '"></div></div>' +
-      '<span class="tv-stat-value">' + num + '</span></div></div>';
-  }
-  return '<div class="beautify-info-card"><div class="beautify-info-label">' + escHtml(label) + '</div><div class="beautify-info-value">' + escHtml(value) + '</div></div>';
-}
-
-function _bdItem(label, value) {
-  var num = parseFloat(value);
-  if (!isNaN(num) && num >= 0) {
-    return '<div class="beautify-detail-item"><div class="beautify-detail-label">' + escHtml(label) + '</div>' +
-      '<div style="display:flex;align-items:center;gap:5px;flex:1;max-width:200px;">' +
-      '<div class="tv-stat-bar-bg" style="flex:1;"><div class="tv-stat-bar-fill" style="width:' + Math.min(num, _statMaxGuess(num)) / _statMaxGuess(num) * 100 + '%;background:' + _statColor(label) + '"></div></div>' +
-      '<span class="tv-stat-value">' + num + '</span></div></div>';
-  }
-  var display = value || '—';
-  return '<div class="beautify-detail-item"><div class="beautify-detail-label">' + escHtml(label) + '</div><div class="beautify-detail-value">' + escHtml(display) + '</div></div>';
-}
-
-function _renderFlatObject(obj, indent) {
-  indent = indent || 0;
-  if (!obj || typeof obj !== 'object') return escHtml(String(obj));
-  var html = '';
-  var keys = Object.keys(obj);
-  for (var i = 0; i < keys.length; i++) {
-    var k = keys[i];
-    var v = obj[k];
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      // Nested object → collapsible details
-      var subKeys = Object.keys(v);
-      if (subKeys.length === 0) {
-        html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:var(--muted)">(empty)</span></div>';
-      } else {
-        html += '<details class="beautify-sub" style="padding-left:' + (indent * 6) + 'px;"><summary><b>' + escHtml(k) + '</b> <span style="color:var(--muted);font-size:10px">(' + subKeys.length + ' fields)</span></summary>';
-        html += _renderFlatObject(v, indent + 1);
-        html += '</details>';
-      }
-    } else if (Array.isArray(v)) {
-      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:var(--muted)">[' + v.length + ' items]</span></div>';
-    } else if (typeof v === 'boolean') {
-      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:' + (v ? '#7a9a5a' : '#9a7a5a') + '">' + (v ? '✓' : '✗') + '</span></div>';
-    } else if (typeof v === 'number') {
-      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span class="beautify-highlight">' + v + '</span></div>';
-    } else if (typeof v === 'string') {
-      var display = escHtml(v);
-      var trunc = display.length > 20 ? display.substring(0, 20) + '…' : '';
-      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span' + (trunc ? ' title="' + display + '"' : '') + '>' + (trunc || display) + '</span></div>';
-    }
-  }
-  return html;
-}
-
-// NPC portrait URLs — from card's .beautify.json (no hardcoded fallback)
-var BEAUTIFY_PORTRAITS = (window.BEAUTIFY_DATA && window.BEAUTIFY_DATA.portraits) || {};
-
-// Initialize random portrait indices
-(function() {
-  if (!window._beautifyPortraitIdx) {
-    window._beautifyPortraitIdx = {};
-    for (var k in BEAUTIFY_PORTRAITS) {
-      var normalPool = BEAUTIFY_PORTRAITS[k].normal;
-      if (normalPool && normalPool.length > 0) {
-        window._beautifyPortraitIdx[k] = Math.floor(Math.random() * normalPool.length);
-      }
-    }
-  }
-})();
-
-// renderBeautify defined above (generic, card-agnostic)
 
 function zoomPortrait(url) {
   var modal = document.getElementById('beautify-modal');
@@ -1991,7 +1930,31 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function setMobileSettingsOpen(open) {
+  var btn = document.getElementById('mobile-settings-toggle');
+  document.body.classList.toggle('mobile-settings-open', !!open);
+  if (btn) {
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.classList.toggle('is-open', !!open);
+  }
+}
+
+function initMobileSettingsToggle() {
+  var btn = document.getElementById('mobile-settings-toggle');
+  if (!btn) return;
+  btn.addEventListener('click', function() {
+    setMobileSettingsOpen(!document.body.classList.contains('mobile-settings-open'));
+  });
+  window.addEventListener('resize', function() {
+    if (window.innerWidth > 720) setMobileSettingsOpen(false);
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') setMobileSettingsOpen(false);
+  });
+}
+
 // No page flash: use dynamic script reloading instead of meta refresh
+initMobileSettingsToggle();
 reloadData();
 checkBridge();
 loadSettings();

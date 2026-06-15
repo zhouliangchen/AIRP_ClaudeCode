@@ -39,7 +39,10 @@
       "Bash(git rm *)",
       "Bash(git ls-files *)",
       "Bash(git check-ignore *)",
-      "PowerShell(\\(Get-Content D:\\\\ds4\\\\README.md | Measure-Object -Line\\).Lines)"
+      "PowerShell(\\(Get-Content D:\\\\ds4\\\\README.md | Measure-Object -Line\\).Lines)",
+      "Bash(gh auth *)",
+      "Bash(git remote *)",
+      "Bash(/c/Program Files \\(x86\\)/Microsoft/Edge/Application/msedge.exe *)"
     ]
   },
   "hooks": {

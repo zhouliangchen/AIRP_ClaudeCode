@@ -24,8 +24,13 @@
 告知用户当前剧情进度（从 project.md 摘要 + 最近 3 轮对话概括）。
 按 CLAUDE.md「自动启动流程」步骤 2-4 恢复运行（启动服务器 → 读上下文 → ScheduleWakeup 输入监听），继续等待用户输入。
 
-### 情况 C — 无任何素材文件
+### 情况 C — 无任何素材文件（空白角色卡模式）
+
+直接按 CLAUDE.md「自动启动流程」步骤 1-5 执行。导入管线会自动创建临时空白角色卡：
+- 写入 `.card_data.json`、`.initvar.json`、`memory/`、`memory/characters/_self/`、`ui_manifest.json`
+- 不生成 AI 开局，不执行 `handler.py --opening`
+- 启动前端和输入监听后，等待用户在浏览器输入第一轮开局设定或行动
+- 每轮会沉淀到 `memory/characters/_self/` 和 `.card_data.json.evolving_profile`，逐步形成自定义角色卡
 
 告知用户：
-> 当前目录下没有找到角色卡或小说文件。
-> 请放入 PNG 角色卡、JSON 世界书 或 TXT 小说文件后重新执行 `/rp`。
+> 当前目录没有素材，已进入空白角色卡模式。

@@ -21,68 +21,44 @@ from pathlib import Path
 import match_worldbook
 import mvu_check
 from handler import apply_injections
-
-
-def read_file(path):
-    """Safely read a text file, return None on failure."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return None
-
-
-def read_json(path):
-    """Safely read a JSON file, return None on failure."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+from io_utils import read_file, read_json, walk_paths
 
 
 def list_initvar_paths(initvar):
     """Recursively list all paths in initvar with current values."""
-    lines = []
-
-    def walk(obj, prefix=""):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                walk(v, f"{prefix}/{k}")
-        elif isinstance(obj, list):
-            for i, v in enumerate(obj):
-                walk(v, f"{prefix}/{i}")
-        else:
-            lines.append(f"  {prefix} = {json.dumps(obj, ensure_ascii=False)}")
-
-    walk(initvar)
-    return "\n".join(lines)
+    return "\n".join(walk_paths(initvar))
 
 
-def grep_reference_md(card_folder, section_title):
-    """Read reference.md and return lines under ## section_title (up to 200 lines).
-    Pure Python — no shell grep dependency (Windows compatible)."""
+def _load_reference_sections(card_folder):
+    """Read reference.md once and index by ## section title for O(1) lookup."""
     ref_path = Path(card_folder) / "memory" / "reference.md"
     if not ref_path.exists():
-        return ""
+        return {}
     try:
         text = ref_path.read_text(encoding="utf-8")
     except Exception:
-        return ""
-    marker = f"## {section_title}"
-    lines = text.split("\n")
-    output = []
-    found = False
-    for line in lines:
-        if found and line.startswith("## ") and not line.startswith(marker):
-            break
-        if found:
-            output.append(line)
-            if len(output) >= 200:
+        return {}
+    sections = {}
+    current_title = None
+    current_lines = []
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            if current_title is not None:
+                sections[current_title] = "\n".join(current_lines)
+            current_title = line[3:].strip()
+            current_lines = []
+        elif current_title is not None:
+            current_lines.append(line)
+            if len(current_lines) >= 200:
                 break
-        if line.strip() == marker.strip():
-            found = True
-    return "\n".join(output)
+    if current_title is not None:
+        sections[current_title] = "\n".join(current_lines)
+    return sections
+
+
+def grep_reference_section(sections, section_title):
+    """O(1) section lookup against pre-indexed reference.md dict."""
+    return sections.get(section_title, "")
 
 
 def _keyword_score(keyword, text):
@@ -105,7 +81,7 @@ def _keyword_score(keyword, text):
     return 0
 
 
-def _input_matches(wb_index, user_text, card_folder):
+def _input_matches(wb_index, user_text, ref_sections):
     """Scan user input against worldbook index keywords, return top-3 with full entry text."""
     scored = []
     for entry in wb_index:
@@ -124,12 +100,79 @@ def _input_matches(wb_index, user_text, card_folder):
         lines.append(f"\n  --- Input Match {i+1}: {m['keyword']} (score={m['score']}) ---")
         lines.append(f"  Title: {m['title']}")
         lines.append(f"  One-liner: {m['one_liner'][:100]}")
-        full = grep_reference_md(card_folder, m["section"].lstrip("#").strip())
+        full = grep_reference_section(ref_sections, m["section"].lstrip("#").strip())
         if full:
             lines.append("  Full entry:")
             for fl in full.split("\n")[:100]:
                 lines.append(f"    {fl}")
     return lines
+
+
+def _safe_name(name):
+    return re.sub(r'[\\/:*?"<>|]+', "_", name.strip()) or "_unknown"
+
+
+def _read_character_file(card_folder, name, fname):
+    path = Path(card_folder) / "memory" / "characters" / _safe_name(name) / fname
+    if path.exists():
+        try:
+            return path.read_text(encoding="utf-8")[:3000]
+        except Exception:
+            pass
+    return ""
+
+
+def build_character_contexts(card_folder, card_data, card_structure, chat_log, user_text):
+    """Build compact per-character packets for optional Claude Code subagents."""
+    orchestration = card_data.get("character_orchestration", {}) if isinstance(card_data, dict) else {}
+    major = []
+    for name in orchestration.get("major", []) or []:
+        if isinstance(name, str) and name.strip():
+            major.append(name.strip())
+
+    # Blank self-card is always a candidate so the emergent role can keep continuity.
+    if isinstance(card_data, dict) and (card_data.get("mode") == "blank_bootstrap" or card_data.get("source_type") == "blank"):
+        if "_self" not in major:
+            major.insert(0, "_self")
+
+    # Use card structure characters as passive major candidates only when explicitly configured absent.
+    if not major and isinstance(card_structure, dict):
+        for name in (card_structure.get("characters", {}) or {}).keys():
+            major.append(name)
+            if len(major) >= 2:
+                break
+
+    latest_vars = {}
+    for turn in reversed(chat_log or []):
+        vars_obj = turn.get("variables", {}) if isinstance(turn, dict) else {}
+        if isinstance(vars_obj, dict) and isinstance(vars_obj.get("stat_data"), dict):
+            latest_vars = vars_obj["stat_data"]
+            break
+
+    packets = []
+    for name in major[: max(1, int(orchestration.get("max_parallel_subagents", 2) or 2))]:
+        safe = _safe_name(name)
+        profile_md = _read_character_file(card_folder, safe, "profile.md")
+        recent_md = _read_character_file(card_folder, safe, "recent.md")
+        goals_md = _read_character_file(card_folder, safe, "goals.md")
+        state_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "state.json") or {}
+        profile_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "profile.json") or {}
+        stat_slice = latest_vars.get(name, {}) if isinstance(latest_vars, dict) else {}
+        if name == "_self" and not stat_slice:
+            stat_slice = latest_vars.get("角色", {}) if isinstance(latest_vars, dict) else {}
+        packets.append({
+            "name": name,
+            "importance": "major",
+            "scene_relevance": "high" if name == "_self" or name in user_text else "normal",
+            "profile_summary": profile_md[:1200],
+            "recent_state": recent_md[:1200],
+            "goals": goals_md[:1000],
+            "state": state_json,
+            "profile": profile_json,
+            "stat_slice": stat_slice,
+            "task_for_subagent": "站在该角色自身立场，给出本轮私有反应、意图、可选行动/台词、变量变化建议与记忆增量。不要代写最终叙事。",
+        })
+    return {"characters": packets, "minor_policy": orchestration.get("minor_policy", "main_agent")}
 
 
 def main():
@@ -215,6 +258,9 @@ def main():
     card_structure_path = Path(card_folder) / "memory" / ".card_structure.json"
     card_structure = read_json(card_structure_path)
 
+    card_data = read_json(Path(card_folder) / ".card_data.json") or {}
+    evolving_profile = card_data.get("evolving_profile", {}) if isinstance(card_data, dict) else {}
+
     # Worldbook variable matching
     match_result = None
     try:
@@ -245,6 +291,13 @@ def main():
 
     chat_log_path = Path(card_folder) / "chat_log.json"
     chat_log = read_json(chat_log_path) or []
+
+    # Load reference.md once for O(1) section lookups this round
+    ref_sections = _load_reference_sections(card_folder)
+
+    character_contexts = build_character_contexts(
+        card_folder, card_data, card_structure or {}, chat_log, user_text
+    )
 
     # ═══════════════════════════════════════════════
     # BUILD OUTPUT — static prefix first (cached),
@@ -301,7 +354,7 @@ def main():
             dynamic_parts.append(f"\n  --- Match {i+1}: {m['keyword']} (score={m['score']}, {m['reason']}) ---")
             dynamic_parts.append(f"  Title: {m['title']}")
             dynamic_parts.append(f"  One-liner: {m['one_liner'][:100]}")
-            full = grep_reference_md(card_folder, m["section"].lstrip("#").strip())
+            full = grep_reference_section(ref_sections, m["section"].lstrip("#").strip())
             if full:
                 dynamic_parts.append("  Full entry:")
                 for line in full.split("\n")[:100]:
@@ -309,17 +362,18 @@ def main():
     else:
         dynamic_parts.append("  (no matches)")
 
-    # NEW: User input keyword scan (bridges ST-like input-driven worldbook triggering)
     dynamic_parts.append("\n=== INPUT_MATCHES ===")
-    dynamic_parts.extend(_input_matches(wb_index, user_text, card_folder))
+    dynamic_parts.extend(_input_matches(wb_index, user_text, ref_sections))
 
-    # Injections
+    # Injections — each item is a dict with keyword/section/one_liner
     dynamic_parts.append("\n=== INJECTIONS ===")
     if injections:
         for inj in injections:
-            dynamic_parts.append(f"\n  Keyword: {inj}")
-            section_title = inj if inj.startswith("## ") else f"## {inj}"
-            full = grep_reference_md(card_folder, section_title.lstrip("#").strip())
+            kw = inj.get("keyword", "") if isinstance(inj, dict) else str(inj)
+            one_liner = inj.get("one_liner", "") if isinstance(inj, dict) else ""
+            section = inj.get("section", f"## {kw}") if isinstance(inj, dict) else f"## {kw}"
+            dynamic_parts.append(f"\n  Keyword: {kw}" + (f" — {one_liner[:80]}" if one_liner else ""))
+            full = grep_reference_section(ref_sections, section.lstrip("#").strip())
             if full:
                 for line in full.split("\n")[:80]:
                     dynamic_parts.append(f"    {line}")
@@ -347,6 +401,21 @@ def main():
         dynamic_parts.append("\n=== RECENT_MEMORY ===")
         dynamic_parts.append(recent_memory)
 
+    if evolving_profile:
+        dynamic_parts.append("\n=== EVOLVING_PROFILE ===")
+        dynamic_parts.append(json.dumps(evolving_profile, ensure_ascii=False, indent=2)[:4000])
+
+    if character_contexts.get("characters"):
+        dynamic_parts.append("\n=== CHARACTER_CONTEXTS ===")
+        dynamic_parts.append(f"  minor_policy: {character_contexts.get('minor_policy', 'main_agent')}")
+        dynamic_parts.append("  Full JSON also written to skills/styles/character_contexts.json")
+        for ch in character_contexts.get("characters", []):
+            dynamic_parts.append(f"\n  Character: {ch.get('name')} ({ch.get('importance')}, relevance={ch.get('scene_relevance')})")
+            if ch.get("profile_summary"):
+                dynamic_parts.append("    Profile: " + ch.get("profile_summary", "")[:300].replace("\n", " / "))
+            if ch.get("recent_state"):
+                dynamic_parts.append("    Recent: " + ch.get("recent_state", "")[:300].replace("\n", " / "))
+
     # Recent chat
     if chat_log:
         dynamic_parts.append("\n=== RECENT_CHAT (last 3 turns) ===")
@@ -369,13 +438,19 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(output_text)
 
+    character_contexts_path = styles_dir / "character_contexts.json"
+    with open(character_contexts_path, "w", encoding="utf-8") as f:
+        json.dump(character_contexts, f, ensure_ascii=False, indent=2)
+
     print(json.dumps({
         "ok": True,
         "output": str(output_path),
+        "character_contexts": str(character_contexts_path),
+        "character_count": len(character_contexts.get("characters", [])),
         "size": len(output_text),
         "matches": len(match_result or []),
         "injections": len(injections),
-        "is_first_turn": len(chat_log) <= 1
+        "is_first_turn": len(chat_log) == 0
     }, ensure_ascii=False))
 
 

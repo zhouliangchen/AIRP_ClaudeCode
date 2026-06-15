@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import urllib.parse
+import mimetypes
 from pathlib import Path
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
@@ -387,6 +388,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             self._json(settings)
+            return
+
+        # API: serve generated/card-local assets safely from the active card folder
+        if parsed.path.startswith("/api/card_asset/"):
+            card = _card_folder()
+            if not card:
+                self.send_error(404, "no card path configured")
+                return
+            rel = urllib.parse.unquote(parsed.path[len("/api/card_asset/"):]).replace("\\", "/")
+            if rel.startswith("/") or ".." in Path(rel).parts:
+                self.send_error(400, "invalid asset path")
+                return
+            card_root = Path(card).resolve()
+            target = (card_root / rel).resolve()
+            try:
+                target.relative_to(card_root)
+            except ValueError:
+                self.send_error(403, "asset outside card folder")
+                return
+            if not target.exists() or not target.is_file():
+                self.send_error(404, "asset not found")
+                return
+            ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
 
         # Default: serve static files

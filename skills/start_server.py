@@ -40,10 +40,11 @@ def _server_responding():
 
 def _kill_stale():
     """Kill any leftover Python server and Node mvu_server processes."""
+    current_pid = os.getpid()
     # Python skills processes
     cmd_py = (
         "Get-Process python -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.CommandLine -like '*skills*' } | "
+        f"Where-Object {{ $_.Id -ne {current_pid} -and $_.CommandLine -like '*skills*' }} | "
         "Select-Object -ExpandProperty Id"
     )
     try:
@@ -80,8 +81,9 @@ def _kill_stale():
 
 def _start_server(root_dir: str):
     """Launch server.py as a detached background process."""
-    server_py = str(Path(root_dir) / "skills" / "server.py")
-    skills_dir = str(Path(root_dir) / "skills")
+    root_path = Path(root_dir).resolve()
+    server_py = str(root_path / "skills" / "server.py")
+    skills_dir = str(root_path / "skills")
 
     # On Windows, use DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP to background
     flags = 0

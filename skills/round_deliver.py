@@ -16,21 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-def read_file(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return None
-
-
-def read_json(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+from io_utils import read_file, read_json
 
 
 def count_chinese(text):

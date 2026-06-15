@@ -13,51 +13,17 @@ import urllib.request
 from pathlib import Path
 
 from mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
+from io_utils import read_json as _read_json_file, write_json as _write_json_file
+from response_parser import (
+    parse_response,
+    strip_tags as _strip_tags,
+    strip_mvu_commands as _strip_mvu_commands,
+    text_to_p as _text_to_p,
+    extract_options as _extract_options,
+)
 
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
-
-
-# ═══ Tag Parsing ═══
-
-def parse_response(text):
-    """Parse response.txt into structured parts."""
-    result = {}
-    for tag in ("polished_input", "content", "summary", "options", "tokens"):
-        m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
-        if m:
-            raw = m.group(1).strip()
-            if tag == "tokens":
-                result[tag] = _parse_tokens(raw)
-            else:
-                result[tag] = raw
-    return result
-
-
-def _parse_tokens(raw):
-    """Parse <tokens> block: 'key: value' lines → dict.
-    Handles int, float, and percentage (77.4%) values."""
-    tokens = {}
-    for line in raw.split("\n"):
-        line = line.strip()
-        if ":" in line:
-            k, v = line.split(":", 1)
-            v = v.strip()
-            key = k.strip()
-            # Try int
-            try:
-                tokens[key] = int(v)
-                continue
-            except ValueError:
-                pass
-            # Try float (includes percentage like "77.4%")
-            try:
-                v_clean = v.replace("%", "")
-                tokens[key] = float(v_clean)
-                continue
-            except ValueError:
-                pass
-    return tokens
 
 
 # ═══ File I/O ═══
@@ -99,6 +65,47 @@ def write_state(js, card_folder=None):
         card_js_path = Path(card_folder) / "state.js"
         with open(card_js_path, "w", encoding="utf-8") as f:
             f.write(js)
+
+
+def _strip_html(text):
+    text = re.sub(r"<[^>]+>", "", text or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _shorten(text, limit=600):
+    text = _strip_html(text)
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _card_asset_url(path):
+    if not path:
+        return ""
+    path = str(path).replace("\\", "/")
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", path) or path.startswith("data:"):
+        return path
+    return "/api/card_asset/" + path.lstrip("/")
+
+
+def _load_card_assets(card_folder):
+    assets = _read_json_file(Path(card_folder) / ".card_assets.json", {"images": []}) or {"images": []}
+    if not isinstance(assets, dict):
+        assets = {"images": []}
+    images = []
+    for item in assets.get("images", []) or []:
+        if not isinstance(item, dict):
+            continue
+        copied = dict(item)
+        copied["url"] = _card_asset_url(copied.get("path", ""))
+        images.append(copied)
+    assets["images"] = images
+    return assets
+
+
+def _load_ui_manifest(card_folder):
+    manifest = _read_json_file(Path(card_folder) / "ui_manifest.json", {}) or {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    return manifest
 
 
 def _get_latest_variables(log):
@@ -340,7 +347,7 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
 
         # Avatar
         if char_avatar:
-            body_html += '<div class="beautify-char-avatar-wrap"><div class="beautify-char-avatar" style="background-image:url(' + _html_escape(char_avatar) + ')" onclick="zoomPortrait(this)" title="点击放大"></div></div>'
+            body_html += '<div class="beautify-char-avatar-wrap"><div class="beautify-char-avatar" style="background-image:url(' + _html_escape(char_avatar) + ')" data-zoom="' + _html_escape(char_avatar) + '" onclick="zoomPortrait(this.dataset.zoom)" title="点击放大"></div></div>'
 
         # Info column
         body_html += '<div class="beautify-char-info">'
@@ -499,13 +506,8 @@ def write_content_js(card_folder):
         ai_display = _strip_tags(ai_raw, "options")
         ai_display = _strip_tags(ai_display, "summary")
         ai_display = _strip_tags(ai_display, "tokens")
-        # Strip MVU commands (_.set / _.add / _.insert etc.) from display.
-        # These are parsed by extract_commands() for variable updates; the
-        # card author's regex #1 strips <UpdateVariable> blocks, but bare
-        # _.set() lines are the MVU engine's own responsibility.
         ai_display = _strip_mvu_commands(ai_display)
-        # Strip hardcoded text colors from inline styles (card authors
-        # often bake light-theme colors that become invisible in dark mode)
+        # Strip hardcoded text colors from inline styles
         ai_display = re.sub(
             r'\bcolor\s*:\s*#[0-9a-fA-F]{3,8}\s*;?\s*',
             '', ai_display,
@@ -515,6 +517,13 @@ def write_content_js(card_folder):
         tokens = turn.get("tokens")
         if tokens:
             turn_tokens[str(turn_idx)] = tokens
+
+        wrap = '<div class="turn-wrap">'
+        if user_raw:
+            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
+        wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
+        wrap += '</div>'
+        html_parts.append(wrap)
 
     # Extract startup cost from turn 0 token data (persistent across rounds)
     startup_cost = {}
@@ -530,13 +539,6 @@ def write_content_js(card_folder):
                 "total": st_total,
                 "cache_hit": t0.get("cache_hit", 0),
             }
-
-        wrap = '<div class="turn-wrap">'
-        if user_raw:
-            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
-        wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
-        wrap += '</div>'
-        html_parts.append(wrap)
 
     content_html = "".join(html_parts)
 
@@ -619,6 +621,10 @@ def write_content_js(card_folder):
         except Exception:
             pass
 
+    # Load per-card UI manifest and generated assets for autonomous UI evolution.
+    ui_manifest = _load_ui_manifest(card_folder)
+    card_assets = _load_card_assets(card_folder)
+
     js = (
         "window.CONTENT_HTML = " + json.dumps(content_html, ensure_ascii=False) + ";\n"
         "window.BEAUTIFY_HTML = " + json.dumps(beautify_html, ensure_ascii=False) + ";\n"
@@ -631,6 +637,8 @@ def write_content_js(card_folder):
         "window.TURN_VARIABLES = " + json.dumps(_get_turn_variables(log), ensure_ascii=False) + ";\n"
         "window.BEAUTIFY_DATA = " + json.dumps(beautify_data, ensure_ascii=False) + ";\n"
         "window.REGEX_SCRIPTS = " + json.dumps(regex_scripts, ensure_ascii=False) + ";\n"
+        "window.UI_MANIFEST = " + json.dumps(ui_manifest, ensure_ascii=False) + ";\n"
+        "window.CARD_ASSETS = " + json.dumps(card_assets, ensure_ascii=False) + ";\n"
     )
 
     path = STYLES / "content.js"
@@ -660,39 +668,139 @@ def update_state(**kwargs):
     write_state(raw)
 
 
-def _strip_tags(text, tag):
-    return re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL).strip()
+# ═══ Blank-card profile evolution ═══
+
+def _profile_from_card_data(card_data):
+    profile = card_data.get("evolving_profile")
+    if not isinstance(profile, dict):
+        profile = {
+            "version": 1,
+            "last_turn": 0,
+            "confidence": "low",
+            "fields": {
+                "role": "",
+                "appearance": "",
+                "voice": "",
+                "motivation": "",
+                "relationship_to_user": "",
+                "world_assumptions": [],
+            },
+        }
+    profile.setdefault("version", 1)
+    profile.setdefault("last_turn", 0)
+    profile.setdefault("confidence", "low")
+    fields = profile.setdefault("fields", {})
+    for key, default in {
+        "role": "",
+        "appearance": "",
+        "voice": "",
+        "motivation": "",
+        "relationship_to_user": "",
+        "world_assumptions": [],
+    }.items():
+        fields.setdefault(key, default)
+    return profile
 
 
-def _strip_mvu_commands(text):
-    """Strip MVU _.set/add/insert etc. commands and UpdateVariable/json_patch blocks.
+def _find_first_str(obj, names):
+    if isinstance(obj, dict):
+        for name in names:
+            val = obj.get(name)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        for val in obj.values():
+            found = _find_first_str(val, names)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for val in obj:
+            found = _find_first_str(val, names)
+            if found:
+                return found
+    return ""
 
-    These are the MVU engine's responsibility — the card author's regex
-    scripts handle <UpdateVariable> blocks for ST compatibility, but bare
-    _.set() lines must be removed by us before the content reaches the user.
-    """
-    # Bare lodash-style commands: _.set('path', value);
-    text = re.sub(
-        r"^\s*_\.(?:set|insert|assign|remove|unset|delete|add|move)\s*\(.*?\)\s*;?\s*$",
+
+def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, stat_data):
+    """Persist incremental custom-card state for blank_bootstrap cards."""
+    card_path = Path(card_folder) / ".card_data.json"
+    card_data = _read_json_file(card_path, {}) or {}
+    if card_data.get("mode") != "blank_bootstrap" and card_data.get("source_type") != "blank":
+        return
+
+    profile = _profile_from_card_data(card_data)
+    fields = profile["fields"]
+
+    # Use explicit MVU values when available; otherwise keep existing values.
+    # Prefer the emergent role's own name over 玩家.姓名={{user}}.
+    name = ""
+    if isinstance(stat_data, dict):
+        role_obj = stat_data.get("角色")
+        if isinstance(role_obj, dict):
+            name = str(role_obj.get("姓名") or role_obj.get("名字") or "").strip()
+    if not name:
+        name = _find_first_str(stat_data, ["姓名", "名字", "名称", "name"])
+    role = _find_first_str(stat_data, ["身份", "职业", "角色定位", "role"])
+    situation = _find_first_str(stat_data, ["当前状况", "当前状态", "状态"])
+    location = _find_first_str(stat_data, ["地点", "当前位置"])
+    scene = _find_first_str(stat_data, ["当前场景", "场景"])
+
+    if name and name != "{{user}}":
+        card_data["name"] = name
+        card_data.setdefault("data", {})["name"] = name
+    if role:
+        fields["role"] = role
+        card_data.setdefault("data", {})["description"] = role
+    if situation and not fields.get("motivation"):
+        fields["motivation"] = situation
+    if not fields.get("relationship_to_user") and user_text:
+        fields["relationship_to_user"] = "关系正在通过互动建立"
+    if location or scene:
+        assumption = " / ".join([x for x in [location, scene] if x])
+        assumptions = fields.setdefault("world_assumptions", [])
+        if assumption and assumption not in assumptions:
+            assumptions.append(assumption)
+            fields["world_assumptions"] = assumptions[-12:]
+
+    profile["last_turn"] = turn_index
+    profile["confidence"] = "medium" if turn_index >= 3 else "low"
+    profile.setdefault("recent_observations", [])
+    observation = {
+        "turn": turn_index,
+        "user": _shorten(user_text, 240),
+        "summary": _shorten(summary or ai_text, 240),
+    }
+    if observation["summary"] or observation["user"]:
+        profile["recent_observations"].append(observation)
+        profile["recent_observations"] = profile["recent_observations"][-12:]
+
+    card_data["evolving_profile"] = profile
+    card_data.setdefault("data", {})["extensions"] = card_data.get("data", {}).get("extensions", {})
+    _write_json_file(card_path, card_data)
+
+    char_dir = Path(card_folder) / "memory" / "characters" / "_self"
+    _write_json_file(char_dir / "profile.json", profile)
+    md = [
+        "# 自定义角色卡",
         "",
-        text,
-        flags=re.MULTILINE,
-    )
-    # <json_patch> blocks
-    text = re.sub(
-        r"<json_patch>[\s\S]*?</json_patch>",
+        f"- 最后更新轮次: {turn_index}",
+        f"- 置信度: {profile.get('confidence', 'low')}",
+        f"- 姓名: {card_data.get('name', '')}",
+        f"- 身份/定位: {fields.get('role', '')}",
+        f"- 外貌: {fields.get('appearance', '')}",
+        f"- 声口: {fields.get('voice', '')}",
+        f"- 动机/状态: {fields.get('motivation', '')}",
+        f"- 与用户关系: {fields.get('relationship_to_user', '')}",
         "",
-        text,
-    )
-    # <UpdateVariable> blocks
-    text = re.sub(
-        r"<UpdateVariable>[\s\S]*?</UpdateVariable>",
-        "",
-        text,
-    )
-    # Collapse consecutive blank lines
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
-    return text.strip()
+        "## 世界假设",
+    ]
+    for item in fields.get("world_assumptions", []) or []:
+        md.append(f"- {item}")
+    _write_json_file(char_dir / "profile.json", profile)
+    (char_dir / "profile.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    recent_lines = ["# 近期角色沉淀", ""]
+    for obs in profile.get("recent_observations", [])[-8:]:
+        recent_lines.append(f"- 第 {obs.get('turn')} 轮：{obs.get('summary', '')}")
+    (char_dir / "recent.md").write_text("\n".join(recent_lines) + "\n", encoding="utf-8")
 
 
 # ═══ Turn Operations ═══
@@ -921,6 +1029,19 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
 
     log.append(entry)
     write_chat_log(card_folder, log)
+
+    try:
+        evolve_blank_profile(
+            card_folder,
+            next_index,
+            polished_input or "",
+            ai_text,
+            summary,
+            new_vars or prev_vars or {},
+        )
+    except Exception as e:
+        print(f"[handler] blank profile evolution skipped: {e}")
+
     write_content_js(card_folder)
 
     # ── Variable audit: write diff to .var_diff.json for next-turn awareness ──
@@ -961,17 +1082,16 @@ def reroll_last(card_folder):
     if not last.get("user"):
         return None
 
+    user_text = last.get("user", "")
     log.pop()
     write_chat_log(card_folder, log)
     write_content_js(card_folder)
 
     # Update generatedCount
     state_raw = read_state()
-    new_count = len(log) + 2 if log else 1
+    new_count = len(log)
     state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
     write_state(state_raw, card_folder)
-
-    user_text = last.get("user", "")
     (STYLES / "input.txt").write_text(user_text, encoding="utf-8")
     (STYLES / ".pending").touch()
     return user_text
@@ -987,7 +1107,7 @@ def delete_turns(card_folder, from_index):
     # Update generatedCount and clear pending
     (STYLES / ".pending").unlink(missing_ok=True)
     state_raw = read_state()
-    new_count = len(log) + 2 if log else 1
+    new_count = len(log)
     state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
     write_state(state_raw, card_folder)
 
@@ -1192,21 +1312,6 @@ def switch_opening(card_folder, opening_id):
     write_chat_log(card_folder, log)
     write_content_js(card_folder)
     return True
-
-
-def _text_to_p(text):
-    """Convert plain text with \\r\\n\\r\\n paragraph breaks to <p>-wrapped HTML."""
-    # Normalize line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Split on double newlines (blank lines between paragraphs)
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return "\n".join(f"<p>{p}</p>" for p in paras)
-
-
-def _extract_options(ai_text):
-    """Extract options block from AI text, preserving original."""
-    m = re.search(r"<options>(.*?)</options>", ai_text, re.DOTALL)
-    return m.group(1).strip() if m else ""
 
 
 # ═══ CLI ═══

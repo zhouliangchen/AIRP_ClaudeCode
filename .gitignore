@@ -32,6 +32,12 @@ skills/styles/openings.json
 *.lock
 .claude/scheduled_tasks.lock
 
+# Image generation API local secrets (never commit)
+image_config.local.json
+skills/image_config.local.json
+.image_api.json
+*.secret.json
+
 # User card folders — ignore all top-level dirs except project core
 # (Any new card folder is automatically protected from accidental git add)
 */

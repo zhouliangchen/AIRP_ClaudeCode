@@ -18,7 +18,7 @@ import sys
 
 
 def _collect_tokens(root: str) -> dict:
-    """Read DeepSeek token usage from Claude Code session transcript."""
+    """Read token usage from Claude Code session transcript."""
     lock_path = os.path.join(root, ".claude", "scheduled_tasks.lock")
     if not os.path.exists(lock_path):
         print("WARNING: no scheduled_tasks.lock, skipping token collection")

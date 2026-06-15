@@ -946,6 +946,147 @@ def create_memory_index(memory_dir: str, card_name: str, world_name: str) -> Non
         f.writelines(lines)
 
 
+def create_blank_card_data() -> dict:
+    """Create a minimal role card for no-material startup.
+
+    The shape intentionally resembles SillyTavern card data enough for the
+    existing import/handler/MVU pipeline to treat it as a normal card source,
+    while keeping authored identity fields empty so the RP can emerge from
+    user input over later turns.
+    """
+    return {
+        "mode": "blank_bootstrap",
+        "source_type": "blank",
+        "name": "未命名角色",
+        "first_mes": "",
+        "data": {
+            "name": "未命名角色",
+            "description": "",
+            "personality": "",
+            "scenario": "",
+            "first_mes": "",
+            "alternate_greetings": [],
+            "extensions": {"world": "自定义世界"},
+            "character_book": {"entries": []},
+        },
+        "evolving_profile": {
+            "version": 1,
+            "last_turn": 0,
+            "confidence": "low",
+            "fields": {
+                "role": "",
+                "appearance": "",
+                "voice": "",
+                "motivation": "",
+                "relationship_to_user": "",
+                "world_assumptions": [],
+            },
+        },
+        "character_orchestration": {
+            "major": [],
+            "minor_policy": "main_agent",
+            "max_parallel_subagents": 2,
+        },
+    }
+
+
+def default_blank_initvar() -> dict:
+    """Minimal MVU baseline for blank-card mode and cards with no initvars."""
+    return {
+        "世界": {
+            "时间": "",
+            "地点": "",
+            "当前场景": "",
+        },
+        "玩家": {
+            "姓名": "{{user}}",
+        },
+        "角色": {
+            "姓名": "未命名角色",
+            "身份": "",
+            "当前状况": "等待在第一轮互动中成形",
+        },
+    }
+
+
+def ensure_base_memory_files(memory_dir: str, card_name: str, world_name: str, blank_mode: bool = False) -> None:
+    """Create baseline memory files even when there are no worldbook entries."""
+    os.makedirs(memory_dir, exist_ok=True)
+
+    reference_path = os.path.join(memory_dir, "reference.md")
+    if blank_mode and not os.path.exists(reference_path):
+        with open(reference_path, "w", encoding="utf-8") as f:
+            f.write(
+                "---\n"
+                "name: 世界观与设定参考\n"
+                "description: 空白启动模式下由后续剧情逐步沉淀的世界观参考\n"
+                "type: reference\n"
+                "---\n\n"
+                "# 世界观与设定参考\n\n"
+                "当前没有预置资料。请根据用户输入和剧情推进逐步形成设定。\n"
+            )
+
+    project_path = os.path.join(memory_dir, "project.md")
+    if not os.path.exists(project_path):
+        with open(project_path, "w", encoding="utf-8") as f:
+            f.write("---\nname: 剧情进度\ndescription: 待初始化\ntype: project\n---\n\n# 剧情进度\n\n待开局后填入。\n")
+
+    feedback_path = os.path.join(memory_dir, "feedback.md")
+    if not os.path.exists(feedback_path):
+        with open(feedback_path, "w", encoding="utf-8") as f:
+            f.write("---\nname: 用户偏好\ndescription: 文风/节奏/边界偏好\ntype: feedback\n---\n\n# 用户偏好\n\nNSFW 档位: 舒缓\n")
+
+    story_plan_path = os.path.join(memory_dir, "story_plan.md")
+    if not os.path.exists(story_plan_path):
+        with open(story_plan_path, "w", encoding="utf-8") as f:
+            f.write("---\nname: 剧情规划\ndescription: 待首次规划\ntype: project\nnext_plan_at: 第8轮\n---\n\n# 剧情规划\n\n待触发。\n")
+
+    if blank_mode:
+        char_dir = os.path.join(memory_dir, "characters", "_self")
+        os.makedirs(char_dir, exist_ok=True)
+        profile_json = os.path.join(char_dir, "profile.json")
+        if not os.path.exists(profile_json):
+            with open(profile_json, "w", encoding="utf-8") as f:
+                json.dump(create_blank_card_data()["evolving_profile"], f, ensure_ascii=False, indent=2)
+        profile_md = os.path.join(char_dir, "profile.md")
+        if not os.path.exists(profile_md):
+            with open(profile_md, "w", encoding="utf-8") as f:
+                f.write("# 自定义角色卡\n\n空白启动中。角色身份、关系、世界观会根据游玩逐轮沉淀。\n")
+        recent_md = os.path.join(char_dir, "recent.md")
+        if not os.path.exists(recent_md):
+            with open(recent_md, "w", encoding="utf-8") as f:
+                f.write("# 近期角色沉淀\n\n暂无。\n")
+
+    create_memory_index(memory_dir, card_name, world_name)
+
+
+def ensure_ui_manifest(card_dir: str) -> dict:
+    """Create a per-card UI evolution manifest if missing."""
+    manifest_path = os.path.join(card_dir, "ui_manifest.json")
+    manifest = {
+        "version": 1,
+        "mode": "autonomous",
+        "last_evolved_turn": 0,
+        "editable_sources": {
+            "template": ".beautify_template.html",
+            "theme": ".beautify.json",
+            "regex": ".regex_scripts.json",
+        },
+        "generated_assets": [],
+    }
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, dict):
+                _deep_merge(manifest, existing)
+        except Exception:
+            pass
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return manifest
+
+
 def run_card_scripts(card_dir: str, root_dir: str) -> dict | None:
     """Call Node.js runner to execute card's tavern_helper scripts.
     Returns structured JSON with initvar/schema/injections, or None on failure.
@@ -1095,9 +1236,12 @@ def run_import(card_dir, root_dir):
             result["merged_worldbooks"] = {"files": extra_files, "entries": extra_entries}
 
     if card_data is None:
-        result["status"] = "no_card_found"
+        card_data = create_blank_card_data()
+        result["status"] = "blank_bootstrap"
+        result["source_type"] = "blank"
+        result["source_file"] = ""
+        result["blank_bootstrap"] = True
         result["files_scanned"] = {"png": len(png_files), "json": len(json_files), "txt": len(txt_files)}
-        return result
 
     # 5. 提取元数据
     result["card_name"] = get_card_name(card_data)
@@ -1117,9 +1261,12 @@ def run_import(card_dir, root_dir):
 
     # 7. 处理世界书条目 → memory/
     entries = card_data.get("data", {}).get("character_book", {}).get("entries", [])
-    if isinstance(entries, list) and entries:
+    if not isinstance(entries, list):
+        entries = []
+    blank_mode = result.get("source_type") == "blank" or card_data.get("mode") == "blank_bootstrap"
+    memory_dir = os.path.join(card_dir, "memory")
+    if entries:
         result["worldbook_entries_total"] = len(entries)
-        memory_dir = os.path.join(card_dir, "memory")
         mem_stats = init_memory_entries(entries, memory_dir)
         result["memory"] = mem_stats
 
@@ -1127,148 +1274,143 @@ def run_import(card_dir, root_dir):
         index_stats = build_worldbook_index(entries, memory_dir)
         result["worldbook_index"] = index_stats
 
-        # 检测卡片叙事结构（阶段人设/动态事件库）
-        structure = analyze_card_structure(memory_dir)
-        struct_path = os.path.join(memory_dir, ".card_structure.json")
-        with open(struct_path, "w", encoding="utf-8") as f:
-            json.dump(structure, f, ensure_ascii=False, indent=2)
-        result["card_structure"] = structure
+    ensure_base_memory_files(memory_dir, result["card_name"], result["world_name"], blank_mode=blank_mode)
 
-        # 7.1 初始化其他 memory 文件（若不存在）
-        project_path = os.path.join(memory_dir, "project.md")
-        if not os.path.exists(project_path):
-            with open(project_path, "w", encoding="utf-8") as f:
-                f.write("---\nname: 剧情进度\ndescription: 待初始化\ntype: project\n---\n\n# 剧情进度\n\n待开局后填入。\n")
+    # 检测卡片叙事结构（阶段人设/动态事件库）
+    structure = analyze_card_structure(memory_dir)
+    struct_path = os.path.join(memory_dir, ".card_structure.json")
+    with open(struct_path, "w", encoding="utf-8") as f:
+        json.dump(structure, f, ensure_ascii=False, indent=2)
+    result["card_structure"] = structure
 
-        feedback_path = os.path.join(memory_dir, "feedback.md")
-        if not os.path.exists(feedback_path):
-            with open(feedback_path, "w", encoding="utf-8") as f:
-                f.write("---\nname: 用户偏好\ndescription: 文风/节奏/边界偏好\ntype: feedback\n---\n\n# 用户偏好\n\nNSFW 档位: 舒缓\n")
+    ui_manifest = ensure_ui_manifest(card_dir)
+    result["ui_manifest"] = {
+        "mode": ui_manifest.get("mode"),
+        "last_evolved_turn": ui_manifest.get("last_evolved_turn", 0),
+    }
 
-        story_plan_path = os.path.join(memory_dir, "story_plan.md")
-        if not os.path.exists(story_plan_path):
-            with open(story_plan_path, "w", encoding="utf-8") as f:
-                f.write("---\nname: 剧情规划\ndescription: 待首次规划\ntype: project\nnext_plan_at: 第8轮\n---\n\n# 剧情规划\n\n待触发。\n")
+    # 7.1.5 Extract ALL regex_scripts FIRST (writes .beautify_template.html)
+    #     Must run before initvar fallback #3 which reads beautify template macros.
+    regex_info = _extract_all_regex(card_data, card_dir)
+    if regex_info:
+        result["regex_scripts"] = regex_info
 
-        create_memory_index(memory_dir, result["card_name"], result["world_name"])
+    # 7.2 MVU 变量初始化：双路径合并（mirrors MagVarUpdate initCheck()）
+    #
+    #    实际 MVU 浏览器流程：
+    #      1. loadInitVarData() 扫描世界书 [initvar] 条目 → 合并为 stat_data
+    #      2. first_mes <initvar> 块会覆盖世界书 [initvar] 的值
+    #      3. Zod .prefault() 提供 schema 元数据和默认值（补充路径）
+    #
+    #    合并优先级： Zod .prefault() (底) < worldbook [initvar] (中) < first_mes <initvar> (顶)
+    #    每个路径独立运行，然后深度合并。这样即使 Zod 路径返回空/null 值，
+    #    [initvar] 路径仍然可以填充正确的初始值。
+    #    Ref: MagVarUpdate/src/function/initvar/variable_init.ts
 
-        # 7.1.5 Extract ALL regex_scripts FIRST (writes .beautify_template.html)
-        #     Must run before initvar fallback #3 which reads beautify template macros.
-        regex_info = _extract_all_regex(card_data, card_dir)
-        if regex_info:
-            result["regex_scripts"] = regex_info
+    merged_initvar = {}
+    sources_used = []
 
-        # 7.2 MVU 变量初始化：双路径合并（mirrors MagVarUpdate initCheck()）
-        #
-        #    实际 MVU 浏览器流程：
-        #      1. loadInitVarData() 扫描世界书 [initvar] 条目 → 合并为 stat_data
-        #      2. first_mes <initvar> 块会覆盖世界书 [initvar] 的值
-        #      3. Zod .prefault() 提供 schema 元数据和默认值（补充路径）
-        #
-        #    合并优先级： Zod .prefault() (底) < worldbook [initvar] (中) < first_mes <initvar> (顶)
-        #    每个路径独立运行，然后深度合并。这样即使 Zod 路径返回空/null 值，
-        #    [initvar] 路径仍然可以填充正确的初始值。
-        #    Ref: MagVarUpdate/src/function/initvar/variable_init.ts
+    # Path A: Zod schema via Node.js → .prefault() defaults + schema metadata
+    runner_data = run_card_scripts(card_dir, root_dir)
+    if runner_data:
+        zod_initvar = runner_data.get("initvar")
+        if zod_initvar and isinstance(zod_initvar, dict):
+            _deep_merge(merged_initvar, zod_initvar)
+            sources_used.append("tavern_helper (Zod .prefault())")
+        # Write schema metadata regardless (type info is always useful)
+        if runner_data.get("schema"):
+            schema_path = os.path.join(card_dir, ".initvar_schema.json")
+            with open(schema_path, "w", encoding="utf-8") as f:
+                json.dump(runner_data["schema"], f, ensure_ascii=False, indent=2)
+            result["schema_fields"] = len(runner_data["schema"].get("fields", {}))
+            result["schema_constraints"] = len(runner_data["schema"].get("constraints", []))
+        if runner_data.get("injections"):
+            inj_path = os.path.join(card_dir, ".injection_rules.json")
+            with open(inj_path, "w", encoding="utf-8") as f:
+                json.dump(runner_data["injections"], f, ensure_ascii=False, indent=2)
+            result["injection_rules"] = len(runner_data["injections"])
+        if runner_data.get("scope"):
+            scope_path = os.path.join(card_dir, ".initvar_scope.json")
+            with open(scope_path, "w", encoding="utf-8") as f:
+                json.dump(runner_data["scope"], f, ensure_ascii=False, indent=2)
+            result["scope"] = runner_data["scope"]
 
-        merged_initvar = {}
-        sources_used = []
+    # Path B: worldbook [initvar] entries (mirrors MVU loadInitVarData)
+    initvar_wb = extract_initvar_data(entries)
+    if initvar_wb:
+        _deep_merge(merged_initvar, initvar_wb)
+        sources_used.append("worldbook [initvar]")
 
-        # Path A: Zod schema via Node.js → .prefault() defaults + schema metadata
-        runner_data = run_card_scripts(card_dir, root_dir)
-        if runner_data:
-            zod_initvar = runner_data.get("initvar")
-            if zod_initvar and isinstance(zod_initvar, dict):
-                _deep_merge(merged_initvar, zod_initvar)
-                sources_used.append("tavern_helper (Zod .prefault())")
-            # Write schema metadata regardless (type info is always useful)
-            if runner_data.get("schema"):
-                schema_path = os.path.join(card_dir, ".initvar_schema.json")
-                with open(schema_path, "w", encoding="utf-8") as f:
-                    json.dump(runner_data["schema"], f, ensure_ascii=False, indent=2)
-                result["schema_fields"] = len(runner_data["schema"].get("fields", {}))
-                result["schema_constraints"] = len(runner_data["schema"].get("constraints", []))
-            if runner_data.get("injections"):
-                inj_path = os.path.join(card_dir, ".injection_rules.json")
-                with open(inj_path, "w", encoding="utf-8") as f:
-                    json.dump(runner_data["injections"], f, ensure_ascii=False, indent=2)
-                result["injection_rules"] = len(runner_data["injections"])
-            if runner_data.get("scope"):
-                scope_path = os.path.join(card_dir, ".initvar_scope.json")
-                with open(scope_path, "w", encoding="utf-8") as f:
-                    json.dump(runner_data["scope"], f, ensure_ascii=False, indent=2)
-                result["scope"] = runner_data["scope"]
+    # Path C: first_mes <initvar> blocks (mirrors MVU first-message initvar override)
+    initvar_fm = extract_initvar_from_first_mes(card_data)
+    if initvar_fm:
+        _deep_merge(merged_initvar, initvar_fm)
+        sources_used.append("first_mes <initvar>")
 
-        # Path B: worldbook [initvar] entries (mirrors MVU loadInitVarData)
-        initvar_wb = extract_initvar_data(entries)
-        if initvar_wb:
-            _deep_merge(merged_initvar, initvar_wb)
-            sources_used.append("worldbook [initvar]")
+    # Write merged initvar (if any source produced data)
+    if merged_initvar:
+        initvar_path = os.path.join(card_dir, ".initvar.json")
+        with open(initvar_path, "w", encoding="utf-8") as f:
+            _json_dump_safe(merged_initvar, f, ensure_ascii=False, indent=2)
+        result["initvar_keys"] = list(merged_initvar.keys())
+        result["initvar_source"] = " + ".join(sources_used)
 
-        # Path C: first_mes <initvar> blocks (mirrors MVU first-message initvar override)
-        initvar_fm = extract_initvar_from_first_mes(card_data)
-        if initvar_fm:
-            _deep_merge(merged_initvar, initvar_fm)
-            sources_used.append("first_mes <initvar>")
+    # Fallback: if all paths above produced nothing, try beautify/KV heuristics
+    if not result.get("initvar_keys"):
+        beautify_initvar = extract_initvar_from_beautify_template(card_dir)
+        if beautify_initvar:
+            _deep_merge(merged_initvar, beautify_initvar)
+            sources_used.append("beautify macros")
+            result["initvar_source"] = "beautify template macros (heuristic)"
+    if not result.get("initvar_keys"):
+        wb_initvar = extract_initvar_from_worldbook_structured(entries)
+        if wb_initvar:
+            _deep_merge(merged_initvar, wb_initvar)
+            sources_used.append("structured KV")
+            result["initvar_source"] = "worldbook structured KV (heuristic)"
+    if not result.get("initvar_keys"):
+        _deep_merge(merged_initvar, default_blank_initvar())
+        sources_used.append("blank bootstrap defaults")
+        result["initvar_source"] = "blank bootstrap defaults"
 
-        # Write merged initvar (if any source produced data)
-        if merged_initvar:
-            initvar_path = os.path.join(card_dir, ".initvar.json")
-            with open(initvar_path, "w", encoding="utf-8") as f:
-                _json_dump_safe(merged_initvar, f, ensure_ascii=False, indent=2)
-            result["initvar_keys"] = list(merged_initvar.keys())
-            result["initvar_source"] = " + ".join(sources_used)
+    # Re-check and write if heuristic/default sources produced data
+    if merged_initvar and not os.path.exists(os.path.join(card_dir, ".initvar.json")):
+        initvar_path = os.path.join(card_dir, ".initvar.json")
+        with open(initvar_path, "w", encoding="utf-8") as f:
+            _json_dump_safe(merged_initvar, f, ensure_ascii=False, indent=2)
+        result["initvar_keys"] = list(merged_initvar.keys())
 
-        # Fallback: if all paths above produced nothing, try beautify/KV heuristics
-        if not result.get("initvar_keys"):
-            beautify_initvar = extract_initvar_from_beautify_template(card_dir)
-            if beautify_initvar:
-                _deep_merge(merged_initvar, beautify_initvar)
-                sources_used.append("beautify macros")
-                result["initvar_source"] = "beautify template macros (heuristic)"
-        if not result.get("initvar_keys"):
-            wb_initvar = extract_initvar_from_worldbook_structured(entries)
-            if wb_initvar:
-                _deep_merge(merged_initvar, wb_initvar)
-                sources_used.append("structured KV")
-                result["initvar_source"] = "worldbook structured KV (heuristic)"
-        # Re-check and write if heuristic sources produced data
-        if merged_initvar and not os.path.exists(os.path.join(card_dir, ".initvar.json")):
-            initvar_path = os.path.join(card_dir, ".initvar.json")
-            with open(initvar_path, "w", encoding="utf-8") as f:
-                _json_dump_safe(merged_initvar, f, ensure_ascii=False, indent=2)
-            result["initvar_keys"] = list(merged_initvar.keys())
+    # 7.2.5 为每个开场白附加变量快照，使 switch_opening 时状态栏跟随切换
+    if openings and merged_initvar:
+        import copy as _copy
+        per_greeting = _extract_per_greeting_initvar(card_data)
+        openings_path = os.path.join(styles_dir, "openings.json")
+        with open(openings_path, "r", encoding="utf-8") as f:
+            _openings_data = json.load(f)
+        for _i, _o in enumerate(_openings_data):
+            _ov = _copy.deepcopy(merged_initvar)
+            if _i < len(per_greeting) and per_greeting[_i]:
+                _deep_merge(_ov, per_greeting[_i])
+            _o["variables"] = _ov
+        with open(openings_path, "w", encoding="utf-8") as f:
+            json.dump(_openings_data, f, ensure_ascii=False, indent=2)
+        result["openings_variables_added"] = True
 
-        # 7.2.5 为每个开场白附加变量快照，使 switch_opening 时状态栏跟随切换
-        if openings and merged_initvar:
-            import copy as _copy
-            per_greeting = _extract_per_greeting_initvar(card_data)
-            openings_path = os.path.join(styles_dir, "openings.json")
-            with open(openings_path, "r", encoding="utf-8") as f:
-                _openings_data = json.load(f)
-            for _i, _o in enumerate(_openings_data):
-                _ov = _copy.deepcopy(merged_initvar)
-                if _i < len(per_greeting) and per_greeting[_i]:
-                    _deep_merge(_ov, per_greeting[_i])
-                _o["variables"] = _ov
-            with open(openings_path, "w", encoding="utf-8") as f:
-                json.dump(_openings_data, f, ensure_ascii=False, indent=2)
-            result["openings_variables_added"] = True
+    # 7.3 Beautify: 提取 [beautify] 美化数据 → .beautify.json
+    beautify_data = extract_beautify_data(entries)
 
-        # 7.3 Beautify: 提取 [beautify] 美化数据 → .beautify.json
-        beautify_data = extract_beautify_data(entries)
+    # 7.3.1 Also extract phone_data from tavern_helper (phone theme UI)
+    phone_data = _extract_phone_data(card_data)
+    if phone_data:
+        _deep_merge(beautify_data, phone_data)
 
-        # 7.3.1 Also extract phone_data from tavern_helper (phone theme UI)
-        phone_data = _extract_phone_data(card_data)
-        if phone_data:
-            _deep_merge(beautify_data, phone_data)
+    if beautify_data:
+        beautify_path = os.path.join(card_dir, ".beautify.json")
+        with open(beautify_path, "w", encoding="utf-8") as f:
+            json.dump(beautify_data, f, ensure_ascii=False, indent=2)
+        result["beautify_keys"] = list(beautify_data.keys())
 
-        if beautify_data:
-            beautify_path = os.path.join(card_dir, ".beautify.json")
-            with open(beautify_path, "w", encoding="utf-8") as f:
-                json.dump(beautify_data, f, ensure_ascii=False, indent=2)
-            result["beautify_keys"] = list(beautify_data.keys())
-
-        # 7.3.2 (regex_scripts already extracted above, before initvar chain)
+    # 7.3.2 (regex_scripts already extracted above, before initvar chain)
 
     # 8. 预填 response.txt（卡片 first_mes），避免 AI 在开局时重写
     if openings:
