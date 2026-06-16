@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-story-agent
 description: 故事聚合代理：整合分支输出并生成可交付叙事候选
 ---

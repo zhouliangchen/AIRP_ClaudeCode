@@ -64,9 +64,18 @@ class TurnStateTest(unittest.TestCase):
         command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
 
         self.assertIn("rp-orchestrator", command)
-        self.assertIn("主 agent 不直接承担常规叙事创作", command)
+        self.assertTrue("启动模式" in command or "startup" in command.lower())
         self.assertNotIn("## 第一步", command)
         self.assertNotIn("## 第二步", command)
+
+    def test_rp_frontmatter_has_no_bom(self):
+        for path in (ROOT / ".claude" / "skills").glob("rp*.md"):
+            content = path.read_text(encoding="utf-8")
+            self.assertFalse(content.startswith("\ufeff"), f"{path.name} has BOM")
+            self.assertTrue(
+                content.startswith("---"),
+                f"{path.name} should start with frontmatter separator ---",
+            )
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

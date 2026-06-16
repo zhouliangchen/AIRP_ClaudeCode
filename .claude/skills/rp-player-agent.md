@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-player-agent
 description: 玩家代理：第一人称角色化推演与可执行决策提取
 ---

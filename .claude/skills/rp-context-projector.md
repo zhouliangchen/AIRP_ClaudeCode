@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-context-projector
 description: 上下文投射代理：按代理角色注入不同视角上下文
 ---

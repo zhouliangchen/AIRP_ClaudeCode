@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-input-router
 description: 输入路由代理：区分角色输入与用户指令输入并分发到下游
 ---

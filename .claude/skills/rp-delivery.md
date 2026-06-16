@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-delivery
 description: RP 交付代理：最终写出 response.txt 并触发交付脚本
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-critic-agent
 description: RP 严格审核代理：小说写作质量与响应契约审计
 ---

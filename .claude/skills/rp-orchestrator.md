@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-orchestrator
 description: 主编排者入口，路由输入并调度 RP 分阶段工作流
 ---
@@ -6,6 +6,16 @@ description: 主编排者入口，路由输入并调度 RP 分阶段工作流
 ## Orchestrator
 
 你是 RP 的主协调者。每轮先读取 `skills/styles/round_context.txt`，再按固定 stage 调度：输入路由、上下文投射、GM/玩家/角色/故事/审稿代理。
+
+## Startup Modes
+
+- 新卡开局：先启动服务并导入素材。
+  - 关键脚本：`python skills/start_server.py "<card_folder>"`，`python skills/import_prepare.py "<card_folder>" "."`
+- 有 `chat_log.json` + `memory/` 续玩：读取上下文后进入轮次上下文准备。
+  - 关键脚本：`python skills/start_server.py "<card_folder>"`，`python skills/round_prepare.py "<card_folder>" "."`
+- 空白卡模式：无素材且无历史，按空白初始化运行。
+  - 关键脚本：`python skills/start_server.py "<card_folder>"`，`python skills/import_prepare.py "<card_folder>" "."`
+- 运行时每轮：`python skills/round_prepare.py` -> agent 合成 -> `python skills/round_deliver.py`，最终由 `response.txt` 完成交付衔接。
 
 ## Core Duties
 

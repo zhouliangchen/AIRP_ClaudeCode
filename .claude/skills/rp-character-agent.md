@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-character-agent
 description: 重要角色代理：角色内心、动作与发言建议
 ---

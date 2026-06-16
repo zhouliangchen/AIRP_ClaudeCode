@@ -1,4 +1,4 @@
-﻿---
+---
 name: rp-gm-agent
 description: GM 代理：世界状态推演、变量更新建议与流程矛盾修复
 ---
