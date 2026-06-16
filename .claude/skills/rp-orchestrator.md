@@ -33,8 +33,8 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 7. After GM/player/character outputs exist, build or request `story.input.json` as the canonical story bundle.
 8. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
 9. Ask `rp-critic-agent` to write `critic.report.json`.
-10. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, and returns `action: retry` for failed gates.
-11. If retry is returned, repair once through story/agent loop, then rebuild story/critic artifacts and run the gate again. If the failure is systemic and the user has authorized prompt/code iteration, update the system before rerunning. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
+10. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` for repairable gates, and returns `action: blocked` when the critic retry limit requires manual intervention.
+11. If `action: retry` is returned, repair once through story/agent loop, then rebuild story/critic artifacts and run the gate again. If `action: blocked` is returned, stop the automatic repair loop, surface the terminal reason, and wait for manual intervention or explicit authorization before changing prompts/code/process. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
 
 主 agent 不得直接撰写常规叙事正文 except as an explicitly marked fallback.
 

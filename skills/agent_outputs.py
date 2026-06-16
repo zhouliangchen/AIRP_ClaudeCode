@@ -138,6 +138,19 @@ def _increment_retry(run_dir: Path, manifest: Dict[str, Any], stage: str) -> Non
     _write_manifest(run_dir, manifest)
 
 
+def _critic_retry_count(manifest: Dict[str, Any]) -> int:
+    try:
+        return int(manifest.get("critic_retry_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _increment_critic_retry(run_dir: Path, manifest: Dict[str, Any]) -> None:
+    manifest["critic_retry_count"] = _critic_retry_count(manifest) + 1
+    agent_run.append_manifest_stage(manifest, "blocked", "Critic blocked delivery pending revision.")
+    _write_manifest(run_dir, manifest)
+
+
 def _mark_blocked_without_retry(run_dir: Path, manifest: Dict[str, Any]) -> None:
     agent_run.append_manifest_stage(manifest, "blocked", "Agent run remains blocked pending revision.")
     _write_manifest(run_dir, manifest)
@@ -250,17 +263,17 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        if int(manifest.get("retry_count", 0) or 0) >= MAX_CRITIC_RETRIES:
+        if _critic_retry_count(manifest) >= MAX_CRITIC_RETRIES:
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
-        _increment_retry(run_dir, manifest, "blocked")
+        _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        if int(manifest.get("retry_count", 0) or 0) >= MAX_CRITIC_RETRIES:
+        if _critic_retry_count(manifest) >= MAX_CRITIC_RETRIES:
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
-        _increment_retry(run_dir, manifest, "blocked")
+        _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 
     response_path = Path(styles_dir) / "response.txt"

@@ -86,6 +86,7 @@ class AgentWorkflowTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["stage"] = "blocked"
         manifest["retry_count"] = 1
+        manifest["critic_retry_count"] = 1
         _write_json(self.run_dir / "manifest.json", manifest)
         _write_json(
             self.run_dir / "critic.report.json",
@@ -95,6 +96,25 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(advice["next_action"], "repair_from_critic")
         self.assertEqual(advice["critic_decision"], "revise")
         self.assertEqual(advice["retry_count"], 1)
+        self.assertEqual(advice["critic_retry_count"], 1)
+
+    def test_reports_terminal_action_when_blocked_critic_retry_is_capped(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "blocked"
+        manifest["retry_count"] = 0
+        manifest["critic_retry_count"] = 2
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(
+            self.run_dir / "critic.report.json",
+            {"decision": "block", "hard_failures": ["unsafe continuation"], "soft_issues": [], "repair_instruction": "Stop for manual review."},
+        )
+
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+
+        self.assertEqual(advice["next_action"], "blocked_terminal")
+        self.assertEqual(advice["critic_decision"], "block")
+        self.assertEqual(advice["critic_retry_count"], 2)
+        self.assertEqual(advice["retry_count"], 0)
 
     def test_reports_no_action_after_delivery(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))

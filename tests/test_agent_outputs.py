@@ -203,7 +203,26 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "blocked")
         self.assertIn("blocked", [item["stage"] for item in manifest["status"]])
 
-    def test_prepare_delivery_revise_increments_retry_without_rewriting_player_input(self):
+    def test_artifact_retries_do_not_consume_critic_retry_budget(self):
+        first_missing = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        second_missing = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        self._write_story_and_critic(decision="revise")
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(first_missing["ok"])
+        self.assertFalse(second_missing["ok"])
+        self.assertEqual(first_missing["reason"], "agent_outputs")
+        self.assertEqual(second_missing["reason"], "agent_outputs")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        self.assertEqual(result["reason"], "critic_revise")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["retry_count"], 2)
+        self.assertEqual(manifest["critic_retry_count"], 1)
+        self.assertEqual(manifest["stage"], "blocked")
+
+    def test_prepare_delivery_revise_increments_critic_retry_without_rewriting_player_input(self):
         self._write_story_and_critic(decision="revise")
         before = (self.run_dir / "input.json").read_text(encoding="utf-8")
 
@@ -212,7 +231,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "critic_revise")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["retry_count"], 1)
+        self.assertEqual(manifest["critic_retry_count"], 1)
         self.assertEqual((self.run_dir / "input.json").read_text(encoding="utf-8"), before)
         self.assertFalse((self.styles_dir / "response.txt").exists())
 
@@ -253,7 +272,7 @@ class AgentOutputsTest(unittest.TestCase):
             system_iteration_suggestion="Tighten prompt isolation checks.",
         )
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        manifest["retry_count"] = 2
+        manifest["critic_retry_count"] = 2
         _write_json(self.run_dir / "manifest.json", manifest)
 
         result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
@@ -264,7 +283,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertFalse((self.styles_dir / "response.txt").exists())
         final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(final_manifest["stage"], "blocked")
-        self.assertEqual(final_manifest["retry_count"], 2)
+        self.assertEqual(final_manifest["critic_retry_count"], 2)
 
     def test_prepare_delivery_repair_attempt_uses_repair_history_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -300,7 +319,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(len(queue), 1)
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["retry_count"], 2)
+        self.assertEqual(manifest["critic_retry_count"], 2)
         self.assertEqual(manifest["stage"], "blocked")
 
     def test_prepare_delivery_pass_writes_story_content_to_response(self):

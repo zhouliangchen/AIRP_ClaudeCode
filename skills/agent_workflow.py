@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 PathSpec = Tuple[str, str]
 VALID_CRITIC_DECISIONS = {"pass", "revise", "block"}
+MAX_CRITIC_RETRIES = 2
 
 
 def _read_json_object(path: Path) -> Dict[str, Any] | None:
@@ -98,8 +99,16 @@ def _missing_artifacts(run_dir: Path, specs: Iterable[PathSpec]) -> List[Dict[st
 
 
 def _retry_count(manifest: Dict[str, Any]) -> int:
+    return _manifest_count(manifest, "retry_count")
+
+
+def _critic_retry_count(manifest: Dict[str, Any]) -> int:
+    return _manifest_count(manifest, "critic_retry_count")
+
+
+def _manifest_count(manifest: Dict[str, Any], key: str) -> int:
     try:
-        return int(manifest.get("retry_count", 0) or 0)
+        return int(manifest.get(key, 0) or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -125,9 +134,14 @@ def advise_next_actions(run_dir: str | Path) -> Dict[str, Any]:
         critic_report = _read_json_object(root / critic_path) or {}
         critic_decision = critic_report.get("decision")
         if critic_decision in {"revise", "block"}:
-            advice = _advice(manifest, "repair_from_critic")
+            critic_retries = _critic_retry_count(manifest)
+            next_action = "blocked_terminal" if critic_retries >= MAX_CRITIC_RETRIES else "repair_from_critic"
+            advice = _advice(manifest, next_action)
             advice["critic_decision"] = critic_decision
             advice["retry_count"] = _retry_count(manifest)
+            advice["critic_retry_count"] = critic_retries
+            if next_action == "blocked_terminal":
+                advice["reason"] = "critic_retry_limit"
             return advice
 
     story_input_ready = stage == "story_ready" or (root / "story.input.json").exists()
