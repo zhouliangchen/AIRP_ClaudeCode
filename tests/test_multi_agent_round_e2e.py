@@ -33,6 +33,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.styles_dir.mkdir(parents=True)
         self.agent_packets = _load_module("agent_packets")
         self.agent_outputs = _load_module("agent_outputs")
+        self.agent_interactions = _load_module("agent_interactions")
         self.agent_memory = _load_module("agent_memory")
 
     def tearDown(self):
@@ -118,6 +119,161 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertEqual(len(delivery["story_output"]["character_dialogues"]), 2)
         self.assertIn("the archive is a disguised moon base", (self.card / "memory" / "world_delta.md").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
+
+    def test_control_plane_fixture_round_with_repair_trace_and_memory_summary(self):
+        scenario = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        role_text = "I open the archive door."
+        instruction_text = "Omniscient: the archive is secretly a moon base, but characters can only perceive machinery and cold air for now."
+        explicit_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": f"{role_text}\n\n[USER_INSTRUCTION]\n{instruction_text}",
+            "display_text": role_text,
+            "role_text": role_text,
+            "user_instruction_text": instruction_text,
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="legacy fallback should not be used",
+            chat_log=[],
+            card_data={"title": "E2E Control", "character_orchestration": {"major": scenario["characters"]}},
+            character_contexts={"characters": [{"name": name} for name in scenario["characters"]]},
+            turn_index=5,
+            input_payload=explicit_payload,
+        )
+        run_dir = Path(result["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["round_id"], "round-000006")
+        self.assertIn("memory_summaries", manifest["expected_outputs"])
+        self.assertEqual(manifest["expected_outputs"]["memory_summaries"]["player"], "memory_summaries/player.summary.json")
+        self.assertIn("moon base", result["routed_input"]["user_instruction_channel"])
+        self.assertEqual(result["routed_input"]["role_channel"], role_text)
+        player_context = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_contexts = [
+            json.loads((run_dir / "characters" / f"{name}.context.json").read_text(encoding="utf-8"))
+            for name in scenario["characters"]
+        ]
+        self.assertNotIn("moon base", json.dumps(player_context, ensure_ascii=False))
+        for context in character_contexts:
+            self.assertNotIn("moon base", json.dumps(context, ensure_ascii=False))
+
+        self.agent_interactions.init_trace(
+            run_dir,
+            participants=["gm", "player", "character:Ada", "character:Borin"],
+            chapter_target_words=900,
+        )
+        self.agent_interactions.append_event(run_dir, "character:Ada", "world_visible", "dialogue", scenario["dialogue"]["Ada"])
+        self.agent_interactions.append_event(run_dir, "gm", "private", "note", "moon base truth remains hidden")
+        self.agent_interactions.mark_decision_point(run_dir, "player must choose whether to enter", ["enter", "wait"])
+
+        _write_json(
+            run_dir / "gm.output.json",
+            {
+                "agent": "gm",
+                "narration": "The archive door opens into a disguised moon-base airlock.",
+                "npc_events": [],
+                "world_state_delta": [{"scope": "hidden_truth", "fact": "the archive is a disguised moon base"}],
+                "handoff": {"decision_point": "whether to enter the airlock"},
+            },
+        )
+        _write_json(
+            run_dir / "player.output.json",
+            {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I keep one hand on the doorframe and look inside.",
+                "dialogue": [],
+                "perception": ["I hear the door seal breathe like machinery."],
+                "memory_delta": [{"text": "I heard machinery behind the archive door.", "source": "perceived"}],
+            },
+        )
+        for name in scenario["characters"]:
+            _write_json(
+                run_dir / "characters" / f"{name}.output.json",
+                {
+                    "agent": "character",
+                    "agent_id": f"character:{name.lower()}",
+                    "character_name": name,
+                    "action": f"I react to the opening door as {name}.",
+                    "dialogue": [{"target": "player", "text": scenario["dialogue"][name]}],
+                    "perception": ["I see the player hesitate at the threshold."],
+                    "memory_delta": [{"text": "I saw the player hesitate at the archive door.", "source": "perceived"}],
+                },
+            )
+        _write_json(
+            run_dir / "story.output.json",
+            {
+                "content": scenario["story_content"],
+                "character_dialogues": [
+                    {"character": name, "text": scenario["dialogue"][name], "source_agent": f"character:{name.lower()}"}
+                    for name in scenario["characters"]
+                ],
+                "metadata": {"round_id": "round-000006"},
+            },
+        )
+        _write_json(
+            run_dir / "critic.report.json",
+            {
+                "decision": "revise",
+                "hard_failures": [],
+                "soft_issues": ["tighten the decision-point handoff"],
+                "repair_instruction": "Clarify that the player has not entered yet.",
+                "system_iteration_suggestion": "Add a fixture for critic repair history.",
+            },
+        )
+
+        retry = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        self.assertFalse(retry["ok"])
+        self.assertEqual(retry["reason"], "critic_revise")
+        self.assertFalse((self.styles_dir / "response.txt").exists())
+
+        _write_json(
+            run_dir / "critic.report.json",
+            {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
+        )
+        delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        for agent_id, path in manifest["expected_outputs"]["memory_summaries"].items():
+            if agent_id == "player":
+                summary = "I remember opening the archive door and hearing machinery."
+                payload = {"agent_id": "player", "summary": summary, "retained_goals": ["Decide whether to enter."], "forgotten_noise": [], "source": "self", "visibility": "actor"}
+            else:
+                character_name = agent_id.split(":", 1)[1]
+                summary = f"I remember seeing the player hesitate at the archive door as {character_name}."
+                payload = {"agent_id": agent_id, "character_name": character_name, "summary": summary, "retained_goals": ["Watch the threshold."], "forgotten_noise": [], "source": "self", "visibility": "actor"}
+            _write_json(run_dir / path, payload)
+
+        memory_delta = self.agent_memory.ingest_memory_deltas(self.card, run_dir, date_str="2026-06-16 12:00")
+        memory_summary = self.agent_memory.ingest_memory_summaries(self.card, run_dir)
+        delivered = self.agent_outputs.mark_delivered(self.card)
+        story_input = json.loads((run_dir / "story.input.json").read_text(encoding="utf-8"))
+        final_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        repair_history = [json.loads(line) for line in (run_dir / "repair_history.jsonl").read_text(encoding="utf-8").splitlines()]
+        improvement_queue = [
+            json.loads(line)
+            for line in (self.card / ".agent_runs" / "improvement_queue.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+
+        self.assertTrue(delivery["ok"])
+        self.assertTrue(memory_delta["ok"])
+        self.assertTrue(memory_summary["ok"])
+        self.assertTrue(delivered["ok"])
+        self.assertEqual(story_input["player_inputs"]["raw_text"], explicit_payload["raw_text"])
+        self.assertEqual(story_input["player_inputs"]["routed_input"]["input_schema"], "dual_channel_v1")
+        self.assertIn("moon base", story_input["player_inputs"]["routed_input"]["user_instruction_channel"])
+        self.assertNotIn("moon base", json.dumps(story_input["actor_outputs"]["player"], ensure_ascii=False))
+        self.assertNotIn("moon base", json.dumps(story_input["actor_outputs"]["characters"], ensure_ascii=False))
+        self.assertEqual(story_input["interaction_trace"]["visible_events"][0]["content"], scenario["dialogue"]["Ada"])
+        self.assertEqual(story_input["interaction_trace"]["private_event_count"], 1)
+        self.assertEqual(story_input["interaction_trace"]["decision_point"]["options"], ["enter", "wait"])
+        self.assertEqual(repair_history[0]["attempt"], 1)
+        self.assertEqual(repair_history[0]["decision"], "revise")
+        self.assertEqual(improvement_queue[0]["suggestion"], "Add a fixture for critic repair history.")
+        self.assertIn("Decide whether to enter.", (self.card / "memory" / "player" / "summary.md").read_text(encoding="utf-8"))
+        self.assertIn("Watch the threshold.", (self.card / "memory" / "characters" / "Ada" / "summary.md").read_text(encoding="utf-8"))
+        self.assertEqual(final_manifest["stage"], "delivered")
+        self.assertEqual((self.styles_dir / "response.txt").read_text(encoding="utf-8"), scenario["story_content"])
 
 
 if __name__ == "__main__":
