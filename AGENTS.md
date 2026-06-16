@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository runs a Claude Code-driven local RP engine. Core Python runtime lives in `skills/`: `server.py` and `start_server.py` serve the browser bridge, `import_prepare.py` initializes card/story folders, `round_prepare.py` creates per-turn context, and `round_deliver.py` gates and delivers approved output. Multi-agent file contracts are handled by `agent_prompts.py`, `agent_outputs.py`, `agent_memory.py`, and `agent_schemas.py`. Browser assets and generated runtime files live under `skills/styles/`; treat `content.js`, `state.js`, `.pending`, `round_context.txt`, and `progress.json` as runtime artifacts. Claude Code prompts and slash commands live in `.claude/`. Tests are under `tests/`.
+This repository runs a Claude Code-driven local RP engine. Core Python runtime lives in `skills/`: `server.py` and `start_server.py` serve the browser bridge, `import_prepare.py` initializes card/story folders, `round_prepare.py` creates per-turn context, and `round_deliver.py` gates and delivers approved output. Multi-agent file contracts are handled by `agent_prompts.py`, `agent_outputs.py`, `agent_interactions.py`, `agent_memory.py`, and `agent_schemas.py`; repair history and improvement queues are part of that control plane. Browser assets and generated runtime files live under `skills/styles/`; treat `content.js`, `state.js`, `.pending`, `round_context.txt`, and `progress.json` as runtime artifacts. Claude Code prompts and slash commands live in `.claude/`. Tests are under `tests/`.
 
 ## Build, Test, and Development Commands
 
@@ -20,7 +20,7 @@ Use Python standard-library code unless the project already depends on a package
 
 ## Testing Guidelines
 
-Add focused `unittest` coverage for every behavior change. For multi-agent changes, test missing artifacts, schema rejection, context isolation, and preservation of raw player input. Keep live model calls out of tests; use temporary directories and fixtures such as `tests/fixtures/multi_agent_round/`.
+Add focused `unittest` coverage for every behavior change. For multi-agent changes, test missing artifacts, schema rejection, context isolation, interaction traces, `repair_history.jsonl`, scheduled `memory_summaries/`, and preservation of raw player input. Keep live model calls out of tests; use temporary directories and fixtures such as `tests/fixtures/multi_agent_round/`.
 
 ## Commit & Pull Request Guidelines
 

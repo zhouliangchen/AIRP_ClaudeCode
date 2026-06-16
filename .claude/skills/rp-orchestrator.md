@@ -33,8 +33,8 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 7. After GM/player/character outputs exist, build or request `story.input.json` as the canonical story bundle.
 8. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
 9. Ask `rp-critic-agent` to write `critic.report.json`.
-10. If hard failures exist, repair once through story/agent loop. If the failure is systemic and this is a development task or the user has authorized iteration, update prompts/code, rerun the turn, and document the change. Otherwise append the issue to `improvement_queue.jsonl`.
-11. On approval, invoke `rp-delivery`; it runs `round_deliver.py`, which validates artifacts and mirrors approved story content to `skills/styles/response.txt`.
+10. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, and returns `action: retry` for failed gates.
+11. If retry is returned, repair once through story/agent loop, then rebuild story/critic artifacts and run the gate again. If the failure is systemic and the user has authorized prompt/code iteration, update the system before rerunning. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
 
 主 agent 不得直接撰写常规叙事正文 except as an explicitly marked fallback.
 
@@ -46,9 +46,13 @@ Use the current `.agent_runs/<round>/` folder as a mailbox:
 - `gm.context.json` -> `gm.output.json`
 - `player.context.json` -> `player.output.json`
 - `characters/*.context.json` -> `characters/*.output.json`
+- `interaction.trace.json`: optional visible/private interaction ledger; only sanitized summaries enter story input.
 - `story.input.json`
 - `story.output.json`
 - `critic.report.json`
+- `memory_summaries/*.summary.json`: scheduled actor self-summary outputs, usually every 6 rounds.
+- `repair_history.jsonl`: critic revise/block audit for this round.
+- `.agent_runs/improvement_queue.jsonl`: session-level backlog for systemic prompt/code/process improvements.
 - `manifest.json` with stages such as `awaiting_agent_outputs`, `story_ready`, `critic_passed`, `delivered`, or `blocked`
 
 Only the orchestrator runs delivery. Subagents never write `skills/styles/response.txt`.

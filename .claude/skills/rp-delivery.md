@@ -10,7 +10,7 @@ Delivery is a mechanical final step. It must not rewrite prose, alter player inp
 ## Preconditions
 
 - `story.output.json` exists and its `content` field matches the response tag contract.
-- `critic.report.json` exists with `decision` set to `pass`, or the orchestrator has explicitly chosen a documented fallback.
+- `critic.report.json` exists. `decision="pass"` is required for successful frontend delivery; `revise` / `block` reports still run through this gate to record retry state.
 - Any `<character_dialogues>` entries correspond to actual subagent outputs.
 - No image/UI job is still blocking text delivery.
 
@@ -23,8 +23,8 @@ Delivery is a mechanical final step. It must not rewrite prose, alter player inp
 python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"
 ```
 
-3. `round_deliver.py` validates GM/player/character/story/critic artifacts, rebuilds `story.input.json` if needed, mirrors `story.output.json.content` to `skills/styles/response.txt`, invokes `handler.py`, ingests subagent memory deltas, and marks the manifest `delivered`.
-4. If `round_deliver.py` returns `{"action":"retry"}`, pass the reason back to the orchestrator and do not fabricate success.
+3. `round_deliver.py` validates GM/player/character/story/critic artifacts, rebuilds `story.input.json` if needed, mirrors `story.output.json.content` to `skills/styles/response.txt`, invokes `handler.py`, ingests subagent memory deltas plus scheduled `memory_summaries/*.summary.json`, and marks the manifest `delivered`. Summary ingestion failures are reported as `agent_memory_error` without blocking an already approved text delivery.
+4. If `round_deliver.py` returns `{"action":"retry"}`, pass the reason back to the orchestrator and do not fabricate success. Critic `revise` / `block` reports are recorded in `repair_history.jsonl`; on those recorded reports, non-empty `system_iteration_suggestion` entries are appended to `.agent_runs/improvement_queue.jsonl`.
 5. If delivery succeeds, optional `rp-assets-ui` work may continue asynchronously.
 
 Only the orchestrator/main agent performs these steps. Subagents never write `skills/styles/response.txt`.

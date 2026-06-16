@@ -28,13 +28,13 @@ The core runtime is a Python standard-library bridge plus a small Node validatio
 - `skills/start_server.py` is the safe launcher for `server.py`; it checks port `8765`, clears stale Python/Node processes when needed, waits for readiness, and returns local/LAN frontend URLs. The MVU service uses port `8766`.
 - `skills/import_prepare.py` is the startup pipeline. It cleans stale runtime state, delegates card/world import to `import_card.py`, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt` as the single startup context file for Claude.
 - `skills/round_prepare.py` is the per-turn context pipeline. It reads user input, settings, recent memory, worldbook indexes, injection rules, and MVU state, then writes `skills/styles/round_context.txt`. Keep stable/static context near the file prefix and dynamic turn data near the suffix to preserve prompt-cache locality.
-- Claude Code orchestrates subagents that create and review narrative output through `.agent_runs/<round>/`. `agent_prompts.py` materializes prompts, `agent_outputs.py` validates artifacts and mirrors approved `story.output.json` content to `skills/styles/response.txt`, and `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
+- Claude Code orchestrates subagents that create and review narrative output through `.agent_runs/<round>/`. `agent_prompts.py` materializes prompts, `agent_outputs.py` validates artifacts, assembles `story.input.json`, records critic revise/block repair history plus related system improvement suggestions, and mirrors approved `story.output.json` content to `skills/styles/response.txt`. `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
 - `skills/handler.py` parses tagged responses, executes MVU updates through `mvu_engine.py`, appends `chat_log.json`, rebuilds `content.js`, mirrors `state.js` into the card folder, and notifies the browser via `/api/done`.
 - `skills/mvu_engine.py`, `skills/mvu_check.py`, `skills/mvu_shared.js`, and `skills/mvu_server.js` implement the variable/JSONPatch system and schema validation.
-- `skills/import_card.py`, `skills/match_worldbook.py`, `skills/write_memory.py`, and `skills/agent_memory.py` manage card parsing, worldbook lookup, persistent narrative memory, and validated subagent memory deltas under each card folder's `memory/` directory.
+- `skills/import_card.py`, `skills/match_worldbook.py`, `skills/write_memory.py`, and `skills/agent_memory.py` manage card parsing, worldbook lookup, persistent narrative memory, validated subagent memory deltas, and scheduled actor self-summaries under each card folder's `memory/` directory.
 - `skills/styles/` contains the browser UI and runtime files. Files such as `content.js`, `state.js`, `input.txt`, `.pending`, `round_context.txt`, and `import_context.txt` are generated runtime artifacts, not source-of-truth code.
 
-Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest → Claude Code dispatches subagents → GM/player/character outputs are written → `story.input.json` is assembled and story/critic artifacts are written → `round_deliver.py` validates artifacts, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
+Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` → Claude Code dispatches subagents and may record `interaction.trace.json` → GM/player/character outputs are written → `story.input.json` is assembled with sanitized interaction trace and story/critic artifacts are written → `round_deliver.py` validates artifacts, records critic revise/block `repair_history.jsonl` and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
 
 ## Runtime instructions for RP mode
 ## 多 Subagent 编排宪法
@@ -47,7 +47,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。
 - 用户输入分为 `role_channel` 和 `user_instruction_channel`。角色行动/第一人称剧情梗概进入角色通道；第三人称上帝视角设定和直接给 Claude Code 的指令进入用户指令通道，二者互不干扰。
 - 每轮使用 `.agent_runs/<round>/` 作为 agent 文件邮箱。critic 通过后，`round_deliver.py` 才把 `story.output.json` 的正文镜像到 `skills/styles/response.txt` 并交付。
-- 质量不合格时，主 agent 先组织 story/critic 修复循环；若问题来自 prompt、代码或系统流程，且当前任务允许系统迭代，则可以修改项目后重新生成，否则记录到 `improvement_queue.jsonl`。
+- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再组织 story/critic 修复循环；若问题来自 prompt、代码或系统流程，且当前任务允许系统迭代，则可以修改项目后重新生成，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
 - 图片生成和存档 UI 演化属于可选沉浸增强任务，必须异步执行，不得阻塞正文交付。
 
 
@@ -281,7 +281,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 
 每轮至少更新 2 个后台角色的 `角色行动` 和 `内心想法`（即使只是"继续做同一件事"也要写 replace）。轮转优先级按"上次更新距今最久"排序。
 
-**步骤 4** — GM/player/character 产物齐备后生成 `.agent_runs/<round>/story.input.json`；story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。
+**步骤 4** — GM/player/character 产物齐备后生成 `.agent_runs/<round>/story.input.json`；story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。可选的 `interaction.trace.json` 只向 story/critic 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。
 
 ### 后处理（AI 只需调用一次）
 
@@ -289,7 +289,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 ```
 python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"
 ```
-此脚本自动完成：校验 `.agent_runs/<round>/` 必需产物 → 必要时重建 `story.input.json` → critic `block/revise` 或产物缺失时返回 `action: retry` → critic `pass` 时把 `story.output.json.content` 镜像到 `response.txt` → 字数门禁检查 → token 采集 → handler.py 交付前端 → write_memory.py 与 agent memory 更新 → manifest 标记 `delivered` → 检查故事规划触发。
+此脚本自动完成：校验 `.agent_runs/<round>/` 必需产物 → 必要时重建 `story.input.json` → critic `block/revise` 或产物缺失时返回 `action: retry`，并记录 `repair_history.jsonl` 与可选 `.agent_runs/improvement_queue.jsonl` → critic `pass` 时把 `story.output.json.content` 镜像到 `response.txt` → 字数门禁检查 → token 采集 → handler.py 交付前端 → write_memory.py 与 agent memory delta/summary 更新（summary 失败会记录 `agent_memory_error`，不阻断已通过正文交付）→ manifest 标记 `delivered` → 检查故事规划触发。
 
 若 `round_deliver.py` 返回 `story_plan_due: true` → 执行下方「剧情规划」流程。
 

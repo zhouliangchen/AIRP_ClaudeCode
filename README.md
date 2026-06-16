@@ -27,8 +27,8 @@ AIRP_ClaudeCode/
 │  ├─ round_prepare.py      # 每轮上下文收集
 │  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
 │  ├─ agent_prompts.py      # 生成 GM/player/character/story/critic prompt
-│  ├─ agent_outputs.py      # 校验 agent 产物、生成 story.input.json、交付 gate
-│  ├─ agent_memory.py       # 写入 subagent 记忆 delta
+│  ├─ agent_outputs.py      # 校验 agent 产物、生成 story.input.json、修复记录
+│  ├─ agent_memory.py       # 写入 subagent 记忆 delta 与周期摘要
 │  ├─ agent_schemas.py      # agent JSON 产物 schema 校验
 │  ├─ handler.py            # 解析 response.txt 并重建前端数据
 │  ├─ mvu_server.js         # Node MVU 校验服务，默认端口 8766
@@ -75,11 +75,13 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 ## 核心角色 subagent
 
-`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。该目录包含 `input.json`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
+`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。该目录包含 `input.json`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。运行中还会按需写入 `interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
 Claude Code 工作流会在场景强相关时最多并行调用 2 个核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 
-subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM/player/character 产物写入 `.agent_runs/<round>/`，`agent_outputs.py` 校验后生成 `story.input.json`；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
+subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM/player/character 产物写入 `.agent_runs/<round>/`，`agent_outputs.py` 校验后生成 `story.input.json`，并把可见交互轨迹、私有事件计数和关键决策点整理给 story/critic 使用；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若 critic 要求 `revise` 或 `block`，本轮会记录到 `repair_history.jsonl`；若该 revise/block 报告提供 `system_iteration_suggestion`，会追加到卡片文件夹的 `.agent_runs/improvement_queue.jsonl`。
+
+每 6 轮会为 player 和本轮相关 character 安排一次 `memory_summaries/*.summary.json` 自我记忆整理。摘要只允许写入角色自己视角可知的信息；校验会拒绝未排期文件和 `gm_only`、`world_truth`、`gm_notes`、`omniscient` 等显式隐藏标记。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
 
 ## 常用开发命令
 
