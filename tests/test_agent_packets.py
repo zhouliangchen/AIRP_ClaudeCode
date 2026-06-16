@@ -1,6 +1,6 @@
 import importlib.util
-import os
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -14,6 +14,16 @@ def _load_agent_run():
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location("agent_run", ROOT / "skills" / "agent_run.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_agent_packets():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("agent_packets", ROOT / "skills" / "agent_packets.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -72,3 +82,70 @@ class AgentRunTest(unittest.TestCase):
 
         self.assertEqual(report["passed"], False)
         self.assertEqual(report["hard_failures"], ["bad"])
+
+
+class AgentPacketTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.card = Path(self.tmp.name) / "card"
+        self.card.mkdir()
+        self.agent_packets = _load_agent_packets()
+        self.agent_run = _load_agent_run()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_route_player_input_splits_omniscient_setting_block(self):
+        text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
+        routed = self.agent_packets.route_player_input(text)
+
+        self.assertEqual(routed["role_channel"], "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002")
+        self.assertEqual(
+            routed["user_instruction_channel"],
+            "\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
+        )
+        self.assertEqual(
+            routed["components"],
+            [
+                {"channel": "role", "text": "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002"},
+                {
+                    "channel": "user_instruction",
+                    "text": "\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
+                },
+            ],
+        )
+
+    def test_build_player_packet_uses_role_channel_without_user_instructions(self):
+        routed = self.agent_packets.route_player_input("\u6211\u7acb\u5373\u6254\u51fa\u65e5\u5fd7\uff0c\u7ee7\u7eed\u63a2\u7d22\u6708\u9762\u57fa\u5730\u7684\u6838\u5fc3\u4ed3\u5e10\u3002")
+        packet = self.agent_packets.build_player_packet(self.card, routed, [])
+
+        self.assertIn("\u6708\u9762\u57fa\u5730", packet["role_channel"])
+        self.assertNotIn("user_instruction_channel", packet)
+        self.assertEqual(packet["agent"], "player")
+
+    def test_prepare_agent_run_builds_expected_context_files(self):
+        user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
+        chat_log = [{"index": 3, "summary": "\u5f00\u542f\u7b2c\u4e00\u8f6e"}]
+        card_data = {"title": "\u6d4b\u8bd5\u5361"}
+        character_contexts = [{"name": "Ada"}]
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text=user_text,
+            chat_log=chat_log,
+            card_data=card_data,
+            character_contexts=character_contexts,
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        self.assertTrue((run_dir / "input.json").exists())
+        self.assertTrue((run_dir / "gm.context.json").exists())
+        self.assertTrue((run_dir / "player.context.json").exists())
+
+        safe_name = self.agent_run.safe_name("Ada")
+        char_path = run_dir / "characters" / f"{safe_name}.context.json"
+        self.assertTrue(char_path.exists())
+
+        critic = json.loads((run_dir / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic, self.agent_packets.DEFAULT_CRITIC_REPORT)
