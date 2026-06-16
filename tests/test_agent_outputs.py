@@ -266,9 +266,9 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(final_manifest["stage"], "blocked")
         self.assertEqual(final_manifest["retry_count"], 2)
 
-    def test_prepare_delivery_critic_attempt_ignores_non_critic_retry_count(self):
+    def test_prepare_delivery_repair_attempt_uses_repair_history_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        manifest["retry_count"] = 3
+        manifest["retry_count"] = 1
         _write_json(self.run_dir / "manifest.json", manifest)
         self._write_story_and_critic(decision="revise")
 
@@ -286,15 +286,21 @@ class AgentOutputsTest(unittest.TestCase):
 
         first = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
         second = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        third = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
         self.assertFalse(first["ok"])
         self.assertFalse(second["ok"])
+        self.assertFalse(third["ok"])
+        self.assertEqual(first["action"], "retry")
+        self.assertEqual(second["action"], "retry")
+        self.assertEqual(third["action"], "blocked")
+        self.assertEqual(third["reason"], "critic_retry_limit")
         history = _read_jsonl(self.run_dir / "repair_history.jsonl")
         queue = _read_jsonl(self.card / ".agent_runs" / "improvement_queue.jsonl")
         self.assertEqual(len(history), 1)
         self.assertEqual(len(queue), 1)
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["retry_count"], 1)
+        self.assertEqual(manifest["retry_count"], 2)
         self.assertEqual(manifest["stage"], "blocked")
 
     def test_prepare_delivery_pass_writes_story_content_to_response(self):

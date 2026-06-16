@@ -181,6 +181,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when agent output gate blocks")
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
 
         def gate(card_folder, styles_dir):
             return {
@@ -202,6 +203,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
                     self.round_deliver.main()
         finally:
             sys.argv = old_argv
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(ctx.exception.code, 0)
@@ -209,6 +211,41 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "agent_outputs")
         self.assertEqual(payload["detail"], "gm.output.json")
         self.assertTrue(any(args[:2] == ("retry", "多代理产物未就绪，等待修复") for args, _ in progress_calls))
+
+    def test_round_deliver_propagates_terminal_agent_output_block(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when agent output gate is terminal")
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+
+        def gate(card_folder, styles_dir):
+            return {
+                "ok": False,
+                "action": "blocked",
+                "reason": "critic_retry_limit",
+                "message": "Critic retry limit reached.",
+                "detail": {"decision": "block"},
+            }
+
+        self.round_deliver.agent_outputs.prepare_delivery = gate
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+        finally:
+            sys.argv = old_argv
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(payload["action"], "blocked")
+        self.assertEqual(payload["reason"], "critic_retry_limit")
+        self.assertTrue(any(args and args[0] == "blocked" for args, _ in progress_calls))
+        self.assertFalse(any(args and args[0] == "retry" for args, _ in progress_calls))
 
 
 class AgentRunTest(unittest.TestCase):

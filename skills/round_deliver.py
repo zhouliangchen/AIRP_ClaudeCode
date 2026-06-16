@@ -103,7 +103,10 @@ def main():
     delivery_gate = agent_outputs.prepare_delivery(card_folder, styles_dir)
     if not delivery_gate.get("ok", False):
         detail = str(delivery_gate.get("detail") or delivery_gate.get("message") or "")[:500]
-        write_progress("retry", "多代理产物未就绪，等待修复", percent=65, detail=detail)
+        gate_action = str(delivery_gate.get("action") or "retry")
+        progress_status = "blocked" if gate_action == "blocked" else "retry"
+        progress_message = "多代理产物已终止，等待人工处理" if progress_status == "blocked" else "多代理产物未就绪，等待修复"
+        write_progress(progress_status, progress_message, percent=65, detail=detail)
         print(json.dumps(delivery_gate, ensure_ascii=False))
         sys.exit(0)
 
