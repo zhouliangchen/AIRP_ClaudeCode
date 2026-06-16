@@ -479,14 +479,17 @@ class TurnStateTest(unittest.TestCase):
             result = post_submit({"roleText": role_text, "instructionText": instruction_text})
 
             self.assertTrue(result["ok"])
+            self.assertEqual(result["text"], role_text)
             expected_raw = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
             self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_raw)
             inputs = self.handler.read_player_inputs(str(self.card))
             pending = self.handler.read_pending_user_turn(str(self.card))
             self.assertEqual(inputs[-1]["input_schema"], "dual_channel_v1")
             self.assertEqual(inputs[-1]["raw_text"], expected_raw)
+            self.assertEqual(inputs[-1]["display_text"], role_text)
             self.assertEqual(inputs[-1]["role_text"], role_text)
             self.assertEqual(inputs[-1]["user_instruction_text"], instruction_text)
+            self.assertEqual(pending["display_text"], role_text)
             self.assertEqual(pending["raw_text"], expected_raw)
             self.assertEqual(pending["role_text"], role_text)
             self.assertEqual(pending["user_instruction_text"], instruction_text)
@@ -511,6 +514,27 @@ class TurnStateTest(unittest.TestCase):
             log = self.handler.read_chat_log(str(self.card))
             self.assertNotIn("user", log[-1])
             self.assertNotIn(instruction_only, json.dumps(log[-1], ensure_ascii=False))
+
+            whitespace_role_instruction = "Update only the private weather rule."
+            whitespace_role_result = post_submit({
+                "roleText": "   ",
+                "instructionText": whitespace_role_instruction,
+                "charName": "Hero",
+            })
+
+            self.assertTrue(whitespace_role_result["ok"])
+            self.assertEqual(whitespace_role_result["text"], "")
+            expected_whitespace_raw = "   \n\n[USER_INSTRUCTION]\n" + whitespace_role_instruction
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_whitespace_raw)
+            inputs = self.handler.read_player_inputs(str(self.card))
+            pending = self.handler.read_pending_user_turn(str(self.card))
+            self.assertEqual(inputs[-1]["raw_text"], expected_whitespace_raw)
+            self.assertEqual(inputs[-1]["display_text"], "")
+            self.assertEqual(inputs[-1]["role_text"], "   ")
+            self.assertEqual(inputs[-1]["user_instruction_text"], whitespace_role_instruction)
+            self.assertEqual(pending["display_text"], "")
+            self.assertEqual(pending["role_text"], "   ")
+            self.assertEqual(pending["user_instruction_text"], whitespace_role_instruction)
 
             legacy_text = " Legacy exact text  "
             legacy = post_submit({"text": legacy_text, "charName": "Hero"})

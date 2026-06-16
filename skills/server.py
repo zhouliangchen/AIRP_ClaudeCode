@@ -167,7 +167,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 text = role_text
 
             if has_dual_channel and (role_text or instruction_text):
-                full = f"【{char_name}】{role_text}" if char_name and role_text else role_text
+                has_visible_role_text = bool(role_text.strip())
+                full = f"【{char_name}】{role_text}" if char_name and has_visible_role_text else (role_text if has_visible_role_text else "")
                 INPUT_FILE.write_text(full_raw, encoding="utf-8")
                 card = _card_folder()
                 player_entry = None
