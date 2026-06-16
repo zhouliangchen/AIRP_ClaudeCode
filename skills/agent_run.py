@@ -50,19 +50,18 @@ def create_run_dir(card_folder, turn_index=None):
                 name = current.name
                 if name.startswith("round-"):
                     try:
-                        turn_index = int(name.replace("round-", ""), 10) - 1
+                        turn_index = int(name.replace("round-", ""), 10)
                     except ValueError:
                         turn_index = None
         if turn_index is None:
             numbers = _existing_round_numbers(root)
             turn_index = numbers[-1] if numbers else 0
-            turn_index -= 1
 
     turn_index = int(turn_index or 0)
     run_name = f"round-{turn_index + 1:06d}"
     run_dir = root / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    run_root(card_folder).joinpath("current").write_text(str(run_dir), encoding="utf-8")
+    run_root(card_folder).joinpath("current").write_text(str(run_dir.resolve()), encoding="utf-8")
     return run_dir
 
 
@@ -119,4 +118,3 @@ def read_current_critic_report(card_folder):
     if run_dir is None:
         return {}
     return read_json(run_dir / "critic.report.json", {})
-
