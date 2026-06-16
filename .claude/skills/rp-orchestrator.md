@@ -25,3 +25,13 @@ description: 主编排者入口，路由输入并调度 RP 分阶段工作流
 - 仅调用 `rp-delivery` 在最后写入 `skills/styles/response.txt` 并交付。
 - 不直接改写除 `skills/styles/response.txt` 外的核心运行文件。
 - 若任一代理输出不满足响应契约，回退到 `rp-critic-agent` 要求重写后再交付。
+
+## Agent Run Artifacts
+
+- 从 `skills/styles/round_context.txt` 读取 `.agent_runs/<AGENT_RUN>`，并据此触发本轮子代理工作流。
+- 读取并持久化：`gm.context.json` -> `gm.output.json`。
+- 读取并持久化：`player.context.json` -> `player.output.json`。
+- 读取并持久化每个角色：`characters/*.context.json` -> 对应 `characters/*.output.json`。
+- 由 `rp-story-agent` 基于上述产物写入 `story.output.txt`。
+- 将审稿结果写入 `critic.report.json`（`rp-critic-agent` 输出）。
+- 当审稿通过后写入 `final.response.txt`，再镜像到 `skills/styles/response.txt`，随后触发 `rp-delivery`。

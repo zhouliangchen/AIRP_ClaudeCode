@@ -60,6 +60,19 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("Claude Code", claude)
         self.assertIn("response.txt", claude)
 
+    def test_orchestrator_skill_references_agent_run_artifacts(self):
+        orchestrator = (ROOT / ".claude" / "skills" / "rp-orchestrator.md").read_text(encoding="utf-8")
+        story = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+        critic = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        delivery = (ROOT / ".claude" / "skills" / "rp-delivery.md").read_text(encoding="utf-8")
+
+        self.assertIn(".agent_runs", orchestrator)
+        self.assertIn("gm.output.json", orchestrator)
+        self.assertIn("player.output.json", orchestrator)
+        self.assertIn("story.output.txt", story)
+        self.assertIn("critic.report.json", critic)
+        self.assertIn("final.response.txt", delivery)
+
     def test_rp_command_points_to_orchestrator(self):
         command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
 
