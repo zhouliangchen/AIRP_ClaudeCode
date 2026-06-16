@@ -9,23 +9,31 @@ import re
 import agent_run
 
 
-INSTRUCTION_KEYWORDS = (
-    "omniscient",
-    "system",
-    "setting",
-    "history",
-    "edit",
-    "rewrite",
-    "important character",
-    "important_character",
+INSTRUCTION_PREFIXES = (
     "系统指令",
+    "用户指令",
     "上帝视角",
-    "上帝",
-    "设定",
+    "设定：",
+    "设定:",
+    "重要角色",
+    "核心角色",
+    "system:",
+    "user instruction:",
+    "omniscient:",
+    "setting:",
+    "important character:",
 )
 
-_INSTRUCTION_RE = re.compile(r"^\s*[()\uFF08\uFF09][\s\S]*[()\uFF08\uFF09]\s*$")
-_SEGMENTS_RE = re.compile(r"([()\uFF08][^)\uFF09]*[)\uFF09])")
+_PAREN_INNER_RE = re.compile(r"^\(\s*(.*?)\s*\)$")
+_FULL_PAREN_INNER_RE = re.compile(r"^（\s*(.*?)\s*）$")
+_SEGMENTS_RE = re.compile(r"(\([^()]*\)|（[^（）]*）)")
+
+
+def _has_instruction_prefix(text: str) -> bool:
+    for cue in INSTRUCTION_PREFIXES:
+        if text.startswith(cue) or text.lower().startswith(cue.lower()):
+            return True
+    return False
 
 
 def _to_text(value: Any) -> str:
@@ -36,10 +44,10 @@ def _is_instruction(text: str) -> bool:
     text = _to_text(text).strip()
     if not text:
         return False
-    if _INSTRUCTION_RE.match(text):
-        return True
-    lowered = text.lower()
-    return any(key in lowered for key in INSTRUCTION_KEYWORDS)
+    match = _PAREN_INNER_RE.match(text) or _FULL_PAREN_INNER_RE.match(text)
+    if match:
+        text = match.group(1).strip()
+    return _has_instruction_prefix(text)
 
 
 def route_player_input(text: str) -> Dict[str, Any]:
@@ -131,11 +139,6 @@ def _iter_characters(character_contexts: Any) -> Iterable[Dict[str, Any]]:
     if isinstance(character_contexts, dict):
         if "characters" in character_contexts and isinstance(character_contexts["characters"], (list, tuple)):
             return character_contexts["characters"]
-        return [
-            {"name": str(k), **(v if isinstance(v, dict) else {})}
-            for k, v in character_contexts.items()
-            if isinstance(v, dict)
-        ]
     if isinstance(character_contexts, (list, tuple)):
         result = []
         for item in character_contexts:

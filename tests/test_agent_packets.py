@@ -96,13 +96,13 @@ class AgentPacketTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_route_player_input_splits_omniscient_setting_block(self):
-        text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
+        text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
         routed = self.agent_packets.route_player_input(text)
 
         self.assertEqual(routed["role_channel"], "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002")
         self.assertEqual(
             routed["user_instruction_channel"],
-            "\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
+            "\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
         )
         self.assertEqual(
             routed["components"],
@@ -110,10 +110,27 @@ class AgentPacketTest(unittest.TestCase):
                 {"channel": "role", "text": "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002"},
                 {
                     "channel": "user_instruction",
-                    "text": "\uff08\u4e0a\u4e01\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
+                    "text": "\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
                 },
             ],
         )
+
+    def test_route_player_input_supports_english_instruction_cues(self):
+        routed = self.agent_packets.route_player_input(
+            "I open the gate.\nSystem: make the castle a moon base.\n"
+        )
+        self.assertEqual(routed["role_channel"], "I open the gate.")
+        self.assertEqual(routed["user_instruction_channel"], "System: make the castle a moon base.")
+
+    def test_route_player_input_keeps_parenthesized_action_as_role(self):
+        routed = self.agent_packets.route_player_input("(I glance at the door and step inside.)")
+        self.assertEqual(routed["role_channel"], "(I glance at the door and step inside.)")
+        self.assertEqual(routed["user_instruction_channel"], "")
+
+    def test_route_player_input_keeps_ordinary_rewrite_sentence_as_role(self):
+        routed = self.agent_packets.route_player_input("I rewrite the rune on the wall.")
+        self.assertEqual(routed["role_channel"], "I rewrite the rune on the wall.")
+        self.assertEqual(routed["user_instruction_channel"], "")
 
     def test_build_player_packet_uses_role_channel_without_user_instructions(self):
         routed = self.agent_packets.route_player_input("\u6211\u62ab\u51fa\u77ed\u5251\u3002\n\uff08\u7cfb\u7edf\u6307\u4ee4\uff1a\u5c06\u57ce\u5821\u8bbe\u5b9a\u4e3a\u88ab\u9057\u5fd8\u7684\u6708\u9762\u57fa\u5730\u3002\uff09")
@@ -158,3 +175,28 @@ class AgentPacketTest(unittest.TestCase):
 
         critic = json.loads((run_dir / "critic.report.json").read_text(encoding="utf-8"))
         self.assertEqual(critic, self.agent_packets.DEFAULT_CRITIC_REPORT)
+
+    def test_prepare_agent_run_ignores_metadata_dict_as_character_context(self):
+        user_text = "I test metadata-only character context."
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text=user_text,
+            chat_log=[],
+            card_data={"title": "\u6d4b\u8bd5\u5361"},
+            character_contexts={"meta": {"version": 1}},
+            turn_index=0,
+        )
+        run_dir = Path(result["run_dir"])
+        self.assertFalse((run_dir / "characters" / "meta.context.json").exists())
+
+    def test_build_character_packet_excludes_user_instruction_text(self):
+        routed = self.agent_packets.route_player_input("I step toward the gate.\nOmniscient: the door is a dream echo.")
+        packet = self.agent_packets.build_character_packet(
+            self.card,
+            {"name": "Ada", "profile_summary": "Ada is cautious."},
+            routed,
+            [],
+        )
+        self.assertEqual(packet["role_channel"], "I step toward the gate.")
+        self.assertNotIn("user_instruction_channel", packet)
+        self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
