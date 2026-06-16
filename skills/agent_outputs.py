@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import agent_run
+import agent_interactions
 import agent_schemas
 
 
@@ -91,6 +92,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "characters": character_outputs,
         },
         "memory_deltas": _memory_deltas(player_output, character_outputs, gm_output),
+        "interaction_trace": agent_interactions.summarize_for_story_input(root),
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
             "preserve_character_dialogue_metadata": True,

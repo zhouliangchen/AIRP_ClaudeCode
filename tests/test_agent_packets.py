@@ -412,6 +412,8 @@ class AgentPacketTest(unittest.TestCase):
         gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
         player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
         char_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+        story_prompt = (run_dir / "prompts" / "story.prompt.md").read_text(encoding="utf-8")
+        critic_prompt = (run_dir / "prompts" / "critic.prompt.md").read_text(encoding="utf-8")
 
         self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
         self.assertIn("gm.output.json", gm_prompt)
@@ -422,6 +424,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(".claude/skills/rp-character-agent.md", char_prompt)
         self.assertIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
         self.assertNotIn("dream echo", char_prompt)
+        self.assertIn("story.input.json.interaction_trace", story_prompt)
+        self.assertIn("story.input.json.interaction_trace", critic_prompt)
+        self.assertNotIn("interaction.trace.json", story_prompt)
+        self.assertNotIn("interaction.trace.json", critic_prompt)
 
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["round_id"], "round-000001")
@@ -437,6 +443,8 @@ class AgentPacketTest(unittest.TestCase):
             f"prompts/characters/{safe_name}.prompt.md",
         )
         self.assertEqual(manifest["expected_outputs"]["gm"], "gm.output.json")
+        self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
+        self.assertNotIn("interaction_trace", manifest.get("optional_inputs", {}))
 
     def test_prepare_agent_run_prefers_explicit_dual_channel_payload(self):
         explicit_payload = {

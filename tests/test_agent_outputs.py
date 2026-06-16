@@ -138,6 +138,35 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_build_story_input_includes_interaction_trace_summary(self):
+        trace = {
+            "round_id": "round-000001",
+            "status": "decision_point",
+            "participants": ["gm", "player", "character:Ada"],
+            "chapter_target_words": 1200,
+            "events": [
+                {"actor": "character:Ada", "visibility": "world_visible", "type": "dialogue", "content": "Stay close."},
+                {"actor": "character:Ada", "visibility": "private", "type": "thought", "content": "I fear this."},
+            ],
+            "decision_point": {"reason": "player must choose", "options": ["enter"]},
+            "stop_reason": "player must choose",
+        }
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["interaction_trace"]["status"], "decision_point")
+        self.assertEqual(story_input["interaction_trace"]["visible_events"][0]["content"], "Stay close.")
+        self.assertEqual(story_input["interaction_trace"]["private_event_count"], 1)
+
+    def test_build_story_input_degrades_malformed_interaction_trace(self):
+        (self.run_dir / "interaction.trace.json").write_text("{bad json", encoding="utf-8")
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["interaction_trace"]["status"], "invalid")
+        self.assertEqual(story_input["interaction_trace"]["visible_events"], [])
+
     def test_build_story_input_blocks_missing_required_character_output(self):
         (self.run_dir / "characters" / "Ada.output.json").unlink()
 

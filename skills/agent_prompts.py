@@ -140,7 +140,7 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "story.output.json",
         contract,
         run_summary,
-    )
+    ) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
 
 def _critic_prompt(run_summary: Dict[str, Any]) -> str:
@@ -156,7 +156,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "critic.report.json",
         contract,
         run_summary,
-    )
+    ) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
 
 def write_round_prompts(
