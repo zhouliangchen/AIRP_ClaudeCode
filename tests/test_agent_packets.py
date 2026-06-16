@@ -60,6 +60,18 @@ class CriticGateSourceTest(unittest.TestCase):
         self.assertIn("read_current_critic_report", source)
         self.assertIn("critic_hard_failures", source)
 
+    def test_round_deliver_uses_agent_output_gate(self):
+        source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
+
+        self.assertIn("import agent_outputs", source)
+        self.assertIn("prepare_delivery", source)
+
+    def test_round_deliver_ingests_agent_memory_deltas(self):
+        source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
+
+        self.assertIn("import agent_memory", source)
+        self.assertIn("ingest_memory_deltas", source)
+
 
 class CriticGateRuntimeTest(unittest.TestCase):
     def setUp(self):
@@ -158,6 +170,39 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertIn("word_count", payload)
         self.assertIs(self.round_deliver.agent_run.read_current_critic_report, original_read_current_critic_report)
         self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
+
+    def test_round_deliver_returns_retry_when_agent_output_gate_blocks(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when agent output gate blocks")
+
+        def gate(card_folder, styles_dir):
+            return {
+                "ok": False,
+                "action": "retry",
+                "reason": "agent_outputs",
+                "message": "Required agent outputs are missing or invalid.",
+                "detail": "gm.output.json",
+            }
+
+        self.round_deliver.agent_outputs.prepare_delivery = gate
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+        finally:
+            sys.argv = old_argv
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(payload["action"], "retry")
+        self.assertEqual(payload["reason"], "agent_outputs")
+        self.assertEqual(payload["detail"], "gm.output.json")
+        self.assertTrue(any(args[:2] == ("retry", "多代理产物未就绪，等待修复") for args, _ in progress_calls))
 
 
 class AgentRunTest(unittest.TestCase):
@@ -339,6 +384,59 @@ class AgentPacketTest(unittest.TestCase):
 
         critic = json.loads((run_dir / "critic.report.json").read_text(encoding="utf-8"))
         self.assertEqual(critic, self.agent_packets.DEFAULT_CRITIC_REPORT)
+
+    def test_prepare_agent_run_writes_prompts_and_manifest(self):
+        user_text = "I open the archive door.\nOmniscient: the vault behind it is a dream echo."
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text=user_text,
+            chat_log=[],
+            card_data={"title": "Prompt Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        safe_name = self.agent_run.safe_name("Ada")
+        prompt_paths = [
+            run_dir / "prompts" / "gm.prompt.md",
+            run_dir / "prompts" / "player.prompt.md",
+            run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md",
+            run_dir / "prompts" / "story.prompt.md",
+            run_dir / "prompts" / "critic.prompt.md",
+        ]
+        for path in prompt_paths:
+            with self.subTest(path=path):
+                self.assertTrue(path.exists())
+
+        gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
+        player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+        char_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
+        self.assertIn("gm.output.json", gm_prompt)
+        self.assertIn("dream echo", gm_prompt)
+        self.assertIn(".claude/skills/rp-player-agent.md", player_prompt)
+        self.assertIn("player.output.json", player_prompt)
+        self.assertNotIn("dream echo", player_prompt)
+        self.assertIn(".claude/skills/rp-character-agent.md", char_prompt)
+        self.assertIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
+        self.assertNotIn("dream echo", char_prompt)
+
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["round_id"], "round-000001")
+        self.assertEqual(manifest["stage"], "awaiting_agent_outputs")
+        self.assertEqual(
+            [item["stage"] for item in manifest["status"]],
+            ["prepared", "prompts_ready", "awaiting_agent_outputs"],
+        )
+        self.assertEqual(manifest["prompts"]["gm"], "prompts/gm.prompt.md")
+        self.assertEqual(manifest["prompts"]["player"], "prompts/player.prompt.md")
+        self.assertEqual(
+            manifest["prompts"]["characters"][safe_name],
+            f"prompts/characters/{safe_name}.prompt.md",
+        )
+        self.assertEqual(manifest["expected_outputs"]["gm"], "gm.output.json")
 
     def test_prepare_agent_run_ignores_metadata_dict_as_character_context(self):
         user_text = "I test metadata-only character context."

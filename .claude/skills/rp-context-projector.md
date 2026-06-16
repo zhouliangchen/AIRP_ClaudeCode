@@ -1,15 +1,41 @@
 ---
 name: rp-context-projector
-description: 上下文投射代理：按代理角色注入不同视角上下文
+description: Use when preparing GM, player, or character subagent context that must enforce knowledge boundaries.
 ---
 
-## Context Projection
+## RP Context Projector
 
-- 为 GM 代理保留完整上下文，包括最近回合、世界书命中、变量差异。
-- 为 `player` / `character` 代理投射第一人称局部上下文：聚焦当轮输入、可执行动作、当前场景线索与角色关系。
-- 不新增事实，不引入外部假设。
+Projection decides what each agent is allowed to know. It is the main defense for immersion, role independence, and instruction leakage.
 
-## Output
+## Visibility Matrix
 
-- 输出只包含投射后的上下文摘要，不直接写入任何文件。
-- 明确标注不确定项与缺失项，避免臆测。
+| Agent | May Receive | Must Not Receive |
+| --- | --- | --- |
+| GM | complete剧情, hidden facts, user_instruction_channel, memory, variables, worldbook, all prior summaries | none, except private real-user data unrelated to the RP |
+| Player | strict first-person player knowledge, role_channel, perceived scene, body state, remembered facts, current choices | user_instruction_channel, GM plans, hidden world truth, "玩家/Claude Code/系统" framing |
+| Character | strict first-person character knowledge, own memory, own goals, own senses, own misconceptions, visible player action | player private intent, user_instruction_channel, GM notes, other characters' hidden thoughts |
+| Story | all subagent outputs and delivery contract | raw hidden chain-of-thought |
+| Critic | full candidate, all contracts, full context needed for audit | none within project data |
+
+## Projection Rules
+
+- GM agent 可以接收完整剧情.
+- Player and character agents get 严格独立的第一人称视角.
+- Never leak `user_instruction_channel` into player/character packets unless the instruction has become a world-visible fact; 换言之, 不得泄露出戏指令、GM 隐藏真相或 Claude Code 工作流信息。
+- Use `world-visible` labels for facts that characters can perceive this turn.
+- Preserve wrong beliefs. If a character misunderstands something, pass the misconception, not the omniscient truth.
+- Include sensory affordances: what the role can see, hear, touch, smell, remember, and plausibly infer.
+- Include memory from `memory/characters/<safe_name>/` only for that character.
+- Keep packets compact. Prefer local facts over long global summaries for speed.
+
+## Output Requirements
+
+For each projected packet, state:
+
+- `visibility`: `full_story`, `first_person_player`, or `first_person_character`.
+- `known_facts`
+- `sensory_context`
+- `private_memory`
+- `misconceptions`
+- `forbidden_knowledge_removed`
+- `world_visible_changes`

@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable
 import re
 
 import agent_run
+import agent_prompts
 
 
 INSTRUCTION_PREFIXES = (
@@ -207,16 +208,20 @@ def prepare_agent_run(card_folder, user_text, chat_log, card_data, character_con
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)
 
+    character_packets = {}
     for character in _iter_characters(character_contexts):
         name = character.get("name") if isinstance(character, dict) else ""
         safe = agent_run.safe_name(name)
         packet = build_character_packet(card_folder, character, routed_input, chat_log)
         agent_run.write_json(run_dir / "characters" / f"{safe}.context.json", packet)
+        character_packets[safe] = packet
 
     agent_run.write_json(run_dir / "critic.report.json", DEFAULT_CRITIC_REPORT)
+    manifest = agent_prompts.write_round_prompts(run_dir, gm_packet, player_packet, character_packets)
     return {
         "run_dir": str(run_dir.resolve()),
         "routed_input": routed_input,
         "gm_packet": gm_packet,
         "player_packet": player_packet,
+        "manifest": manifest,
     }

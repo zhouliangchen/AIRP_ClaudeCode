@@ -1,0 +1,12 @@
+{
+  "user_text": "I open the archive door.\nOmniscient: the archive is secretly a moon base, but characters can only perceive machinery and cold air for now.",
+  "characters": [
+    "Ada",
+    "Borin"
+  ],
+  "dialogue": {
+    "Ada": "Stay close. That sound is not wind.",
+    "Borin": "The hinges are too clean for an old archive."
+  },
+  "story_content": "<content>Ada lifted the lamp as the archive door opened. \"Stay close. That sound is not wind.\" Borin crouched beside the hinge and frowned. \"The hinges are too clean for an old archive.\" Beyond the threshold, the stale paper smell gave way to cold metal and a slow mechanical breath.</content>"
+}
