@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import sys
@@ -24,6 +26,16 @@ def _load_agent_packets():
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location("agent_packets", ROOT / "skills" / "agent_packets.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_round_prepare():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("round_prepare", ROOT / "skills" / "round_prepare.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -94,6 +106,15 @@ class AgentPacketTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def _make_round_prepare_fixture(self):
+        temp_root = Path(self.tmp.name) / "root"
+        styles_dir = temp_root / "skills" / "styles"
+        styles_dir.mkdir(parents=True)
+        (styles_dir / "input.txt").write_text("I step into the archive.", encoding="utf-8")
+        (styles_dir / "settings.json").write_text("{}", encoding="utf-8")
+        (self.card / ".card_data.json").write_text("{}", encoding="utf-8")
+        return temp_root, styles_dir
 
     def test_route_player_input_splits_omniscient_setting_block(self):
         text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
@@ -201,9 +222,76 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
 
-    def test_round_prepare_source_writes_agent_run_packets(self):
-        source = (ROOT / "skills" / "round_prepare.py").read_text(encoding="utf-8")
+    def test_round_prepare_writes_agent_run_packets_and_reports_path(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        round_prepare = _load_round_prepare()
+        called = {}
+        expected_run_dir = str(self.card / ".agent_runs" / "round-000001")
 
-        self.assertIn("import agent_packets", source)
-        self.assertIn("prepare_agent_run", source)
-        self.assertIn("agent_run", source)
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": expected_run_dir,
+                "routed_input": {
+                    "role_channel": "I step into the archive.",
+                    "user_instruction_channel": "",
+                },
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertEqual(called["turn_index"], 0)
+        self.assertIsInstance(called["character_contexts"], dict)
+
+        round_context_path = styles_dir / "round_context.txt"
+        self.assertTrue(round_context_path.exists())
+        self.assertIn("=== AGENT_RUN ===", round_context_path.read_text(encoding="utf-8"))
+
+        character_contexts_path = styles_dir / "character_contexts.json"
+        self.assertTrue(character_contexts_path.exists())
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(payload["agent_run"], expected_run_dir)
+
+    def test_round_prepare_continues_when_agent_run_packet_generation_fails(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        round_prepare = _load_round_prepare()
+
+        def boom(**kwargs):
+            raise OSError("boom")
+
+        round_prepare.agent_packets.prepare_agent_run = boom
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        round_context_path = styles_dir / "round_context.txt"
+        character_contexts_path = styles_dir / "character_contexts.json"
+        self.assertTrue(round_context_path.exists())
+        self.assertTrue(character_contexts_path.exists())
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertIsNone(payload["agent_run"])

@@ -427,14 +427,19 @@ def main():
     character_contexts = build_character_contexts(
         card_folder, card_data, card_structure or {}, chat_log, user_text
     )
-    agent_run_info = agent_packets.prepare_agent_run(
-        card_folder=card_folder,
-        user_text=user_text,
-        chat_log=chat_log,
-        card_data=card_data,
-        character_contexts=character_contexts,
-        turn_index=len(chat_log),
-    )
+    agent_run_info = None
+    agent_run_error = None
+    try:
+        agent_run_info = agent_packets.prepare_agent_run(
+            card_folder=card_folder,
+            user_text=user_text,
+            chat_log=chat_log,
+            card_data=card_data,
+            character_contexts=character_contexts,
+            turn_index=len(chat_log),
+        )
+    except Exception as exc:
+        agent_run_error = str(exc)
 
     # ═══════════════════════════════════════════════
     # BUILD OUTPUT — static prefix first (cached),
@@ -619,6 +624,9 @@ def main():
         dynamic_parts.append("  role_channel: " + (routed.get("role_channel") or "(empty)")[:500])
         dynamic_parts.append("  user_instruction_channel: " + (routed.get("user_instruction_channel") or "(empty)")[:500])
         dynamic_parts.append("  packet_contract: GM/player/character context packets are written under this run_dir.")
+    elif agent_run_error:
+        dynamic_parts.append("\n=== AGENT_RUN ===")
+        dynamic_parts.append("  agent_run_error: " + agent_run_error[:200])
 
     # Recent chat
     if chat_log:
