@@ -98,6 +98,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
+        original_subprocess_run = self.round_deliver.subprocess.run
         self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: critic_report
         self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail(handler_message)
 
@@ -130,6 +131,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
                 sys.argv = old_argv
         finally:
             self.round_deliver.agent_run.read_current_critic_report = original_read_current_critic_report
+            self.round_deliver.subprocess.run = original_subprocess_run
             token_stats.locate_transcript = original_locate_transcript
             token_stats.load_checkpoint = original_load_checkpoint
             token_stats.compute_delta = original_compute_delta
@@ -180,6 +182,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
     def test_round_deliver_returns_retry_when_agent_output_gate_blocks(self):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        original_subprocess_run = self.round_deliver.subprocess.run
         self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when agent output gate blocks")
         original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
 
@@ -203,6 +206,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
                     self.round_deliver.main()
         finally:
             sys.argv = old_argv
+            self.round_deliver.subprocess.run = original_subprocess_run
             self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
 
         payload = json.loads(stdout.getvalue().strip())
@@ -215,6 +219,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
     def test_round_deliver_propagates_terminal_agent_output_block(self):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        original_subprocess_run = self.round_deliver.subprocess.run
         self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when agent output gate is terminal")
         original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
 
@@ -238,6 +243,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
                     self.round_deliver.main()
         finally:
             sys.argv = old_argv
+            self.round_deliver.subprocess.run = original_subprocess_run
             self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
 
         payload = json.loads(stdout.getvalue().strip())
