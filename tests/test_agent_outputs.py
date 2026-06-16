@@ -247,6 +247,25 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(queue[0]["suggestion"], "Add a context-isolation regression test.")
         self.assertEqual(queue[0]["source"], str((self.run_dir / "critic.report.json").resolve()))
 
+    def test_prepare_delivery_returns_terminal_block_after_retry_limit(self):
+        self._write_story_and_critic(
+            decision="block",
+            system_iteration_suggestion="Tighten prompt isolation checks.",
+        )
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["retry_count"] = 2
+        _write_json(self.run_dir / "manifest.json", manifest)
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "critic_retry_limit")
+        self.assertFalse((self.styles_dir / "response.txt").exists())
+        final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(final_manifest["stage"], "blocked")
+        self.assertEqual(final_manifest["retry_count"], 2)
+
     def test_prepare_delivery_critic_attempt_ignores_non_critic_retry_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["retry_count"] = 3

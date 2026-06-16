@@ -12,6 +12,9 @@ import agent_interactions
 import agent_schemas
 
 
+MAX_CRITIC_RETRIES = 2
+
+
 class AgentOutputError(RuntimeError):
     """Raised when a required agent artifact is missing or invalid."""
 
@@ -109,6 +112,18 @@ def _retry_result(reason: str, message: str, detail: Any = None) -> Dict[str, An
     result = {
         "ok": False,
         "action": "retry",
+        "reason": reason,
+        "message": message,
+    }
+    if detail is not None:
+        result["detail"] = detail
+    return result
+
+
+def _blocked_result(reason: str, message: str, detail: Any = None) -> Dict[str, Any]:
+    result = {
+        "ok": False,
+        "action": "blocked",
         "reason": reason,
         "message": message,
     }
@@ -235,6 +250,9 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         repair_entry = _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        if int(manifest.get("retry_count", 0) or 0) >= MAX_CRITIC_RETRIES:
+            _mark_blocked_without_retry(run_dir, manifest)
+            return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         if repair_entry.get("recorded") is not False:
             _increment_retry(run_dir, manifest, "blocked")
         else:
@@ -242,6 +260,9 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         repair_entry = _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        if int(manifest.get("retry_count", 0) or 0) >= MAX_CRITIC_RETRIES:
+            _mark_blocked_without_retry(run_dir, manifest)
+            return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         if repair_entry.get("recorded") is not False:
             _increment_retry(run_dir, manifest, "blocked")
         else:
