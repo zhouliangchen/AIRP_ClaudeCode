@@ -832,4 +832,3 @@ Run this only after the deterministic checks pass:
    - story stops at real player decision points.
 
 Record the exact command outputs and browser observations in the final response before pushing.
-
