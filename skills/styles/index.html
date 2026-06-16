@@ -300,6 +300,23 @@ body {
   outline: none;
 }
 .settings-meta-row input:focus { border-color: var(--accent2); }
+#instruction-channel-card textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 8px;
+  font-family: var(--font-ui);
+  font-size: 0.82em;
+  box-sizing: border-box;
+}
+#instruction-channel-card textarea:focus {
+  border-color: var(--accent2);
+  outline: none;
+}
 .toggle-switch { position: relative; width: 40px; height: 20px; flex-shrink: 0; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; }
 .toggle-slider {
@@ -1176,6 +1193,10 @@ body {
       <div id="sb-actions"></div>
     </div>
     <div id="mobile-settings-drawer">
+    <div class="side-card" id="instruction-channel-card">
+      <h4>用户指令</h4>
+      <textarea id="instruction-input" rows="4" placeholder="上帝视角设定、历史修正或给 Claude Code 的指令"></textarea>
+    </div>
     <div class="side-card">
       <h4>⚙️ 预设配置 <span id="settings-saved" style="margin-left:4px;">已保存</span></h4>
       <div class="setting-row">
@@ -1255,7 +1276,8 @@ body {
 
 <div id="input-panel">
   <div class="input-row">
-    <textarea id="user-input" placeholder="在此输入你的回复或指令..." rows="2"></textarea>
+    <textarea id="role-input" placeholder="角色行动或剧情梗概" rows="2"></textarea>
+    <textarea id="user-input" style="display:none"></textarea>
     <!-- 酒馆桥接元素：卡脚本期望的 send_textarea / send_but -->
     <textarea id="send_textarea" style="display:none"></textarea>
     <div id="send_but" style="display:none"></div>
@@ -1755,8 +1777,9 @@ function renderOptions(container, opts) {
       const tmp = document.createElement('div');
       tmp.innerHTML = optHtml;
       const plainText = (tmp.textContent || tmp.innerText || '').trim();
-      const ta = document.getElementById('user-input');
+      const ta = document.getElementById('role-input');
       ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
+      syncLegacyInputBridge();
       ta.focus();
     });
     container.appendChild(span);
@@ -1770,15 +1793,26 @@ let progressHideTimer = null;
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
 // 卡内嵌脚本使用 SillyTavern 标准元素 ID:
 //   #send_textarea (输入框)  #send_but (发送按钮)
-// 这些隐藏元素接收卡脚本的写入/点击，同步到我们的 #user-input / doSubmit()
+// 这些隐藏元素接收卡脚本的写入/点击，同步到我们的 #role-input / doSubmit()
+function syncLegacyInputBridge() {
+  const role = document.getElementById('role-input');
+  const legacy = document.getElementById('user-input');
+  const sendTextarea = document.getElementById('send_textarea');
+  const value = role ? role.value : '';
+  if (legacy) legacy.value = value;
+  if (sendTextarea) sendTextarea.value = value;
+}
+
 $(function() {
   var $st = $('#send_textarea');
-  var $ui = $('#user-input');
+  var $ui = $('#role-input');
   $st.on('input change', function() {
     $ui.val($st.val());
+    syncLegacyInputBridge();
   });
   $('#send_but').on('click', function() {
     $ui.val($st.val() || $ui.val());
+    syncLegacyInputBridge();
     doSubmit();
   });
 });
@@ -1986,10 +2020,14 @@ async function loadProgress() {
 
 async function doSubmit() {
   console.log('[RP-Frontend] doSubmit called');
-  const input = document.getElementById('user-input').value.trim();
-  const charNameEl = document.querySelector('#input-panel input[id*="char-name"]');
+  const roleInput = document.getElementById('role-input');
+  const instructionInput = document.getElementById('instruction-input');
+  const roleText = roleInput ? roleInput.value : '';
+  const instructionText = instructionInput ? instructionInput.value : '';
+  const charNameEl = document.getElementById('player-name-input');
   const charName = charNameEl ? charNameEl.value.trim() : '';
-  if (!input) return;
+  if (!roleText.trim() && !instructionText.trim()) return;
+  syncLegacyInputBridge();
 
   const btn = document.querySelector('.btn-submit');
   btn.disabled = true; btn.textContent = '...';
@@ -1998,13 +2036,20 @@ async function doSubmit() {
     const r = await fetch(BRIDGE + '/api/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: input, charName: charName })
+      body: JSON.stringify({
+        text: roleText,
+        roleText: roleText,
+        instructionText: instructionText,
+        charName: charName
+      })
     });
     const data = await r.json();
     if (data.ok) {
       setProgressVisible({ stage: 'received', label: '已发送，等待处理', percent: 10 });
       reloadData();
-      document.getElementById('user-input').value = '';
+      if (roleInput) roleInput.value = '';
+      if (instructionInput) instructionInput.value = '';
+      syncLegacyInputBridge();
       const toast = document.getElementById('toast');
       toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
       toast.style.background = 'var(--accent2)';
@@ -2037,11 +2082,17 @@ function showToast(msg) {
 }
 
 function doClear() {
-  document.getElementById('user-input').value = '';
-  document.getElementById('user-input').focus();
+  const roleInput = document.getElementById('role-input');
+  const instructionInput = document.getElementById('instruction-input');
+  if (roleInput) roleInput.value = '';
+  if (instructionInput) instructionInput.value = '';
+  syncLegacyInputBridge();
+  if (roleInput) roleInput.focus();
 }
 
-document.getElementById('user-input').addEventListener('keydown', function(e) {
+document.getElementById('role-input').addEventListener('input', syncLegacyInputBridge);
+document.getElementById('role-input').addEventListener('change', syncLegacyInputBridge);
+document.getElementById('role-input').addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); doSubmit(); }
 });
 

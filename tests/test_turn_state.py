@@ -398,6 +398,41 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("update_only", html)
         self.assertIn("branch_submit", html)
 
+    def test_frontend_exposes_dual_channel_inputs(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="role-input"', html)
+        self.assertIn('id="instruction-input"', html)
+        self.assertIn("roleText", html)
+        self.assertIn("instructionText", html)
+        self.assertIn("syncLegacyInputBridge", html)
+
+    def test_mobile_keeps_instruction_input_in_settings_drawer(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        drawer_index = html.index('id="mobile-settings-drawer"')
+        instruction_index = html.index('id="instruction-input"')
+        input_panel_index = html.index('id="input-panel"')
+        self.assertLess(drawer_index, instruction_index)
+        self.assertLess(instruction_index, input_panel_index)
+        self.assertIn("mobile-settings-open", html)
+
+    def test_frontend_dual_channel_submit_and_bridge_contract(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("const roleText = roleInput ? roleInput.value : ''", html)
+        self.assertIn("const instructionText = instructionInput ? instructionInput.value : ''", html)
+        self.assertIn("if (!roleText.trim() && !instructionText.trim()) return", html)
+        self.assertIn("text: roleText", html)
+        self.assertIn("roleText: roleText", html)
+        self.assertIn("instructionText: instructionText", html)
+        self.assertIn("if (roleInput) roleInput.value = ''", html)
+        self.assertIn("if (instructionInput) instructionInput.value = ''", html)
+        self.assertIn("if (legacy) legacy.value = value", html)
+        self.assertIn("if (sendTextarea) sendTextarea.value = value", html)
+        self.assertIn("var $ui = $('#role-input')", html)
+        self.assertIn("document.getElementById('role-input').addEventListener('input', syncLegacyInputBridge)", html)
+
     def test_round_prepare_documents_player_input_interpretation_policy(self):
         source = (ROOT / "skills" / "round_prepare.py").read_text(encoding="utf-8")
 
