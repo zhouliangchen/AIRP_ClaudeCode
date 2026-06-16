@@ -1,9 +1,9 @@
-import importlib.util
 import contextlib
+import importlib
+import importlib.util
 import io
 import json
 import os
-import importlib
 import sys
 import tempfile
 import unittest
@@ -69,21 +69,18 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.root = Path(self.tmp.name) / "root"
         self.styles_dir = self.root / "skills" / "styles"
         self.styles_dir.mkdir(parents=True)
-        (self.styles_dir / "response.txt").write_text("<content>太短了</content>", encoding="utf-8")
+        (self.styles_dir / "response.txt").write_text("<content>短</content>", encoding="utf-8")
         (self.styles_dir / "settings.json").write_text(json.dumps({"wordCount": 2000}), encoding="utf-8")
         self.round_deliver = _load_round_deliver()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_round_deliver_retries_on_critic_hard_failures(self):
+    def _run_round_deliver(self, critic_report, handler_message):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
-        self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: {
-            "passed": False,
-            "hard_failures": ["missing continuity fix"],
-        }
-        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when critic gate retries")
+        self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: critic_report
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail(handler_message)
 
         token_stats = importlib.import_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
@@ -118,12 +115,32 @@ class CriticGateRuntimeTest(unittest.TestCase):
             token_stats.compute_delta = original_compute_delta
             token_stats.read_usage_since = original_read_usage_since
 
-        self.assertEqual(ctx.exception.code, 0)
-        payload = json.loads(stdout.getvalue().strip())
+        return ctx.exception.code, json.loads(stdout.getvalue().strip()), progress_calls
+
+    def test_round_deliver_retries_on_critic_hard_failures(self):
+        exit_code, payload, progress_calls = self._run_round_deliver(
+            critic_report={"passed": False, "hard_failures": ["missing continuity fix"]},
+            handler_message="handler should not run when critic gate retries",
+        )
+
+        self.assertEqual(exit_code, 0)
         self.assertEqual(payload["action"], "retry")
         self.assertEqual(payload["reason"], "critic_hard_failures")
         self.assertEqual(payload["critic_report"]["hard_failures"], ["missing continuity fix"])
         self.assertTrue(any(args[:2] == ("retry", "质检未通过，等待修复") for args, _ in progress_calls))
+
+    def test_round_deliver_ignores_malformed_critic_hard_failures(self):
+        exit_code, payload, progress_calls = self._run_round_deliver(
+            critic_report={"passed": False, "hard_failures": "oops"},
+            handler_message="handler should not run when word-count retry triggers",
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["action"], "retry")
+        self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
+        self.assertNotIn("critic_report", payload)
+        self.assertIn("word_count", payload)
+        self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
 
 
 class AgentRunTest(unittest.TestCase):

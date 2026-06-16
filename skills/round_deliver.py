@@ -112,7 +112,9 @@ def main():
     critic_report = agent_run.read_current_critic_report(card_folder)
     critic_hard_failures = []
     if isinstance(critic_report, dict):
-        critic_hard_failures = critic_report.get("hard_failures") or []
+        raw_hard_failures = critic_report.get("hard_failures")
+        if isinstance(raw_hard_failures, list):
+            critic_hard_failures = raw_hard_failures
         if critic_report.get("passed") is False and critic_hard_failures:
             write_progress("retry", "质检未通过，等待修复", percent=65, detail="; ".join(map(str, critic_hard_failures))[:500])
             print(json.dumps({
