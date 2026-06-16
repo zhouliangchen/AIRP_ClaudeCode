@@ -60,6 +60,14 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("Claude Code", claude)
         self.assertIn("response.txt", claude)
 
+    def test_rp_command_points_to_orchestrator(self):
+        command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
+
+        self.assertIn("rp-orchestrator", command)
+        self.assertIn("主 agent 不直接承担常规叙事创作", command)
+        self.assertNotIn("## 第一步", command)
+        self.assertNotIn("## 第二步", command)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
