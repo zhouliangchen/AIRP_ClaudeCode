@@ -304,4 +304,3 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("<character_dialogues>", claude)
         self.assertIn("source=\"subagent\"", claude)
         self.assertIn("独立对话框", readme)
-

@@ -27,6 +27,12 @@ INSTRUCTION_PREFIXES = (
 _PAREN_INNER_RE = re.compile(r"^\(\s*(.*?)\s*\)$")
 _FULL_PAREN_INNER_RE = re.compile(r"^（\s*(.*?)\s*）$")
 _SEGMENTS_RE = re.compile(r"(\([^()]*\)|（[^（）]*）)")
+_INLINE_INSTRUCTION_RE = re.compile(
+    r"(?:^|(?<=[.!?。！？]))\s*("
+    + "|".join(re.escape(prefix) for prefix in sorted(INSTRUCTION_PREFIXES, key=len, reverse=True))
+    + r")",
+    re.IGNORECASE,
+)
 
 
 def _has_instruction_prefix(text: str) -> bool:
@@ -48,6 +54,21 @@ def _is_instruction(text: str) -> bool:
     if match:
         text = match.group(1).strip()
     return _has_instruction_prefix(text)
+
+
+def _split_inline_instruction(text: str) -> tuple[str, str] | None:
+    text = _to_text(text).strip()
+    if not text or _is_instruction(text):
+        return None
+    match = _INLINE_INSTRUCTION_RE.search(text)
+    if not match:
+        return None
+    prefix_start = match.start(1)
+    role_text = text[:prefix_start].rstrip()
+    instruction_text = text[prefix_start:].strip()
+    if not role_text or not instruction_text:
+        return None
+    return role_text, instruction_text
 
 
 def route_player_input(text: str) -> Dict[str, Any]:
@@ -75,9 +96,17 @@ def route_player_input(text: str) -> Dict[str, Any]:
             if _is_instruction(line):
                 instruction_parts.append(line)
                 components.append({"channel": "user_instruction", "text": line})
-            else:
-                role_parts.append(line)
-                components.append({"channel": "role", "text": line})
+                continue
+            inline_split = _split_inline_instruction(line)
+            if inline_split:
+                role_text, instruction_text = inline_split
+                role_parts.append(role_text)
+                components.append({"channel": "role", "text": role_text})
+                instruction_parts.append(instruction_text)
+                components.append({"channel": "user_instruction", "text": instruction_text})
+                continue
+            role_parts.append(line)
+            components.append({"channel": "role", "text": line})
 
     return {
         "role_channel": "\n".join(role_parts),

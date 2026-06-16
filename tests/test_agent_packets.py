@@ -262,6 +262,21 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(routed["role_channel"], "I open the gate.")
         self.assertEqual(routed["user_instruction_channel"], "System: make the castle a moon base.")
 
+    def test_route_player_input_splits_inline_chinese_instruction_after_sentence_boundary(self):
+        routed = self.agent_packets.route_player_input(
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+        )
+
+        self.assertEqual(routed["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertEqual(routed["user_instruction_channel"], "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002")
+        self.assertEqual(
+            routed["components"],
+            [
+                {"channel": "role", "text": "\u6211\u8d70\u8fdb\u623f\u95f4\u3002"},
+                {"channel": "user_instruction", "text": "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"},
+            ],
+        )
+
     def test_route_player_input_keeps_parenthesized_action_as_role(self):
         routed = self.agent_packets.route_player_input("(I glance at the door and step inside.)")
         self.assertEqual(routed["role_channel"], "(I glance at the door and step inside.)")
@@ -280,6 +295,15 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("\u6708\u9762\u57fa\u5730", json.dumps(packet, ensure_ascii=False))
         self.assertNotIn("user_instruction_channel", packet)
         self.assertEqual(packet["agent"], "player")
+
+    def test_build_player_packet_excludes_inline_chinese_instruction_text(self):
+        routed = self.agent_packets.route_player_input(
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+        )
+        packet = self.agent_packets.build_player_packet(self.card, routed, [])
+
+        self.assertEqual(packet["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
 
     def test_prepare_agent_run_builds_expected_context_files(self):
         user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
@@ -340,6 +364,21 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(packet["role_channel"], "I step toward the gate.")
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
+
+    def test_build_character_packet_excludes_inline_chinese_instruction_text(self):
+        routed = self.agent_packets.route_player_input(
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+        )
+        packet = self.agent_packets.build_character_packet(
+            self.card,
+            {"name": "Ada", "profile_summary": "Ada is cautious."},
+            routed,
+            [],
+        )
+
+        self.assertEqual(packet["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertNotIn("user_instruction_channel", packet)
+        self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
 
     def test_round_prepare_writes_agent_run_packets_and_reports_path(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
