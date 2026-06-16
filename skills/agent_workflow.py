@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 
 PathSpec = Tuple[str, str]
+VALID_CRITIC_DECISIONS = {"pass", "revise", "block"}
 
 
 def _read_json_object(path: Path) -> Dict[str, Any] | None:
@@ -85,8 +86,14 @@ def _path_label(relative_path: str) -> str:
 def _missing_artifacts(run_dir: Path, specs: Iterable[PathSpec]) -> List[Dict[str, str]]:
     missing = []
     for agent, relative_path in specs:
-        if not (run_dir / relative_path).exists():
+        path = run_dir / relative_path
+        if not path.exists():
             missing.append({"agent": agent, "path": _path_label(relative_path)})
+            continue
+        if agent == "critic":
+            critic_report = _read_json_object(path) or {}
+            if critic_report.get("decision") not in VALID_CRITIC_DECISIONS:
+                missing.append({"agent": agent, "path": _path_label(relative_path)})
     return missing
 
 

@@ -112,12 +112,36 @@ class AgentWorkflowTest(unittest.TestCase):
             "characters/Ada.output.json",
             "story.input.json",
             "story.output.json",
-            "critic.report.json",
         ]:
             _write_json(self.run_dir / rel, {"agent": "fixture"})
+        _write_json(self.run_dir / "critic.report.json", {"decision": "pass"})
         advice = self.agent_workflow.advise_next_actions(self.run_dir)
         self.assertEqual(advice["next_action"], "run_delivery_gate")
         self.assertEqual(advice["missing_required"], [])
+
+    def test_treats_seeded_default_critic_report_as_incomplete(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "story_ready"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(self.run_dir / "story.input.json", {"agent": "fixture"})
+        _write_json(self.run_dir / "story.output.json", {"agent": "fixture"})
+        _write_json(
+            self.run_dir / "critic.report.json",
+            {
+                "passed": True,
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+                "source": "default-pre-critic",
+            },
+        )
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+        self.assertEqual(advice["next_action"], "dispatch_story_and_critic")
+        self.assertEqual(
+            [item["path"] for item in advice["missing_required"]],
+            ["critic.report.json"],
+        )
 
 
 if __name__ == "__main__":
