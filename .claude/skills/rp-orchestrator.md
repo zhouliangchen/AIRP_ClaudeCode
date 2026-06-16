@@ -28,7 +28,7 @@ description: 主编排者入口，路由输入并调度 RP 分阶段工作流
 
 ## Agent Run Artifacts
 
-- 从 `skills/styles/round_context.txt` 读取 `.agent_runs/<AGENT_RUN>`，并据此触发本轮子代理工作流。
+- 从 `skills/styles/round_context.txt` 读取 `AGENT_RUN` 区块中的 `run_dir`（该目录位于 `.agent_runs/...`），并据此触发本轮子代理工作流。
 - 读取并持久化：`gm.context.json` -> `gm.output.json`。
 - 读取并持久化：`player.context.json` -> `player.output.json`。
 - 读取并持久化每个角色：`characters/*.context.json` -> 对应 `characters/*.output.json`。
