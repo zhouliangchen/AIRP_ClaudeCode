@@ -208,6 +208,7 @@ DEFAULT_CRITIC_REPORT = {
     "hard_failures": [],
     "soft_issues": [],
     "repair_instruction": "",
+    "system_iteration_suggestion": "",
     "source": "default-pre-critic",
 }
 

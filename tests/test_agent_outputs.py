@@ -23,6 +23,14 @@ def _write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _read_jsonl(path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 class AgentOutputsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -97,7 +105,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
 
-    def _write_story_and_critic(self, decision="pass"):
+    def _write_story_and_critic(self, decision="pass", system_iteration_suggestion=""):
         _write_json(
             self.run_dir / "story.output.json",
             {
@@ -115,6 +123,7 @@ class AgentOutputsTest(unittest.TestCase):
                 "hard_failures": ["logic gap"] if decision == "block" else [],
                 "soft_issues": ["needs sharper sensory detail"] if decision == "revise" else [],
                 "repair_instruction": "Revise sensory continuity." if decision == "revise" else "",
+                "system_iteration_suggestion": system_iteration_suggestion,
             },
         )
 
@@ -207,6 +216,68 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual((self.run_dir / "input.json").read_text(encoding="utf-8"), before)
         self.assertFalse((self.styles_dir / "response.txt").exists())
 
+    def test_prepare_delivery_records_critic_repair_history(self):
+        self._write_story_and_critic(decision="revise")
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        history = _read_jsonl(self.run_dir / "repair_history.jsonl")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["round_id"], "round-000001")
+        self.assertEqual(history[0]["attempt"], 1)
+        self.assertEqual(history[0]["decision"], "revise")
+        self.assertEqual(history[0]["soft_issues"], ["needs sharper sensory detail"])
+        self.assertEqual(history[0]["repair_instruction"], "Revise sensory continuity.")
+        self.assertEqual(history[0]["source"], "critic.report.json")
+
+    def test_prepare_delivery_appends_system_iteration_suggestion_to_improvement_queue(self):
+        self._write_story_and_critic(
+            decision="block",
+            system_iteration_suggestion="Add a context-isolation regression test.",
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        queue = _read_jsonl(self.card / ".agent_runs" / "improvement_queue.jsonl")
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["round_id"], "round-000001")
+        self.assertEqual(queue[0]["decision"], "block")
+        self.assertEqual(queue[0]["suggestion"], "Add a context-isolation regression test.")
+        self.assertEqual(queue[0]["source"], str((self.run_dir / "critic.report.json").resolve()))
+
+    def test_prepare_delivery_critic_attempt_ignores_non_critic_retry_count(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["retry_count"] = 3
+        _write_json(self.run_dir / "manifest.json", manifest)
+        self._write_story_and_critic(decision="revise")
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        history = _read_jsonl(self.run_dir / "repair_history.jsonl")
+        self.assertEqual(history[0]["attempt"], 1)
+
+    def test_prepare_delivery_does_not_duplicate_unchanged_critic_repair(self):
+        self._write_story_and_critic(
+            decision="block",
+            system_iteration_suggestion="Add a context-isolation regression test.",
+        )
+
+        first = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        second = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(first["ok"])
+        self.assertFalse(second["ok"])
+        history = _read_jsonl(self.run_dir / "repair_history.jsonl")
+        queue = _read_jsonl(self.card / ".agent_runs" / "improvement_queue.jsonl")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(len(queue), 1)
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["retry_count"], 1)
+        self.assertEqual(manifest["stage"], "blocked")
+
     def test_prepare_delivery_pass_writes_story_content_to_response(self):
         self._write_story_and_critic(decision="pass")
 
@@ -214,6 +285,8 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["story_output"]["content"], (self.styles_dir / "response.txt").read_text(encoding="utf-8"))
+        self.assertFalse((self.run_dir / "repair_history.jsonl").exists())
+        self.assertFalse((self.card / ".agent_runs" / "improvement_queue.jsonl").exists())
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "critic_passed")
         self.assertIn("critic_passed", [item["stage"] for item in manifest["status"]])

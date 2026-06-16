@@ -96,12 +96,14 @@ class AgentSchemaTest(unittest.TestCase):
                     "hard_failures": [],
                     "soft_issues": [],
                     "repair_instruction": "",
+                    "system_iteration_suggestion": "Tighten critic retry prompts.",
                 }
 
                 normalized = self.agent_schemas.validate_critic_report(payload)
 
                 self.assertEqual(normalized["decision"], decision)
                 self.assertEqual(normalized["hard_failures"], [])
+                self.assertEqual(normalized["system_iteration_suggestion"], "Tighten critic retry prompts.")
 
     def test_load_json_checked_applies_validator(self):
         with tempfile.TemporaryDirectory() as tmp:

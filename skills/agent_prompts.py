@@ -150,6 +150,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "hard_failures": [],
         "soft_issues": [],
         "repair_instruction": "",
+        "system_iteration_suggestion": "",
     })
     return _base_prompt(
         "Critic Agent Prompt",

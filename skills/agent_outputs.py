@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -121,6 +123,87 @@ def _increment_retry(run_dir: Path, manifest: Dict[str, Any], stage: str) -> Non
     _write_manifest(run_dir, manifest)
 
 
+def _mark_blocked_without_retry(run_dir: Path, manifest: Dict[str, Any]) -> None:
+    agent_run.append_manifest_stage(manifest, "blocked", "Agent run remains blocked pending revision.")
+    _write_manifest(run_dir, manifest)
+
+
+def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _read_jsonl(path: Path) -> list[Dict[str, Any]]:
+    rows = []
+    if not path.exists():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _critic_fingerprint(critic_report: Dict[str, Any]) -> str:
+    fields = {
+        "decision": critic_report.get("decision", ""),
+        "hard_failures": critic_report.get("hard_failures", []),
+        "soft_issues": critic_report.get("soft_issues", []),
+        "repair_instruction": critic_report.get("repair_instruction", ""),
+        "system_iteration_suggestion": critic_report.get("system_iteration_suggestion", ""),
+    }
+    return json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict[str, Any], critic_report: Dict[str, Any]) -> Dict[str, Any]:
+    history_path = run_dir / "repair_history.jsonl"
+    existing = _read_jsonl(history_path)
+    fingerprint = _critic_fingerprint(critic_report)
+    for entry in existing:
+        if entry.get("fingerprint") == fingerprint:
+            entry["recorded"] = False
+            return entry
+
+    attempt = len(existing) + 1
+    entry = {
+        "round_id": str(manifest.get("round_id") or run_dir.name),
+        "attempt": attempt,
+        "decision": critic_report.get("decision", ""),
+        "hard_failures": critic_report.get("hard_failures", []),
+        "soft_issues": critic_report.get("soft_issues", []),
+        "repair_instruction": critic_report.get("repair_instruction", ""),
+        "system_iteration_suggestion": critic_report.get("system_iteration_suggestion", ""),
+        "fingerprint": fingerprint,
+        "source": "critic.report.json",
+        "timestamp": datetime.now(agent_run.CST).isoformat(timespec="seconds"),
+    }
+    _append_jsonl(history_path, entry)
+
+    suggestion = str(critic_report.get("system_iteration_suggestion") or "").strip()
+    if suggestion:
+        _append_jsonl(
+            agent_run.run_root(card_folder) / "improvement_queue.jsonl",
+            {
+                "round_id": entry["round_id"],
+                "attempt": attempt,
+                "decision": entry["decision"],
+                "suggestion": suggestion,
+                "hard_failures": entry["hard_failures"],
+                "soft_issues": entry["soft_issues"],
+                "source": str((run_dir / "critic.report.json").resolve()),
+                "timestamp": entry["timestamp"],
+            },
+        )
+    entry["recorded"] = True
+    return entry
+
+
 def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[str, Any]:
     """Gate delivery for the current run and mirror story output to response.txt."""
     run_dir = agent_run.current_run_dir(card_folder)
@@ -151,10 +234,18 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
 
     decision = critic_report["decision"]
     if decision == "block":
-        _increment_retry(run_dir, manifest, "blocked")
+        repair_entry = _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        if repair_entry.get("recorded") is not False:
+            _increment_retry(run_dir, manifest, "blocked")
+        else:
+            _mark_blocked_without_retry(run_dir, manifest)
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
-        _increment_retry(run_dir, manifest, "blocked")
+        repair_entry = _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        if repair_entry.get("recorded") is not False:
+            _increment_retry(run_dir, manifest, "blocked")
+        else:
+            _mark_blocked_without_retry(run_dir, manifest)
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 
     response_path = Path(styles_dir) / "response.txt"

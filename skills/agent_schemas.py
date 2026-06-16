@@ -148,6 +148,7 @@ def validate_critic_report(payload: Any) -> Dict[str, Any]:
         "hard_failures": _optional_list(data, "hard_failures", "critic_report"),
         "soft_issues": _optional_list(data, "soft_issues", "critic_report"),
         "repair_instruction": _optional_str(data, "repair_instruction", path="critic_report"),
+        "system_iteration_suggestion": _optional_str(data, "system_iteration_suggestion", path="critic_report"),
     }
 
 
