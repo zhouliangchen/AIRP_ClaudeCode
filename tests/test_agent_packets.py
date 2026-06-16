@@ -575,6 +575,26 @@ class AgentPacketTest(unittest.TestCase):
 
         def stub_prepare_agent_run(**kwargs):
             called.update(kwargs)
+            run_dir = Path(expected_run_dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "round_id": "round-000001",
+                        "stage": "awaiting_agent_outputs",
+                        "expected_outputs": {
+                            "gm": "gm.output.json",
+                            "player": "player.output.json",
+                            "characters": {},
+                            "story": "story.output.json",
+                            "critic": "critic.report.json",
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             return {
                 "run_dir": expected_run_dir,
                 "routed_input": {
@@ -603,7 +623,10 @@ class AgentPacketTest(unittest.TestCase):
 
         round_context_path = styles_dir / "round_context.txt"
         self.assertTrue(round_context_path.exists())
-        self.assertIn("=== AGENT_RUN ===", round_context_path.read_text(encoding="utf-8"))
+        round_context = round_context_path.read_text(encoding="utf-8")
+        self.assertIn("=== AGENT_RUN ===", round_context)
+        self.assertIn("=== AGENT_WORKFLOW ===", round_context)
+        self.assertIn("dispatch_agent_outputs", round_context)
 
         character_contexts_path = styles_dir / "character_contexts.json"
         self.assertTrue(character_contexts_path.exists())

@@ -19,6 +19,7 @@ from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
 import agent_packets
+import agent_workflow
 import match_worldbook
 import mvu_check
 from handler import apply_injections, write_progress
@@ -445,6 +446,7 @@ def main():
     )
     agent_run_info = None
     agent_run_error = None
+    agent_workflow_advice = None
     try:
         agent_run_info = agent_packets.prepare_agent_run(
             card_folder=card_folder,
@@ -455,6 +457,9 @@ def main():
             turn_index=len(chat_log),
             input_payload=explicit_input_payload or None,
         )
+        run_dir = agent_run_info.get("run_dir") if isinstance(agent_run_info, dict) else None
+        if run_dir:
+            agent_workflow_advice = agent_workflow.advise_next_actions(run_dir)
     except Exception as exc:
         agent_run_error = str(exc)
 
@@ -641,6 +646,9 @@ def main():
         dynamic_parts.append("  role_channel: " + (routed.get("role_channel") or "(empty)")[:500])
         dynamic_parts.append("  user_instruction_channel: " + (routed.get("user_instruction_channel") or "(empty)")[:500])
         dynamic_parts.append("  packet_contract: GM/player/character context packets are written under this run_dir.")
+        if agent_workflow_advice is not None:
+            dynamic_parts.append("\n=== AGENT_WORKFLOW ===")
+            dynamic_parts.append(json.dumps(agent_workflow_advice, ensure_ascii=False, indent=2))
     elif agent_run_error:
         dynamic_parts.append("\n=== AGENT_RUN ===")
         dynamic_parts.append("  agent_run_error: " + agent_run_error[:200])
