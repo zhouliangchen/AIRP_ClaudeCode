@@ -51,6 +51,7 @@ skills/image_config.local.json
 
 # User card folders — ignore all top-level dirs except project core
 # (Any new card folder is automatically protected from accidental git add)
+.worktrees/
 */
 !.claude/
 !.claude/commands/
