@@ -200,3 +200,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(packet["role_channel"], "I step toward the gate.")
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
+
+    def test_round_prepare_source_writes_agent_run_packets(self):
+        source = (ROOT / "skills" / "round_prepare.py").read_text(encoding="utf-8")
+
+        self.assertIn("import agent_packets", source)
+        self.assertIn("prepare_agent_run", source)
+        self.assertIn("agent_run", source)

@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
+import agent_packets
 import match_worldbook
 import mvu_check
 from handler import apply_injections, write_progress
@@ -426,6 +427,14 @@ def main():
     character_contexts = build_character_contexts(
         card_folder, card_data, card_structure or {}, chat_log, user_text
     )
+    agent_run_info = agent_packets.prepare_agent_run(
+        card_folder=card_folder,
+        user_text=user_text,
+        chat_log=chat_log,
+        card_data=card_data,
+        character_contexts=character_contexts,
+        turn_index=len(chat_log),
+    )
 
     # ═══════════════════════════════════════════════
     # BUILD OUTPUT — static prefix first (cached),
@@ -603,6 +612,14 @@ def main():
             if ch.get("recent_state"):
                 dynamic_parts.append("    Recent: " + ch.get("recent_state", "")[:300].replace("\n", " / "))
 
+    if agent_run_info:
+        dynamic_parts.append("\n=== AGENT_RUN ===")
+        dynamic_parts.append(f"  run_dir: {agent_run_info.get('run_dir', '')}")
+        routed = agent_run_info.get("routed_input", {})
+        dynamic_parts.append("  role_channel: " + (routed.get("role_channel") or "(empty)")[:500])
+        dynamic_parts.append("  user_instruction_channel: " + (routed.get("user_instruction_channel") or "(empty)")[:500])
+        dynamic_parts.append("  packet_contract: GM/player/character context packets are written under this run_dir.")
+
     # Recent chat
     if chat_log:
         dynamic_parts.append("\n=== RECENT_CHAT (last 3 turns) ===")
@@ -635,6 +652,7 @@ def main():
         "ok": True,
         "output": str(output_path),
         "character_contexts": str(character_contexts_path),
+        "agent_run": agent_run_info.get("run_dir") if agent_run_info else None,
         "character_count": len(character_contexts.get("characters", [])),
         "size": len(output_text),
         "matches": len(match_result or []),
