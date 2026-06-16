@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib.util
 import json
 import sys
 import tempfile
@@ -67,10 +67,17 @@ class TurnStateTest(unittest.TestCase):
         delivery = (ROOT / ".claude" / "skills" / "rp-delivery.md").read_text(encoding="utf-8")
 
         self.assertIn(".agent_runs", orchestrator)
+        self.assertIn("gm.context.json", orchestrator)
         self.assertIn("gm.output.json", orchestrator)
+        self.assertIn("player.context.json", orchestrator)
         self.assertIn("player.output.json", orchestrator)
+        self.assertIn("characters/*.context.json", orchestrator)
+        self.assertIn("characters/*.output.json", orchestrator)
         self.assertIn("story.output.txt", story)
+        self.assertIn("characters/*.output.json", story)
         self.assertIn("critic.report.json", critic)
+        self.assertIn("skills/styles/response.txt", delivery)
+        self.assertIn("round_deliver.py", delivery)
         self.assertIn("final.response.txt", delivery)
 
     def test_rp_command_points_to_orchestrator(self):
@@ -297,3 +304,4 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("<character_dialogues>", claude)
         self.assertIn("source=\"subagent\"", claude)
         self.assertIn("独立对话框", readme)
+
