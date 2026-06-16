@@ -2,6 +2,8 @@
 name: rp-delivery
 description: RP 交付技能，负责将最终响应写入 `skills/styles/response.txt` 并衔接交付。
 
+---
+
 ## Delivery Rules
 
 - Owner / trigger: `orchestrator` 调用 `rp-delivery`，用于在交付前对照 `final.response.txt`。

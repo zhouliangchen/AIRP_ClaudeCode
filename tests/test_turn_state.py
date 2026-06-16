@@ -92,11 +92,22 @@ class TurnStateTest(unittest.TestCase):
 
     def test_rp_frontmatter_has_no_bom(self):
         for path in (ROOT / ".claude" / "skills").glob("rp*.md"):
-            content = path.read_text(encoding="utf-8")
-            self.assertFalse(content.startswith("\ufeff"), f"{path.name} has BOM")
+            raw = path.read_bytes()
+            self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), f"{path.name} has BOM")
+            lines = raw.decode("utf-8").splitlines()
+            self.assertGreaterEqual(len(lines), 4, f"{path.name} should include frontmatter and markdown body")
+            self.assertEqual(lines[0], "---", f"{path.name} should start with frontmatter delimiter")
+            self.assertIn("name:", lines[1], f"{path.name} second line should contain name field")
+
+            frontmatter_end = None
+            for i in range(2, min(5, len(lines))):
+                if lines[i].strip() == "---":
+                    frontmatter_end = i
+                    break
+            self.assertIsNotNone(frontmatter_end, f"{path.name} should close frontmatter with --- within first 5 lines")
             self.assertTrue(
-                content.startswith("---"),
-                f"{path.name} should start with frontmatter separator ---",
+                any(line.lstrip().startswith("#") for line in lines[frontmatter_end + 1 :]),
+                f"{path.name} should include a markdown heading after frontmatter",
             )
 
     def setUp(self):
