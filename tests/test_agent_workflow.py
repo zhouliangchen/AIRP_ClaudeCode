@@ -47,6 +47,14 @@ class AgentWorkflowTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_reports_missing_manifest_as_create_agent_run(self):
+        (self.run_dir / "manifest.json").unlink()
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+        self.assertIs(advice.get("ok"), False)
+        self.assertEqual(advice["stage"], "missing_manifest")
+        self.assertEqual(advice["next_action"], "create_agent_run")
+        self.assertEqual(advice["missing_required"], [{"path": "manifest.json"}])
+
     def test_reports_missing_required_agent_outputs(self):
         advice = self.agent_workflow.advise_next_actions(self.run_dir)
         self.assertEqual(advice["stage"], "awaiting_agent_outputs")
@@ -87,6 +95,29 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(advice["next_action"], "repair_from_critic")
         self.assertEqual(advice["critic_decision"], "revise")
         self.assertEqual(advice["retry_count"], 1)
+
+    def test_reports_no_action_after_delivery(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "delivered"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+        self.assertEqual(advice["stage"], "delivered")
+        self.assertEqual(advice["next_action"], "none")
+        self.assertEqual(advice["missing_required"], [])
+
+    def test_reports_delivery_gate_when_all_artifacts_exist(self):
+        for rel in [
+            "gm.output.json",
+            "player.output.json",
+            "characters/Ada.output.json",
+            "story.input.json",
+            "story.output.json",
+            "critic.report.json",
+        ]:
+            _write_json(self.run_dir / rel, {"agent": "fixture"})
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+        self.assertEqual(advice["next_action"], "run_delivery_gate")
+        self.assertEqual(advice["missing_required"], [])
 
 
 if __name__ == "__main__":

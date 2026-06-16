@@ -22,6 +22,7 @@ def _read_json_object(path: Path) -> Dict[str, Any] | None:
 
 def _missing_manifest(reason: str) -> Dict[str, Any]:
     return {
+        "ok": False,
         "stage": "missing_manifest",
         "next_action": "create_agent_run",
         "missing_required": [{"path": "manifest.json"}],
