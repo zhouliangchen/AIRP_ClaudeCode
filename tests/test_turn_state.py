@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+
 import unittest
 from pathlib import Path
 
@@ -30,6 +31,56 @@ def _load_response_parser():
 
 
 class TurnStateTest(unittest.TestCase):
+    def test_rp_skill_is_split_into_stage_skills(self):
+        skills_dir = ROOT / ".claude" / "skills"
+        expected = [
+            "rp-orchestrator.md",
+            "rp-input-router.md",
+            "rp-context-projector.md",
+            "rp-gm-agent.md",
+            "rp-player-agent.md",
+            "rp-character-agent.md",
+            "rp-story-agent.md",
+            "rp-critic-agent.md",
+            "rp-delivery.md",
+        ]
+
+        for name in expected:
+            self.assertTrue((skills_dir / name).exists(), name)
+
+        rp = (skills_dir / "rp.md").read_text(encoding="utf-8")
+        self.assertIn("rp-orchestrator", rp)
+
+    def test_claude_md_delegates_stage_details_to_skills(self):
+        claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+        self.assertIn("rp-orchestrator", claude)
+        self.assertIn("rp-input-router", claude)
+        self.assertIn("rp-critic-agent", claude)
+        self.assertIn("Claude Code", claude)
+        self.assertIn("response.txt", claude)
+
+    def test_orchestrator_skill_references_agent_run_artifacts(self):
+        orchestrator = (ROOT / ".claude" / "skills" / "rp-orchestrator.md").read_text(encoding="utf-8")
+        story = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+        critic = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        delivery = (ROOT / ".claude" / "skills" / "rp-delivery.md").read_text(encoding="utf-8")
+
+        self.assertIn(".agent_runs", orchestrator)
+        self.assertIn("gm.context.json", orchestrator)
+        self.assertIn("gm.output.json", orchestrator)
+        self.assertIn("player.context.json", orchestrator)
+        self.assertIn("player.output.json", orchestrator)
+        self.assertIn("characters/*.context.json", orchestrator)
+        self.assertIn("characters/*.output.json", orchestrator)
+        self.assertIn("story.output.txt", story)
+        self.assertIn("characters/*.output.json", story)
+        self.assertIn("critic.report.json", critic)
+        self.assertIn("skills/styles/response.txt", delivery)
+        self.assertIn("{ROOT}/skills/round_deliver.py", delivery)
+        self.assertNotIn("python skills/round_deliver.py", delivery)
+        self.assertIn("final.response.txt", delivery)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
