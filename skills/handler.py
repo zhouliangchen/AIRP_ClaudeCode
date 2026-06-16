@@ -100,12 +100,24 @@ def _append_jsonl(path, entry):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def record_player_input(card_folder, raw_text, display_text=None):
+def record_player_input(
+    card_folder,
+    raw_text,
+    display_text=None,
+    role_text=None,
+    user_instruction_text=None,
+    input_schema=None,
+):
     """Append an immutable player-authored input entry.
 
     This log is the authority source for player wording. Claude Code may revise
     generated narrative or derived memory, but should not mutate this file.
     """
+    has_explicit_channels = (
+        input_schema == "dual_channel_v1"
+        or role_text is not None
+        or user_instruction_text is not None
+    )
     entry = {
         "id": uuid.uuid4().hex,
         "created_at": _utc_timestamp(),
@@ -113,6 +125,12 @@ def record_player_input(card_folder, raw_text, display_text=None):
         "raw_text": raw_text or "",
         "display_text": display_text if display_text is not None else (raw_text or ""),
     }
+    if has_explicit_channels:
+        entry["input_schema"] = "dual_channel_v1"
+        entry["role_text"] = "" if role_text is None else str(role_text)
+        entry["user_instruction_text"] = (
+            "" if user_instruction_text is None else str(user_instruction_text)
+        )
     path = _player_input_log_path(card_folder)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -134,13 +152,32 @@ def read_player_input_edits(card_folder, processed=None):
     return [item for item in items if bool(item.get("processed", False)) is bool(processed)]
 
 
-def write_pending_user_turn(card_folder, display_text, raw_text=None, input_id=None):
+def write_pending_user_turn(
+    card_folder,
+    display_text,
+    raw_text=None,
+    input_id=None,
+    role_text=None,
+    user_instruction_text=None,
+    input_schema=None,
+):
+    has_explicit_channels = (
+        input_schema == "dual_channel_v1"
+        or role_text is not None
+        or user_instruction_text is not None
+    )
     entry = {
         "id": input_id or uuid.uuid4().hex,
         "created_at": _utc_timestamp(),
         "raw_text": raw_text if raw_text is not None else display_text,
-        "display_text": display_text or raw_text or "",
+        "display_text": display_text if display_text is not None else (raw_text or ""),
     }
+    if has_explicit_channels:
+        entry["input_schema"] = "dual_channel_v1"
+        entry["role_text"] = "" if role_text is None else str(role_text)
+        entry["user_instruction_text"] = (
+            "" if user_instruction_text is None else str(user_instruction_text)
+        )
     _write_json_file(_pending_user_turn_path(card_folder), entry)
     return entry
 
@@ -199,6 +236,8 @@ def edit_player_input(card_folder, input_id, new_text, mode="update_only"):
     old_display = input_entry.get("display_text", old_raw)
     input_entry["raw_text"] = new_text
     input_entry["display_text"] = new_text
+    for stale_key in ("input_schema", "role_text", "user_instruction_text"):
+        input_entry.pop(stale_key, None)
     input_entry["updated_at"] = now
     input_entry["edit_count"] = int(input_entry.get("edit_count", 0) or 0) + 1
     _write_player_inputs(card_folder, player_inputs)
@@ -821,7 +860,11 @@ def write_content_js(card_folder):
         html_parts.append(wrap)
 
     if pending_turn:
-        pending_text = pending_turn.get("display_text") or pending_turn.get("raw_text") or ""
+        pending_text = (
+            pending_turn.get("display_text")
+            if "display_text" in pending_turn
+            else pending_turn.get("raw_text")
+        ) or ""
         pending_html = html.escape(pending_text).replace("\n", "<br>")
         pending_id = pending_turn.get("id")
         attrs = ' data-player-input-id="' + _escape_attr(pending_id) + '"' if pending_id else ""
@@ -1396,7 +1439,11 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         entry["character_dialogues"] = normalized_dialogues
     if not is_opening:
         if pending_user_turn:
-            pending_display = pending_user_turn.get("display_text") or pending_user_turn.get("raw_text") or ""
+            pending_display = (
+                pending_user_turn.get("display_text")
+                if "display_text" in pending_user_turn
+                else pending_user_turn.get("raw_text")
+            ) or ""
             if pending_display:
                 entry["user"] = pending_display
             if pending_user_turn.get("id"):

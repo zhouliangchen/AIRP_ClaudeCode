@@ -116,6 +116,29 @@ def route_player_input(text: str) -> Dict[str, Any]:
     }
 
 
+def route_input_payload(user_text: str, input_payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Route explicit dual-channel payloads before falling back to heuristics."""
+    payload = input_payload if isinstance(input_payload, dict) else {}
+    if payload.get("input_schema") == "dual_channel_v1":
+        role = _to_text(payload.get("role_text"))
+        instruction = _to_text(payload.get("user_instruction_text"))
+        components = []
+        if role:
+            components.append({"channel": "role", "text": role})
+        if instruction:
+            components.append({"channel": "user_instruction", "text": instruction})
+        return {
+            "role_channel": role,
+            "user_instruction_channel": instruction,
+            "components": components,
+            "input_schema": "dual_channel_v1",
+        }
+
+    routed = route_player_input(user_text)
+    routed["input_schema"] = "heuristic_v1"
+    return routed
+
+
 def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]]:
     return [item for item in routed_input.get("components", []) if item.get("channel") == "role"]
 
@@ -189,19 +212,27 @@ DEFAULT_CRITIC_REPORT = {
 }
 
 
-def prepare_agent_run(card_folder, user_text, chat_log, card_data, character_contexts, turn_index=None):
+def prepare_agent_run(
+    card_folder,
+    user_text,
+    chat_log,
+    card_data,
+    character_contexts,
+    turn_index=None,
+    input_payload=None,
+):
     """Create one round run directory and persist agent packets."""
-    routed_input = route_player_input(user_text)
+    routed_input = route_input_payload(user_text, input_payload)
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
 
-    input_payload = {
-        "raw_text": _to_text(user_text),
-        "routed_input": routed_input,
-        "recent_chat": chat_log or [],
-        "card_data": card_data or {},
-        "character_contexts": character_contexts or {},
-    }
-    agent_run.write_json(run_dir / "input.json", input_payload)
+    input_json = input_payload if isinstance(input_payload, dict) else {"raw_text": _to_text(user_text)}
+    input_json = dict(input_json)
+    input_json["raw_text"] = _to_text(input_json.get("raw_text", user_text))
+    input_json["routed_input"] = routed_input
+    input_json["recent_chat"] = chat_log or []
+    input_json["card_data"] = card_data or {}
+    input_json["character_contexts"] = character_contexts or {}
+    agent_run.write_json(run_dir / "input.json", input_json)
 
     gm_packet = build_gm_packet(card_folder, routed_input, chat_log, card_data, character_contexts)
     player_packet = build_player_packet(card_folder, routed_input, chat_log)

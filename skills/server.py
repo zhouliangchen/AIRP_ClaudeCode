@@ -146,9 +146,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 text = ""
             if not isinstance(text, str):
                 text = str(text)
-            char_name = data.get("charName", "").strip()
+            char_name = data.get("charName", "")
+            if char_name is None:
+                char_name = ""
+            if not isinstance(char_name, str):
+                char_name = str(char_name)
+            char_name = char_name.strip()
 
-            if text.strip():
+            role_text = data.get("roleText")
+            instruction_text = data.get("instructionText")
+            has_dual_channel = role_text is not None or instruction_text is not None
+            if has_dual_channel:
+                role_text = "" if role_text is None else str(role_text)
+                instruction_text = "" if instruction_text is None else str(instruction_text)
+                full_raw = (
+                    role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+                    if instruction_text
+                    else role_text
+                )
+                text = role_text
+
+            if has_dual_channel and (role_text or instruction_text):
+                full = f"【{char_name}】{role_text}" if char_name else role_text
+                INPUT_FILE.write_text(full_raw, encoding="utf-8")
+                card = _card_folder()
+                player_entry = None
+                if card:
+                    player_entry = handler.record_player_input(
+                        card,
+                        full_raw,
+                        full,
+                        role_text=role_text,
+                        user_instruction_text=instruction_text,
+                        input_schema="dual_channel_v1",
+                    )
+                    handler.write_pending_user_turn(
+                        card,
+                        full,
+                        raw_text=full_raw,
+                        input_id=player_entry.get("id"),
+                        role_text=role_text,
+                        user_instruction_text=instruction_text,
+                        input_schema="dual_channel_v1",
+                    )
+                    handler.write_content_js(card)
+                handler.write_progress("received", "已接收玩家输入", percent=10)
+                PENDING_FILE.touch()
+                self._json({"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None})
+            elif text.strip():
                 # Write input for Claude Code
                 full = f"【{char_name}】{text}" if char_name else text
                 INPUT_FILE.write_text(full, encoding="utf-8")

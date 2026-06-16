@@ -1,7 +1,10 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import threading
+import urllib.request
 
 import unittest
 from pathlib import Path
@@ -28,6 +31,23 @@ def _load_response_parser():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_server():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    old_argv = sys.argv
+    old_cwd = os.getcwd()
+    try:
+        sys.argv = ["server.py", "0"]
+        spec = importlib.util.spec_from_file_location("server", ROOT / "skills" / "server.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.argv = old_argv
+        os.chdir(old_cwd)
 
 
 class TurnStateTest(unittest.TestCase):
@@ -226,6 +246,44 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(saved["display_text"], "【玩家】原始输入")
         self.assertEqual(saved["source"], "player")
 
+    def test_player_input_log_preserves_explicit_channels(self):
+        entry = self.handler.record_player_input(
+            str(self.card),
+            "I open the gate.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.",
+            "I open the gate.",
+            role_text="I open the gate.",
+            user_instruction_text="Make the gate lead to orbit.",
+            input_schema="dual_channel_v1",
+        )
+
+        saved = json.loads((self.card / ".player_inputs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+        self.assertEqual(saved["id"], entry["id"])
+        self.assertEqual(saved["input_schema"], "dual_channel_v1")
+        self.assertEqual(saved["role_text"], "I open the gate.")
+        self.assertEqual(saved["user_instruction_text"], "Make the gate lead to orbit.")
+        self.assertEqual(saved["raw_text"], "I open the gate.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.")
+        self.assertEqual(entry["role_text"], "I open the gate.")
+
+    def test_pending_user_turn_preserves_channel_metadata(self):
+        pending = self.handler.write_pending_user_turn(
+            str(self.card),
+            "I open the gate.",
+            raw_text="I open the gate.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.",
+            input_id="input-1",
+            role_text="I open the gate.",
+            user_instruction_text="Make the gate lead to orbit.",
+            input_schema="dual_channel_v1",
+        )
+
+        saved = self.handler.read_pending_user_turn(str(self.card))
+
+        self.assertEqual(saved, pending)
+        self.assertEqual(saved["input_schema"], "dual_channel_v1")
+        self.assertEqual(saved["role_text"], "I open the gate.")
+        self.assertEqual(saved["user_instruction_text"], "Make the gate lead to orbit.")
+        self.assertEqual(saved["raw_text"], "I open the gate.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.")
+
     def test_progress_state_round_trips(self):
         self.handler.write_progress("delivering", "正在交付到前端", percent=85)
 
@@ -289,6 +347,30 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(edits[0]["mode"], "update_only")
         self.assertEqual(edits[0]["input_id"], first["id"])
 
+    def test_player_input_edit_clears_stale_dual_channel_metadata(self):
+        entry = self.handler.record_player_input(
+            str(self.card),
+            "Old role.\n\n[USER_INSTRUCTION]\nOld hidden instruction.",
+            "Old role.",
+            role_text="Old role.",
+            user_instruction_text="Old hidden instruction.",
+            input_schema="dual_channel_v1",
+        )
+
+        self.handler.edit_player_input(str(self.card), entry["id"], "New legacy replacement.", "branch_submit")
+
+        saved = self.handler.read_player_inputs(str(self.card))[0]
+        pending = self.handler.read_pending_user_turn(str(self.card))
+        self.assertEqual(saved["raw_text"], "New legacy replacement.")
+        self.assertEqual(saved["display_text"], "New legacy replacement.")
+        self.assertNotIn("input_schema", saved)
+        self.assertNotIn("role_text", saved)
+        self.assertNotIn("user_instruction_text", saved)
+        self.assertEqual(pending["raw_text"], "New legacy replacement.")
+        self.assertNotIn("input_schema", pending)
+        self.assertNotIn("role_text", pending)
+        self.assertNotIn("user_instruction_text", pending)
+
     def test_branch_submit_player_input_edit_truncates_and_pends_revised_turn(self):
         first = self.handler.record_player_input(str(self.card), "first input", "first input")
         second = self.handler.record_player_input(str(self.card), "second input", "second input")
@@ -330,6 +412,83 @@ class TurnStateTest(unittest.TestCase):
 
         self.assertNotIn('data.get("text", "").strip()', source)
         self.assertNotIn('data.get("message", "").strip()', source)
+
+    def test_server_submit_accepts_explicit_dual_channel_fields(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.INPUT_FILE = self.styles / "input.txt"
+        server.PENDING_FILE = self.styles / ".pending"
+        server.CARD_PATH_FILE = self.styles / ".card_path"
+        server.SETTINGS_FILE = self.styles / "settings.json"
+        server.handler.STYLES = self.styles
+        server.CARD_PATH_FILE.write_text(str(self.card), encoding="utf-8")
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def post_submit(payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}/api/submit",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            role_text = " I open the gate. "
+            instruction_text = " Make the gate lead to orbit. "
+            result = post_submit({"roleText": role_text, "instructionText": instruction_text})
+
+            self.assertTrue(result["ok"])
+            expected_raw = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_raw)
+            inputs = self.handler.read_player_inputs(str(self.card))
+            pending = self.handler.read_pending_user_turn(str(self.card))
+            self.assertEqual(inputs[-1]["input_schema"], "dual_channel_v1")
+            self.assertEqual(inputs[-1]["raw_text"], expected_raw)
+            self.assertEqual(inputs[-1]["role_text"], role_text)
+            self.assertEqual(inputs[-1]["user_instruction_text"], instruction_text)
+            self.assertEqual(pending["raw_text"], expected_raw)
+            self.assertEqual(pending["role_text"], role_text)
+            self.assertEqual(pending["user_instruction_text"], instruction_text)
+
+            instruction_only = "Only update the hidden world state."
+            instruction_result = post_submit({"instructionText": instruction_only})
+
+            self.assertTrue(instruction_result["ok"])
+            expected_instruction_raw = "\n\n[USER_INSTRUCTION]\n" + instruction_only
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_instruction_raw)
+            inputs = self.handler.read_player_inputs(str(self.card))
+            pending = self.handler.read_pending_user_turn(str(self.card))
+            self.assertEqual(inputs[-1]["display_text"], "")
+            self.assertEqual(inputs[-1]["role_text"], "")
+            self.assertEqual(inputs[-1]["user_instruction_text"], instruction_only)
+            self.assertEqual(pending["display_text"], "")
+            self.assertEqual(pending["role_text"], "")
+            self.assertEqual(pending["user_instruction_text"], instruction_only)
+
+            self.handler.append_turn(str(self.card), polished_input="", content="<p>ok</p>", summary="ok")
+            log = self.handler.read_chat_log(str(self.card))
+            self.assertNotIn("user", log[-1])
+            self.assertNotIn(instruction_only, json.dumps(log[-1], ensure_ascii=False))
+
+            legacy_text = " Legacy exact text  "
+            legacy = post_submit({"text": legacy_text, "charName": "Hero"})
+
+            self.assertTrue(legacy["ok"])
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), f"【Hero】{legacy_text}")
+            inputs = self.handler.read_player_inputs(str(self.card))
+            self.assertEqual(inputs[-1]["raw_text"], legacy_text)
+            self.assertEqual(inputs[-1]["display_text"], f"【Hero】{legacy_text}")
+            self.assertNotIn("input_schema", inputs[-1])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
     def test_response_parser_extracts_character_dialogues(self):
         parser = _load_response_parser()

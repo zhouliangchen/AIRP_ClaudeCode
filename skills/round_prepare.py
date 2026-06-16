@@ -403,6 +403,22 @@ def main():
     chat_log = read_json(chat_log_path) or []
     player_input_history = _load_player_input_history(card_folder)
     player_input_edits = _load_player_input_edits(card_folder, processed=False)
+    latest_player_input = player_input_history[-1] if player_input_history else {}
+    explicit_input_payload = {}
+    if (
+        isinstance(latest_player_input, dict)
+        and latest_player_input.get("input_schema") == "dual_channel_v1"
+    ):
+        latest_raw_text = "" if latest_player_input.get("raw_text") is None else str(latest_player_input.get("raw_text"))
+        latest_role_text = "" if latest_player_input.get("role_text") is None else str(latest_player_input.get("role_text"))
+        current_user_text = "" if user_text is None else str(user_text)
+        if (
+            latest_raw_text == current_user_text
+            or latest_raw_text.strip() == current_user_text
+            or latest_role_text == current_user_text
+            or latest_role_text.strip() == current_user_text
+        ):
+            explicit_input_payload = dict(latest_player_input)
     input_plan = _analyze_player_input_for_plan(user_text, chat_log)
     if input_plan.get("declared_major_characters") and isinstance(card_data, dict):
         orchestration = card_data.setdefault("character_orchestration", {})
@@ -437,6 +453,7 @@ def main():
             card_data=card_data,
             character_contexts=character_contexts,
             turn_index=len(chat_log),
+            input_payload=explicit_input_payload or None,
         )
     except Exception as exc:
         agent_run_error = str(exc)

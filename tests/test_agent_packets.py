@@ -438,6 +438,52 @@ class AgentPacketTest(unittest.TestCase):
         )
         self.assertEqual(manifest["expected_outputs"]["gm"], "gm.output.json")
 
+    def test_prepare_agent_run_prefers_explicit_dual_channel_payload(self):
+        explicit_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "System: I speak as the captain.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.",
+            "display_text": "System: I speak as the captain.",
+            "role_text": "System: I speak as the captain.",
+            "user_instruction_text": "Make the gate lead to orbit.",
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="Legacy fallback text should not be routed.",
+            chat_log=[],
+            card_data={"title": "Explicit Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+            input_payload=explicit_payload,
+        )
+
+        run_dir = Path(result["run_dir"])
+        routed = result["routed_input"]
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        safe_name = self.agent_run.safe_name("Ada")
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(routed["input_schema"], "dual_channel_v1")
+        self.assertEqual(routed["role_channel"], "System: I speak as the captain.")
+        self.assertEqual(routed["user_instruction_channel"], "Make the gate lead to orbit.")
+        self.assertEqual(
+            routed["components"],
+            [
+                {"channel": "role", "text": "System: I speak as the captain."},
+                {"channel": "user_instruction", "text": "Make the gate lead to orbit."},
+            ],
+        )
+        self.assertEqual(input_json["input_schema"], "dual_channel_v1")
+        self.assertEqual(input_json["raw_text"], explicit_payload["raw_text"])
+        self.assertEqual(input_json["role_text"], explicit_payload["role_text"])
+        self.assertEqual(input_json["user_instruction_text"], explicit_payload["user_instruction_text"])
+        self.assertEqual(input_json["routed_input"], routed)
+        self.assertIn("Make the gate lead to orbit.", json.dumps(gm_packet, ensure_ascii=False))
+        self.assertNotIn("Make the gate lead to orbit.", json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn("Make the gate lead to orbit.", json.dumps(character_packet, ensure_ascii=False))
+
     def test_prepare_agent_run_ignores_metadata_dict_as_character_context(self):
         user_text = "I test metadata-only character context."
         result = self.agent_packets.prepare_agent_run(
@@ -521,6 +567,159 @@ class AgentPacketTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
+
+    def test_round_prepare_passes_latest_dual_channel_payload_to_agent_run(self):
+        temp_root, _styles_dir = self._make_round_prepare_fixture()
+        explicit_payload = {
+            "id": "input-2",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.",
+            "display_text": "I step into the archive.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "Make the gate lead to orbit.",
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(
+                {
+                    "id": "input-1",
+                    "source": "player",
+                    "raw_text": "legacy input",
+                    "display_text": "legacy input",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            + json.dumps(explicit_payload, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        called = {}
+        expected_run_dir = str(self.card / ".agent_runs" / "round-000001")
+
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": expected_run_dir,
+                "routed_input": {
+                    "role_channel": "I step into the archive.",
+                    "user_instruction_channel": "Make the gate lead to orbit.",
+                },
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertEqual(called["input_payload"], explicit_payload)
+
+    def test_round_prepare_ignores_stale_dual_channel_payload_for_legacy_current_input(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        styles_dir.joinpath("input.txt").write_text("Legacy current input.", encoding="utf-8")
+        stale_payload = {
+            "id": "input-2",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nMake the gate lead to orbit.",
+            "display_text": "I step into the archive.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "Make the gate lead to orbit.",
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(stale_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        called = {}
+
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "routed_input": {"role_channel": "Legacy current input.", "user_instruction_channel": ""},
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertIsNone(called["input_payload"])
+
+    def test_round_prepare_matches_instruction_only_dual_channel_payload_after_input_strip(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        raw_text = "\n\n[USER_INSTRUCTION]\nOnly update the hidden world state."
+        styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
+        explicit_payload = {
+            "id": "input-3",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": raw_text,
+            "display_text": "",
+            "role_text": "",
+            "user_instruction_text": "Only update the hidden world state.",
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(explicit_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        called = {}
+
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "routed_input": {
+                    "role_channel": "",
+                    "user_instruction_channel": "Only update the hidden world state.",
+                },
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertEqual(called["input_payload"], explicit_payload)
 
     def test_round_prepare_continues_when_agent_run_packet_generation_fails(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
