@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import agent_run
 from handler import write_progress
 from io_utils import read_file, read_json
 
@@ -107,6 +108,20 @@ def main():
         write_progress("error", "response.txt 为空", percent=0)
         print(json.dumps({"ok": False, "error": "response.txt is empty"}))
         sys.exit(1)
+
+    critic_report = agent_run.read_current_critic_report(card_folder)
+    critic_hard_failures = []
+    if isinstance(critic_report, dict):
+        critic_hard_failures = critic_report.get("hard_failures") or []
+        if critic_report.get("passed") is False and critic_hard_failures:
+            write_progress("retry", "质检未通过，等待修复", percent=65, detail="; ".join(map(str, critic_hard_failures))[:500])
+            print(json.dumps({
+                "action": "retry",
+                "reason": "critic_hard_failures",
+                "critic_report": critic_report,
+                "hint": "根据 critic.report.json 修复 story 输出后重新写入 response.txt。"
+            }, ensure_ascii=False))
+            sys.exit(0)
 
     # ── 1. Word Count Check ──
     settings = read_json(styles_dir / "settings.json") or {}

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import importlib
 import sys
 import tempfile
 import unittest
@@ -39,6 +40,90 @@ def _load_round_prepare():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_round_deliver():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("round_deliver", ROOT / "skills" / "round_deliver.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CriticGateSourceTest(unittest.TestCase):
+    def test_round_deliver_reads_current_critic_report(self):
+        source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
+
+        self.assertIn("import agent_run", source)
+        self.assertIn("read_current_critic_report", source)
+        self.assertIn("critic_hard_failures", source)
+
+
+class CriticGateRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.card = Path(self.tmp.name) / "card"
+        self.card.mkdir()
+        self.root = Path(self.tmp.name) / "root"
+        self.styles_dir = self.root / "skills" / "styles"
+        self.styles_dir.mkdir(parents=True)
+        (self.styles_dir / "response.txt").write_text("<content>太短了</content>", encoding="utf-8")
+        (self.styles_dir / "settings.json").write_text(json.dumps({"wordCount": 2000}), encoding="utf-8")
+        self.round_deliver = _load_round_deliver()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_round_deliver_retries_on_critic_hard_failures(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: {
+            "passed": False,
+            "hard_failures": ["missing continuity fix"],
+        }
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run when critic gate retries")
+
+        token_stats = importlib.import_module("token_stats")
+        original_locate_transcript = token_stats.locate_transcript
+        original_load_checkpoint = token_stats.load_checkpoint
+        original_compute_delta = token_stats.compute_delta
+        original_read_usage_since = token_stats.read_usage_since
+        try:
+            token_stats.locate_transcript = lambda: None
+            token_stats.load_checkpoint = lambda card_folder: {}
+            token_stats.read_usage_since = lambda transcript_path, byte_offset=0: []
+            token_stats.compute_delta = lambda entries: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read": 0,
+                "cache_creation": 0,
+                "request_count": 0,
+                "cache_hit_pct": 0.0,
+            }
+
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+                with self.assertRaises(SystemExit) as ctx:
+                    with contextlib.redirect_stdout(stdout):
+                        self.round_deliver.main()
+            finally:
+                sys.argv = old_argv
+        finally:
+            token_stats.locate_transcript = original_locate_transcript
+            token_stats.load_checkpoint = original_load_checkpoint
+            token_stats.compute_delta = original_compute_delta
+            token_stats.read_usage_since = original_read_usage_since
+
+        self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(payload["action"], "retry")
+        self.assertEqual(payload["reason"], "critic_hard_failures")
+        self.assertEqual(payload["critic_report"]["hard_failures"], ["missing continuity fix"])
+        self.assertTrue(any(args[:2] == ("retry", "质检未通过，等待修复") for args, _ in progress_calls))
 
 
 class AgentRunTest(unittest.TestCase):
