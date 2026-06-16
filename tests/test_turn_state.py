@@ -31,6 +31,7 @@ def _load_response_parser():
 
 
 class TurnStateTest(unittest.TestCase):
+
     def test_rp_skill_is_split_into_stage_skills(self):
         skills_dir = ROOT / ".claude" / "skills"
         expected = [
@@ -77,9 +78,38 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("characters/*.output.json", story)
         self.assertIn("critic.report.json", critic)
         self.assertIn("skills/styles/response.txt", delivery)
-        self.assertIn("{ROOT}/skills/round_deliver.py", delivery)
-        self.assertNotIn("python skills/round_deliver.py", delivery)
+        self.assertIn('{ROOT}/skills/round_deliver.py', delivery)
+        self.assertIn("round_deliver.py", delivery)
+        self.assertNotIn('python skills/round_deliver.py "<card_folder>" "."', delivery)
         self.assertIn("final.response.txt", delivery)
+
+    def test_rp_command_points_to_orchestrator(self):
+        command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
+
+        self.assertIn("rp-orchestrator", command)
+        self.assertTrue("启动模式" in command or "startup" in command.lower())
+        self.assertNotIn("## 第一步", command)
+        self.assertNotIn("## 第二步", command)
+
+    def test_rp_frontmatter_has_no_bom(self):
+        for path in (ROOT / ".claude" / "skills").glob("rp*.md"):
+            raw = path.read_bytes()
+            self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), f"{path.name} has BOM")
+            lines = raw.decode("utf-8").splitlines()
+            self.assertGreaterEqual(len(lines), 4, f"{path.name} should include frontmatter and markdown body")
+            self.assertEqual(lines[0], "---", f"{path.name} should start with frontmatter delimiter")
+            self.assertIn("name:", lines[1], f"{path.name} second line should contain name field")
+
+            frontmatter_end = None
+            for i in range(2, min(5, len(lines))):
+                if lines[i].strip() == "---":
+                    frontmatter_end = i
+                    break
+            self.assertIsNotNone(frontmatter_end, f"{path.name} should close frontmatter with --- within first 5 lines")
+            self.assertTrue(
+                any(line.lstrip().startswith("#") for line in lines[frontmatter_end + 1 :]),
+                f"{path.name} should include a markdown heading after frontmatter",
+            )
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
