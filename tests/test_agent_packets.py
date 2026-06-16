@@ -72,6 +72,12 @@ class CriticGateSourceTest(unittest.TestCase):
         self.assertIn("import agent_memory", source)
         self.assertIn("ingest_memory_deltas", source)
 
+    def test_round_deliver_ingests_agent_memory_summaries(self):
+        source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
+
+        self.assertIn("import agent_memory", source)
+        self.assertIn("ingest_memory_summaries", source)
+
 
 class CriticGateRuntimeTest(unittest.TestCase):
     def setUp(self):
@@ -445,6 +451,35 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(manifest["expected_outputs"]["gm"], "gm.output.json")
         self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
         self.assertNotIn("interaction_trace", manifest.get("optional_inputs", {}))
+
+    def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.",
+            chat_log=[],
+            card_data={"title": "Memory Summary Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=5,
+        )
+
+        run_dir = Path(result["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["round_id"], "round-000006")
+        self.assertTrue((run_dir / "prompts" / "memory" / "player.prompt.md").exists())
+        self.assertTrue((run_dir / "prompts" / "memory" / "character_Ada.prompt.md").exists())
+        self.assertEqual(
+            manifest["expected_outputs"]["memory_summaries"]["player"],
+            "memory_summaries/player.summary.json",
+        )
+        self.assertEqual(
+            manifest["expected_outputs"]["memory_summaries"]["character:Ada"],
+            "memory_summaries/character_Ada.summary.json",
+        )
+        self.assertEqual(
+            manifest["prompts"]["memory_summaries"]["character:Ada"],
+            "prompts/memory/character_Ada.prompt.md",
+        )
 
     def test_prepare_agent_run_prefers_explicit_dual_channel_payload(self):
         explicit_payload = {

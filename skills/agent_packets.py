@@ -248,7 +248,13 @@ def prepare_agent_run(
         character_packets[safe] = packet
 
     agent_run.write_json(run_dir / "critic.report.json", DEFAULT_CRITIC_REPORT)
-    manifest = agent_prompts.write_round_prompts(run_dir, gm_packet, player_packet, character_packets)
+    manifest = agent_prompts.write_round_prompts(
+        run_dir,
+        gm_packet,
+        player_packet,
+        character_packets,
+        card_folder=card_folder,
+    )
     return {
         "run_dir": str(run_dir.resolve()),
         "routed_input": routed_input,

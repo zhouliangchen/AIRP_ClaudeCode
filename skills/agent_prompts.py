@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+import agent_memory
 import agent_run
 
 
@@ -164,6 +165,7 @@ def write_round_prompts(
     gm_packet: Dict[str, Any],
     player_packet: Dict[str, Any],
     character_packets: Dict[str, Dict[str, Any]],
+    card_folder: str | Path | None = None,
 ) -> Dict[str, Any]:
     """Write prompt files and return the round manifest."""
     root = Path(run_dir)
@@ -217,6 +219,10 @@ def write_round_prompts(
             "critic": "critic.report.json",
         },
     }
+    if card_folder is not None and agent_memory.memory_summary_due(root.name):
+        summary_agents = ["player"] + [f"character:{name}" for name in character_outputs.keys()]
+        agent_memory.write_memory_summary_prompts(card_folder, root, manifest, summary_agents)
+
     agent_run.append_manifest_stage(manifest, "prepared", "Agent run directory and context packets are prepared.")
     agent_run.append_manifest_stage(manifest, "prompts_ready", "Subagent prompts are materialized.")
     agent_run.append_manifest_stage(manifest, "awaiting_agent_outputs", "Waiting for Claude Code subagent output artifacts.")

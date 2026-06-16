@@ -282,8 +282,9 @@ def main():
     try:
         current_run = agent_run.current_run_dir(card_folder)
         if current_run is not None and (current_run / "story.input.json").exists():
-            agent_memory_result = agent_memory.ingest_memory_deltas(card_folder, current_run)
-            agent_memory_ok = bool(agent_memory_result.get("ok"))
+            delta_result = agent_memory.ingest_memory_deltas(card_folder, current_run)
+            summary_result = agent_memory.ingest_memory_summaries(card_folder, current_run)
+            agent_memory_ok = bool(delta_result.get("ok") and summary_result.get("ok"))
     except Exception as exc:
         agent_memory_error = str(exc)
 
