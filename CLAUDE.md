@@ -37,6 +37,13 @@ The core runtime is a Python standard-library bridge plus a small Node validatio
 Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and marks progress as generating → Claude writes `response.txt` → `round_deliver.py` gates and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
 
 ## Runtime instructions for RP mode
+## 多 Subagent 编排原则
+
+- Claude Code is the direct orchestration layer for RP turns.
+- Delegate execution to focused skills: rp-orchestrator, rp-input-router, rp-context-projector, rp-gm-agent, rp-player-agent, rp-character-agent, rp-story-agent, rp-critic-agent, rp-delivery.
+- Main narrative drafting is done by subagents; only delivery uses `round_deliver.py` and writes `response.txt` through the orchestrated path.
+
+
 
 # 话本RP — Claude Code 直驱模式
 

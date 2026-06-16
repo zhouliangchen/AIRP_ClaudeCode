@@ -1,4 +1,4 @@
-在当前目录下启动话本RP流程。
+Run RP via the rp-orchestrator skill; the main agent does not directly compose routine narrative payloads here.
 
 ## 第一步：扫描当前目录
 

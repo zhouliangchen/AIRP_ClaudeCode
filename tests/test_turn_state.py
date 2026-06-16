@@ -30,6 +30,36 @@ def _load_response_parser():
 
 
 class TurnStateTest(unittest.TestCase):
+
+    def test_rp_skill_is_split_into_stage_skills(self):
+        skills_dir = ROOT / ".claude" / "skills"
+        expected = [
+            "rp-orchestrator.md",
+            "rp-input-router.md",
+            "rp-context-projector.md",
+            "rp-gm-agent.md",
+            "rp-player-agent.md",
+            "rp-character-agent.md",
+            "rp-story-agent.md",
+            "rp-critic-agent.md",
+            "rp-delivery.md",
+        ]
+
+        for name in expected:
+            self.assertTrue((skills_dir / name).exists(), name)
+
+        rp = (skills_dir / "rp.md").read_text(encoding="utf-8")
+        self.assertIn("rp-orchestrator", rp)
+
+    def test_claude_md_delegates_stage_details_to_skills(self):
+        claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+        self.assertIn("rp-orchestrator", claude)
+        self.assertIn("rp-input-router", claude)
+        self.assertIn("rp-critic-agent", claude)
+        self.assertIn("Claude Code", claude)
+        self.assertIn("response.txt", claude)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
