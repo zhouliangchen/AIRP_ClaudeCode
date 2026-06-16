@@ -77,7 +77,9 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("characters/*.output.json", story)
         self.assertIn("critic.report.json", critic)
         self.assertIn("skills/styles/response.txt", delivery)
+        self.assertIn('{ROOT}/skills/round_deliver.py', delivery)
         self.assertIn("round_deliver.py", delivery)
+        self.assertNotIn('python skills/round_deliver.py "<card_folder>" "."', delivery)
         self.assertIn("final.response.txt", delivery)
 
     def test_rp_command_points_to_orchestrator(self):

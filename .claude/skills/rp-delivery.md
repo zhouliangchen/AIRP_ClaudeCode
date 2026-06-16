@@ -1,17 +1,12 @@
 ---
 name: rp-delivery
-description: RP 交付代理：最终写出 response.txt 并触发交付脚本
----
+description: RP 交付技能，负责将最终响应写入 `skills/styles/response.txt` 并衔接交付。
 
 ## Delivery Rules
 
-- 仅主编排层负责执行本代理流程。
-- 本代理只做交付文件落盘与校验，不承担 `round_deliver.py` 执行。
-- 最终写入 `skills/styles/response.txt`。
-- 禁止其他代理直接写 `response.txt` 或执行交付脚本。
-- 禁止普通来源文件（`content.js`, `state.js`, `chat_log.json`）在此阶段直接改写。
+- Owner / trigger: `orchestrator` 调用 `rp-delivery`，用于在交付前对照 `final.response.txt`。
+- 读取 `final.response.txt` 后，镜像到 `skills/styles/response.txt`，并执行：
+  `python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"`
 
-## Final File
-
-- 读取 `final.response.txt`，校验响应标签后镜像到 `skills/styles/response.txt`。
-- 待 `skills/styles/response.txt` 就绪后，由 orchestrator 触发 `python skills/round_deliver.py "<card_folder>" "."` 进行最终交付。
+- `orchestrator` 负责在每轮审稿通过后将 `final.response.txt` 写入并镜像到
+  `skills/styles/response.txt`，随后触发 `rp-delivery` 执行该交付命令。
