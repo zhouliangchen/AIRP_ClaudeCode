@@ -79,6 +79,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
     def _run_round_deliver(self, critic_report, handler_message):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
         self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: critic_report
         self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail(handler_message)
 
@@ -110,6 +111,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
             finally:
                 sys.argv = old_argv
         finally:
+            self.round_deliver.agent_run.read_current_critic_report = original_read_current_critic_report
             token_stats.locate_transcript = original_locate_transcript
             token_stats.load_checkpoint = original_load_checkpoint
             token_stats.compute_delta = original_compute_delta
@@ -140,6 +142,21 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
         self.assertNotIn("critic_report", payload)
         self.assertIn("word_count", payload)
+        self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
+
+    def test_round_deliver_ignores_missing_critic_report(self):
+        original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
+        exit_code, payload, progress_calls = self._run_round_deliver(
+            critic_report={},
+            handler_message="handler should not run when no-report falls through to word-count retry",
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["action"], "retry")
+        self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
+        self.assertNotIn("critic_report", payload)
+        self.assertIn("word_count", payload)
+        self.assertIs(self.round_deliver.agent_run.read_current_critic_report, original_read_current_critic_report)
         self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
 
 
