@@ -62,5 +62,8 @@ skills/image_config.local.json
 !skills/
 !tests/
 !tests/**
+!docs/
+!docs/superpowers/
+!docs/superpowers/**
 tests/__pycache__/
 tests/*.pyc
