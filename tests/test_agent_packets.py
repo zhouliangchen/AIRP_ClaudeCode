@@ -434,14 +434,74 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
-        self.assertIn('"narration"', gm_prompt)
-        self.assertIn('"world_state_delta"', gm_prompt)
-        self.assertIn('"action"', player_prompt)
-        self.assertIn('"perception"', player_prompt)
-        self.assertIn('"agent_id"', char_prompt)
-        self.assertIn('"decision"', critic_prompt)
-        self.assertNotIn('"scene_state"', gm_prompt)
-        self.assertNotIn('"embodied_intent"', player_prompt)
+        required_prompt_keys = {
+            "gm": ("agent", "narration", "npc_events", "world_state_delta", "handoff"),
+            "player": ("agent", "agent_id", "action", "dialogue", "perception", "memory_delta"),
+            "character": (
+                "agent",
+                "agent_id",
+                "character_name",
+                "action",
+                "dialogue",
+                "perception",
+                "memory_delta",
+            ),
+            "story": ("content", "character_dialogues", "metadata"),
+            "critic": (
+                "decision",
+                "hard_failures",
+                "soft_issues",
+                "repair_instruction",
+                "system_iteration_suggestion",
+            ),
+        }
+        prompt_texts = {
+            "gm": gm_prompt,
+            "player": player_prompt,
+            "character": char_prompt,
+            "story": story_prompt,
+            "critic": critic_prompt,
+        }
+        for prompt_name, keys in required_prompt_keys.items():
+            for key in keys:
+                with self.subTest(prompt=prompt_name, required_key=key):
+                    self.assertIn(f'"{key}"', prompt_texts[prompt_name])
+
+        forbidden_prompt_keys = {
+            "gm": (
+                "scene_state",
+                "world_updates",
+                "non_core_characters",
+                "visible_consequences",
+                "hidden_consequences",
+                "conflict_repairs",
+                "facts_now_world_visible",
+                "next_pressure",
+            ),
+            "player": (
+                "embodied_intent",
+                "immediate_action",
+                "inner_sensation",
+                "spoken_line",
+                "meaningful_player_decision",
+                "decision_reason",
+                "state_suggestions",
+                "stop_reason",
+            ),
+            "character": (
+                "private_reaction",
+                "intent",
+                "aside",
+                "relationship_shift",
+                "state_suggestions",
+                "visible_to_others",
+                "needs_response_from",
+            ),
+        }
+        for prompt_name, keys in forbidden_prompt_keys.items():
+            for key in keys:
+                with self.subTest(prompt=prompt_name, forbidden_key=key):
+                    self.assertNotIn(f'"{key}"', prompt_texts[prompt_name])
 
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["round_id"], "round-000001")
