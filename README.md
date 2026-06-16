@@ -26,6 +26,10 @@ AIRP_ClaudeCode/
 │  ├─ import_prepare.py     # 启动/导入管线
 │  ├─ round_prepare.py      # 每轮上下文收集
 │  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
+│  ├─ agent_prompts.py      # 生成 GM/player/character/story/critic prompt
+│  ├─ agent_outputs.py      # 校验 agent 产物、生成 story.input.json、交付 gate
+│  ├─ agent_memory.py       # 写入 subagent 记忆 delta
+│  ├─ agent_schemas.py      # agent JSON 产物 schema 校验
 │  ├─ handler.py            # 解析 response.txt 并重建前端数据
 │  ├─ mvu_server.js         # Node MVU 校验服务，默认端口 8766
 │  └─ styles/               # 前端入口、运行时文件和文风配置
@@ -71,9 +75,11 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 ## 核心角色 subagent
 
-`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，汇总核心角色的私有记忆、目标、近况和变量切片。Claude Code 工作流会在场景强相关时最多并行调用 2 个核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。
+`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。该目录包含 `input.json`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
-subagent 不直接写 `response.txt`，也不直接交付前端；最终叙事仍由主代理整合。若某个重要角色本轮确实使用了 subagent，主代理可在 `response.txt` 的 `<character_dialogues>` JSON 数组中登记该角色台词，前端会在主叙事前以独立对话框显示。如果当前 Claude Code 环境不可用 subagent，会退回主代理兼任，但仍应参考 `CHARACTER_CONTEXTS` 保持角色独立性。
+Claude Code 工作流会在场景强相关时最多并行调用 2 个核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
+
+subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM/player/character 产物写入 `.agent_runs/<round>/`，`agent_outputs.py` 校验后生成 `story.input.json`；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
 
 ## 常用开发命令
 
@@ -82,11 +88,12 @@ python skills/start_server.py .
 python skills/import_prepare.py "<卡片文件夹>" "."
 python skills/round_prepare.py "<卡片文件夹>" "."
 python skills/round_deliver.py "<卡片文件夹>" "."
+python -m unittest discover -s tests -v
 python -m py_compile skills/<file>.py
 cd skills; npm install
 ```
 
-`npm install` 只用于安装 MVU 服务依赖 `zod`。`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 或前端桥接逻辑后优先运行 `python -m unittest tests.test_turn_state tests.test_lan_access`，并对改动过的 Python 文件运行 `python -m py_compile`。修改前端后请启动本地服务并在 `http://localhost:8765` 和局域网 URL 各做一次浏览器检查。
+`npm install` 只用于安装 MVU 服务依赖 `zod`。`skills/package.json` 里的 `npm test` 是占位命令，会直接失败。修改 Python 或前端桥接逻辑后优先运行 `python -m unittest discover -s tests -v`，并对改动过的 Python 文件运行 `python -m py_compile`。修改前端后请启动本地服务并在 `http://localhost:8765` 和局域网 URL 各做一次浏览器检查。
 
 ## 数据与安全
 
@@ -108,6 +115,7 @@ skills/styles/progress.json
 .player_inputs.jsonl
 .player_input_edits.jsonl
 .player_input_branches.jsonl
+.agent_runs/
 ```
 
 仓库内的主要源代码是 `skills/`、`.claude/`、`CLAUDE.md`、`README.md` 和相关参考文档；用户运行产生的存档数据应只留在本机。

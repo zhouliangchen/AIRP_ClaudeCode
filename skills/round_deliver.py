@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import agent_memory
+import agent_outputs
 import agent_run
 from handler import write_progress
 from io_utils import read_file, read_json
@@ -97,6 +99,13 @@ def main():
     styles_dir = Path(root) / "skills" / "styles"
     response_path = styles_dir / "response.txt"
     write_progress("delivering", "正在质检回复", percent=75)
+
+    delivery_gate = agent_outputs.prepare_delivery(card_folder, styles_dir)
+    if not delivery_gate.get("ok", False):
+        detail = str(delivery_gate.get("detail") or delivery_gate.get("message") or "")[:500]
+        write_progress("retry", "多代理产物未就绪，等待修复", percent=65, detail=detail)
+        print(json.dumps(delivery_gate, ensure_ascii=False))
+        sys.exit(0)
 
     if not response_path.exists():
         write_progress("error", "未找到 response.txt", percent=0)
@@ -268,6 +277,16 @@ def main():
     except Exception:
         pass
 
+    agent_memory_ok = False
+    agent_memory_error = ""
+    try:
+        current_run = agent_run.current_run_dir(card_folder)
+        if current_run is not None and (current_run / "story.input.json").exists():
+            agent_memory_result = agent_memory.ingest_memory_deltas(card_folder, current_run)
+            agent_memory_ok = bool(agent_memory_result.get("ok"))
+    except Exception as exc:
+        agent_memory_error = str(exc)
+
     # ── 6. Story Planning Check ──
     state_js = read_file(styles_dir / "state.js")
     generated_count = 0
@@ -285,6 +304,7 @@ def main():
     if summary_match:
         summary_text = re.sub(r"<[^>]+>", "", summary_match.group(1)).strip()[:200]
 
+    agent_delivery = agent_outputs.mark_delivered(card_folder)
     write_progress("complete", "回复已完成", percent=100)
 
     print(json.dumps({
@@ -294,6 +314,9 @@ def main():
         "word_count": {"current": chinese_count, "target": word_count_target, "ratio": round(ratio, 2)},
         "tokens": token_data,
         "memory_updated": memory_ok,
+        "agent_memory_updated": agent_memory_ok,
+        "agent_memory_error": agent_memory_error,
+        "agent_delivery": agent_delivery,
         "summary": summary_text
     }, ensure_ascii=False))
 

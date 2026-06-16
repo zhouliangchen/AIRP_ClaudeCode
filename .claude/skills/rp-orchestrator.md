@@ -1,37 +1,62 @@
 ---
 name: rp-orchestrator
-description: 主编排者入口，路由输入并调度 RP 分阶段工作流
+description: Use when /rp starts, a pending RP input is detected, or a multi-agent RP turn must be coordinated.
 ---
 
-## Orchestrator
+## RP Orchestrator
 
-你是 RP 的主协调者。每轮先读取 `skills/styles/round_context.txt`，再按固定 stage 调度：输入路由、上下文投射、GM/玩家/角色/故事/审稿代理。
+You are the main Claude Code coordinator. Keep Claude Code as the direct driver, but keep the main agent out of routine fiction writing. Your job is workflow orchestration, script execution, subagent dispatch, artifact collection, repair loops, code/system iteration when authorized, and final delivery.
+
+## Stage Selection
+
+按需导入 stage skills. Load only what the current phase needs:
+
+- Startup or resume: use this skill plus `rp-delivery` only if there is an opening to deliver.
+- New player input: use `rp-input-router`, `rp-context-projector`, GM/player/character skills, `rp-story-agent`, `rp-critic-agent`, and `rp-delivery`.
+- Pure user instruction, repair, or planning: load only router, GM/story/critic, and delivery as needed.
+- Image or UI enhancement after text delivery: load `rp-assets-ui`.
 
 ## Startup Modes
 
-- 新卡开局：先启动服务并导入素材。
-  - 关键脚本：`python "{ROOT}/skills/start_server.py" "{ROOT}"`，`python "{ROOT}/skills/import_prepare.py" "<card_folder>" "{ROOT}"`
-- 有 `chat_log.json` + `memory/` 续玩：读取上下文后进入轮次上下文准备。
-  - 关键脚本：`python "{ROOT}/skills/start_server.py" "{ROOT}"`，`python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"`
-- 空白卡模式：无素材且无历史，按空白初始化运行。
-  - 关键脚本：`python "{ROOT}/skills/start_server.py" "{ROOT}"`，`python "{ROOT}/skills/import_prepare.py" "<card_folder>" "{ROOT}"`
-- 运行时每轮：`python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"` -> agent 合成 -> `python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"`，最终由 `response.txt` 完成交付衔接。
+- New card: run `python "{ROOT}/skills/start_server.py" "{ROOT}"`, then `python "{ROOT}/skills/import_prepare.py" "<card_folder>" "{ROOT}"`.
+- Existing `chat_log.json` + `memory/`: run `python "{ROOT}/skills/start_server.py" "{ROOT}"`, then `python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"` when a pending input exists.
+- Blank bootstrap: run startup normally, then wait for the first browser input; do not invent a character before the player gives one.
 
-## Core Duties
+## Per-Turn Flow
 
-- 只做流程编排，不直接执行常规叙事扩写。
-- 明确区分角色输入与指令输入，路由到正确代理。
-- 运行标准脚本：`python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"` 和 `python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"`。
-- 仅调用 `rp-delivery` 在最后写入 `skills/styles/response.txt` 并交付。
-- 不直接改写除 `skills/styles/response.txt` 外的核心运行文件。
-- 若任一代理输出不满足响应契约，回退到 `rp-critic-agent` 要求重写后再交付。
+1. Run `python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"`.
+2. Read `skills/styles/round_context.txt` and the `AGENT_RUN` run directory.
+3. Use `rp-input-router` to confirm `role_channel` and `user_instruction_channel`.
+4. Use `rp-context-projector` to decide what GM, player, and character agents may see.
+5. Dispatch GM, player, and relevant character subagents. Parallelize independent agents when possible to improve speed.
+6. Run an interaction loop / 交互循环: agents may respond to each other's world-visible actions and dialogue through the orchestrator until a real player 关键决策点 is reached, the 章节字数 or scene target is met, or the critic says enough.
+7. After GM/player/character outputs exist, build or request `story.input.json` as the canonical story bundle.
+8. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
+9. Ask `rp-critic-agent` to write `critic.report.json`.
+10. If hard failures exist, repair once through story/agent loop. If the failure is systemic and this is a development task or the user has authorized iteration, update prompts/code, rerun the turn, and document the change. Otherwise append the issue to `improvement_queue.jsonl`.
+11. On approval, invoke `rp-delivery`; it runs `round_deliver.py`, which validates artifacts and mirrors approved story content to `skills/styles/response.txt`.
+
+主 agent 不得直接撰写常规叙事正文 except as an explicitly marked fallback.
 
 ## Agent Run Artifacts
 
-- 从 `skills/styles/round_context.txt` 读取 `AGENT_RUN` 区块中的 `run_dir`（该目录位于 `.agent_runs/...`），并据此触发本轮子代理工作流。
-- 读取并持久化：`gm.context.json` -> `gm.output.json`。
-- 读取并持久化：`player.context.json` -> `player.output.json`。
-- 读取并持久化每个角色：`characters/*.context.json` -> 对应 `characters/*.output.json`。
-- 由 `rp-story-agent` 基于上述产物写入 `story.output.txt`。
-- 将审稿结果写入 `critic.report.json`（`rp-critic-agent` 输出）。
-- 当审稿通过后写入 `final.response.txt`，再镜像到 `skills/styles/response.txt`，随后触发 `rp-delivery`。
+Use the current `.agent_runs/<round>/` folder as a mailbox:
+
+- `input.json`: routed raw input and channel split.
+- `gm.context.json` -> `gm.output.json`
+- `player.context.json` -> `player.output.json`
+- `characters/*.context.json` -> `characters/*.output.json`
+- `story.input.json`
+- `story.output.json`
+- `critic.report.json`
+- `manifest.json` with stages such as `awaiting_agent_outputs`, `story_ready`, `critic_passed`, `delivered`, or `blocked`
+
+Only the orchestrator runs delivery. Subagents never write `skills/styles/response.txt`.
+
+## Non-Negotiable Boundaries
+
+- `.player_inputs.jsonl` is authoritative player data. Do not rewrite, trim, summarize, or delete it.
+- Player and character agents must not receive hidden user instructions, GM notes, or out-of-world mechanics.
+- GM may see complete剧情 and user instructions; player and character agents only see first-person projected facts.
+- Stop at meaningful player choices. Do not silently decide relationship commitments, irreversible danger, consent-sensitive actions, or major plot direction for the player.
+- Keep latency low: dispatch independent subagents in parallel, keep packet outputs compact, and defer image/UI work until after text delivery.

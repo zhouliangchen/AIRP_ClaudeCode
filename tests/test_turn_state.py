@@ -44,6 +44,7 @@ class TurnStateTest(unittest.TestCase):
             "rp-story-agent.md",
             "rp-critic-agent.md",
             "rp-delivery.md",
+            "rp-assets-ui.md",
         ]
 
         for name in expected:
@@ -74,14 +75,15 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("player.output.json", orchestrator)
         self.assertIn("characters/*.context.json", orchestrator)
         self.assertIn("characters/*.output.json", orchestrator)
-        self.assertIn("story.output.txt", story)
+        self.assertIn("story.output.json", story)
+        self.assertIn("story.input.json", story)
         self.assertIn("characters/*.output.json", story)
         self.assertIn("critic.report.json", critic)
         self.assertIn("skills/styles/response.txt", delivery)
         self.assertIn('{ROOT}/skills/round_deliver.py', delivery)
         self.assertIn("round_deliver.py", delivery)
         self.assertNotIn('python skills/round_deliver.py "<card_folder>" "."', delivery)
-        self.assertIn("final.response.txt", delivery)
+        self.assertIn("story.output.json", delivery)
 
     def test_rp_command_points_to_orchestrator(self):
         command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
@@ -110,6 +112,81 @@ class TurnStateTest(unittest.TestCase):
                 any(line.lstrip().startswith("#") for line in lines[frontmatter_end + 1 :]),
                 f"{path.name} should include a markdown heading after frontmatter",
             )
+
+    def test_rp_skills_define_immersive_multi_agent_contracts(self):
+        skills_dir = ROOT / ".claude" / "skills"
+        rp = (skills_dir / "rp.md").read_text(encoding="utf-8")
+        orchestrator = (skills_dir / "rp-orchestrator.md").read_text(encoding="utf-8")
+        router = (skills_dir / "rp-input-router.md").read_text(encoding="utf-8")
+        projector = (skills_dir / "rp-context-projector.md").read_text(encoding="utf-8")
+        gm = (skills_dir / "rp-gm-agent.md").read_text(encoding="utf-8")
+        player = (skills_dir / "rp-player-agent.md").read_text(encoding="utf-8")
+        character = (skills_dir / "rp-character-agent.md").read_text(encoding="utf-8")
+        story = (skills_dir / "rp-story-agent.md").read_text(encoding="utf-8")
+        critic = (skills_dir / "rp-critic-agent.md").read_text(encoding="utf-8")
+        delivery = (skills_dir / "rp-delivery.md").read_text(encoding="utf-8")
+        assets = (skills_dir / "rp-assets-ui.md").read_text(encoding="utf-8")
+        claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+        self.assertIn("Claude Code 直驱", rp)
+        self.assertIn("主 agent 只负责编排", rp)
+        self.assertIn("按需导入", orchestrator)
+        self.assertIn("不得直接撰写常规叙事正文", orchestrator)
+        self.assertIn("交互循环", orchestrator)
+        self.assertIn("关键决策点", orchestrator)
+        self.assertIn("章节字数", orchestrator)
+        self.assertIn("improvement_queue.jsonl", orchestrator)
+
+        self.assertIn("role_channel", router)
+        self.assertIn("user_instruction_channel", router)
+        self.assertIn("第一人称剧情梗概", router)
+        self.assertIn("第三人称上帝视角设定", router)
+        self.assertIn("互不干扰", router)
+
+        self.assertIn("GM agent 可以接收完整剧情", projector)
+        self.assertIn("严格独立的第一人称视角", projector)
+        self.assertIn("不得泄露", projector)
+        self.assertIn("world-visible", projector)
+
+        self.assertIn("旁白和非核心角色", gm)
+        self.assertIn("实时运转", gm)
+        self.assertIn("完整剧情", gm)
+        self.assertIn("gm.output.json", gm)
+
+        self.assertIn("不知道玩家", player)
+        self.assertIn("不知道 GM", player)
+        self.assertIn("关键决策点", player)
+        self.assertIn("player.output.json", player)
+
+        self.assertIn("真正活在作品世界", character)
+        self.assertIn("角色独立的人格", character)
+        self.assertIn("感官", character)
+        self.assertIn("memory_delta", character)
+
+        self.assertIn("尽可能保留各 subagent", story)
+        self.assertIn("<character_dialogues>", story)
+        self.assertIn("整体性", story)
+        self.assertIn("story.output.json", story)
+        self.assertIn("story.input.json", story)
+
+        self.assertIn("严谨的小说创作者", critic)
+        self.assertIn("叙事连贯", critic)
+        self.assertIn("逻辑严密", critic)
+        self.assertIn("角色生动", critic)
+        self.assertIn("系统迭代建议", critic)
+
+        self.assertIn("story.output.json", delivery)
+        self.assertIn("skills/styles/response.txt", delivery)
+        self.assertIn("round_deliver.py", delivery)
+
+        self.assertIn("image_generate.py", assets)
+        self.assertIn("异步", assets)
+        self.assertIn("不得阻塞正文交付", assets)
+        self.assertIn("ui_manifest.json", assets)
+
+        self.assertIn("Claude Code 直驱", claude)
+        self.assertIn("各阶段 skill 按需导入", claude)
+        self.assertIn("叙事创作和角色扮演任务必须交给 subagent", claude)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

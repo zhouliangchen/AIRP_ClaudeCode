@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+CST = timezone(timedelta(hours=8))
 
 
 def safe_name(name):
@@ -118,3 +122,33 @@ def read_current_critic_report(card_folder):
     if run_dir is None:
         return {}
     return read_json(run_dir / "critic.report.json", {})
+
+
+def append_manifest_stage(manifest, stage, message):
+    """Append a stage entry to a manifest and set it as current progress."""
+    if not isinstance(manifest, dict):
+        manifest = {}
+    timestamp = datetime.now(CST).isoformat(timespec="seconds")
+    status = manifest.setdefault("status", [])
+    if not isinstance(status, list):
+        status = []
+        manifest["status"] = status
+    entry = {
+        "stage": stage,
+        "message": message,
+        "timestamp": timestamp,
+    }
+    status.append(entry)
+    manifest["stage"] = stage
+    manifest["progress"] = entry
+    manifest["progress_message"] = message
+    return manifest
+
+
+def update_manifest_stage(run_dir, stage, message):
+    """Read, update, and persist one manifest stage."""
+    run_dir = Path(run_dir)
+    manifest = read_json(run_dir / "manifest.json", {}) or {}
+    append_manifest_stage(manifest, stage, message)
+    write_json(run_dir / "manifest.json", manifest)
+    return manifest
