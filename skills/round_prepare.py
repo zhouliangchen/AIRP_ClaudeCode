@@ -96,9 +96,77 @@ def _load_player_input_edits(card_folder, limit=20, processed=False):
     return items
 
 
-def grep_reference_section(sections, section_title):
-    """O(1) section lookup against pre-indexed reference.md dict."""
-    return sections.get(section_title, "")
+def _short_context(text, limit=260):
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _analyze_player_input_for_plan(user_text, chat_log):
+    """Heuristic, non-authoritative breakdown used to force generation-time discipline.
+
+    The model still makes the final literary decision, but this section prevents mixed
+    player inputs from being treated as a single ordinary action.
+    """
+    text = user_text or ""
+    paragraphs = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    components = []
+
+    setting_cues = ["用于长期剧情引导", "长期剧情", "上帝视角", "设定", "主角是", "吊坠为", "代价是", "不需要立刻", "规则", "真相"]
+    derived_edit_cues = ["第一段", "首段", "上一段", "上轮", "前文", "前面", "所有章节", "章节", "修改", "改写", "重写", "重新构思", "重新编写", "编写", "修正", "回复"]
+    important_character_cues = ["设定重要角色", "重要角色", "核心角色"]
+    synopsis_cues = ["直到", "之后", "再回过神", "梦境", "梦醒", "醒来", "时间却", "唯一提醒", "正在", "化作泡影", "记住", "预示", "过去了", "下课后"]
+    action_pattern = re.compile(r"(^|[。！？，,\n])\s*我\s*(尝试|决定|打算|伸手|走向|冲向|询问|问|说|拿起|捡起|扔掉|丢掉|后退|离开|跟上|拉住|打开|看向|靠近|躲开|拒绝|同意)")
+
+    def add(kind, para, reason):
+        snippet = _short_context(para)
+        if not any(c["type"] == kind and c["text"] == snippet for c in components):
+            components.append({"type": kind, "text": snippet, "reason": reason})
+
+    for para in paragraphs:
+        stripped = para.strip()
+        inner = stripped[1:-1].strip() if stripped.startswith("（") and stripped.endswith("）") else stripped
+        if stripped.startswith("（") and stripped.endswith("）") or any(cue in inner for cue in setting_cues):
+            # Parenthetical authorial guidance is not character action unless it also has action cues below.
+            kind = "OMNISCIENT_SETTING"
+            reason = "括号/设定提示/长期剧情规则，必须作为权威设定或暗线保存"
+            if any(cue in inner for cue in derived_edit_cues):
+                kind = "DERIVED_CONTENT_EDIT"
+                reason = "玩家要求修改既有 AI 回复/前文；必须写入 <derived_content_edits> 修正旧派生内容，不得只在新回复里演出"
+            elif any(cue in inner for cue in important_character_cues):
+                kind = "IMPORTANT_CHARACTER_DECLARATION"
+                reason = "玩家手动指定重要角色；必须更新 character_orchestration.major 并为该角色开启 subagent/独立上下文"
+            add(kind, para, reason)
+        if any(cue in para for cue in synopsis_cues):
+            add("SYNOPSIS", para, "玩家概述已发生或将发生的剧情，先按原顺序扩写/承认")
+        if action_pattern.search(para):
+            add("ACTION", para, "玩家当前行动，必须在处理完设定与梗概后解析其直接后果")
+
+    if not components and text.strip():
+        components.append({"type": "UNCLASSIFIED", "text": _short_context(text), "reason": "未命中启发式分类；仍以玩家原文为权威"})
+
+    conflict_patterns = [
+        "梦境破碎", "醒来", "梦醒", "现实", "时间却只过去", "只过去了一分钟",
+        "不是梦境", "唯一提醒", "之前", "其实", "而是", "不需要立刻在剧情中体现",
+        "长期剧情引导", "无法再被回忆", "化作泡影",
+    ]
+    conflict_cues = [cue for cue in conflict_patterns if cue in text]
+    previous = {}
+    if chat_log:
+        last = chat_log[-1] or {}
+        previous = {
+            "index": last.get("index", "?"),
+            "summary": _short_context(last.get("summary", ""), 220),
+            "ai_excerpt": _short_context(re.sub(r"<[^>]+>", "", last.get("ai", "")), 260),
+        }
+    declared_major = []
+    for m in re.finditer(r"(?:设定重要角色|重要角色|核心角色)[：:，,\s]*([一-鿿A-Za-z0-9_·]{1,20})", text):
+        name = m.group(1).strip()
+        if name and name not in declared_major:
+            declared_major.append(name)
+
+    return {"components": components, "conflict_cues": conflict_cues, "previous": previous, "declared_major_characters": declared_major}
 
 
 def _keyword_score(keyword, text):
@@ -334,6 +402,23 @@ def main():
     chat_log = read_json(chat_log_path) or []
     player_input_history = _load_player_input_history(card_folder)
     player_input_edits = _load_player_input_edits(card_folder, processed=False)
+    input_plan = _analyze_player_input_for_plan(user_text, chat_log)
+    if input_plan.get("declared_major_characters") and isinstance(card_data, dict):
+        orchestration = card_data.setdefault("character_orchestration", {})
+        major = orchestration.setdefault("major", [])
+        changed_orchestration = False
+        for name in input_plan.get("declared_major_characters", []):
+            if name and name not in major:
+                major.append(name)
+                changed_orchestration = True
+        orchestration.setdefault("minor_policy", "main_agent")
+        orchestration.setdefault("max_parallel_subagents", 2)
+        if changed_orchestration:
+            try:
+                with open(Path(card_folder) / ".card_data.json", "w", encoding="utf-8") as f:
+                    json.dump(card_data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
     # Load reference.md once for O(1) section lookups this round
     ref_sections = _load_reference_sections(card_folder)
@@ -388,13 +473,39 @@ def main():
     dynamic_parts.append("- 玩家历次输入是唯一权威事实源；不得改写、润色或删除 .player_inputs.jsonl 中的 raw_text/display_text。")
     dynamic_parts.append("- 不得擅自编辑、裁剪、合并或摘要玩家输入；response.txt 中的 <polished_input> 仅可作为内部解释，不可覆盖玩家原文。")
     dynamic_parts.append("- 若新玩家输入与既有 AI 叙事、角色资料、变量、记忆或世界设定冲突，以玩家新输入为准。")
-    dynamic_parts.append("- 可修正或重写 AI 生成内容、摘要、memory、角色状态、变量和派生设定，使其服从玩家输入。")
+    dynamic_parts.append("- 每轮都必须实时根据玩家最新输入评估过去剧情和设定；发现冲突时，可以小幅修改或完全重写 AI 派生数据。")
+    dynamic_parts.append("- 冲突不是只在正文里解释一句；必须在本轮 <UpdateVariable> 中修正所有受影响的 AI 派生变量/角色状态/世界假设。")
+    dynamic_parts.append("- 可修正或重写 AI 生成内容、摘要、memory、角色状态、变量和派生设定，使其服从玩家输入；不得把玩家新设定当作可选建议。")
+    dynamic_parts.append("- 若玩家把上一轮 AI 推演改定为梦境、误会、预示、回忆、幻觉、演戏或已被覆盖的分支，本轮必须明确降级上一轮 AI 内容为对应性质，并阻止它继续作为现实事实污染后续变量。")
 
     dynamic_parts.append("\n=== PLAYER_INPUT_INTERPRETATION ===")
-    dynamic_parts.append("- ACTION: 玩家以第一人称给出下一步行动时，先简短复述该行动，再自然推进剧情。")
-    dynamic_parts.append("- SYNOPSIS: 玩家以第一人称给出接下来剧情梗概时，先结合既有数据扩写该梗概，再视情况继续推进。")
-    dynamic_parts.append("- OMNISCIENT_SETTING: 玩家以上帝视角给出设定时，将其视为权威事实，并更新/修正所有相关派生文件。")
-    dynamic_parts.append("- MIXED: 输入混合以上类型时，逐项识别处理；冲突处永远以玩家最新原文为准。")
+    dynamic_parts.append("- 先分类，后创作；不要把混合输入整体当作 ACTION 直接推进。")
+    dynamic_parts.append("- SYNOPSIS: 玩家给出的剧情梗概/已发生经过，必须先承认并按玩家顺序扩写；不得跳过梗概直接续写下一幕。")
+    dynamic_parts.append("- OMNISCIENT_SETTING: 玩家给出的括号设定、长期引导、世界规则、真相和代价，视为权威设定；不必一次性向角色揭示，但必须写入变量/记忆暗线。")
+    dynamic_parts.append("- ACTION: 玩家当前行动只在处理完设定与梗概后推进；先给出该行动的直接后果，再引出新的变化。")
+    dynamic_parts.append("- DERIVED_CONTENT_EDIT: 玩家要求修改第一段/首段/上一轮/前文/既有回复时，不是把指定内容写进最新回复；必须在 response.txt 写 <derived_content_edits> JSON，定点修正旧 AI 派生内容。")
+    dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: 玩家手动指定重要角色时，必须写入角色变量/记忆，并将其加入 character_orchestration.major；本轮若 scene_relevance=high/normal，应调用该角色 subagent，除非运行环境无法调用。")
+    dynamic_parts.append("- MIXED: 按 DERIVED_CONTENT_EDIT → IMPORTANT_CHARACTER_DECLARATION → OMNISCIENT_SETTING → SYNOPSIS → ACTION 的顺序逐项处理；response.txt 的 <polished_input> 必须简要列出本轮识别到的类型和修正动作。")
+
+    dynamic_parts.append("\n=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===")
+    comps = input_plan.get("components", [])
+    if comps:
+        for idx, comp in enumerate(comps, 1):
+            dynamic_parts.append(f"  {idx}. {comp.get('type')}: {comp.get('text')}")
+            dynamic_parts.append(f"     why: {comp.get('reason')}")
+    else:
+        dynamic_parts.append("  (no classified components; still obey raw user text)")
+    if input_plan.get("declared_major_characters"):
+        dynamic_parts.append("  declared_major_characters: " + ", ".join(input_plan.get("declared_major_characters", [])))
+        dynamic_parts.append("  required_orchestration: add these names to .card_data.json character_orchestration.major and use a role subagent when generating this turn.")
+    if input_plan.get("conflict_cues"):
+        dynamic_parts.append("  conflict_cues: " + ", ".join(input_plan.get("conflict_cues", [])[:12]))
+        prev = input_plan.get("previous") or {}
+        if prev:
+            dynamic_parts.append(f"  prior_ai_to_reconcile: turn={prev.get('index')} summary={prev.get('summary')}")
+            dynamic_parts.append("  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete; update variables so future turns follow the player's latest framing. Repair can be a small edit or a full rewrite of prior derived story/settings/memory, while preserving raw player inputs.")
+    else:
+        dynamic_parts.append("  conflict_cues: (none detected heuristically; still check manually)")
 
     if player_input_history:
         dynamic_parts.append("\n=== PLAYER_INPUT_HISTORY (authoritative, recent) ===")

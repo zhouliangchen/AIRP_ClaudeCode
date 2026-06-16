@@ -1038,15 +1038,29 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     fields = profile["fields"]
 
     # Use explicit MVU values when available; otherwise keep existing values.
-    # Prefer the emergent role's own name over 玩家.姓名={{user}}.
+    # Blank-bootstrap evolves the story/card from authoritative player input, so
+    # never let an NPC written under the generic /角色 slot rename the whole card
+    # when /玩家/姓名 is present. Treat /角色 as the current focus NPC, not self.
+    player_name = ""
     name = ""
     if isinstance(stat_data, dict):
+        player_obj = stat_data.get("玩家")
+        if isinstance(player_obj, dict):
+            player_name = str(player_obj.get("姓名") or player_obj.get("名字") or "").strip()
         role_obj = stat_data.get("角色")
         if isinstance(role_obj, dict):
             name = str(role_obj.get("姓名") or role_obj.get("名字") or "").strip()
+    if player_name and player_name != "{{user}}":
+        name = player_name
     if not name:
         name = _find_first_str(stat_data, ["姓名", "名字", "名称", "name"])
-    role = _find_first_str(stat_data, ["身份", "职业", "角色定位", "role"])
+    role = ""
+    if isinstance(stat_data, dict):
+        player_obj = stat_data.get("玩家")
+        if isinstance(player_obj, dict):
+            role = _find_first_str(player_obj, ["身份", "职业", "角色定位", "role"])
+    if not role:
+        role = _find_first_str(stat_data, ["身份", "职业", "角色定位", "role"])
     situation = _find_first_str(stat_data, ["当前状况", "当前状态", "状态"])
     location = _find_first_str(stat_data, ["地点", "当前位置"])
     scene = _find_first_str(stat_data, ["当前场景", "场景"])
@@ -1259,7 +1273,62 @@ def _dict_to_schema_node(d):
     return schema
 
 
-def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text="", character_dialogues=None):
+def apply_derived_content_edits(log, edits):
+    """Apply player-requested repairs to AI-derived turn content.
+
+    Edits never touch player input fields. They are for cases where the user says
+    e.g. "modify the first AI paragraph" while also submitting the next turn.
+    """
+    if not isinstance(edits, list):
+        return []
+    applied = []
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        try:
+            turn_index = int(edit.get("turn_index", 0))
+        except Exception:
+            continue
+        if turn_index < 0 or turn_index >= len(log):
+            continue
+        target = log[turn_index]
+        ai_text = target.get("ai", "") or ""
+        summary_text = target.get("summary", "") or ""
+        reason = str(edit.get("reason") or "player-directed derived content repair")
+
+        # Full replacement for broad rewrite requests (e.g. "rewrite all previous chapters").
+        new_ai = edit.get("ai") or edit.get("content") or edit.get("new_ai")
+        if isinstance(new_ai, str) and new_ai.strip():
+            target["ai"] = new_ai.strip()
+            applied.append({"turn_index": turn_index, "op": "replace_ai", "reason": reason})
+
+        # Currently supported partial operation: replace the first narrative paragraph.
+        new_first = edit.get("first_paragraph") or edit.get("new_first_paragraph")
+        if isinstance(new_first, str) and new_first.strip():
+            para = new_first.strip()
+            if not para.startswith("<p>"):
+                para = "<p>" + para + "</p>"
+            if re.search(r"<p>.*?</p>", ai_text, flags=re.DOTALL):
+                ai_text = re.sub(r"<p>.*?</p>", para, ai_text, count=1, flags=re.DOTALL)
+            else:
+                ai_text = para + "\n" + ai_text
+            target["ai"] = ai_text
+            applied.append({"turn_index": turn_index, "op": "replace_first_paragraph", "reason": reason})
+
+        new_summary = edit.get("summary")
+        if isinstance(new_summary, str) and new_summary.strip():
+            target["summary"] = new_summary.strip()
+            target["ai"] = re.sub(r"<summary>.*?</summary>", "<summary>" + new_summary.strip() + "</summary>", target.get("ai", ""), flags=re.DOTALL)
+            applied.append({"turn_index": turn_index, "op": "replace_summary", "reason": reason})
+
+        target.setdefault("derived_repairs", []).append({
+            "reason": reason,
+            "source": "response.txt/derived_content_edits",
+        })
+    return applied
+
+
+def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text="", character_dialogues=None, derived_content_edits=None):
     """Append a new turn to chat_log and rebuild content.js."""
     log = read_chat_log(card_folder)
     next_index = len(log)
@@ -1348,6 +1417,9 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         entry["variables"] = {"stat_data": prev_vars}
 
     log.append(entry)
+    applied_repairs = apply_derived_content_edits(log, derived_content_edits)
+    if applied_repairs:
+        entry["derived_content_edits_applied"] = applied_repairs
     write_chat_log(card_folder, log)
     if pending_user_turn:
         clear_pending_user_turn(card_folder)
@@ -1667,8 +1739,22 @@ if __name__ == "__main__":
     summary = parts.get("summary", "")
     options = parts.get("options", "")
     character_dialogues = parts.get("character_dialogues", [])
+    derived_content_edits = parts.get("derived_content_edits", [])
+    edit_only = bool(parts.get("edit_only")) and bool(derived_content_edits)
     polished_input = parts.get("polished_input", "")
     tokens = parts.get("tokens", None)
+
+    if edit_only:
+        log = read_chat_log(card_folder)
+        apply_derived_content_edits(log, derived_content_edits)
+        write_chat_log(card_folder, log)
+        write_content_js(card_folder)
+        clear_pending_user_turn(card_folder)
+        resp_path.unlink(missing_ok=True)
+        bridge_done()
+        write_progress("complete", "派生内容已重写", percent=100)
+        print("[handler] Derived content edits applied. content.js rebuilt.")
+        sys.exit(0)
 
     # ── Opening: compute startup cost BEFORE append_turn so turn 0 has token stats ──
     if is_opening and not tokens:
@@ -1698,6 +1784,7 @@ if __name__ == "__main__":
         summary=summary,
         options=options,
         character_dialogues=character_dialogues,
+        derived_content_edits=derived_content_edits,
         is_opening=is_opening,
         tokens=tokens,
         full_text=response_text,

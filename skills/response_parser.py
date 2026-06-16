@@ -35,17 +35,18 @@ def parse_response(text):
     """Parse response.txt into structured parts.
 
     Returns a dict with any of: polished_input, content, character_dialogues,
-    summary, options, tokens.
-    The tokens value is a parsed dict; others are stripped strings.
+    summary, options, tokens, derived_content_edits.
+    The tokens value is a parsed dict; JSON blocks are parsed into Python values;
+    others are stripped strings.
     """
     result = {}
-    for tag in ("polished_input", "content", "character_dialogues", "summary", "options", "tokens"):
+    for tag in ("polished_input", "content", "character_dialogues", "derived_content_edits", "edit_only", "summary", "options", "tokens"):
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
         if m:
             raw = m.group(1).strip()
             if tag == "tokens":
                 result[tag] = parse_tokens(raw)
-            elif tag == "character_dialogues":
+            elif tag in ("character_dialogues", "derived_content_edits"):
                 try:
                     parsed = json.loads(raw)
                 except json.JSONDecodeError:

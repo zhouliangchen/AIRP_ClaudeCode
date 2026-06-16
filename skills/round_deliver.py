@@ -20,6 +20,61 @@ from handler import write_progress
 from io_utils import read_file, read_json
 
 
+def _extract_tag(text, tag):
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def validate_player_processing(response_text, round_context):
+    """Guardrail for mixed player inputs and conflict repairs.
+
+    This is intentionally heuristic: it catches the common failure mode where the
+    model notices a player correction in prose but does not persist the repaired
+    facts into MVU state for future turns.
+    """
+    warnings = []
+    ctx = round_context or ""
+    polished = _extract_tag(response_text, "polished_input")
+    update_block = _extract_tag(response_text, "UpdateVariable")
+    patch_block = _extract_tag(response_text, "JSONPatch")
+    summary = _extract_tag(response_text, "summary")
+    response_probe = "\n".join([polished, update_block, summary])
+
+    classified = re.findall(r"^\s*\d+\.\s+(OMNISCIENT_SETTING|SYNOPSIS|ACTION|UNCLASSIFIED|DERIVED_CONTENT_EDIT|IMPORTANT_CHARACTER_DECLARATION):", ctx, flags=re.MULTILINE)
+    if len(set(classified)) >= 2:
+        missing = [kind for kind in sorted(set(classified)) if kind not in polished]
+        if missing:
+            warnings.append("<polished_input> must explicitly list mixed input handling for: " + ", ".join(missing))
+
+    if "conflict_cues: (none detected" not in ctx and "required_repair:" in ctx:
+        repair_terms = ["修正", "覆盖", "降级", "梦", "预示", "现实", "分支", "派生", "上一轮"]
+        if not any(term in response_probe for term in repair_terms):
+            warnings.append("Detected conflict cues, but response does not explicitly describe repair/reframing in polished_input/summary/UpdateVariable.")
+        if not patch_block:
+            warnings.append("Detected conflict cues, but no <JSONPatch> was written to persist repaired derived state.")
+        patch_terms = ["梦", "预示", "现实", "覆盖", "分支", "核心异常", "长期", "规则", "吊坠"]
+        if patch_block and not any(term in patch_block for term in patch_terms):
+            warnings.append("JSONPatch exists but does not appear to persist the player's reframing/long-term setting.")
+
+    if "DERIVED_CONTENT_EDIT" in classified and "<derived_content_edits>" not in response_text:
+        warnings.append("Player requested editing existing AI-derived content, but response lacks <derived_content_edits>; do not merely place the requested scene in the latest reply.")
+
+    edit_only = _extract_tag(response_text, "edit_only")
+    if edit_only and "<derived_content_edits>" in response_text:
+        return warnings
+
+    if "IMPORTANT_CHARACTER_DECLARATION" in classified:
+        if "source=\"subagent\"" not in response_text and '"source":"subagent"' not in response_text and '"source": "subagent"' not in response_text:
+            warnings.append("Player declared an important character, but no subagent-sourced <character_dialogues> entry was provided.")
+
+    if "OMNISCIENT_SETTING" in classified and patch_block:
+        setting_terms = ["长期", "规则", "代价", "真相", "暗线", "吊坠", "变身", "黑暗", "魔力"]
+        if not any(term in patch_block for term in setting_terms):
+            warnings.append("Omniscient setting detected, but JSONPatch does not appear to store it as an ongoing rule/hidden truth.")
+
+    return warnings
+
+
 def count_chinese(text):
     """Count Chinese characters in text, stripping HTML."""
     clean = re.sub(r"<[^>]+>", "", text)
@@ -61,6 +116,7 @@ def main():
     content_match = re.search(r"<content>(.*?)</content>", response_text, re.DOTALL)
     content_text = content_match.group(1) if content_match else response_text
     chinese_count = count_chinese(content_text)
+    edit_only = _extract_tag(response_text, "edit_only") and "<derived_content_edits>" in response_text
 
     # ── 2. Token Collection (checkpoint-based delta) ──
     import token_stats
@@ -104,8 +160,22 @@ def main():
 
     # ── 3. Quality Gate ──
     ratio = chinese_count / word_count_target if word_count_target > 0 else 1.0
+    round_context = read_file(styles_dir / "round_context.txt") or ""
+    processing_warnings = validate_player_processing(response_text, round_context)
 
-    if chinese_count < threshold:
+    if processing_warnings:
+        write_progress("retry", "回复未按玩家输入权威规则修正，等待重写", percent=65)
+        print(json.dumps({
+            "action": "retry",
+            "reason": "player_input_processing",
+            "warnings": processing_warnings,
+            "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
+            "tokens": token_data,
+            "hint": "必须先按 PLAYER_INPUT_PROCESSING_PLAN 分类处理：冲突需修正派生设定/变量，梗概需先承认并扩写，上帝视角设定需存入暗线变量，最后才推进玩家行动。"
+        }, ensure_ascii=False))
+        sys.exit(0)
+
+    if not edit_only and chinese_count < threshold:
         # Word count failed — signal retry (do NOT save checkpoint)
         write_progress("retry", "回复未达字数要求，等待重写", percent=65)
         print(json.dumps({
@@ -144,6 +214,27 @@ def main():
             "detail": handler_output[:500]
         }, ensure_ascii=False))
         sys.exit(1)
+
+    if edit_only:
+        token_stats.save_checkpoint(card_folder, delta=delta, label="round")
+        state_js = read_file(styles_dir / "state.js")
+        generated_count = 0
+        if state_js:
+            m = re.search(r"generatedCount:\s*(\d+)", state_js)
+            if m:
+                generated_count = int(m.group(1))
+        write_progress("complete", "派生内容已重写", percent=100)
+        print(json.dumps({
+            "action": "done",
+            "edit_only": True,
+            "generatedCount": generated_count,
+            "story_plan_due": False,
+            "word_count": {"current": chinese_count, "target": word_count_target, "ratio": round(ratio, 2)},
+            "tokens": token_data,
+            "memory_updated": False,
+            "summary": "已按玩家指令重写前文 AI 派生章节"
+        }, ensure_ascii=False))
+        sys.exit(0)
 
     # Save checkpoint only after successful delivery
     token_stats.save_checkpoint(card_folder, delta=delta, label="round")

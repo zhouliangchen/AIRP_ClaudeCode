@@ -1,9 +1,9 @@
 {
-  "style": "北棱特调",
-  "nsfw": "直白",
+  "style": "轻松活泼",
+  "nsfw": "舒缓",
   "person": "第二人称",
-  "antiImpersonation": true,
-  "bgNpc": false,
-  "charName": "猫子",
-  "wordCount": 2000
+  "antiImpersonation": false,
+  "bgNpc": true,
+  "charName": "良辰",
+  "wordCount": 4000
 }
