@@ -18,10 +18,14 @@ INSTRUCTION_KEYWORDS = (
     "rewrite",
     "important character",
     "important_character",
+    "系统指令",
+    "上帝视角",
+    "上帝",
+    "设定",
 )
 
-_INSTRUCTION_RE = re.compile(r"^\s*[（(].*[）)]\s*$")
-_SEGMENTS_RE = re.compile(r"([（(][^）)]*[）)])")
+_INSTRUCTION_RE = re.compile(r"^\s*[()\uFF08\uFF09][\s\S]*[()\uFF08\uFF09]\s*$")
+_SEGMENTS_RE = re.compile(r"([()\uFF08][^)\uFF09]*[)\uFF09])")
 
 
 def _to_text(value: Any) -> str:
@@ -125,7 +129,13 @@ def _iter_characters(character_contexts: Any) -> Iterable[Dict[str, Any]]:
     if not character_contexts:
         return []
     if isinstance(character_contexts, dict):
-        return [{"name": str(k), **(v if isinstance(v, dict) else {})} for k, v in character_contexts.items()]
+        if "characters" in character_contexts and isinstance(character_contexts["characters"], (list, tuple)):
+            return character_contexts["characters"]
+        return [
+            {"name": str(k), **(v if isinstance(v, dict) else {})}
+            for k, v in character_contexts.items()
+            if isinstance(v, dict)
+        ]
     if isinstance(character_contexts, (list, tuple)):
         result = []
         for item in character_contexts:
