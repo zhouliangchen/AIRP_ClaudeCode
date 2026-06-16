@@ -12,6 +12,7 @@ Use PowerShell for manual project operation on Windows; the runtime cleanup scri
 - Run the import/startup pipeline manually: `python skills/import_prepare.py "<card_folder>" "."`.
 - Run a turn preparation pipeline manually: `python skills/round_prepare.py "<card_folder>" "."`.
 - Deliver a generated response manually after `.agent_runs/<round>/story.output.json` and `critic.report.json` are ready, or after legacy `skills/styles/response.txt` is written: `python skills/round_deliver.py "<card_folder>" "."`.
+- Run the deterministic no-live-model multi-agent control-plane smoke test: `python skills/control_plane_smoke.py --repo .`.
 - Process a response directly: `python skills/handler.py "<card_folder>"`; add `--opening` for the initial opening turn.
 - Run the MVU Node service directly only when debugging schema validation: from `skills/`, run `node mvu_server.js`.
 - Install/update the only Node dependency used by the MVU service: from `skills/`, run `npm install`.
@@ -29,12 +30,22 @@ The core runtime is a Python standard-library bridge plus a small Node validatio
 - `skills/import_prepare.py` is the startup pipeline. It cleans stale runtime state, delegates card/world import to `import_card.py`, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt` as the single startup context file for Claude.
 - `skills/round_prepare.py` is the per-turn context pipeline. It reads user input, settings, recent memory, worldbook indexes, injection rules, and MVU state, then writes `skills/styles/round_context.txt`. Keep stable/static context near the file prefix and dynamic turn data near the suffix to preserve prompt-cache locality.
 - Claude Code orchestrates subagents that create and review narrative output through `.agent_runs/<round>/`. `agent_prompts.py` materializes prompts, `agent_outputs.py` validates artifacts, assembles `story.input.json`, records critic revise/block repair history plus related system improvement suggestions, and mirrors approved `story.output.json` content to `skills/styles/response.txt`. `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
+- `skills/agent_workflow.py` gives deterministic next-action advice from a run manifest, and `skills/control_plane_smoke.py` drives a temporary no-live-model control-plane smoke that covers artifacts, interaction trace, memory delta/summary, and delivery.
 - `skills/handler.py` parses tagged responses, executes MVU updates through `mvu_engine.py`, appends `chat_log.json`, rebuilds `content.js`, mirrors `state.js` into the card folder, and notifies the browser via `/api/done`.
 - `skills/mvu_engine.py`, `skills/mvu_check.py`, `skills/mvu_shared.js`, and `skills/mvu_server.js` implement the variable/JSONPatch system and schema validation.
 - `skills/import_card.py`, `skills/match_worldbook.py`, `skills/write_memory.py`, and `skills/agent_memory.py` manage card parsing, worldbook lookup, persistent narrative memory, validated subagent memory deltas, and scheduled actor self-summaries under each card folder's `memory/` directory.
 - `skills/styles/` contains the browser UI and runtime files. Files such as `content.js`, `state.js`, `input.txt`, `.pending`, `round_context.txt`, and `import_context.txt` are generated runtime artifacts, not source-of-truth code.
 
-Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` → Claude Code dispatches subagents and may record `interaction.trace.json` → GM/player/character outputs are written → `story.input.json` is assembled with sanitized interaction trace and story/critic artifacts are written → `round_deliver.py` validates artifacts, records critic revise/block `repair_history.jsonl` and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
+Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` → Claude Code dispatches subagents and may record `interaction.trace.json` → GM/player/character outputs are written → `agent_workflow.py` can advise the next control-plane action → `story.input.json` is assembled with sanitized interaction trace and story/critic artifacts are written → `round_deliver.py` validates artifacts, records critic revise/block `repair_history.jsonl` and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
+
+## Final Acceptance Checklist
+
+- `python -m unittest discover -s tests -v`
+- `python skills/control_plane_smoke.py --repo .`
+- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py`
+- Start `python skills/start_server.py .` and verify `http://localhost:8765`.
+- Verify the printed LAN URL from a phone or other LAN device.
+- In Claude Code, run `/rp` against a blank folder and complete at least five player turns, checking immediate player-input display, independent important-character dialogue boxes, progress updates, hot UI/image refresh, and stopping at player decisions.
 
 ## Runtime instructions for RP mode
 ## 多 Subagent 编排宪法
@@ -69,7 +80,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - 当前卡片文件夹下的 `memory/` 目录及其所有 `.md`、`.json` 文件 — 跨会话记忆、角色私有记忆与世界书索引
 - `{ROOT}/skills/styles/round_context.txt` — 回合预处理汇总上下文
 - `{ROOT}/skills/styles/import_context.txt` — 导入预处理汇总上下文
-- `{ROOT}/skills/handler.py`, `{ROOT}/skills/server.py`, `{ROOT}/skills/mvu_engine.py`, `{ROOT}/skills/mvu_check.py`, `{ROOT}/skills/match_worldbook.py`, `{ROOT}/skills/write_memory.py`, `{ROOT}/skills/agent_prompts.py`, `{ROOT}/skills/agent_outputs.py`, `{ROOT}/skills/agent_memory.py`, `{ROOT}/skills/agent_schemas.py`, `{ROOT}/skills/round_prepare.py`, `{ROOT}/skills/round_deliver.py`, `{ROOT}/skills/import_prepare.py`, `{ROOT}/skills/start_server.py`
+- `{ROOT}/skills/handler.py`, `{ROOT}/skills/server.py`, `{ROOT}/skills/mvu_engine.py`, `{ROOT}/skills/mvu_check.py`, `{ROOT}/skills/match_worldbook.py`, `{ROOT}/skills/write_memory.py`, `{ROOT}/skills/agent_workflow.py`, `{ROOT}/skills/control_plane_smoke.py`, `{ROOT}/skills/agent_prompts.py`, `{ROOT}/skills/agent_outputs.py`, `{ROOT}/skills/agent_memory.py`, `{ROOT}/skills/agent_schemas.py`, `{ROOT}/skills/round_prepare.py`, `{ROOT}/skills/round_deliver.py`, `{ROOT}/skills/import_prepare.py`, `{ROOT}/skills/start_server.py`
 - `{ROOT}/STORY.md` — 叙事理论框架，剧情规划时读取
 - `{ROOT}/CLAUDE.md`
 
@@ -98,6 +109,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - `python "{ROOT}/skills/match_worldbook.py" "<卡片文件夹>"` — 匹配变量变更与世界书索引
 - `python "{ROOT}/skills/write_memory.py" "<卡片文件夹>"` — 追加本轮摘要到 project.md
 - `python -c "import sys; sys.path.insert(0, r'{ROOT}/skills'); import agent_outputs; agent_outputs.build_story_input(r'<当前 .agent_runs 轮目录>')"` — 在 GM/player/character 产物齐备后生成 `story.input.json`（通常由 `round_deliver.py` 防御性重建）
+- `python "{ROOT}/skills/control_plane_smoke.py" --repo "{ROOT}"` — 运行无 live model 的多 agent 控制面冒烟测试
 - `python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"` — 回合预处理管线
 - `python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"` — 回合后处理管线
 - `python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"` — 导入/启动预处理管线
