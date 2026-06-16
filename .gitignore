@@ -63,7 +63,11 @@ skills/image_config.local.json
 !tests/
 !tests/**
 !docs/
+docs/*
 !docs/superpowers/
-!docs/superpowers/**
+docs/superpowers/*
+!docs/superpowers/plans/
+docs/superpowers/plans/*
+!docs/superpowers/plans/2026-06-16-final-stage-rp-refactor.md
 tests/__pycache__/
 tests/*.pyc
