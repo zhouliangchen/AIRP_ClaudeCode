@@ -492,9 +492,10 @@ class TurnStateTest(unittest.TestCase):
             self.assertEqual(pending["user_instruction_text"], instruction_text)
 
             instruction_only = "Only update the hidden world state."
-            instruction_result = post_submit({"instructionText": instruction_only})
+            instruction_result = post_submit({"instructionText": instruction_only, "charName": "Hero"})
 
             self.assertTrue(instruction_result["ok"])
+            self.assertEqual(instruction_result["text"], "")
             expected_instruction_raw = "\n\n[USER_INSTRUCTION]\n" + instruction_only
             self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_instruction_raw)
             inputs = self.handler.read_player_inputs(str(self.card))

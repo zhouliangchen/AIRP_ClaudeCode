@@ -333,6 +333,32 @@ class AgentMemoryTest(unittest.TestCase):
 
                 self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
 
+    def test_ingest_memory_summaries_rejects_prompt_declared_hidden_markers(self):
+        for marker, expected in [
+            ("hidden-note", "hidden_note"),
+            ("out-of-character", "out_of_character"),
+        ]:
+            with self.subTest(marker=marker):
+                if (self.card / "memory" / "player" / "summary.md").exists():
+                    (self.card / "memory" / "player" / "summary.md").unlink()
+                self._write_memory_summary_manifest(
+                    {"player": "memory_summaries/player.summary.json"}
+                )
+                _write_json(
+                    self.run_dir / "memory_summaries" / "player.summary.json",
+                    {
+                        "agent_id": "player",
+                        "summary": f"I should not persist {marker} knowledge.",
+                        "source": "self",
+                        "visibility": "actor",
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
+                    self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
+
+                self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

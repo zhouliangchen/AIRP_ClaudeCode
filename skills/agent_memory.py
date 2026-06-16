@@ -14,7 +14,14 @@ import agent_run
 CST = timezone(timedelta(hours=8))
 
 ACTOR_ALLOWED_SOURCES = {"perceived", "observed", "self", "dialogue"}
-ACTOR_FORBIDDEN_MARKERS = {"gm_only", "omniscient", "world_truth", "gm_notes"}
+ACTOR_FORBIDDEN_MARKERS = {
+    "gm_only",
+    "omniscient",
+    "world_truth",
+    "gm_notes",
+    "hidden_note",
+    "out_of_character",
+}
 SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
 
 
