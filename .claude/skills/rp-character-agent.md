@@ -32,18 +32,16 @@ Write `characters/<safe_name>.output.json`:
 
 ```json
 {
-  "name": "...",
-  "private_reaction": "...",
-  "intent": "...",
+  "agent": "character",
+  "agent_id": "character:<safe_name>",
+  "character_name": "...",
   "action": "...",
-  "dialogue": "",
-  "aside": "",
-  "relationship_shift": "",
-  "state_suggestions": [],
-  "memory_delta": [],
-  "visible_to_others": [],
-  "needs_response_from": []
+  "dialogue": [],
+  "perception": [],
+  "memory_delta": []
 }
 ```
+
+Use only these top-level keys. Put private reaction, intent, sensory detail, and misunderstandings in `perception` or `action`; spoken lines in `dialogue`; relationship shifts, durable state changes, and remembered facts in `memory_delta`.
 
 Do not write final narration. Do not duplicate another character's voice.

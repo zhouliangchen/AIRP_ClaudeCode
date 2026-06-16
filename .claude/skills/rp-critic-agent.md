@@ -44,6 +44,8 @@ Write `critic.report.json`:
 }
 ```
 
+Use only these top-level keys. Put all review notes inside `hard_failures`, `soft_issues`, `repair_instruction`, or `system_iteration_suggestion`.
+
 Use `decision: "pass"` only when delivery is safe. Use `decision: "revise"` for fixable issues and `decision: "block"` for severe authority, logic, or safety failures.
 
 Do not edit `story.output.json` directly.

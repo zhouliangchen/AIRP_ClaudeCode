@@ -28,14 +28,13 @@ Write `player.output.json`:
 
 ```json
 {
-  "embodied_intent": "...",
-  "immediate_action": "...",
-  "inner_sensation": "...",
-  "spoken_line": "",
-  "meaningful_player_decision": "",
-  "decision_reason": "",
-  "memory_delta": [],
-  "state_suggestions": [],
-  "stop_reason": "decision_point|synopsis_complete|continue"
+  "agent": "player",
+  "agent_id": "player",
+  "action": "...",
+  "dialogue": [],
+  "perception": [],
+  "memory_delta": []
 }
 ```
+
+Use only these top-level keys. Put embodied intent and immediate action in `action`; inner sensation, risk perception, and character-perceivable decision pressure in `perception`; spoken lines in `dialogue`; durable memory or state changes in `memory_delta`.

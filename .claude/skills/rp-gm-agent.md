@@ -31,16 +31,14 @@ Write `gm.output.json`:
 
 ```json
 {
-  "scene_state": "...",
-  "world_updates": [],
-  "non_core_characters": [],
-  "visible_consequences": [],
-  "hidden_consequences": [],
-  "conflict_repairs": [],
-  "facts_now_world_visible": [],
-  "next_pressure": "...",
-  "stop_reason": "decision_point|word_target|continue"
+  "agent": "gm",
+  "narration": "...",
+  "npc_events": [],
+  "world_state_delta": [],
+  "handoff": {}
 }
 ```
+
+Use only these top-level keys. Put scene pressure, stop/decision notes, conflict repair suggestions, and hidden/visible consequence routing inside `handoff`; put durable world facts in `world_state_delta`; put NPC and background action in `npc_events`.
 
 Do not write `skills/styles/response.txt`. Do not impersonate player or core character inner voice.

@@ -43,6 +43,8 @@ Write `story.output.json`:
 }
 ```
 
+Use only these top-level keys. Put assembly notes, source round identifiers, and delivery hints inside `metadata`.
+
 `content` must use the existing response tag contract:
 
 - `<polished_input>` as processing notes only, never as a replacement for player text.
