@@ -33,9 +33,9 @@ When a message contains both channels, keep order but split responsibility:
 
 ## Classification Notes
 
-- A parenthesized sentence is not automatically instruction. "(I look away)" remains role-channel.
-- "我重写符文" is role action, not a rewrite command.
-- Explicit cues such as `系统指令:`, `用户指令:`, `上帝视角:`, `设定:`, `重要角色:`, `System:`, `Omniscient:` route to user instruction.
+- Explicit dual-channel UI fields are authoritative.
+- When text is mixed or ambiguous, use `rp-input-analyst`; do not rely on keyword lists.
+- Parentheses, genre labels, and casual phrases are not sufficient by themselves to classify a sentence.
 - For a first-person synopsis, story must expand the synopsis before advancing beyond it.
 - For an action, story briefly reflects the action's immediate consequence before moving forward.
 - For omniscient settings, update derived data and memory even if no in-world character currently knows the fact.

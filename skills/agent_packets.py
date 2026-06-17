@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable
-
+import json
 import re
+from pathlib import Path
+from typing import Any, Dict, Iterable
 
 import agent_run
 import agent_prompts
+import input_analysis
 
 
 INSTRUCTION_PREFIXES = (
@@ -270,6 +272,57 @@ DEFAULT_CRITIC_REPORT = {
 }
 
 
+def build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data):
+    """Build the immutable raw-input request for the input analyst subagent."""
+    explicit_payload = dict(input_payload) if isinstance(input_payload, dict) else {}
+    if explicit_payload.get("input_schema") == "dual_channel_v1":
+        raw_text = _to_text(explicit_payload.get("raw_text"))
+        role_text = _to_text(explicit_payload.get("role_text"))
+        user_instruction_text = _to_text(explicit_payload.get("user_instruction_text"))
+    else:
+        routed = route_input_payload(user_text, None)
+        raw_text = _to_text(user_text)
+        role_text = _to_text(routed.get("role_channel"))
+        user_instruction_text = _to_text(routed.get("user_instruction_channel"))
+
+    return {
+        "round_id": Path(run_dir).name,
+        "raw_text": raw_text,
+        "explicit_payload": explicit_payload,
+        "role_text": role_text,
+        "user_instruction_text": user_instruction_text,
+        "source_integrity": {
+            "raw_text_sha256": input_analysis.sha256_text(raw_text),
+            "role_text_sha256": input_analysis.sha256_text(role_text),
+            "user_instruction_text_sha256": input_analysis.sha256_text(user_instruction_text),
+            "raw_preserved": True,
+        },
+        "recent_chat": chat_log or [],
+        "card_projection": compact_card_data(card_data),
+    }
+
+
+def _input_raw_record(input_request: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "round_id": input_request.get("round_id", ""),
+        "raw_text": input_request.get("raw_text", ""),
+        "explicit_payload": input_request.get("explicit_payload", {}),
+        "role_text": input_request.get("role_text", ""),
+        "user_instruction_text": input_request.get("user_instruction_text", ""),
+        "source_integrity": input_request.get("source_integrity", {}),
+    }
+
+
+def _input_analysis_request_markdown(input_request: Dict[str, Any]) -> str:
+    return (
+        "# Input Analysis Request\n\n"
+        "Classify the preserved player input into `input_analysis.output.json`.\n\n"
+        "```json\n"
+        f"{json.dumps(input_request, ensure_ascii=False, indent=2)}\n"
+        "```\n"
+    )
+
+
 def prepare_agent_run(
     card_folder,
     user_text,
@@ -284,6 +337,9 @@ def prepare_agent_run(
     routed_input = route_input_payload(user_text, input_payload)
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
     hidden_setting_records = hidden_setting_records or []
+    input_request = build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data)
+    agent_run.write_json(run_dir / "input.raw.json", _input_raw_record(input_request))
+    agent_run.write_text(run_dir / "input_analysis.request.md", _input_analysis_request_markdown(input_request))
 
     input_json = input_payload if isinstance(input_payload, dict) else {"raw_text": _to_text(user_text)}
     input_json = dict(input_json)
@@ -303,6 +359,7 @@ def prepare_agent_run(
         character_contexts,
         hidden_setting_records=hidden_setting_records,
     )
+    gm_packet["input_analysis_request"] = input_request
     player_packet = build_player_packet(card_folder, routed_input, chat_log)
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)

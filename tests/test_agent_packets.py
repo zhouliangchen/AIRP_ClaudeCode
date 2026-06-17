@@ -736,6 +736,33 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
         self.assertNotIn("interaction_trace", manifest.get("optional_inputs", {}))
 
+    def test_prepare_agent_run_writes_input_analysis_request_and_prompt(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "我走进教室。\n\n[USER_INSTRUCTION]\n设定：今天是梦境。",
+            "role_text": "我走进教室。",
+            "user_instruction_text": "设定：今天是梦境。",
+        }
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=[{"index": 1, "summary": "previous"}],
+            card_data={"title": "Card"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+        run_dir = Path(result["run_dir"])
+        self.assertTrue((run_dir / "input.raw.json").exists())
+        self.assertTrue((run_dir / "input_analysis.request.md").exists())
+        self.assertTrue((run_dir / "prompts" / "input_analyst.prompt.md").exists())
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["prompts"]["input_analyst"], "prompts/input_analyst.prompt.md")
+        self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
+        request = (run_dir / "input_analysis.request.md").read_text(encoding="utf-8")
+        self.assertIn("raw_text", request)
+        self.assertIn("设定：今天是梦境。", request)
+
     def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(
             self.card,

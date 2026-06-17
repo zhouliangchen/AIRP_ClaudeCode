@@ -13,6 +13,7 @@ import agent_run
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SKILL_PATHS = {
+    "input_analyst": ".claude/skills/rp-input-analyst.md",
     "gm": ".claude/skills/rp-gm-agent.md",
     "player": ".claude/skills/rp-player-agent.md",
     "character": ".claude/skills/rp-character-agent.md",
@@ -73,6 +74,51 @@ Do not write final prose unless this is the story agent.
 {_skill_excerpt(skill_key)}
 ```
 """
+
+
+def _input_analyst_prompt(context: Dict[str, Any]) -> str:
+    context = context if isinstance(context, dict) else {}
+    source_integrity = context.get("source_integrity", {})
+    source_integrity = source_integrity if isinstance(source_integrity, dict) else {}
+    contract = _json_block({
+        "schema_version": 1,
+        "round_id": context.get("round_id", ""),
+        "analysis_mode": "ai",
+        "source_integrity": {
+            "raw_text_sha256": source_integrity.get("raw_text_sha256", ""),
+            "role_text_sha256": source_integrity.get("role_text_sha256", ""),
+            "user_instruction_text_sha256": source_integrity.get("user_instruction_text_sha256", ""),
+            "raw_preserved": True,
+        },
+        "semantic_units": [],
+        "world_updates": {
+            "hidden_facts": [],
+            "public_facts": [],
+            "important_characters": [],
+            "retcon_requests": [],
+        },
+        "narrative_directives": {
+            "rewrite_previous_output": False,
+            "expand_synopsis_before_continue": False,
+            "continue_after_player_action": True,
+            "must_stop_for_player_decision": False,
+        },
+        "routing": {
+            "role_channel": "",
+            "user_instruction_channel": "",
+            "gm": True,
+            "player": True,
+            "characters": [],
+        },
+        "risks": [],
+    })
+    return _base_prompt(
+        "Input Analyst Prompt",
+        "input_analyst",
+        "input_analysis.output.json",
+        contract,
+        context,
+    )
 
 
 def _gm_prompt(context: Dict[str, Any]) -> str:
@@ -173,6 +219,8 @@ def write_round_prompts(
     prompt_root = root / "prompts"
     characters_prompt_root = prompt_root / "characters"
 
+    input_request = gm_packet.get("input_analysis_request", {}) if isinstance(gm_packet, dict) else {}
+    input_analyst_prompt = prompt_root / "input_analyst.prompt.md"
     gm_prompt = prompt_root / "gm.prompt.md"
     player_prompt = prompt_root / "player.prompt.md"
     story_prompt = prompt_root / "story.prompt.md"
@@ -181,6 +229,7 @@ def write_round_prompts(
     character_prompts: Dict[str, str] = {}
     character_outputs: Dict[str, str] = {}
 
+    _write_prompt(input_analyst_prompt, _input_analyst_prompt(input_request))
     _write_prompt(gm_prompt, _gm_prompt(gm_packet))
     _write_prompt(player_prompt, _player_prompt(player_packet))
 
@@ -206,6 +255,7 @@ def write_round_prompts(
     manifest = {
         "round_id": root.name,
         "prompts": {
+            "input_analyst": _rel(input_analyst_prompt, root),
             "gm": _rel(gm_prompt, root),
             "player": _rel(player_prompt, root),
             "characters": character_prompts,
@@ -213,6 +263,7 @@ def write_round_prompts(
             "critic": _rel(critic_prompt, root),
         },
         "expected_outputs": {
+            "input_analysis": "input_analysis.output.json",
             "gm": "gm.output.json",
             "player": "player.output.json",
             "characters": character_outputs,
