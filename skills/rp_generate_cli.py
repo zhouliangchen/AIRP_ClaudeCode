@@ -694,16 +694,28 @@ def _ensure_input_analysis(
         prompt_text = prompt_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
-    _dispatch_and_write(
-        "input_analyst",
-        output_path,
-        prompt_text,
-        root,
-        run_claude,
-        attempts=2,
-    )
+    last_error: AgentExecutionError | None = None
+    for attempt in range(2):
+        try:
+            _dispatch_and_write(
+                "input_analyst",
+                output_path,
+                prompt_text,
+                root,
+                run_claude,
+                attempts=1,
+            )
+            return _apply_input_analysis(card, root)
+        except AgentExecutionError as exc:
+            last_error = exc
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
+            if attempt == 1:
+                raise
 
-    return _apply_input_analysis(card, root)
+    raise last_error or AgentExecutionError("input analyst did not complete.")
 
 
 def run_round(

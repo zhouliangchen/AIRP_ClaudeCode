@@ -134,6 +134,7 @@ class InputAnalysisTest(unittest.TestCase):
     def test_validate_accepts_world_update_record_safe_status_variants(self):
         for status in ("active", "superseded", "retracted"):
             with self.subTest(status=status):
+                important_status = "active"
                 data = self._analysis()
                 data["world_updates"] = {
                     "hidden_facts": [
@@ -157,7 +158,7 @@ class InputAnalysisTest(unittest.TestCase):
                             "name": "Suli",
                             "text": "Suli is a transfer student.",
                             "visibility": "character_private_and_gm",
-                            "status": status,
+                            "status": important_status,
                         }
                     ],
                     "retcon_requests": [
@@ -171,6 +172,25 @@ class InputAnalysisTest(unittest.TestCase):
                 }
 
                 self._validate(data)
+
+    def test_validate_rejects_non_active_important_character_status(self):
+        for status in ("superseded", "retracted"):
+            with self.subTest(status=status):
+                data = self._analysis()
+                data["world_updates"]["important_characters"] = [
+                    {
+                        "name": "Suli",
+                        "text": "Suli is a transfer student.",
+                        "visibility": "character_private_and_gm",
+                        "status": status,
+                    }
+                ]
+
+                with self.assertRaisesRegex(
+                    self.mod.InputAnalysisError,
+                    r"important_characters\[0\]\.status",
+                ):
+                    self._validate(data)
 
     def test_validate_rejects_missing_blank_or_invalid_world_update_status(self):
         base_records = {
@@ -449,6 +469,42 @@ class InputAnalysisTest(unittest.TestCase):
                 {"channel": "role", "text": self.role},
                 {"channel": "user_instruction", "text": self.instruction},
             ],
+        )
+
+    def test_validate_rejects_non_explicit_routing_text_not_in_raw_input(self):
+        data = self._analysis()
+        data["routing"]["role_channel"] = "I do something the player never wrote."
+        data["routing"]["user_instruction_channel"] = self.instruction
+
+        with self.assertRaisesRegex(self.mod.InputAnalysisError, "routing.role_channel"):
+            self._validate(data)
+
+    def test_validate_accepts_non_explicit_routing_substrings_from_raw_input(self):
+        data = self._analysis()
+        data["routing"]["role_channel"] = self.role
+        data["routing"]["user_instruction_channel"] = self.instruction
+
+        self._validate(data)
+
+    def test_validate_allows_explicit_payload_routing_override_text(self):
+        data = self._analysis()
+        data["routing"]["role_channel"] = "analysis rewrite"
+        data["routing"]["user_instruction_channel"] = "analysis instruction rewrite"
+        explicit_role = "explicit role text not in raw"
+        explicit_instruction = "explicit instruction text not in raw"
+        data["source_integrity"]["role_text_sha256"] = self.mod.sha256_text(explicit_role)
+        data["source_integrity"]["user_instruction_text_sha256"] = self.mod.sha256_text(explicit_instruction)
+
+        self.mod.validate_input_analysis(
+            data,
+            raw_text=self.raw,
+            role_text=explicit_role,
+            user_instruction_text=explicit_instruction,
+            explicit_payload={
+                "input_schema": "dual_channel_v1",
+                "role_text": explicit_role,
+                "user_instruction_text": explicit_instruction,
+            },
         )
 
     def test_routing_converts_channel_values_to_strings(self):
@@ -833,6 +889,31 @@ class InputAnalysisApplyTest(unittest.TestCase):
             manifest["critic_retry_count"],
             original_manifest["critic_retry_count"],
         )
+
+    def test_apply_current_run_rejects_non_active_important_character_without_promotion(self):
+        for status in ("superseded", "retracted"):
+            with self.subTest(status=status):
+                analysis = self._analysis()
+                analysis["world_updates"]["hidden_facts"] = []
+                analysis["world_updates"]["important_characters"] = [
+                    {
+                        "name": "Suli",
+                        "text": self.important_text,
+                        "visibility": "character_private_and_gm",
+                        "status": status,
+                    }
+                ]
+                self._write_analysis(analysis)
+
+                with self.assertRaisesRegex(self.InputAnalysisError, "status"):
+                    self.apply_mod.apply_current_run(self.card)
+
+                card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+                self.assertNotIn(
+                    "Suli",
+                    card_data.get("character_orchestration", {}).get("major", []),
+                )
+                self.assertFalse((self.card / "memory" / "characters" / "Suli").exists())
 
     def test_apply_current_run_rejects_gm_only_important_character_without_profile(self):
         analysis = self._analysis()

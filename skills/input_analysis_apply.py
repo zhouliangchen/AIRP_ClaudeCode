@@ -258,6 +258,7 @@ def apply_current_run(card_folder, root_dir=None):
         raw_text=str(raw_request.get("raw_text") or ""),
         role_text=str(raw_request.get("role_text") or ""),
         user_instruction_text=str(raw_request.get("user_instruction_text") or ""),
+        explicit_payload=raw_request.get("explicit_payload"),
     )
     routed_input = input_analysis.analysis_to_routed_input(
         analysis,

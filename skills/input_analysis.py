@@ -84,7 +84,14 @@ def load_json(path):
         raise InputAnalysisError(f"failed to load input analysis JSON: {json_path}") from exc
 
 
-def validate_input_analysis(data, *, raw_text, role_text="", user_instruction_text=""):
+def validate_input_analysis(
+    data,
+    *,
+    raw_text,
+    role_text="",
+    user_instruction_text="",
+    explicit_payload=None,
+):
     if not isinstance(data, dict):
         raise InputAnalysisError("input analysis must be a JSON object")
 
@@ -129,6 +136,11 @@ def validate_input_analysis(data, *, raw_text, role_text="", user_instruction_te
 
     _validate_narrative_directives(data.get("narrative_directives"))
     _validate_routing(data.get("routing"))
+    _validate_routing_grounded(
+        data.get("routing"),
+        raw_text=raw_text,
+        explicit_payload=explicit_payload,
+    )
 
     if analysis_mode == "fallback":
         _validate_fallback_has_no_high_risk_persistence(
@@ -338,6 +350,25 @@ def _validate_routing(routing):
         raise InputAnalysisError("routing.characters must be a list")
 
 
+def _explicit_dual_channel_payload(explicit_payload):
+    return (
+        isinstance(explicit_payload, dict)
+        and explicit_payload.get("input_schema") == "dual_channel_v1"
+    )
+
+
+def _validate_routing_grounded(routing, *, raw_text, explicit_payload=None):
+    if _explicit_dual_channel_payload(explicit_payload):
+        return
+    if not isinstance(routing, dict):
+        return
+    raw = _to_text(raw_text)
+    for key in ("role_channel", "user_instruction_channel"):
+        text = _to_text(routing.get(key)).strip()
+        if text and text not in raw:
+            raise InputAnalysisError(f"routing.{key} must be present in raw_text")
+
+
 def _text(value):
     if value is None:
         return ""
@@ -411,6 +442,8 @@ def _validate_world_update_records(world_updates):
         ):
             raise InputAnalysisError(f"{path}.visibility is invalid: {_text(visibility).strip()}")
         _validate_status(record, path)
+        if record.get("status").strip() != "active":
+            raise InputAnalysisError(f"{path}.status must be active")
 
     for index, record in enumerate(world_updates.get("retcon_requests", [])):
         path = f"world_updates.retcon_requests[{index}]"

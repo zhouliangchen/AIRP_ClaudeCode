@@ -368,6 +368,124 @@ class RpGenerateCliTest(unittest.TestCase):
             [entry.get("stage") for entry in applied_manifest.get("status", [])],
         )
 
+    def test_run_round_retries_invalid_input_analyst_output_before_gm(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        raw_text = "I follow the noise.\nSetting: keep it quiet."
+        role_text = "I follow the noise."
+        instruction_text = "Setting: keep it quiet."
+        _write_json(self.card / ".card_data.json", {"character_orchestration": {"major": []}})
+        input_analysis = self.module.input_analysis_apply.input_analysis
+        _write_json(
+            self.run_dir / "input.raw.json",
+            {
+                "round_id": "round-000002",
+                "raw_text": raw_text,
+                "explicit_payload": {},
+                "role_text": role_text,
+                "user_instruction_text": instruction_text,
+                "source_integrity": {
+                    "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                    "role_text_sha256": input_analysis.sha256_text(role_text),
+                    "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+                    "raw_preserved": True,
+                },
+            },
+        )
+
+        valid_analysis = {
+            "schema_version": 1,
+            "round_id": "round-000002",
+            "analysis_mode": "fixture",
+            "source_integrity": {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(role_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+                "raw_preserved": True,
+            },
+            "semantic_units": [
+                {
+                    "id": "unit-action-1",
+                    "source_channel": "role_input",
+                    "type": "action",
+                    "raw_excerpt": role_text,
+                    "derived_summary": "The player follows the noise.",
+                    "confidence": 0.9,
+                    "visibility": "player_pov",
+                    "persist": False,
+                }
+            ],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+                "must_stop_for_player_decision": False,
+            },
+            "routing": {
+                "role_channel": role_text,
+                "user_instruction_channel": instruction_text,
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "risks": [],
+        }
+        invalid_analysis = json.loads(json.dumps(valid_analysis))
+        invalid_analysis["source_integrity"]["raw_text_sha256"] = "bad-hash"
+        responses = {
+            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
+            "player": {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
+            },
+            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
+            "critic": {
+                "decision": "pass",
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+            },
+        }
+        order = []
+        analyst_attempts = {"count": 0}
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            order.append(agent_key)
+            if agent_key == "input_analyst":
+                analyst_attempts["count"] += 1
+                payload = invalid_analysis if analyst_attempts["count"] == 1 else valid_analysis
+                return _agent_stream(json.dumps(payload, ensure_ascii=False))
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(order[:3], ["input_analyst", "input_analyst", "gm"])
+        applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        self.assertEqual(applied_input["input_analysis"]["source_integrity"]["raw_text_sha256"], input_analysis.sha256_text(raw_text))
+
     def test_run_round_applies_existing_input_analysis_without_dispatching_analyst(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
