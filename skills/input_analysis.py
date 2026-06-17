@@ -135,6 +135,9 @@ def analysis_to_routed_input(data, explicit_payload=None):
 
     return {
         "input_schema": "analysis_v1",
+        "analysis_mode": (
+            data.get("analysis_mode", "") if isinstance(data, dict) else ""
+        ),
         "role_channel": role_channel,
         "user_instruction_channel": user_instruction_channel,
         "gm": bool(routing.get("gm", bool(user_instruction_channel))),

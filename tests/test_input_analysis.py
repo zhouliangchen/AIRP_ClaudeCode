@@ -83,6 +83,30 @@ class InputAnalysisTest(unittest.TestCase):
             "risks": [],
         }
 
+    def _safe_fallback_analysis(self):
+        data = self._analysis()
+        data["analysis_mode"] = "fallback"
+        data["semantic_units"] = [
+            {
+                "id": "fallback-role-1",
+                "source_channel": "role_input",
+                "type": "action",
+                "raw_excerpt": self.role,
+                "derived_summary": "Fallback preserved role input.",
+                "confidence": 0.0,
+                "visibility": "player_pov",
+                "persist": False,
+            }
+        ]
+        data["world_updates"] = {
+            "hidden_facts": [],
+            "public_facts": [],
+            "important_characters": [],
+            "retcon_requests": [],
+        }
+        data["risks"] = ["fallback: persistence blocked"]
+        return data
+
     def test_validate_accepts_ai_analysis_with_matching_hashes(self):
         result = self.mod.validate_input_analysis(
             self._analysis(),
@@ -117,6 +141,14 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["user_instruction_channel"], self.instruction)
         self.assertEqual(result["input_schema"], "analysis_v1")
 
+    def test_routing_uses_analysis_channels_without_explicit_payload(self):
+        result = self.mod.analysis_to_routed_input(self._analysis())
+
+        self.assertEqual(result["role_channel"], self.role)
+        self.assertEqual(result["user_instruction_channel"], self.instruction)
+        self.assertEqual(result["input_schema"], "analysis_v1")
+        self.assertEqual(result["analysis_mode"], "ai")
+
     def test_fallback_blocks_high_risk_persistence(self):
         fallback = self.mod.build_fallback_analysis(
             raw_text=self.raw,
@@ -128,6 +160,51 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(fallback["world_updates"]["hidden_facts"], [])
         self.assertEqual(fallback["world_updates"]["important_characters"], [])
         self.assertIn("fallback", fallback["risks"][0])
+
+    def test_validate_rejects_fallback_world_update_persistence(self):
+        blocked_updates = {
+            "hidden_facts": [
+                {"text": self.instruction, "visibility": "gm_only", "status": "active"}
+            ],
+            "important_characters": [{"name": "神秘少女"}],
+            "retcon_requests": [{"text": "重写上一轮输出。"}],
+        }
+
+        for key, value in blocked_updates.items():
+            with self.subTest(key=key):
+                data = self._safe_fallback_analysis()
+                data["world_updates"][key] = value
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self.mod.validate_input_analysis(
+                        data,
+                        raw_text=self.raw,
+                        role_text=self.role,
+                        user_instruction_text=self.instruction,
+                    )
+
+    def test_validate_rejects_fallback_persisted_high_risk_unit(self):
+        data = self._safe_fallback_analysis()
+        data["semantic_units"].append(
+            {
+                "id": "fallback-hidden-1",
+                "source_channel": "user_instruction",
+                "type": "hidden_setting",
+                "raw_excerpt": self.instruction,
+                "derived_summary": "Fallback must not persist hidden settings.",
+                "confidence": 0.0,
+                "visibility": "gm_only",
+                "persist": True,
+            }
+        )
+
+        with self.assertRaises(self.mod.InputAnalysisError):
+            self.mod.validate_input_analysis(
+                data,
+                raw_text=self.raw,
+                role_text=self.role,
+                user_instruction_text=self.instruction,
+            )
 
 
 if __name__ == "__main__":
