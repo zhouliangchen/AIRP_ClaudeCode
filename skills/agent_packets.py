@@ -262,6 +262,29 @@ def _iter_characters(character_contexts: Any) -> Iterable[Dict[str, Any]]:
     return []
 
 
+def build_character_contexts_from_card(card_folder, card_data, chat_log, user_text):
+    """Build character contexts through round_prepare, falling back conservatively."""
+    try:
+        import round_prepare
+
+        card_structure = agent_run.read_json(
+            Path(card_folder) / "memory" / ".card_structure.json",
+            {},
+        )
+        contexts = round_prepare.build_character_contexts(
+            card_folder,
+            card_data if isinstance(card_data, dict) else {},
+            card_structure or {},
+            chat_log or [],
+            _to_text(user_text),
+        )
+        if isinstance(contexts, dict):
+            return contexts
+    except Exception:
+        pass
+    return {"characters": []}
+
+
 DEFAULT_CRITIC_REPORT = {
     "passed": True,
     "hard_failures": [],
@@ -397,4 +420,94 @@ def prepare_agent_run(
         "gm_packet": gm_packet,
         "player_packet": player_packet,
         "manifest": manifest,
+    }
+
+
+def _clear_generated_character_files(run_dir: Path) -> None:
+    for pattern in (
+        "characters/*.context.json",
+        "prompts/characters/*.prompt.md",
+    ):
+        for path in run_dir.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def rebuild_agent_run_from_analysis(
+    card_folder,
+    run_dir,
+    analysis: Dict[str, Any],
+    routed_input: Dict[str, Any],
+    raw_request: Dict[str, Any],
+    *,
+    chat_log=None,
+    card_data=None,
+    character_contexts=None,
+    hidden_setting_records=None,
+):
+    """Rewrite final agent packets/prompts after input analysis has been applied."""
+    root = Path(run_dir)
+    chat_log = chat_log or []
+    hidden_setting_records = hidden_setting_records or []
+    card_data = card_data if isinstance(card_data, dict) else {}
+    character_contexts = character_contexts or {"characters": []}
+    _clear_generated_character_files(root)
+
+    input_json = {
+        "input_analysis": analysis,
+        "routed_input": routed_input,
+        "raw_text": _to_text(raw_request.get("raw_text")),
+        "explicit_payload": raw_request.get("explicit_payload", {}),
+        "source_integrity": raw_request.get("source_integrity", {}),
+        "recent_chat": chat_log,
+        "gm_only_hidden_settings": hidden_setting_records,
+        "card_data": compact_card_data(card_data),
+        "character_contexts": character_contexts,
+    }
+    agent_run.write_json(root / "input.json", input_json)
+
+    gm_packet = build_gm_packet(
+        card_folder,
+        routed_input,
+        chat_log,
+        card_data,
+        character_contexts,
+        hidden_setting_records=hidden_setting_records,
+    )
+    gm_packet["input_analysis_request"] = _input_analysis_request_reference(raw_request)
+    player_packet = build_player_packet(card_folder, routed_input, chat_log)
+    agent_run.write_json(root / "gm.context.json", gm_packet)
+    agent_run.write_json(root / "player.context.json", player_packet)
+
+    character_packets = {}
+    for character in _iter_characters(character_contexts):
+        name = character.get("name") if isinstance(character, dict) else ""
+        safe = agent_run.safe_name(name)
+        packet = build_character_packet(card_folder, character, routed_input, chat_log)
+        agent_run.write_json(root / "characters" / f"{safe}.context.json", packet)
+        character_packets[safe] = packet
+
+    manifest = agent_prompts.write_round_prompts(
+        root,
+        gm_packet,
+        player_packet,
+        character_packets,
+        card_folder=card_folder,
+        input_analysis_request=raw_request,
+    )
+    agent_run.append_manifest_stage(
+        manifest,
+        "analysis_applied",
+        "Input analysis has been validated and applied to agent packets.",
+    )
+    agent_run.write_json(root / "manifest.json", manifest)
+    return {
+        "run_dir": str(root.resolve()),
+        "routed_input": routed_input,
+        "gm_packet": gm_packet,
+        "player_packet": player_packet,
+        "manifest": manifest,
+        "character_packets": character_packets,
     }

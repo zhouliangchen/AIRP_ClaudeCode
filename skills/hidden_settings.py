@@ -59,6 +59,8 @@ def _normalize_entry(item: Any) -> Optional[Dict[str, Any]]:
         "created_at": str(item.get("created_at") or "").strip(),
         "round_id": str(item.get("round_id") or "").strip(),
         "source_input_id": str(item.get("source_input_id") or "").strip(),
+        "source": str(item.get("source") or "").strip(),
+        "source_unit_id": str(item.get("source_unit_id") or "").strip(),
         "visibility": str(item.get("visibility") or "gm_only"),
         "status": str(item.get("status") or "active"),
         "text": text,
@@ -119,6 +121,45 @@ def persist_hidden_setting(
         "source_input_id": str(source_input_id or ""),
         "visibility": "gm_only",
         "status": "active",
+        "text": body,
+    }
+    path = hidden_settings_path(card_folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def persist_hidden_setting_record(
+    card_folder: Any,
+    record: Any,
+    *,
+    source_input_id: str = "",
+    round_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Persist a validated input-analysis hidden fact record without cue matching."""
+    if not isinstance(record, dict):
+        return None
+
+    body = str(record.get("text") or "").strip()
+    if not body:
+        return None
+
+    item_id = _entry_id(body, source_input_id or "")
+    existing = load_hidden_settings(card_folder, limit=None)
+    for item in existing:
+        if item.get("id") == item_id:
+            return item
+
+    entry = {
+        "id": item_id,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "round_id": str(round_id or ""),
+        "source_input_id": str(source_input_id or ""),
+        "source": "input_analysis",
+        "source_unit_id": str(record.get("id") or record.get("source_unit_id") or ""),
+        "visibility": str(record.get("visibility") or "gm_only"),
+        "status": str(record.get("status") or "active"),
         "text": body,
     }
     path = hidden_settings_path(card_folder)
