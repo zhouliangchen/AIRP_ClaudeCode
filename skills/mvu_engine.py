@@ -18,7 +18,7 @@ from typing import Any, Optional, Union
 
 COMMAND_PATTERN = r"_\.(set|insert|assign|remove|unset|delete|add|move)\("
 JSON_PATCH_PATTERN = r"<(json_?patch)>\s*(?:```.*)?((?:(?!<json_?patch>)[\s\S])*?)(?:```\s*)?</\1>"
-UPDATE_VARIABLE_PATTERN = r"<UpdateVariable>\s*(?:<Analysis>[\s\S]*?</Analysis>\s*)?(?:<JSONPatch>\s*(?:```.*)?([\s\S]*?)(?:```\s*)?</JSONPatch>)\s*</UpdateVariable>"
+UPDATE_VARIABLE_PATTERN = r"<UpdateVariable>\s*(?:<Analysis>[\s\S]*?</Analysis>\s*)?(?:<JSONPatch>\s*(?:```(?:json)?\s*)?([\s\S]*?)(?:```\s*)?(?:</JSONPatch>\s*)?)</UpdateVariable>"
 
 
 # ═══ Types (lightweight dataclass-free equivalents) ═══

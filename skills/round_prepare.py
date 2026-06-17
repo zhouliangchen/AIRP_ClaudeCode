@@ -58,6 +58,16 @@ def _load_reference_sections(card_folder):
     return sections
 
 
+def grep_reference_section(ref_sections, title):
+    """Return a cached reference.md section by Markdown or bare title."""
+    if not isinstance(ref_sections, dict):
+        return ""
+    key = str(title or "").lstrip("#").strip()
+    if not key:
+        return ""
+    return str(ref_sections.get(key, "")).strip()
+
+
 def _load_player_input_history(card_folder, limit=20):
     path = Path(card_folder) / ".player_inputs.jsonl"
     if not path.exists():
@@ -507,7 +517,7 @@ def main():
 
     dynamic_parts.append("\n=== PLAYER_AUTHORITY_RULES ===")
     dynamic_parts.append("- 玩家历次输入是唯一权威事实源；不得改写、润色或删除 .player_inputs.jsonl 中的 raw_text/display_text。")
-    dynamic_parts.append("- 不得擅自编辑、裁剪、合并或摘要玩家输入；response.txt 中的 <polished_input> 仅可作为内部解释，不可覆盖玩家原文。")
+    dynamic_parts.append("- 不得擅自编辑、裁剪、合并或摘要玩家输入；正常回合不要输出 <polished_input>，处理证据应写入 <UpdateVariable>/<derived_content_edits> 等非显示控制标签。")
     dynamic_parts.append("- 若新玩家输入与既有 AI 叙事、角色资料、变量、记忆或世界设定冲突，以玩家新输入为准。")
     dynamic_parts.append("- 每轮都必须实时根据玩家最新输入评估过去剧情和设定；发现冲突时，可以小幅修改或完全重写 AI 派生数据。")
     dynamic_parts.append("- 冲突不是只在正文里解释一句；必须在本轮 <UpdateVariable> 中修正所有受影响的 AI 派生变量/角色状态/世界假设。")
@@ -521,7 +531,7 @@ def main():
     dynamic_parts.append("- ACTION: 玩家当前行动只在处理完设定与梗概后推进；先给出该行动的直接后果，再引出新的变化。")
     dynamic_parts.append("- DERIVED_CONTENT_EDIT: 玩家要求修改第一段/首段/上一轮/前文/既有回复时，不是把指定内容写进最新回复；必须在 response.txt 写 <derived_content_edits> JSON，定点修正旧 AI 派生内容。")
     dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: 玩家手动指定重要角色时，必须写入角色变量/记忆，并将其加入 character_orchestration.major；本轮若 scene_relevance=high/normal，应调用该角色 subagent，除非运行环境无法调用。")
-    dynamic_parts.append("- MIXED: 按 DERIVED_CONTENT_EDIT → IMPORTANT_CHARACTER_DECLARATION → OMNISCIENT_SETTING → SYNOPSIS → ACTION 的顺序逐项处理；response.txt 的 <polished_input> 必须简要列出本轮识别到的类型和修正动作。")
+    dynamic_parts.append("- MIXED: 按 DERIVED_CONTENT_EDIT → IMPORTANT_CHARACTER_DECLARATION → OMNISCIENT_SETTING → SYNOPSIS → ACTION 的顺序逐项处理；必须在 <UpdateVariable> 的 Analysis 或 <derived_content_edits> 中列出识别到的类型和修正动作，不要把处理说明暴露给玩家。")
 
     dynamic_parts.append("\n=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===")
     comps = input_plan.get("components", [])

@@ -455,6 +455,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            return
+
         # API: check if new input is pending
         if parsed.path == "/api/pending":
             if PENDING_FILE.exists():

@@ -1,0 +1,699 @@
+#!/usr/bin/env python3
+"""Deterministically drive one prepared RP round through Claude Code subagents."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Callable, Dict
+
+import agent_outputs
+import agent_run
+import agent_schemas
+
+
+class AgentExecutionError(RuntimeError):
+    """Raised when a Claude Code subagent run is missing, invalid, or unusable."""
+
+
+MAX_DELIVERY_REPAIR_ATTEMPTS = 3
+MAX_STORY_PREFLIGHT_ATTEMPTS = 3
+
+
+def _text_from_blocks(blocks: Any) -> str:
+    if isinstance(blocks, str):
+        return blocks
+    if not isinstance(blocks, list):
+        return ""
+    parts = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif isinstance(block, str):
+            parts.append(block)
+    return "\n".join(part for part in parts if part).strip()
+
+
+def extract_agent_text(stream_text: str) -> str:
+    """Extract the completed local-agent text from Claude Code stream-json output."""
+    saw_local_agent = False
+    tool_result_text = ""
+    final_result_text = ""
+
+    for raw_line in str(stream_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") == "system" and item.get("subtype") == "task_started":
+            if item.get("task_type") == "local_agent":
+                saw_local_agent = True
+
+        tool_use_result = item.get("tool_use_result")
+        if isinstance(tool_use_result, dict) and tool_use_result.get("status") == "completed":
+            content_text = _text_from_blocks(tool_use_result.get("content"))
+            if content_text:
+                tool_result_text = content_text
+
+        if item.get("type") == "result" and item.get("subtype") == "success":
+            result_text = item.get("result")
+            if isinstance(result_text, str):
+                final_result_text = result_text.strip()
+
+    if not saw_local_agent:
+        raise AgentExecutionError("Claude Code stream did not include a local_agent task.")
+    result = tool_result_text or final_result_text
+    if not result:
+        raise AgentExecutionError("Claude Code local_agent task returned no text.")
+    return result
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        payload = None
+        for match in re.finditer(r"\{", raw):
+            try:
+                candidate, _ = decoder.raw_decode(raw[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                payload = candidate
+                break
+        if payload is None:
+            if "{" not in raw:
+                raise AgentExecutionError(f"Agent returned non-JSON text: {raw[:200]}") from exc
+            raise AgentExecutionError(f"Agent returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AgentExecutionError("Agent JSON result must be an object.")
+    return payload
+
+
+def _outer_prompt(agent_key: str, subagent_prompt: str, extra_context: Dict[str, Any] | None = None) -> str:
+    extra = ""
+    if extra_context:
+        extra = "\n\n## Runtime Input\n\n```json\n" + json.dumps(extra_context, ensure_ascii=False, indent=2) + "\n```\n"
+    return f"""You are the Claude Code general-purpose agent for RP artifact `{agent_key}`.
+
+You are running in embedded-context mode. Use the Context Packet and Runtime Input embedded in this task as the authoritative source.
+Do not attempt to read files, inspect run_dir, or require filesystem access.
+Do not block because run_dir, story.input.json, story.output.json, or card files are inaccessible; their required contents are embedded below when needed.
+If Runtime Input contains `previous_rejected_story_output`, treat it only as a rejected anti-example. Rebuild from `story_input`, current GM/player/character artifacts, and the repair instruction; do not preserve unsupported details from the rejected draft.
+Return only one valid JSON object and no prose. Follow the full RP subagent prompt between `<subagent_prompt>` tags exactly. The prompt may contain Markdown fences; do not treat those fences as the end of the task.
+
+<subagent_prompt>
+{subagent_prompt}
+</subagent_prompt>
+{extra}
+Return exactly the JSON artifact and no other prose.
+There is no fallback prose answer; a response that is not a JSON artifact is invalid.
+"""
+
+
+def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
+    """Run Claude Code in print mode with the general-purpose agent."""
+    command = [
+        "claude",
+        "--print",
+        "--dangerously-skip-permissions",
+        "--agent",
+        "general-purpose",
+    ]
+    result = subprocess.run(
+        command,
+        input=prompt,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise AgentExecutionError(f"claude exited with {result.returncode}: {result.stderr[:500]}")
+    return result.stdout
+
+
+def _extract_agent_or_direct_text(output: str) -> str:
+    try:
+        return extract_agent_text(output)
+    except AgentExecutionError:
+        text = str(output or "").strip()
+        if not text:
+            raise
+        return text
+
+
+def _load_manifest(run_dir: Path) -> Dict[str, Any]:
+    manifest = agent_run.read_json(run_dir / "manifest.json")
+    if not isinstance(manifest, dict):
+        raise AgentExecutionError(f"{run_dir / 'manifest.json'} is missing or invalid.")
+    return manifest
+
+
+def _relative_path(run_dir: Path, value: str, default: str) -> Path:
+    relative = value or default
+    return run_dir / relative
+
+
+def _read_prompt(run_dir: Path, manifest: Dict[str, Any], key: str) -> str:
+    prompts = manifest.get("prompts") or {}
+    if not isinstance(prompts, dict):
+        raise AgentExecutionError("manifest.prompts is required.")
+    prompt_path = _relative_path(run_dir, str(prompts.get(key) or f"prompts/{key}.prompt.md"), f"prompts/{key}.prompt.md")
+    try:
+        return prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
+
+
+def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    wrapper = ""
+    if agent_key == "gm":
+        wrapper = "gm_output"
+    elif agent_key in {"player"} or agent_key.startswith("character:"):
+        wrapper = "actor_output"
+    elif agent_key == "story":
+        wrapper = "story_output"
+    elif agent_key == "critic":
+        wrapper = "critic_report"
+
+    nested = payload.get(wrapper) if wrapper else None
+    if isinstance(nested, dict):
+        return nested
+    return payload
+
+
+def _listify(value: Any) -> list[Any]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _normalize_legacy_actor(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if "agent" in payload:
+        return payload
+    legacy_keys = {
+        "embodied_intent",
+        "immediate_action",
+        "inner_sensation",
+        "spoken_line",
+        "state_suggestions",
+        "private_reaction",
+        "intent",
+    }
+    if not any(key in payload for key in legacy_keys):
+        return payload
+
+    agent = "character" if agent_key.startswith("character:") else "player"
+    agent_id = agent_key if agent == "character" else "player"
+    action = payload.get("immediate_action") or payload.get("embodied_intent") or payload.get("intent") or ""
+    dialogue = []
+    for line in _listify(payload.get("spoken_line") or payload.get("dialogue")):
+        if isinstance(line, dict):
+            dialogue.append(line)
+        elif str(line).strip():
+            dialogue.append({"text": str(line).strip()})
+    perception = []
+    for item in (
+        _listify(payload.get("inner_sensation"))
+        + _listify(payload.get("private_reaction"))
+        + _listify(payload.get("risk_perception"))
+        + _listify(payload.get("perception"))
+    ):
+        if str(item).strip():
+            perception.append(str(item).strip())
+    memory_delta = _listify(payload.get("memory_delta")) or _listify(payload.get("state_suggestions"))
+    normalized: Dict[str, Any] = {
+        "agent": agent,
+        "agent_id": agent_id,
+        "action": str(action).strip(),
+        "dialogue": dialogue,
+        "perception": perception,
+        "memory_delta": memory_delta,
+    }
+    if agent == "character":
+        normalized["character_name"] = str(payload.get("character_name") or agent_key.split(":", 1)[-1])
+    return normalized
+
+
+def _normalize_world_state_delta(items: list[Any]) -> list[Any]:
+    normalized = []
+    for item in items:
+        if isinstance(item, dict):
+            if item.get("fact"):
+                normalized.append(item)
+                continue
+            fact = item.get("value") or item.get("description") or item.get("event") or item.get("text") or ""
+            scope = item.get("scope") or item.get("path") or item.get("target") or "world"
+            if str(fact).strip():
+                normalized.append({"scope": str(scope), "fact": str(fact)})
+            continue
+        if str(item).strip():
+            normalized.append({"scope": "world", "fact": str(item).strip()})
+    return normalized
+
+
+def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _unwrap_payload(agent_key, payload)
+    if agent_key in {"player"} or agent_key.startswith("character:"):
+        payload = _normalize_legacy_actor(agent_key, payload)
+    try:
+        if agent_key == "gm":
+            normalized = agent_schemas.validate_gm_output(payload)
+            normalized["world_state_delta"] = _normalize_world_state_delta(normalized.get("world_state_delta", []))
+            return normalized
+        if agent_key in {"player"} or agent_key.startswith("character:"):
+            return agent_schemas.validate_actor_output(payload)
+        if agent_key == "story":
+            return agent_schemas.validate_story_output(payload)
+        if agent_key == "critic":
+            return agent_schemas.validate_critic_report(payload)
+    except agent_schemas.ValidationError as exc:
+        raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
+    raise AgentExecutionError(f"Unknown agent key: {agent_key}")
+
+
+def _dispatch_and_write(
+    agent_key: str,
+    output_path: Path,
+    prompt_text: str,
+    cwd: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+    extra_context: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    last_error: AgentExecutionError | None = None
+    for attempt in range(2):
+        stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
+        try:
+            text = _extract_agent_or_direct_text(stream)
+            payload = _extract_json_object(text)
+            normalized = _validate(agent_key, payload)
+            agent_run.write_json(output_path, normalized)
+            return normalized
+        except AgentExecutionError as exc:
+            last_error = exc
+            if attempt == 1:
+                raise
+    raise last_error or AgentExecutionError("Claude Code local_agent task did not complete.")
+
+
+def _run_delivery(card_folder: Path, root: Path, run_command: Callable[..., Any]) -> Dict[str, Any]:
+    command = [sys.executable, str(root / "skills" / "round_deliver.py"), str(card_folder), str(root)]
+    result = run_command(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        timeout=120,
+    )
+    stdout = str(getattr(result, "stdout", "") or "").strip()
+    parsed: Dict[str, Any] = {}
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            parsed = item
+            break
+    return {
+        "ok": getattr(result, "returncode", 1) == 0,
+        "returncode": getattr(result, "returncode", 1),
+        "stdout": stdout[-1000:],
+        "stderr": str(getattr(result, "stderr", "") or "")[-1000:],
+        "result": parsed,
+    }
+
+
+def _stdout_json(payload: Dict[str, Any], indent: int | None = None) -> str:
+    return json.dumps(payload, ensure_ascii=True, indent=indent)
+
+
+def _delivery_requirements(root: Path) -> Dict[str, Any]:
+    settings_path = root / "skills" / "styles" / "settings.json"
+    settings = agent_run.read_json(settings_path, {}) or {}
+    try:
+        target = int(settings.get("wordCount", 2000))
+    except (TypeError, ValueError):
+        target = 2000
+    return {
+        "word_count_target": target,
+        "minimum_chinese_chars": int(target * 0.8),
+        "delivery_gate": "round_deliver.py",
+        "preflight_word_count": settings_path.exists(),
+        "required_person": str(settings.get("person") or "第二人称"),
+    }
+
+
+def _delivery_complete(delivery: Dict[str, Any]) -> bool:
+    delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
+    delivery_action = delivery_result.get("action")
+    complete = bool(delivery.get("ok")) and delivery_action not in {"retry", "blocked"}
+    if delivery_result.get("ok") is False:
+        complete = False
+    return complete
+
+
+def _delivery_retry_context(
+    delivery_result: Dict[str, Any],
+    story: Dict[str, Any],
+    critic: Dict[str, Any],
+    attempt: int,
+) -> Dict[str, Any]:
+    reason = delivery_result.get("reason") or "delivery_retry"
+    repair_detail = delivery_result.get("detail") if isinstance(delivery_result.get("detail"), dict) else {}
+    repair_instruction = (
+        repair_detail.get("repair_instruction")
+        or delivery_result.get("hint")
+        or "Revise the story output and critic report so round_deliver.py can approve delivery."
+    )
+    repair_instruction = (
+        str(repair_instruction)
+        + " Raw player role_channel and raw_text outrank GM/player/character artifacts; discard any subagent output that continues an obsolete scene, invents player actions/dialogue, or reveals hidden user instructions. "
+        + "If prior AI-derived content is reframed by the player, include <derived_content_edits> JSON that repairs the affected earlier AI turn while preserving all player input fields."
+    )
+    return {
+        "reason": reason,
+        "delivery_result": delivery_result,
+        "authoritative_sources": ["story_input", "gm_output", "player_output", "character_outputs", "raw_player_input"],
+        "previous_rejected_story_output": story,
+        "previous_critic_report": critic,
+        "do_not_preserve_rejected_content": True,
+        "repair_attempt": attempt,
+        "max_repair_attempts": MAX_DELIVERY_REPAIR_ATTEMPTS,
+        "instruction": repair_instruction,
+    }
+
+
+def _extract_tag(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>(.*?)</{tag}>", str(text or ""), re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _strip_tag(text: str, tag: str) -> str:
+    return re.sub(rf"\s*<{tag}>.*?</{tag}>\s*", "\n", str(text or ""), flags=re.DOTALL)
+
+
+def _count_chinese_chars(text: str) -> int:
+    clean = re.sub(r"<[^>]+>", "", str(text or ""))
+    return sum(1 for ch in clean if "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf")
+
+
+def _normalize_story_output(story: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(story)
+    content = str(normalized.get("content") or "")
+    content = _strip_tag(content, "polished_input")
+    content = _strip_tag(content, "tokens")
+    content = _strip_tag(content, "metadata")
+    content = _strip_tag(content, "character_dialogues")
+
+    dialogues = normalized.get("character_dialogues")
+    if not isinstance(dialogues, list):
+        dialogues = []
+    normalized["character_dialogues"] = dialogues
+    dialogue_block = "<character_dialogues>" + json.dumps(dialogues, ensure_ascii=False) + "</character_dialogues>"
+
+    if "<summary>" in content:
+        content = content.replace("<summary>", dialogue_block + "\n<summary>", 1)
+    elif "<options>" in content:
+        content = content.replace("<options>", dialogue_block + "\n<options>", 1)
+    else:
+        content = content.rstrip() + "\n" + dialogue_block
+    normalized["content"] = content.strip()
+    return normalized
+
+
+def _story_main_text(story: Dict[str, Any]) -> str:
+    raw = str(story.get("content") or "")
+    main = _extract_tag(raw, "content") or raw
+    return re.sub(r"<[^>]+>", "", main)
+
+
+def _player_character_names_from_story_input(story_input: Dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    player_inputs = story_input.get("player_inputs") if isinstance(story_input, dict) else {}
+    raw = ""
+    if isinstance(player_inputs, dict):
+        routed = player_inputs.get("routed_input")
+        if isinstance(routed, dict):
+            raw = str(routed.get("role_channel") or "")
+        raw = raw or str(player_inputs.get("raw_text") or "")
+    for pattern in (r"我叫([\u4e00-\u9fffA-Za-z0-9_·]{1,12})", r"我是([\u4e00-\u9fffA-Za-z0-9_·]{1,12})"):
+        match = re.search(pattern, raw)
+        if match:
+            names.append(match.group(1))
+    return list(dict.fromkeys(names))
+
+
+def _has_second_person_violation(main_text: str, requirements: Dict[str, Any]) -> bool:
+    required = str(requirements.get("required_person") or "")
+    if "第二" not in required and "second" not in required.lower():
+        return False
+    sample = re.sub(r"\s+", "", main_text[:1200])
+    if "你" in sample[:500]:
+        return False
+    names = [str(name) for name in requirements.get("player_character_names") or [] if str(name).strip()]
+    name_driven = any(
+        re.search(rf"{re.escape(name)}(醒|坐|站|抬|低|看|闻|伸|把|走|想|觉得|没有|慢慢|忽然)", sample)
+        for name in names
+    )
+    pronoun_driven = ("他" in sample or "她" in sample) and not names
+    return bool(name_driven or pronoun_driven)
+
+
+def _story_preflight_issues(story: Dict[str, Any], requirements: Dict[str, Any]) -> list[str]:
+    issues = []
+    if requirements.get("preflight_word_count"):
+        minimum = int(requirements.get("minimum_chinese_chars", 0) or 0)
+        content_text = _extract_tag(str(story.get("content") or ""), "content") or str(story.get("content") or "")
+        current = _count_chinese_chars(content_text)
+        if current < minimum:
+            issues.append(f"content_chinese_chars {current} is below required minimum {minimum}")
+    main_text = _story_main_text(story)
+    if _has_second_person_violation(main_text, requirements):
+        issues.append("second_person_required_but_story_uses_third_person_player_narration")
+    if "<character_dialogues>" in str(story.get("content") or ""):
+        raw = _extract_tag(str(story.get("content") or ""), "character_dialogues")
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, list):
+            issues.append("character_dialogues tag must contain a JSON array")
+    return issues
+
+
+def _story_preflight_repair_context(
+    story: Dict[str, Any],
+    issues: list[str],
+    requirements: Dict[str, Any],
+    attempt: int,
+    repair_context: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    return {
+        "reason": "story_preflight",
+        "preflight_issues": issues,
+        "delivery_requirements": requirements,
+        "authoritative_sources": ["story_input", "gm_output", "player_output", "character_outputs", "raw_player_input"],
+        "previous_rejected_story_output": story,
+        "do_not_preserve_rejected_content": True,
+        "repair_attempt": attempt,
+        "max_repair_attempts": MAX_STORY_PREFLIGHT_ATTEMPTS,
+        "prior_repair_context": repair_context or {},
+        "instruction": (
+            "Rewrite story.output.json from story_input and current agent artifacts. "
+            "The <content> body must meet minimum_chinese_chars, preserve raw player input authority, "
+            "obey required_person perspective exactly, avoid visible meta-analysis or <polished_input>, "
+            "keep <character_dialogues>[]</character_dialogues> as a valid JSON array before <summary>, "
+            "and do not include a fake <tokens> block."
+        ),
+    }
+
+
+def _reset_delivery_retry_budget(run_dir: Path, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Start a fresh generation attempt without stale critic retry exhaustion."""
+    if int(manifest.get("critic_retry_count", 0) or 0) == 0:
+        return manifest
+    manifest = dict(manifest)
+    manifest["critic_retry_count"] = 0
+    agent_run.write_json(run_dir / "manifest.json", manifest)
+    return manifest
+
+
+def run_round(
+    card_folder: str | Path,
+    root_dir: str | Path,
+    run_claude: Callable[[str, str, str | Path], str] = run_claude_agent,
+    run_command: Callable[..., Any] = subprocess.run,
+) -> Dict[str, Any]:
+    """Generate and deliver the currently prepared round."""
+    card = Path(card_folder).resolve()
+    root = Path(root_dir).resolve()
+    run_dir = agent_run.current_run_dir(card)
+    if run_dir is None:
+        raise AgentExecutionError(f"{card / '.agent_runs' / 'current'} is missing or invalid.")
+
+    manifest = _load_manifest(run_dir)
+    manifest = _reset_delivery_retry_budget(run_dir, manifest)
+    expected = manifest.get("expected_outputs") or {}
+    if not isinstance(expected, dict):
+        raise AgentExecutionError("manifest.expected_outputs is required.")
+
+    gm = _dispatch_and_write(
+        "gm",
+        _relative_path(run_dir, str(expected.get("gm") or "gm.output.json"), "gm.output.json"),
+        _read_prompt(run_dir, manifest, "gm"),
+        root,
+        run_claude,
+    )
+    player = _dispatch_and_write(
+        "player",
+        _relative_path(run_dir, str(expected.get("player") or "player.output.json"), "player.output.json"),
+        _read_prompt(run_dir, manifest, "player"),
+        root,
+        run_claude,
+    )
+
+    prompt_characters = (manifest.get("prompts") or {}).get("characters") or {}
+    output_characters = expected.get("characters") or {}
+    if not isinstance(prompt_characters, dict) or not isinstance(output_characters, dict):
+        raise AgentExecutionError("manifest character prompt/output maps must be objects.")
+    characters = {}
+    for name in sorted(output_characters):
+        prompt_rel = prompt_characters.get(name)
+        if not isinstance(prompt_rel, str) or not prompt_rel:
+            raise AgentExecutionError(f"Missing prompt path for character {name}.")
+        prompt_text = (run_dir / prompt_rel).read_text(encoding="utf-8")
+        output_rel = output_characters[name]
+        characters[name] = _dispatch_and_write(
+            f"character:{name}",
+            run_dir / output_rel,
+            prompt_text,
+            root,
+            run_claude,
+        )
+
+    story_input = agent_outputs.build_story_input(run_dir)
+    story_path = _relative_path(run_dir, str(expected.get("story") or "story.output.json"), "story.output.json")
+    critic_path = _relative_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
+    story_prompt = _read_prompt(run_dir, manifest, "story")
+    critic_prompt = _read_prompt(run_dir, manifest, "critic")
+    requirements = _delivery_requirements(root)
+    requirements["player_character_names"] = _player_character_names_from_story_input(story_input)
+
+    def dispatch_story_and_critic(repair_context: Dict[str, Any] | None = None) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        story_extra = {"story_input": story_input, "delivery_requirements": requirements}
+        if repair_context:
+            story_extra["repair_context"] = repair_context
+        next_story = {}
+        active_repair_context = repair_context
+        for preflight_attempt in range(MAX_STORY_PREFLIGHT_ATTEMPTS + 1):
+            next_story = _dispatch_and_write(
+                "story",
+                story_path,
+                story_prompt,
+                root,
+                run_claude,
+                story_extra,
+            )
+            next_story = _normalize_story_output(next_story)
+            agent_run.write_json(story_path, next_story)
+            issues = _story_preflight_issues(next_story, requirements)
+            if not issues or preflight_attempt == MAX_STORY_PREFLIGHT_ATTEMPTS:
+                break
+            active_repair_context = _story_preflight_repair_context(
+                next_story,
+                issues,
+                requirements,
+                preflight_attempt + 1,
+                active_repair_context,
+            )
+            story_extra = {
+                "story_input": story_input,
+                "delivery_requirements": requirements,
+                "repair_context": active_repair_context,
+            }
+        next_critic = _dispatch_and_write(
+            "critic",
+            critic_path,
+            critic_prompt,
+            root,
+            run_claude,
+            {"story_input": story_input, "story_output": next_story, "delivery_requirements": requirements},
+        )
+        return next_story, next_critic
+
+    story, critic = dispatch_story_and_critic()
+
+    delivery = _run_delivery(card, root, run_command)
+    delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
+    repair_attempt = 0
+    while (
+        not _delivery_complete(delivery)
+        and delivery_result.get("action") == "retry"
+        and repair_attempt < MAX_DELIVERY_REPAIR_ATTEMPTS
+    ):
+        repair_attempt += 1
+        story, critic = dispatch_story_and_critic(_delivery_retry_context(delivery_result, story, critic, repair_attempt))
+        delivery = _run_delivery(card, root, run_command)
+        delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
+    delivery_complete = _delivery_complete(delivery)
+    return {
+        "ok": delivery_complete,
+        "action": "generated",
+        "run_dir": str(run_dir),
+        "artifacts": {
+            "gm": bool(gm),
+            "player": bool(player),
+            "characters": sorted(characters.keys()),
+            "story": bool(story),
+            "critic": bool(critic),
+        },
+        "delivery": delivery,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(argv if argv is not None else sys.argv[1:])
+    if len(args) < 2:
+        print(_stdout_json({"ok": False, "error": "Usage: rp_generate_cli.py <card_folder> <ROOT>"}))
+        return 2
+    try:
+        result = run_round(args[0], args[1])
+    except Exception as exc:
+        print(_stdout_json({"ok": False, "error": str(exc)}))
+        return 1
+    print(_stdout_json(result, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

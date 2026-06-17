@@ -28,6 +28,38 @@ def _extract_tag(text, tag):
     return m.group(1).strip() if m else ""
 
 
+def _has_processing_evidence(kind, probe):
+    if kind in probe:
+        return True
+    text = str(probe or "")
+    semantic_terms = {
+        "ACTION": ["action", "attempt", "attempted", "direct consequence", "尝试", "行动", "丢弃", "扔掉", "直接后果"],
+        "SYNOPSIS": ["synopsis", "dream", "expanded", "梦境", "梦醒", "梦境残留", "梗概", "扩写", "预兆"],
+        "OMNISCIENT_SETTING": ["omniscient", "hidden", "future setting", "长期", "暗线", "隐藏", "不向角色", "显性揭露", "真实用途", "代价"],
+        "DERIVED_CONTENT_EDIT": ["derived_content_edits", "prior", "repair", "rewrite", "上一轮", "前文", "修正", "重写", "降级"],
+        "IMPORTANT_CHARACTER_DECLARATION": ["important character", "character_dialogues", "核心角色", "重要角色", "subagent"],
+    }
+    return any(term in text for term in semantic_terms.get(kind, []))
+
+
+def _derived_edits_actionable(raw):
+    try:
+        edits = json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(edits, list):
+        return False
+    action_keys = {"ai", "content", "new_ai", "first_paragraph", "new_first_paragraph", "summary"}
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        if "turn_index" not in edit:
+            continue
+        if any(isinstance(edit.get(key), str) and edit.get(key).strip() for key in action_keys):
+            return True
+    return False
+
+
 def validate_player_processing(response_text, round_context):
     """Guardrail for mixed player inputs and conflict repairs.
 
@@ -40,14 +72,15 @@ def validate_player_processing(response_text, round_context):
     polished = _extract_tag(response_text, "polished_input")
     update_block = _extract_tag(response_text, "UpdateVariable")
     patch_block = _extract_tag(response_text, "JSONPatch")
+    derived_edits = _extract_tag(response_text, "derived_content_edits")
     summary = _extract_tag(response_text, "summary")
-    response_probe = "\n".join([polished, update_block, summary])
+    response_probe = "\n".join([polished, update_block, patch_block, derived_edits, summary])
 
     classified = re.findall(r"^\s*\d+\.\s+(OMNISCIENT_SETTING|SYNOPSIS|ACTION|UNCLASSIFIED|DERIVED_CONTENT_EDIT|IMPORTANT_CHARACTER_DECLARATION):", ctx, flags=re.MULTILINE)
     if len(set(classified)) >= 2:
-        missing = [kind for kind in sorted(set(classified)) if kind not in polished]
+        missing = [kind for kind in sorted(set(classified)) if not _has_processing_evidence(kind, response_probe)]
         if missing:
-            warnings.append("<polished_input> must explicitly list mixed input handling for: " + ", ".join(missing))
+            warnings.append("Mixed input handling evidence must explicitly list: " + ", ".join(missing))
 
     if "conflict_cues: (none detected" not in ctx and "required_repair:" in ctx:
         repair_terms = ["修正", "覆盖", "降级", "梦", "预示", "现实", "分支", "派生", "上一轮"]
@@ -58,6 +91,10 @@ def validate_player_processing(response_text, round_context):
         patch_terms = ["梦", "预示", "现实", "覆盖", "分支", "核心异常", "长期", "规则", "吊坠"]
         if patch_block and not any(term in patch_block for term in patch_terms):
             warnings.append("JSONPatch exists but does not appear to persist the player's reframing/long-term setting.")
+        if "prior_ai_to_reconcile:" in ctx and not derived_edits:
+            warnings.append("Detected required repair of prior AI-derived content, but response lacks <derived_content_edits>; rewrite or reframe the affected earlier turn without touching player inputs.")
+        elif "prior_ai_to_reconcile:" in ctx and not _derived_edits_actionable(derived_edits):
+            warnings.append("Detected required repair of prior AI-derived content, but <derived_content_edits> is not actionable by handler.py; include turn_index plus ai/content/new_ai/first_paragraph/summary.")
 
     if "DERIVED_CONTENT_EDIT" in classified and "<derived_content_edits>" not in response_text:
         warnings.append("Player requested editing existing AI-derived content, but response lacks <derived_content_edits>; do not merely place the requested scene in the latest reply.")
@@ -228,7 +265,11 @@ def main():
     try:
         result = subprocess.run(
             [sys.executable, str(Path(root) / "skills" / "handler.py"), card_folder],
-            capture_output=True, text=True, timeout=30
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
         )
         handler_ok = result.returncode == 0
         handler_output = result.stdout.strip()
@@ -274,7 +315,11 @@ def main():
     try:
         result = subprocess.run(
             [sys.executable, str(Path(root) / "skills" / "write_memory.py"), card_folder],
-            capture_output=True, text=True, timeout=15
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
         )
         memory_ok = result.returncode == 0
     except Exception:

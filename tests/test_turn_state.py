@@ -109,6 +109,21 @@ class TurnStateTest(unittest.TestCase):
         command = (ROOT / ".claude" / "commands" / "rp.md").read_text(encoding="utf-8")
 
         self.assertIn("rp-orchestrator", command)
+        self.assertIn("Read `.claude/skills/rp.md`", command)
+        self.assertIn("Read `.claude/skills/rp-orchestrator.md`", command)
+        self.assertIn("Do not call `rp-orchestrator` as an external registered skill", command)
+        self.assertIn("The first assistant action must be a PowerShell tool call", command)
+        self.assertIn("Do not reply with prose before the first tool result", command)
+        self.assertIn("Use the PowerShell tool on Windows", command)
+        self.assertIn("```!", command)
+        self.assertIn("rp_bootstrap.py", command)
+        self.assertIn("rp_generate_cli.py", command)
+        self.assertIn("turn_generated", command)
+        self.assertIn("Do not generate this turn again", command)
+        self.assertIn("Native subagent dispatch uses the Agent tool", command)
+        self.assertIn("Do not describe a tooling mismatch", command)
+        self.assertIn("gm.output.json", command)
+        self.assertIn("player.output.json", command)
         self.assertTrue("启动模式" in command or "startup" in command.lower())
         self.assertNotIn("## 第一步", command)
         self.assertNotIn("## 第二步", command)
@@ -293,6 +308,49 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(progress["label"], "正在交付到前端")
         self.assertEqual(progress["percent"], 85)
 
+    def test_blank_profile_derives_self_identity_from_authoritative_player_input(self):
+        (self.card / "memory" / "characters" / "_self").mkdir(parents=True)
+        (self.card / ".card_data.json").write_text(
+            json.dumps(
+                {
+                    "mode": "blank_bootstrap",
+                    "source_type": "blank",
+                    "name": "未命名角色",
+                    "data": {"name": "未命名角色"},
+                    "evolving_profile": {
+                        "version": 1,
+                        "last_turn": 0,
+                        "confidence": "low",
+                        "fields": {
+                            "role": "",
+                            "appearance": "",
+                            "voice": "",
+                            "motivation": "",
+                            "relationship_to_user": "",
+                            "world_assumptions": [],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        self.handler.evolve_blank_profile(
+            str(self.card),
+            1,
+            "【雨蒙】我叫雨蒙，一名普通的高一男生。今天早上我看见粉色云彩。",
+            "<p>你在教室里醒来。</p>",
+            "你在教室里醒来。",
+            {"世界": {"地点": "高一教室"}},
+        )
+
+        card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        profile = json.loads((self.card / "memory" / "characters" / "_self" / "profile.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(card_data["name"], "雨蒙")
+        self.assertEqual(profile["fields"]["role"], "普通的高一男生")
+
     def test_frontend_polls_progress_and_refreshes_after_submit(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
@@ -370,6 +428,30 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn("input_schema", pending)
         self.assertNotIn("role_text", pending)
         self.assertNotIn("user_instruction_text", pending)
+
+    def test_derived_content_edits_only_record_when_actionable(self):
+        log = [{"index": 0, "user": "player", "ai": "<p>old</p>", "summary": "old"}]
+
+        applied = self.handler.apply_derived_content_edits(
+            log,
+            [{"op": "replace", "path": "/prior_ai_turn/scene", "value": "not actionable"}],
+        )
+
+        self.assertEqual(applied, [])
+        self.assertNotIn("derived_repairs", log[0])
+
+    def test_derived_content_edits_can_update_prior_summary(self):
+        log = [{"index": 0, "user": "player", "ai": "<p>old</p><summary>old</summary>", "summary": "old"}]
+
+        applied = self.handler.apply_derived_content_edits(
+            log,
+            [{"turn_index": 0, "summary": "课堂段落改定为梦境预示", "reason": "玩家梦醒回拨"}],
+        )
+
+        self.assertEqual(applied[0]["op"], "replace_summary")
+        self.assertEqual(log[0]["summary"], "课堂段落改定为梦境预示")
+        self.assertIn("课堂段落改定为梦境预示", log[0]["ai"])
+        self.assertIn("derived_repairs", log[0])
 
     def test_branch_submit_player_input_edit_truncates_and_pends_revised_turn(self):
         first = self.handler.record_player_input(str(self.card), "first input", "first input")

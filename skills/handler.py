@@ -1070,6 +1070,32 @@ def _find_first_str(obj, names):
     return ""
 
 
+def _derive_blank_identity_from_user_text(user_text):
+    text = str(user_text or "")
+    text = re.sub(r"\[USER_INSTRUCTION\].*", "", text, flags=re.DOTALL).strip()
+    name = ""
+    role = ""
+
+    match = re.search(r"【([^】\n]{1,24})】", text)
+    if match:
+        name = match.group(1).strip()
+    if not name:
+        match = re.search(r"(?:我叫|我是)([\u4e00-\u9fffA-Za-z0-9_·]{1,24})", text)
+        if match:
+            name = match.group(1).strip()
+
+    if name:
+        role_match = re.search(rf"(?:我叫|我是){re.escape(name)}[，,]\s*([^。；;\n]+)", text)
+        if role_match:
+            role = role_match.group(1).strip()
+    if not role:
+        role_match = re.search(r"(?:我叫|我是)[^，,。；;\n]{1,24}[，,]\s*([^。；;\n]+)", text)
+        if role_match:
+            role = role_match.group(1).strip()
+    role = re.sub(r"^(?:一名|一个|一位|名|个|位)", "", role).strip()
+    return name, role
+
+
 def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, stat_data):
     """Persist incremental custom-card state for blank_bootstrap cards."""
     card_path = Path(card_folder) / ".card_data.json"
@@ -1104,6 +1130,11 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
             role = _find_first_str(player_obj, ["身份", "职业", "角色定位", "role"])
     if not role:
         role = _find_first_str(stat_data, ["身份", "职业", "角色定位", "role"])
+    derived_name, derived_role = _derive_blank_identity_from_user_text(user_text)
+    if not name and derived_name:
+        name = derived_name
+    if not role and derived_role:
+        role = derived_role
     situation = _find_first_str(stat_data, ["当前状况", "当前状态", "状态"])
     location = _find_first_str(stat_data, ["地点", "当前位置"])
     scene = _find_first_str(stat_data, ["当前场景", "场景"])
@@ -1338,12 +1369,14 @@ def apply_derived_content_edits(log, edits):
         ai_text = target.get("ai", "") or ""
         summary_text = target.get("summary", "") or ""
         reason = str(edit.get("reason") or "player-directed derived content repair")
+        applied_this_edit = False
 
         # Full replacement for broad rewrite requests (e.g. "rewrite all previous chapters").
         new_ai = edit.get("ai") or edit.get("content") or edit.get("new_ai")
         if isinstance(new_ai, str) and new_ai.strip():
             target["ai"] = new_ai.strip()
             applied.append({"turn_index": turn_index, "op": "replace_ai", "reason": reason})
+            applied_this_edit = True
 
         # Currently supported partial operation: replace the first narrative paragraph.
         new_first = edit.get("first_paragraph") or edit.get("new_first_paragraph")
@@ -1357,17 +1390,20 @@ def apply_derived_content_edits(log, edits):
                 ai_text = para + "\n" + ai_text
             target["ai"] = ai_text
             applied.append({"turn_index": turn_index, "op": "replace_first_paragraph", "reason": reason})
+            applied_this_edit = True
 
         new_summary = edit.get("summary")
         if isinstance(new_summary, str) and new_summary.strip():
             target["summary"] = new_summary.strip()
             target["ai"] = re.sub(r"<summary>.*?</summary>", "<summary>" + new_summary.strip() + "</summary>", target.get("ai", ""), flags=re.DOTALL)
             applied.append({"turn_index": turn_index, "op": "replace_summary", "reason": reason})
+            applied_this_edit = True
 
-        target.setdefault("derived_repairs", []).append({
-            "reason": reason,
-            "source": "response.txt/derived_content_edits",
-        })
+        if applied_this_edit:
+            target.setdefault("derived_repairs", []).append({
+                "reason": reason,
+                "source": "response.txt/derived_content_edits",
+            })
     return applied
 
 

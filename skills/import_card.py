@@ -169,13 +169,37 @@ def _extract_all_regex(card_data: dict, card_dir: str) -> dict | None:
     return result
 
 
+def _strip_response_contract_tags(text: str) -> str:
+    """Remove response wrapper tags that some cards include in first_mes."""
+    contract_tags = "summary|options|tokens|character_dialogues|polished_input"
+    text = re.sub(
+        rf"<(?:{contract_tags})>[\s\S]*?</(?:{contract_tags})>",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"</?content\s*>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _opening_label(text: str, limit: int = 20) -> str:
+    plain = _strip_response_contract_tags(text)
+    plain = re.sub(r"</p\s*>", "\n", plain, flags=re.IGNORECASE)
+    plain = re.sub(r"<br\s*/?>", "\n", plain, flags=re.IGNORECASE)
+    plain = re.sub(r"<[^>]+>", "", plain)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in plain.splitlines()]
+    plain = next((line for line in lines if line), "")
+    return plain[:limit] if len(plain) > limit else plain
+
+
 def _mes_to_html(text: str) -> str:
     """将 first_mes / alternate_greeting 文本转为 HTML 段落。
     按 \\r\\n\\r\\n 或 \\n\\n 分段，每段用 <p> 包裹。
     自动剥离 MVU 变量块——这些是作者给 MVU 系统的变量数据，不应显示在前端。"""
     import re
-    # Strip MVU blocks before paragraph splitting.
+    # Strip response wrappers and MVU blocks before paragraph splitting.
     # Card authors may use malformed nesting, so strip each tag type independently.
+    text = _strip_response_contract_tags(text)
     text = re.sub(r"<UpdateVariable>[\s\S]*?</UpdateVariable>", "", text)
     text = re.sub(r"<initvar>[\s\S]*?</initvar>", "", text)
     # Keep <StatusPlaceHolderImpl/> — handler.py replaces it with the
@@ -183,7 +207,16 @@ def _mes_to_html(text: str) -> str:
     # Also strip any remaining orphaned open/close tags
     text = re.sub(r"</?(?:UpdateVariable|initvar)\s*/?>", "", text)
     paragraphs = re.split(r"\r?\n\s*\r?\n", text.strip())
-    return "\n".join(f"<p>{p.strip()}</p>" for p in paragraphs if p.strip())
+    html_parts = []
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if re.match(r"^<p(?:\s[^>]*)?>[\s\S]*</p>$", paragraph, flags=re.IGNORECASE):
+            html_parts.append(paragraph)
+        else:
+            html_parts.append(f"<p>{paragraph}</p>")
+    return "\n".join(html_parts)
 
 
 def extract_openings(card_data: dict) -> list[dict]:
@@ -194,7 +227,7 @@ def extract_openings(card_data: dict) -> list[dict]:
     if first_mes:
         openings.append({
             "id": 0,
-            "label": first_mes[:20] if len(first_mes) > 20 else first_mes,
+            "label": _opening_label(first_mes),
             "content": _mes_to_html(first_mes),
             "options": []
         })
@@ -204,7 +237,7 @@ def extract_openings(card_data: dict) -> list[dict]:
     for i, greeting in enumerate(alt_greetings):
         openings.append({
             "id": i + 1,
-            "label": greeting[:20] if len(greeting) > 20 else greeting,
+            "label": _opening_label(greeting),
             "content": _mes_to_html(greeting),
             "options": []
         })
@@ -1168,6 +1201,7 @@ def run_import(card_dir, root_dir):
     """
     styles_dir = os.path.join(root_dir, "skills", "styles")
     os.makedirs(styles_dir, exist_ok=True)
+    os.makedirs(card_dir, exist_ok=True)
 
     result = {
         "status": "ok",

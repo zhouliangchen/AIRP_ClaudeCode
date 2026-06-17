@@ -47,6 +47,55 @@ def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _clip_text(value: Any, limit: int) -> str:
+    text = _to_text(value).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...[truncated]"
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = _to_text(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def compact_card_data(card_data: Any) -> Dict[str, Any]:
+    """Project large SillyTavern card data into a bounded per-round context."""
+    if not isinstance(card_data, dict):
+        return {}
+
+    nested = card_data.get("data")
+    if not isinstance(nested, dict):
+        nested = {}
+
+    extensions = {}
+    for source in (nested.get("extensions"), card_data.get("extensions")):
+        if isinstance(source, dict):
+            extensions.update(source)
+
+    tags = card_data.get("tags") or nested.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+
+    return {
+        "projection": "compacted_card_data_v1",
+        "name": _first_text(card_data.get("name"), nested.get("name"), card_data.get("title")),
+        "world": _first_text(extensions.get("world"), card_data.get("world"), nested.get("world")),
+        "description": _clip_text(_first_text(card_data.get("description"), nested.get("description")), 4000),
+        "personality": _clip_text(_first_text(card_data.get("personality"), nested.get("personality")), 2000),
+        "scenario": _clip_text(_first_text(card_data.get("scenario"), nested.get("scenario")), 3000),
+        "first_mes": _clip_text(_first_text(card_data.get("first_mes"), nested.get("first_mes")), 5000),
+        "creator_notes": _clip_text(
+            _first_text(card_data.get("creatorcomment"), nested.get("creator_notes"), card_data.get("creator_notes")),
+            1500,
+        ),
+        "tags": tags[:20],
+    }
+
+
 def _is_instruction(text: str) -> bool:
     text = _to_text(text).strip()
     if not text:
@@ -151,7 +200,7 @@ def build_gm_packet(card_folder, routed_input: Dict[str, Any], recent_chat, card
         "role_channel": _to_text(routed_input.get("role_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
         "recent_chat": recent_chat or [],
-        "card_data": card_data or {},
+        "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts or [],
         "components": routed_input.get("components", []),
     }
@@ -231,7 +280,7 @@ def prepare_agent_run(
     input_json["raw_text"] = _to_text(input_json.get("raw_text", user_text))
     input_json["routed_input"] = routed_input
     input_json["recent_chat"] = chat_log or []
-    input_json["card_data"] = card_data or {}
+    input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
     agent_run.write_json(run_dir / "input.json", input_json)
 

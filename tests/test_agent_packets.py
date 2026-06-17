@@ -78,6 +78,137 @@ class CriticGateSourceTest(unittest.TestCase):
         self.assertIn("import agent_memory", source)
         self.assertIn("ingest_memory_summaries", source)
 
+    def test_round_deliver_decodes_child_process_output_as_utf8(self):
+        source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(source.count('encoding="utf-8"'), 2)
+        self.assertGreaterEqual(source.count('errors="replace"'), 2)
+
+
+class PlayerProcessingGuardTest(unittest.TestCase):
+    def setUp(self):
+        self.round_deliver = _load_round_deliver()
+
+    def test_mixed_input_evidence_may_live_in_update_variable(self):
+        context = """
+=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+  1. OMNISCIENT_SETTING: hidden rule
+  2. SYNOPSIS: dream breaks
+  3. ACTION: throw pendant
+  conflict_cues: 梦境破碎, 醒来
+"""
+        response = """
+<content><p>你在上学路上醒来，并尝试丢掉吊坠。</p></content>
+<UpdateVariable>
+<Analysis>
+- mixed input handled: OMNISCIENT_SETTING, SYNOPSIS, ACTION
+- repair/reframing: prior classroom branch treated as dream preview
+</Analysis>
+<JSONPatch>
+[
+  {"op":"replace","path":"/异常/隐藏机制","value":"吊坠为未公开暗线"},
+  {"op":"replace","path":"/异常/前文修正","value":"上一轮教室段落降级为梦境预示"}
+]
+</JSONPatch>
+</UpdateVariable>
+<summary>你醒来后确认吊坠无法丢弃。</summary>
+"""
+
+        warnings = self.round_deliver.validate_player_processing(response, context)
+
+        self.assertEqual(warnings, [])
+
+    def test_required_repair_requires_derived_content_edits(self):
+        context = """
+=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+  1. SYNOPSIS: dream breaks
+  2. ACTION: throw pendant
+  conflict_cues: 梦境破碎, 醒来
+  prior_ai_to_reconcile: turn=0 summary=classroom already happened.
+  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete.
+"""
+        response = """
+<content><p>你在上学路上醒来，并尝试丢掉吊坠。</p></content>
+<UpdateVariable>
+<Analysis>
+- mixed input handled: SYNOPSIS, ACTION
+- repair/reframing: prior classroom branch treated as dream preview
+</Analysis>
+<JSONPatch>
+[
+  {"op":"replace","path":"/异常/前文修正","value":"上一轮教室段落降级为梦境预示"}
+]
+</JSONPatch>
+</UpdateVariable>
+<summary>你醒来后确认吊坠无法丢弃。</summary>
+"""
+
+        warnings = self.round_deliver.validate_player_processing(response, context)
+
+        self.assertTrue(any("derived_content_edits" in warning for warning in warnings))
+
+    def test_mixed_input_guard_accepts_semantic_evidence_without_english_labels(self):
+        context = """
+=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+  1. OMNISCIENT_SETTING: hidden rule
+  2. SYNOPSIS: dream breaks
+  3. ACTION: throw pendant
+  conflict_cues: 梦境破碎, 醒来
+  prior_ai_to_reconcile: turn=0 summary=classroom already happened.
+  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete.
+"""
+        response = """
+<content><p>你在上学路上从梦境残留中醒来，并尝试丢弃吊坠。</p></content>
+<UpdateVariable>
+<Analysis>
+- player attempted discard; pendant returned cleanly, then classroom observation began without revealing hidden future setting
+</Analysis>
+<JSONPatch>
+[
+  {"op":"replace","path":"/异常/梦境残留/状态","value":"梦境细节快速消散，仅保留女性身份感、粉色花朵吊坠与未来预兆的碎片印象"},
+  {"op":"replace","path":"/暗线/长期引导/吊坠秘密","value":"吊坠真实用途与代价暂不向角色显性揭露，仅作为后续线索保留"}
+]
+</JSONPatch>
+</UpdateVariable>
+<derived_content_edits>
+[
+  {"turn_index":0,"summary":"上一轮课堂段落改定为梦境预示。","reason":"玩家梦醒回拨"}
+]
+</derived_content_edits>
+<summary>你醒来后确认吊坠无法丢弃。</summary>
+"""
+
+        warnings = self.round_deliver.validate_player_processing(response, context)
+
+        self.assertEqual(warnings, [])
+
+    def test_required_repair_rejects_unactionable_derived_content_edits(self):
+        context = """
+=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+  1. SYNOPSIS: dream breaks
+  2. ACTION: throw pendant
+  conflict_cues: 梦境破碎, 醒来
+  prior_ai_to_reconcile: turn=0 summary=classroom already happened.
+  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete.
+"""
+        response = """
+<content><p>你在上学路上醒来，并尝试丢掉吊坠。</p></content>
+<UpdateVariable>
+<Analysis>- attempted discard; dream residue stored</Analysis>
+<JSONPatch>[{"op":"replace","path":"/异常/梦境残留","value":"已记录"}]</JSONPatch>
+</UpdateVariable>
+<derived_content_edits>
+[
+  {"op":"replace","path":"/prior_ai_turn/scene","value":"not actionable for handler"}
+]
+</derived_content_edits>
+<summary>你醒来后确认吊坠无法丢弃。</summary>
+"""
+
+        warnings = self.round_deliver.validate_player_processing(response, context)
+
+        self.assertTrue(any("actionable" in warning for warning in warnings))
+
 
 class CriticGateRuntimeTest(unittest.TestCase):
     def setUp(self):
@@ -433,6 +564,48 @@ class AgentPacketTest(unittest.TestCase):
 
         critic = json.loads((run_dir / "critic.report.json").read_text(encoding="utf-8"))
         self.assertEqual(critic, self.agent_packets.DEFAULT_CRITIC_REPORT)
+
+    def test_prepare_agent_run_compacts_large_card_data_for_agent_mailbox(self):
+        large_entries = [
+            {
+                "comment": f"entry-{index}",
+                "keys": [f"key-{index}"],
+                "content": "world lore " * 600,
+                "enabled": True,
+            }
+            for index in range(80)
+        ]
+        card_data = {
+            "name": "Huge Card",
+            "description": "A focused playable setup.",
+            "first_mes": "Opening scene." * 200,
+            "data": {
+                "name": "Huge Card Data",
+                "character_book": {"entries": large_entries},
+                "extensions": {"world": "Huge World"},
+            },
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I ask what happened.",
+            chat_log=[],
+            card_data=card_data,
+            character_contexts={"characters": []},
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        gm_context_text = (run_dir / "gm.context.json").read_text(encoding="utf-8")
+        input_text = (run_dir / "input.json").read_text(encoding="utf-8")
+        gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
+
+        self.assertLess(len(gm_context_text), 30000)
+        self.assertLess(len(input_text), 35000)
+        self.assertLess(len(gm_prompt), 50000)
+        self.assertNotIn("character_book", gm_context_text)
+        self.assertNotIn("entry-79", gm_prompt)
+        self.assertIn("Huge World", gm_context_text)
 
     def test_prepare_agent_run_writes_prompts_and_manifest(self):
         user_text = "I open the archive door.\nOmniscient: the vault behind it is a dream echo."

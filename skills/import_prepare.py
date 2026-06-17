@@ -36,8 +36,8 @@ def cleanup_residual(styles_dir: Path) -> dict:
     Uses PowerShell to identify and kill processes whose command-line
     contains '*skills*', excluding the current process (self).
 
-    Also removes any stale .pending file from a previous session so
-    the bridge server doesn't see a phantom pending event.
+    Also removes stale .pending/progress files from a previous session so
+    the bridge server doesn't see a phantom pending event or old error state.
     """
     current_pid = os.getpid()
     killed = 0
@@ -77,7 +77,19 @@ def cleanup_residual(styles_dir: Path) -> dict:
         except Exception:
             pass
 
-    return {"killed_processes": killed, "stale_pending_cleared": pending_existed}
+    progress = styles_dir / "progress.json"
+    progress_existed = progress.exists()
+    if progress_existed:
+        try:
+            progress.unlink()
+        except Exception:
+            pass
+
+    return {
+        "killed_processes": killed,
+        "stale_pending_cleared": pending_existed,
+        "stale_progress_cleared": progress_existed,
+    }
 
 
 # ─── Phase 2: Session File Initialization ────────────────────

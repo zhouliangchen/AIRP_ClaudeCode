@@ -16,12 +16,15 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 - Player authority: raw player input is preserved; AI-derived data bends to player revisions.
 - Decision point: the text stops before deciding critical player choices.
 - Style: avoids banned cliches, flat exposition, same-voice dialogue, and abstract emotion labels.
+- Perspective: when `delivery_requirements.required_person` is `第二人称`, protagonist-facing narration must use second person (`你`) rather than third-person protagonist naming or `他/她` as the narrative subject.
+- Immersion: visible response tags must not contain prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供`.
 - Contract: required response tags parse, `<character_dialogues>` JSON is valid, and delivery files are correct.
+- Token contract: Do not hard-fail missing <tokens> in `story.output.json`; `round_deliver.py appends` the real token block. Do hard-fail fake or all-zero `<tokens>` only if the story agent supplied them as final data.
 - Speed and scope: image/UI jobs are deferred and do not block text delivery.
 
 ## Failure Handling
 
-Hard failures require rewrite before delivery. Soft issues may pass with notes.
+Hard failures require rewrite before delivery. Perspective violations, visible meta-analysis, leaked routing/user-instruction summaries, and missing `<derived_content_edits>` when player authority requires repairing earlier AI-derived content are hard failures, not style preferences. Soft issues may pass with notes.
 
 If the same hard failure repeats:
 

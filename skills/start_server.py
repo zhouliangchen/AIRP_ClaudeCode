@@ -141,10 +141,11 @@ def _server_responding():
     try:
         result = subprocess.run(
             ["curl", "-s", "--max-time", "2", f"http://{_probe_host()}:{SERVER_PORT}/api/pending"],
-            capture_output=True, text=True, timeout=3
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3
         )
-        if result.returncode == 0 and result.stdout.strip():
-            json.loads(result.stdout)  # validate it's JSON
+        stdout = (result.stdout or "").strip()
+        if result.returncode == 0 and stdout:
+            json.loads(stdout)  # validate it's JSON
             return True
     except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError):
         pass
