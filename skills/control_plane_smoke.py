@@ -25,6 +25,79 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], input_analysis) -> Dict[str, Any]:
+    raw_text = str(input_payload.get("raw_text") or "")
+    role_text = str(input_payload.get("role_text") or "")
+    user_instruction_text = str(input_payload.get("user_instruction_text") or "")
+    analysis = {
+        "schema_version": 1,
+        "round_id": run_dir.name,
+        "analysis_mode": "fixture",
+        "source_integrity": {
+            "raw_text_sha256": input_analysis.sha256_text(raw_text),
+            "role_text_sha256": input_analysis.sha256_text(role_text),
+            "user_instruction_text_sha256": input_analysis.sha256_text(user_instruction_text),
+            "raw_preserved": True,
+        },
+        "semantic_units": [
+            {
+                "id": "fixture-role-action-1",
+                "source_channel": "role_input",
+                "type": "action",
+                "raw_excerpt": role_text,
+                "derived_summary": "The player enters the archive.",
+                "confidence": 1.0,
+                "visibility": "player_pov",
+                "persist": False,
+            },
+            {
+                "id": "fixture-style-guidance-1",
+                "source_channel": "user_instruction",
+                "type": "style_guidance",
+                "raw_excerpt": user_instruction_text,
+                "derived_summary": "Keep the scene quiet and inspectable.",
+                "confidence": 1.0,
+                "visibility": "gm_only",
+                "persist": False,
+            },
+        ],
+        "world_updates": {
+            "hidden_facts": [],
+            "public_facts": [],
+            "important_characters": [
+                {
+                    "id": "fixture-character-ada",
+                    "name": "Ada",
+                    "text": "Ada is cautious and carries the lamp.",
+                    "visibility": "character_private_and_gm",
+                    "status": "active",
+                }
+            ],
+            "retcon_requests": [],
+        },
+        "narrative_directives": {
+            "rewrite_previous_output": False,
+            "expand_synopsis_before_continue": False,
+            "continue_after_player_action": True,
+            "must_stop_for_player_decision": True,
+        },
+        "routing": {
+            "role_channel": role_text,
+            "user_instruction_channel": user_instruction_text,
+            "gm": True,
+            "player": True,
+            "characters": ["Ada"],
+        },
+        "risks": [],
+    }
+    return input_analysis.validate_input_analysis(
+        analysis,
+        raw_text=raw_text,
+        role_text=role_text,
+        user_instruction_text=user_instruction_text,
+    )
+
+
 def _write_agent_outputs(run_dir: Path) -> None:
     _write_json(
         run_dir / "gm.output.json",
@@ -158,6 +231,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         card.mkdir(parents=True)
         styles_dir.mkdir(parents=True)
 
+        card_data = {
+            "title": "Smoke Card",
+            "scenario": "Archive threshold",
+            "character_orchestration": {
+                "major": [],
+                "minor_policy": "main_agent",
+                "max_parallel_subagents": 2,
+            },
+        }
+        _write_json(card / ".card_data.json", card_data)
+
         input_payload = {
             "input_schema": "dual_channel_v1",
             "raw_text": "I enter the archive.\n\n[USER_INSTRUCTION]\nKeep the scene quiet and inspectable.",
@@ -169,7 +253,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             card_folder=card,
             user_text="fallback text should not be routed",
             chat_log=[{"index": 4, "summary": "The player reached the archive door."}],
-            card_data={"title": "Smoke Card", "scenario": "Archive threshold"},
+            card_data=card_data,
             character_contexts={
                 "characters": [
                     {
@@ -184,6 +268,13 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         run_dir = Path(prepared["run_dir"])
         if run_dir.name != "round-000006":
             raise RuntimeError(f"expected round-000006, got {run_dir.name}")
+
+        import input_analysis
+        import input_analysis_apply
+
+        analysis = _build_input_analysis_fixture(run_dir, input_payload, input_analysis)
+        _write_json(run_dir / "input_analysis.output.json", analysis)
+        applied_analysis = input_analysis_apply.apply_current_run(card, repo)
 
         agent_interactions.init_trace(
             run_dir,
@@ -225,10 +316,20 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         delivered = agent_outputs.mark_delivered(card)
         manifest = _read_json(run_dir / "manifest.json")
         trace = agent_interactions.summarize_for_story_input(run_dir)
+        story_input = _read_json(run_dir / "story.input.json")
+        story_input_analysis = (
+            story_input.get("player_inputs", {}).get("input_analysis", {})
+            if isinstance(story_input, dict)
+            else {}
+        )
 
         return {
             "ok": True,
             "round_id": run_dir.name,
+            "input_analysis": {
+                "analysis_mode": story_input_analysis.get("analysis_mode"),
+                "stage": applied_analysis.get("stage"),
+            },
             "delivery": {
                 "ok": bool(delivery.get("ok")),
                 "mode": delivery.get("mode"),

@@ -89,6 +89,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         "player_inputs": {
             "raw_text": input_payload.get("raw_text", ""),
             "routed_input": input_payload.get("routed_input", {}),
+            "input_analysis": input_payload.get("input_analysis", {}),
             "components": (input_payload.get("routed_input") or {}).get("components", []),
         },
         "gm_output": gm_output,

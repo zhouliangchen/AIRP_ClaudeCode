@@ -147,6 +147,21 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_build_story_input_preserves_input_analysis(self):
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["input_analysis"] = {
+            "schema_version": 1,
+            "analysis_mode": "fixture",
+        }
+        _write_json(self.run_dir / "input.json", input_payload)
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            story_input["player_inputs"]["input_analysis"]["analysis_mode"],
+            "fixture",
+        )
+
     def test_build_story_input_includes_interaction_trace_summary(self):
         trace = {
             "round_id": "round-000001",

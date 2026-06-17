@@ -24,6 +24,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertEqual(payload["manifest_stage"], "delivered")
         self.assertEqual(payload["trace"]["private_event_count"], 1)
         self.assertIn("player", payload["memory_summary"]["ingested"])
+        self.assertEqual(payload["input_analysis"]["analysis_mode"], "fixture")
 
 
 if __name__ == "__main__":
