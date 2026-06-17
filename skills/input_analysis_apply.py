@@ -15,6 +15,23 @@ import hidden_settings
 import input_analysis
 
 
+_ANALYSIS_APPLY_ALLOWED_STAGES = {
+    "",
+    "prepared",
+    "prompts_ready",
+    "awaiting_agent_outputs",
+    "analysis_applied",
+}
+
+_PROFILE_SAFE_IMPORTANT_CHARACTER_VISIBILITIES = {
+    "",
+    "character_private_and_gm",
+    "public_world",
+    "character_pov",
+    "specific_characters",
+}
+
+
 def _read_json_required(path: Path) -> Dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -29,11 +46,74 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
 
 def _read_card_data(card_folder: Any) -> Dict[str, Any]:
     path = Path(card_folder) / ".card_data.json"
+    if not path.exists():
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        raise input_analysis.InputAnalysisError(
+            f".card_data.json must be a valid JSON object: {path}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise input_analysis.InputAnalysisError(
+            f".card_data.json must be a valid JSON object: {path}"
+        )
+    return data
+
+
+def _read_manifest(run_dir: Path) -> Dict[str, Any]:
+    path = run_dir / "manifest.json"
+    if not path.exists():
         return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise input_analysis.InputAnalysisError(
+            f"manifest.json must be a valid JSON object before applying input analysis: {path}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise input_analysis.InputAnalysisError(
+            f"manifest.json must be a valid JSON object before applying input analysis: {path}"
+        )
+    return data
+
+
+def _assert_manifest_stage_allows_apply(run_dir: Path) -> Dict[str, Any]:
+    manifest = _read_manifest(run_dir)
+    stage = manifest.get("stage")
+    stage_text = "" if stage is None else str(stage)
+    if stage_text not in _ANALYSIS_APPLY_ALLOWED_STAGES:
+        raise input_analysis.InputAnalysisError(
+            f"cannot apply input analysis after manifest stage: {stage_text}"
+        )
+    return manifest
+
+
+def _validate_important_characters_for_profile(world_updates: Any) -> None:
+    if not isinstance(world_updates, dict):
+        return
+    important_records = world_updates.get("important_characters", [])
+    if not isinstance(important_records, list):
+        return
+
+    for index, record in enumerate(important_records):
+        if not isinstance(record, dict):
+            raise input_analysis.InputAnalysisError(
+                f"world_updates.important_characters[{index}] must be an object"
+            )
+
+        name = str(record.get("name") or record.get("character_name") or "").strip()
+        if not name:
+            raise input_analysis.InputAnalysisError(
+                f"world_updates.important_characters[{index}].name is required"
+            )
+
+        visibility = str(record.get("visibility") or "").strip()
+        if visibility not in _PROFILE_SAFE_IMPORTANT_CHARACTER_VISIBILITIES:
+            raise input_analysis.InputAnalysisError(
+                "world_updates.important_characters"
+                f"[{index}].visibility cannot be written to a character profile: {visibility}"
+            )
 
 
 def _source_input_id(raw_request: Dict[str, Any]) -> str:
@@ -53,6 +133,7 @@ def apply_current_run(card_folder, root_dir=None):
         raise FileNotFoundError(f"no current agent run for card folder: {card_folder}")
 
     run_dir = Path(run_dir)
+    _assert_manifest_stage_allows_apply(run_dir)
     raw_request = _read_json_required(run_dir / "input.raw.json")
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
     input_analysis.validate_input_analysis(
@@ -68,6 +149,7 @@ def apply_current_run(card_folder, root_dir=None):
 
     source_input_id = _source_input_id(raw_request)
     world_updates = analysis.get("world_updates", {})
+    _validate_important_characters_for_profile(world_updates)
     hidden_records = []
     for record in world_updates.get("hidden_facts", []) if isinstance(world_updates, dict) else []:
         persisted = hidden_settings.persist_hidden_setting_record(

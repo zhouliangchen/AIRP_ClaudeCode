@@ -398,6 +398,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.agent_packets = _load_module("agent_packets")
         self.input_analysis = _load_module("input_analysis")
         self.apply_mod = _load_module("input_analysis_apply")
+        self.InputAnalysisError = self.apply_mod.input_analysis.InputAnalysisError
 
         self.role_text = "I press the cracked pendant into my palm."
         self.hidden_text = "The pendant can only be destroyed by moon fire."
@@ -574,6 +575,84 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertNotIn("raw_text", gm_packet["input_analysis_request"])
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
+
+    def test_apply_current_run_rejects_after_story_ready_without_overwriting_manifest(self):
+        self._write_analysis()
+        original_manifest = self._set_manifest_stage("story_ready")
+
+        with self.assertRaisesRegex(self.InputAnalysisError, "story_ready"):
+            self.apply_mod.apply_current_run(self.card)
+
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "story_ready")
+        self.assertEqual(manifest["retry_count"], original_manifest["retry_count"])
+        self.assertEqual(
+            manifest["critic_retry_count"],
+            original_manifest["critic_retry_count"],
+        )
+
+    def test_apply_current_run_rejects_after_blocked_without_overwriting_manifest(self):
+        self._write_analysis()
+        original_manifest = self._set_manifest_stage("blocked")
+
+        with self.assertRaisesRegex(self.InputAnalysisError, "blocked"):
+            self.apply_mod.apply_current_run(self.card)
+
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["retry_count"], original_manifest["retry_count"])
+        self.assertEqual(
+            manifest["critic_retry_count"],
+            original_manifest["critic_retry_count"],
+        )
+
+    def test_apply_current_run_rejects_gm_only_important_character_without_profile(self):
+        analysis = self._analysis()
+        analysis["world_updates"]["important_characters"] = [
+            {
+                "name": "苏黎",
+                "setting_text": "秘密",
+                "visibility": "gm_only",
+            }
+        ]
+        self._write_analysis(analysis)
+
+        with self.assertRaisesRegex(self.InputAnalysisError, "gm_only"):
+            self.apply_mod.apply_current_run(self.card)
+
+        self.assertFalse((self.card / "memory" / "characters" / "苏黎").exists())
+
+    def test_apply_current_run_rejects_invalid_card_data_without_overwriting_file(self):
+        self._write_analysis()
+        invalid_text = "{not valid json"
+        (self.card / ".card_data.json").write_text(invalid_text, encoding="utf-8")
+
+        with self.assertRaisesRegex(self.InputAnalysisError, r"\.card_data\.json"):
+            self.apply_mod.apply_current_run(self.card)
+
+        self.assertEqual(
+            (self.card / ".card_data.json").read_text(encoding="utf-8"),
+            invalid_text,
+        )
+
+    def _write_analysis(self, analysis=None):
+        (self.run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis or self._analysis(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _set_manifest_stage(self, stage):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["stage"] = stage
+        manifest["retry_count"] = 2
+        manifest["critic_retry_count"] = 3
+        manifest["delivery"] = {"stage": "locked"}
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return manifest
 
 
 if __name__ == "__main__":
