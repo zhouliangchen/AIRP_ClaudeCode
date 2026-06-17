@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict
 import agent_outputs
 import agent_run
 import agent_schemas
+import input_analysis_apply
 
 
 class AgentExecutionError(RuntimeError):
@@ -291,6 +292,8 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             return agent_schemas.validate_story_output(payload)
         if agent_key == "critic":
             return agent_schemas.validate_critic_report(payload)
+        if agent_key == "input_analyst":
+            return payload
     except agent_schemas.ValidationError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     raise AgentExecutionError(f"Unknown agent key: {agent_key}")
@@ -303,9 +306,11 @@ def _dispatch_and_write(
     cwd: Path,
     run_claude: Callable[[str, str, str | Path], str],
     extra_context: Dict[str, Any] | None = None,
+    attempts: int = 2,
 ) -> Dict[str, Any]:
     last_error: AgentExecutionError | None = None
-    for attempt in range(2):
+    attempts = max(1, int(attempts or 1))
+    for attempt in range(attempts):
         stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
         try:
             text = _extract_agent_or_direct_text(stream)
@@ -315,7 +320,7 @@ def _dispatch_and_write(
             return normalized
         except AgentExecutionError as exc:
             last_error = exc
-            if attempt == 1:
+            if attempt == attempts - 1:
                 raise
     raise last_error or AgentExecutionError("Claude Code local_agent task did not complete.")
 
@@ -616,6 +621,74 @@ def _reset_delivery_retry_budget(run_dir: Path, manifest: Dict[str, Any]) -> Dic
     return manifest
 
 
+def _read_existing_json_object(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AgentExecutionError(f"{path}: input analysis output is invalid JSON.") from exc
+    except OSError as exc:
+        raise AgentExecutionError(f"{path}: input analysis output cannot be read.") from exc
+    if not isinstance(payload, dict):
+        raise AgentExecutionError(f"{path}: input analysis output must be a JSON object.")
+    return payload
+
+
+def _apply_input_analysis(card: Path, root: Path) -> Dict[str, Any]:
+    try:
+        result = input_analysis_apply.apply_current_run(card, root)
+    except AgentExecutionError:
+        raise
+    except Exception as exc:
+        raise AgentExecutionError(f"input analysis apply failed: {exc}") from exc
+    if isinstance(result, dict):
+        return result
+    return {}
+
+
+def _ensure_input_analysis(
+    run_dir: Path,
+    manifest: Dict[str, Any],
+    card: Path,
+    root: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+) -> Dict[str, Any]:
+    expected = manifest.get("expected_outputs") or {}
+    prompts = manifest.get("prompts") or {}
+    if not isinstance(expected, dict):
+        raise AgentExecutionError("manifest.expected_outputs is required.")
+    if not isinstance(prompts, dict):
+        raise AgentExecutionError("manifest.prompts is required.")
+
+    expected_rel = expected.get("input_analysis")
+    prompt_rel = prompts.get("input_analyst")
+    if not expected_rel and not prompt_rel:
+        return {}
+    if expected_rel and not prompt_rel:
+        raise AgentExecutionError("manifest.prompts.input_analyst is required.")
+    if prompt_rel and not expected_rel:
+        raise AgentExecutionError("manifest.expected_outputs.input_analysis is required.")
+
+    output_path = _relative_path(run_dir, str(expected_rel), "input_analysis.output.json")
+    if _read_existing_json_object(output_path) is None:
+        prompt_path = _relative_path(run_dir, str(prompt_rel), "prompts/input_analyst.prompt.md")
+        try:
+            prompt_text = prompt_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
+        _dispatch_and_write(
+            "input_analyst",
+            output_path,
+            prompt_text,
+            root,
+            run_claude,
+            attempts=2,
+        )
+
+    return _apply_input_analysis(card, root)
+
+
 def run_round(
     card_folder: str | Path,
     root_dir: str | Path,
@@ -631,6 +704,8 @@ def run_round(
 
     manifest = _load_manifest(run_dir)
     manifest = _reset_delivery_retry_budget(run_dir, manifest)
+    _ensure_input_analysis(run_dir, manifest, card, root, run_claude)
+    manifest = _load_manifest(run_dir)
     expected = manifest.get("expected_outputs") or {}
     if not isinstance(expected, dict):
         raise AgentExecutionError("manifest.expected_outputs is required.")

@@ -246,6 +246,135 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue((self.run_dir / "critic.report.json").exists())
         self.assertTrue(any("round_deliver.py" in " ".join(command) for command in delivery_calls))
 
+    def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+
+        order = []
+        dispatch_payloads = {
+            "input_analyst": {"analysis": "ok"},
+            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
+            "player": {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
+            },
+            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
+            "critic": {
+                "decision": "pass",
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+            },
+        }
+
+        original_dispatch = self.module._dispatch_and_write
+        original_apply = getattr(self.module, "input_analysis_apply", None)
+
+        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            order.append(agent_key)
+            payload = dispatch_payloads[agent_key]
+            _write_json(Path(output_path), payload)
+            return payload
+
+        def fake_apply(card, root):
+            order.append("apply")
+            return {"ok": True}
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        try:
+            self.module._dispatch_and_write = fake_dispatch
+            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fake_apply)
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda agent_key, prompt, cwd: "",
+                run_command=fake_delivery,
+            )
+        finally:
+            self.module._dispatch_and_write = original_dispatch
+            if original_apply is None:
+                delattr(self.module, "input_analysis_apply")
+            else:
+                self.module.input_analysis_apply = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(order[:3], ["input_analyst", "apply", "gm"])
+
+    def test_run_round_applies_existing_input_analysis_without_dispatching_analyst(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(self.run_dir / "input_analysis.output.json", {"analysis": "already available"})
+
+        order = []
+        dispatch_payloads = {
+            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
+            "player": {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
+            },
+            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
+            "critic": {
+                "decision": "pass",
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+            },
+        }
+
+        original_dispatch = self.module._dispatch_and_write
+        original_apply = getattr(self.module, "input_analysis_apply", None)
+
+        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            order.append(agent_key)
+            payload = dispatch_payloads[agent_key]
+            _write_json(Path(output_path), payload)
+            return payload
+
+        def fake_apply(card, root):
+            order.append("apply")
+            return {"ok": True}
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        try:
+            self.module._dispatch_and_write = fake_dispatch
+            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fake_apply)
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda agent_key, prompt, cwd: "",
+                run_command=fake_delivery,
+            )
+        finally:
+            self.module._dispatch_and_write = original_dispatch
+            if original_apply is None:
+                delattr(self.module, "input_analysis_apply")
+            else:
+                self.module.input_analysis_apply = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("input_analyst", order)
+        self.assertEqual(order[:2], ["apply", "gm"])
+
     def test_run_round_accepts_direct_agent_plain_json_output(self):
         responses = {
             "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
