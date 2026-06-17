@@ -35,6 +35,12 @@ WORLD_UPDATE_LIST_KEYS = (
     "important_characters",
     "retcon_requests",
 )
+NARRATIVE_DIRECTIVE_BOOL_KEYS = (
+    "rewrite_previous_output",
+    "expand_synopsis_before_continue",
+    "continue_after_player_action",
+    "must_stop_for_player_decision",
+)
 FALLBACK_HIGH_RISK_TYPES = {
     "hidden_setting",
     "character_declaration",
@@ -80,13 +86,9 @@ def validate_input_analysis(data, *, raw_text, role_text="", user_instruction_te
     if source_integrity.get("raw_preserved") is not True:
         raise InputAnalysisError("source_integrity.raw_preserved must be true")
 
-    _validate_present_hash(
-        source_integrity, "raw_text_sha256", raw_text, "raw_text"
-    )
-    _validate_present_hash(
-        source_integrity, "role_text_sha256", role_text, "role_text"
-    )
-    _validate_present_hash(
+    _validate_required_hash(source_integrity, "raw_text_sha256", raw_text, "raw_text")
+    _validate_required_hash(source_integrity, "role_text_sha256", role_text, "role_text")
+    _validate_required_hash(
         source_integrity,
         "user_instruction_text_sha256",
         user_instruction_text,
@@ -106,6 +108,9 @@ def validate_input_analysis(data, *, raw_text, role_text="", user_instruction_te
         if not isinstance(world_updates.get(key), list):
             raise InputAnalysisError(f"world_updates.{key} must be a list")
 
+    _validate_narrative_directives(data.get("narrative_directives"))
+    _validate_routing(data.get("routing"))
+
     if analysis_mode == "fallback":
         _validate_fallback_has_no_high_risk_persistence(
             semantic_units, world_updates
@@ -119,19 +124,29 @@ def analysis_to_routed_input(data, explicit_payload=None):
     if not isinstance(routing, dict):
         routing = {}
 
-    role_channel = routing.get("role_channel", "")
-    user_instruction_channel = routing.get("user_instruction_channel", "")
+    role_channel = _to_text(routing.get("role_channel", ""))
+    user_instruction_channel = _to_text(routing.get("user_instruction_channel", ""))
 
     if (
         isinstance(explicit_payload, dict)
         and explicit_payload.get("input_schema") == "dual_channel_v1"
     ):
-        role_channel = explicit_payload.get("role_text", "")
-        user_instruction_channel = explicit_payload.get("user_instruction_text", "")
+        role_channel = _to_text(explicit_payload.get("role_text"))
+        user_instruction_channel = _to_text(
+            explicit_payload.get("user_instruction_text")
+        )
 
     characters = routing.get("characters", [])
     if not isinstance(characters, list):
         characters = []
+
+    components = []
+    if role_channel:
+        components.append({"channel": "role", "text": role_channel})
+    if user_instruction_channel:
+        components.append(
+            {"channel": "user_instruction", "text": user_instruction_channel}
+        )
 
     return {
         "input_schema": "analysis_v1",
@@ -143,6 +158,7 @@ def analysis_to_routed_input(data, explicit_payload=None):
         "gm": bool(routing.get("gm", bool(user_instruction_channel))),
         "player": bool(routing.get("player", bool(role_channel))),
         "characters": characters,
+        "components": components,
     }
 
 
@@ -219,9 +235,15 @@ def build_fallback_analysis(
     )
 
 
-def _validate_present_hash(source_integrity, key, text, label):
+def _to_text(value):
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _validate_required_hash(source_integrity, key, text, label):
     if key not in source_integrity:
-        return
+        raise InputAnalysisError(f"source_integrity.{key} is required")
     if source_integrity[key] != sha256_text(text):
         raise InputAnalysisError(f"source_integrity.{key} does not match {label}")
 
@@ -229,6 +251,16 @@ def _validate_present_hash(source_integrity, key, text, label):
 def _validate_semantic_unit(unit, index):
     if not isinstance(unit, dict):
         raise InputAnalysisError(f"semantic_units[{index}] must be an object")
+
+    unit_id = unit.get("id")
+    if not isinstance(unit_id, str) or not unit_id.strip():
+        raise InputAnalysisError(f"semantic_units[{index}].id is required")
+
+    source_channel = unit.get("source_channel")
+    if not isinstance(source_channel, str) or not source_channel.strip():
+        raise InputAnalysisError(
+            f"semantic_units[{index}].source_channel is required"
+        )
 
     unit_type = unit.get("type")
     if unit_type not in SEMANTIC_UNIT_TYPES:
@@ -251,6 +283,40 @@ def _validate_semantic_unit(unit, index):
     raw_excerpt = unit.get("raw_excerpt")
     if not isinstance(raw_excerpt, str) or not raw_excerpt.strip():
         raise InputAnalysisError(f"semantic_units[{index}].raw_excerpt is required")
+
+    derived_summary = unit.get("derived_summary")
+    if not isinstance(derived_summary, str):
+        raise InputAnalysisError(
+            f"semantic_units[{index}].derived_summary must be a string"
+        )
+
+    if not isinstance(unit.get("persist"), bool):
+        raise InputAnalysisError(f"semantic_units[{index}].persist must be a bool")
+
+
+def _validate_narrative_directives(narrative_directives):
+    if not isinstance(narrative_directives, dict):
+        raise InputAnalysisError("narrative_directives must be an object")
+
+    for key in NARRATIVE_DIRECTIVE_BOOL_KEYS:
+        if not isinstance(narrative_directives.get(key), bool):
+            raise InputAnalysisError(f"narrative_directives.{key} must be a bool")
+
+
+def _validate_routing(routing):
+    if not isinstance(routing, dict):
+        raise InputAnalysisError("routing must be an object")
+
+    for key in ("role_channel", "user_instruction_channel"):
+        if not isinstance(routing.get(key), str):
+            raise InputAnalysisError(f"routing.{key} must be a string")
+
+    for key in ("gm", "player"):
+        if not isinstance(routing.get(key), bool):
+            raise InputAnalysisError(f"routing.{key} must be a bool")
+
+    if not isinstance(routing.get("characters"), list):
+        raise InputAnalysisError("routing.characters must be a list")
 
 
 def _validate_fallback_has_no_high_risk_persistence(

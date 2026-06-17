@@ -107,13 +107,16 @@ class InputAnalysisTest(unittest.TestCase):
         data["risks"] = ["fallback: persistence blocked"]
         return data
 
-    def test_validate_accepts_ai_analysis_with_matching_hashes(self):
-        result = self.mod.validate_input_analysis(
-            self._analysis(),
+    def _validate(self, data):
+        return self.mod.validate_input_analysis(
+            data,
             raw_text=self.raw,
             role_text=self.role,
             user_instruction_text=self.instruction,
         )
+
+    def test_validate_accepts_ai_analysis_with_matching_hashes(self):
+        result = self._validate(self._analysis())
         self.assertEqual(result["analysis_mode"], "ai")
         self.assertEqual(result["semantic_units"][0]["type"], "action")
 
@@ -121,12 +124,101 @@ class InputAnalysisTest(unittest.TestCase):
         data = self._analysis()
         data["source_integrity"]["raw_text_sha256"] = hashlib.sha256(b"wrong").hexdigest()
         with self.assertRaises(self.mod.InputAnalysisError):
-            self.mod.validate_input_analysis(
-                data,
-                raw_text=self.raw,
-                role_text=self.role,
-                user_instruction_text=self.instruction,
-            )
+            self._validate(data)
+
+    def test_validate_rejects_missing_integrity_hash(self):
+        for key in (
+            "raw_text_sha256",
+            "role_text_sha256",
+            "user_instruction_text_sha256",
+        ):
+            with self.subTest(key=key):
+                data = self._analysis()
+                del data["source_integrity"][key]
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
+
+    def test_validate_rejects_missing_semantic_unit_required_field(self):
+        for key in (
+            "id",
+            "source_channel",
+            "type",
+            "raw_excerpt",
+            "derived_summary",
+            "confidence",
+            "visibility",
+            "persist",
+        ):
+            with self.subTest(key=key):
+                data = self._analysis()
+                del data["semantic_units"][0][key]
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
+
+    def test_validate_rejects_non_bool_semantic_unit_persist(self):
+        data = self._analysis()
+        data["semantic_units"][0]["persist"] = "false"
+
+        with self.assertRaises(self.mod.InputAnalysisError):
+            self._validate(data)
+
+    def test_validate_rejects_missing_or_mistyped_routing_keys(self):
+        required_keys = (
+            "role_channel",
+            "user_instruction_channel",
+            "gm",
+            "player",
+            "characters",
+        )
+        bad_values = {
+            "role_channel": None,
+            "user_instruction_channel": 7,
+            "gm": "true",
+            "player": 1,
+            "characters": "npc",
+        }
+
+        for key in required_keys:
+            with self.subTest(case="missing", key=key):
+                data = self._analysis()
+                del data["routing"][key]
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
+
+        for key, value in bad_values.items():
+            with self.subTest(case="bad_type", key=key):
+                data = self._analysis()
+                data["routing"][key] = value
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
+
+    def test_validate_rejects_missing_or_mistyped_narrative_directive_keys(self):
+        required_keys = (
+            "rewrite_previous_output",
+            "expand_synopsis_before_continue",
+            "continue_after_player_action",
+            "must_stop_for_player_decision",
+        )
+
+        for key in required_keys:
+            with self.subTest(case="missing", key=key):
+                data = self._analysis()
+                del data["narrative_directives"][key]
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
+
+        for key in required_keys:
+            with self.subTest(case="bad_type", key=key):
+                data = self._analysis()
+                data["narrative_directives"][key] = "false"
+
+                with self.assertRaises(self.mod.InputAnalysisError):
+                    self._validate(data)
 
     def test_routing_preserves_explicit_dual_channel_text(self):
         result = self.mod.analysis_to_routed_input(
@@ -140,6 +232,14 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["role_channel"], self.role)
         self.assertEqual(result["user_instruction_channel"], self.instruction)
         self.assertEqual(result["input_schema"], "analysis_v1")
+        self.assertEqual(result["analysis_mode"], "ai")
+        self.assertEqual(
+            result["components"],
+            [
+                {"channel": "role", "text": self.role},
+                {"channel": "user_instruction", "text": self.instruction},
+            ],
+        )
 
     def test_routing_uses_analysis_channels_without_explicit_payload(self):
         result = self.mod.analysis_to_routed_input(self._analysis())
@@ -148,6 +248,43 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["user_instruction_channel"], self.instruction)
         self.assertEqual(result["input_schema"], "analysis_v1")
         self.assertEqual(result["analysis_mode"], "ai")
+        self.assertEqual(
+            result["components"],
+            [
+                {"channel": "role", "text": self.role},
+                {"channel": "user_instruction", "text": self.instruction},
+            ],
+        )
+
+    def test_routing_converts_channel_values_to_strings(self):
+        data = self._analysis()
+        data["routing"]["role_channel"] = None
+        data["routing"]["user_instruction_channel"] = 42
+
+        result = self.mod.analysis_to_routed_input(data)
+
+        self.assertEqual(result["role_channel"], "")
+        self.assertEqual(result["user_instruction_channel"], "42")
+        self.assertEqual(
+            result["components"],
+            [{"channel": "user_instruction", "text": "42"}],
+        )
+
+        explicit_result = self.mod.analysis_to_routed_input(
+            self._analysis(),
+            explicit_payload={
+                "input_schema": "dual_channel_v1",
+                "role_text": 7,
+                "user_instruction_text": None,
+            },
+        )
+
+        self.assertEqual(explicit_result["role_channel"], "7")
+        self.assertEqual(explicit_result["user_instruction_channel"], "")
+        self.assertEqual(
+            explicit_result["components"],
+            [{"channel": "role", "text": "7"}],
+        )
 
     def test_fallback_blocks_high_risk_persistence(self):
         fallback = self.mod.build_fallback_analysis(
@@ -176,12 +313,7 @@ class InputAnalysisTest(unittest.TestCase):
                 data["world_updates"][key] = value
 
                 with self.assertRaises(self.mod.InputAnalysisError):
-                    self.mod.validate_input_analysis(
-                        data,
-                        raw_text=self.raw,
-                        role_text=self.role,
-                        user_instruction_text=self.instruction,
-                    )
+                    self._validate(data)
 
     def test_validate_rejects_fallback_persisted_high_risk_unit(self):
         data = self._safe_fallback_analysis()
@@ -199,12 +331,7 @@ class InputAnalysisTest(unittest.TestCase):
         )
 
         with self.assertRaises(self.mod.InputAnalysisError):
-            self.mod.validate_input_analysis(
-                data,
-                raw_text=self.raw,
-                role_text=self.role,
-                user_instruction_text=self.instruction,
-            )
+            self._validate(data)
 
 
 if __name__ == "__main__":
