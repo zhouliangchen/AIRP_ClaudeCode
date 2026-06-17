@@ -538,47 +538,18 @@ def main():
         ):
             explicit_input_payload = dict(latest_player_input)
     input_plan = _analyze_player_input_for_plan(user_text, chat_log)
-    routed_for_hidden = agent_packets.route_input_payload(user_text, explicit_input_payload or None)
-    hidden_instruction_text = routed_for_hidden.get("user_instruction_channel", "")
-    hidden_setting_records = []
-    if hidden_instruction_text:
-        try:
-            hidden_settings.persist_hidden_setting(
-                card_folder,
-                hidden_instruction_text,
-                source_input_id=latest_player_input.get("id", "") if isinstance(latest_player_input, dict) else "",
-                round_id=f"round-{len(chat_log) + 1:06d}",
-            )
-        except Exception:
-            pass
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
     except Exception:
         hidden_setting_records = []
 
-    declaration_source_text = hidden_instruction_text or user_text
-    important_declarations = _extract_important_character_declarations(declaration_source_text)
     declared_major = []
     for name in input_plan.get("declared_major_characters", []):
         normalized = _normalize_declared_character_name(name)
         if normalized and normalized not in declared_major:
             declared_major.append(normalized)
-    for declaration in important_declarations:
-        name = declaration.get("name")
-        if name and name not in declared_major:
-            declared_major.append(name)
     if declared_major:
         input_plan["declared_major_characters"] = declared_major
-    for name in declared_major:
-        if not any(declaration.get("name") == name for declaration in important_declarations):
-            important_declarations.append({"name": name, "setting_text": declaration_source_text.strip()})
-    _persist_important_character_declarations(
-        card_folder,
-        card_data,
-        important_declarations,
-        source_input_id=latest_player_input.get("id", "") if isinstance(latest_player_input, dict) else "",
-        round_id=f"round-{len(chat_log) + 1:06d}",
-    )
 
     # Load reference.md once for O(1) section lookups this round
     ref_sections = _load_reference_sections(card_folder)
@@ -666,7 +637,7 @@ def main():
     dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: 玩家手动指定重要角色时，必须写入角色变量/记忆，并将其加入 character_orchestration.major；本轮若 scene_relevance=high/normal，应调用该角色 subagent，除非运行环境无法调用。")
     dynamic_parts.append("- MIXED: 按 DERIVED_CONTENT_EDIT → IMPORTANT_CHARACTER_DECLARATION → OMNISCIENT_SETTING → SYNOPSIS → ACTION 的顺序逐项处理；必须在 <UpdateVariable> 的 Analysis 或 <derived_content_edits> 中列出识别到的类型和修正动作，不要把处理说明暴露给玩家。")
 
-    dynamic_parts.append("\n=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===")
+    dynamic_parts.append("\n=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===")
     comps = input_plan.get("components", [])
     if comps:
         for idx, comp in enumerate(comps, 1):
@@ -676,7 +647,7 @@ def main():
         dynamic_parts.append("  (no classified components; still obey raw user text)")
     if input_plan.get("declared_major_characters"):
         dynamic_parts.append("  declared_major_characters: " + ", ".join(input_plan.get("declared_major_characters", [])))
-        dynamic_parts.append("  required_orchestration: add these names to .card_data.json character_orchestration.major and use a role subagent when generating this turn.")
+        dynamic_parts.append("  analysis_apply_required: promote these names only through validated input_analysis.output.json and input_analysis_apply.py.")
     if input_plan.get("conflict_cues"):
         dynamic_parts.append("  conflict_cues: " + ", ".join(input_plan.get("conflict_cues", [])[:12]))
         prev = input_plan.get("previous") or {}

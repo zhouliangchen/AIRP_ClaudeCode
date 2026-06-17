@@ -91,7 +91,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
     def test_mixed_input_evidence_may_live_in_update_variable(self):
         context = """
-=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===
   1. OMNISCIENT_SETTING: hidden rule
   2. SYNOPSIS: dream breaks
   3. ACTION: throw pendant
@@ -120,7 +120,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
     def test_required_repair_requires_derived_content_edits(self):
         context = """
-=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===
   1. SYNOPSIS: dream breaks
   2. ACTION: throw pendant
   conflict_cues: 梦境破碎, 醒来
@@ -149,7 +149,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
     def test_mixed_input_guard_accepts_semantic_evidence_without_english_labels(self):
         context = """
-=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===
   1. OMNISCIENT_SETTING: hidden rule
   2. SYNOPSIS: dream breaks
   3. ACTION: throw pendant
@@ -184,7 +184,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
     def test_required_repair_rejects_unactionable_derived_content_edits(self):
         context = """
-=== PLAYER_INPUT_PROCESSING_PLAN (must follow before writing response.txt) ===
+=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===
   1. SYNOPSIS: dream breaks
   2. ACTION: throw pendant
   conflict_cues: 梦境破碎, 醒来
@@ -1179,7 +1179,7 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(called["input_payload"], explicit_payload)
 
-    def test_round_prepare_persists_long_term_instruction_as_gm_only_hidden_setting(self):
+    def test_round_prepare_does_not_persist_hidden_settings_before_analysis_apply(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
         hidden_text = (
             "\u7528\u4e8e\u957f\u671f\u5267\u60c5\u5f15\u5bfc\u7684\u63d0\u793a\uff0c"
@@ -1209,7 +1209,16 @@ class AgentPacketTest(unittest.TestCase):
         )
 
         round_prepare = _load_round_prepare()
-        round_prepare.agent_packets = _load_agent_packets()
+        agent_packets = _load_agent_packets()
+        real_prepare_agent_run = agent_packets.prepare_agent_run
+        called = {}
+
+        def capture_prepare_agent_run(**kwargs):
+            called["hidden_setting_records"] = kwargs.get("hidden_setting_records")
+            return real_prepare_agent_run(**kwargs)
+
+        agent_packets.prepare_agent_run = capture_prepare_agent_run
+        round_prepare.agent_packets = agent_packets
         round_prepare.write_progress = lambda *args, **kwargs: None
         round_prepare.apply_injections = lambda card_folder: []
         round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
@@ -1225,27 +1234,15 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         hidden_path = self.card / "memory" / "gm_only_hidden_truths.jsonl"
-        hidden_entries = [
-            json.loads(line)
-            for line in hidden_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
         payload = json.loads(stdout.getvalue())
         run_dir = Path(payload["agent_run"])
         gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
-        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
-        self_packet = json.loads((run_dir / "characters" / "_self.context.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(len(hidden_entries), 1)
-        self.assertEqual(hidden_entries[0]["text"], hidden_text)
-        self.assertEqual(hidden_entries[0]["source_input_id"], "input-hidden-1")
-        self.assertEqual(hidden_entries[0]["visibility"], "gm_only")
-        self.assertEqual(hidden_entries[0]["status"], "active")
-        self.assertIn(hidden_text, json.dumps(gm_packet, ensure_ascii=False))
-        self.assertNotIn(hidden_text, json.dumps(player_packet, ensure_ascii=False))
-        self.assertNotIn(hidden_text, json.dumps(self_packet, ensure_ascii=False))
+        self.assertFalse(hidden_path.exists())
+        self.assertEqual(called["hidden_setting_records"], [])
+        self.assertNotIn("hidden_facts", gm_packet)
 
-    def test_round_prepare_persists_quoted_important_character_instruction(self):
+    def test_round_prepare_does_not_promote_important_character_before_analysis_apply(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
         role_text = "\u6211\u7559\u610f\u73ed\u4e0a\u6709\u6ca1\u6709\u4eba\u770b\u5411\u540a\u5760\u3002"
         important_text = (
@@ -1291,25 +1288,10 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
-        profile_md = self.card / "memory" / "characters" / "\u82cf\u9ece" / "profile.md"
         profile_json = self.card / "memory" / "characters" / "\u82cf\u9ece" / "profile.json"
-        payload = json.loads(stdout.getvalue())
-        run_dir = Path(payload["agent_run"])
-        suli_packet = json.loads((run_dir / "characters" / "\u82cf\u9ece.context.json").read_text(encoding="utf-8"))
-        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
-        self_packet = json.loads((run_dir / "characters" / "_self.context.json").read_text(encoding="utf-8"))
 
-        self.assertIn("\u82cf\u9ece", card_data["character_orchestration"]["major"])
-        self.assertTrue(profile_md.exists())
-        self.assertTrue(profile_json.exists())
-        self.assertIn(important_text, profile_md.read_text(encoding="utf-8"))
-        self.assertEqual(
-            json.loads(profile_json.read_text(encoding="utf-8"))["authoritative_setting"],
-            important_text,
-        )
-        self.assertIn(important_text, json.dumps(suli_packet, ensure_ascii=False))
-        self.assertNotIn(important_text, json.dumps(player_packet, ensure_ascii=False))
-        self.assertNotIn(important_text, json.dumps(self_packet, ensure_ascii=False))
+        self.assertNotIn("\u82cf\u9ece", card_data.get("character_orchestration", {}).get("major", []))
+        self.assertFalse(profile_json.exists())
 
     def test_round_prepare_continues_when_agent_run_packet_generation_fails(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
