@@ -23,6 +23,13 @@ class AgentExecutionError(RuntimeError):
 
 MAX_DELIVERY_REPAIR_ATTEMPTS = 3
 MAX_STORY_PREFLIGHT_ATTEMPTS = 3
+_INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
+    "",
+    "prepared",
+    "prompts_ready",
+    "awaiting_agent_outputs",
+    "analysis_applied",
+}
 
 
 def _text_from_blocks(blocks: Any) -> str:
@@ -647,6 +654,11 @@ def _apply_input_analysis(card: Path, root: Path) -> Dict[str, Any]:
     return {}
 
 
+def _input_analysis_apply_allowed(stage: Any) -> bool:
+    stage_text = "" if stage is None else str(stage)
+    return stage_text in _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES
+
+
 def _ensure_input_analysis(
     run_dir: Path,
     manifest: Dict[str, Any],
@@ -671,20 +683,25 @@ def _ensure_input_analysis(
         raise AgentExecutionError("manifest.expected_outputs.input_analysis is required.")
 
     output_path = _relative_path(run_dir, str(expected_rel), "input_analysis.output.json")
-    if _read_existing_json_object(output_path) is None:
-        prompt_path = _relative_path(run_dir, str(prompt_rel), "prompts/input_analyst.prompt.md")
-        try:
-            prompt_text = prompt_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
-        _dispatch_and_write(
-            "input_analyst",
-            output_path,
-            prompt_text,
-            root,
-            run_claude,
-            attempts=2,
-        )
+    existing = _read_existing_json_object(output_path)
+    if existing is not None:
+        if _input_analysis_apply_allowed(manifest.get("stage")):
+            return _apply_input_analysis(card, root)
+        return existing
+
+    prompt_path = _relative_path(run_dir, str(prompt_rel), "prompts/input_analyst.prompt.md")
+    try:
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
+    _dispatch_and_write(
+        "input_analyst",
+        output_path,
+        prompt_text,
+        root,
+        run_claude,
+        attempts=2,
+    )
 
     return _apply_input_analysis(card, root)
 

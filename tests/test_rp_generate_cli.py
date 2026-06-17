@@ -375,6 +375,166 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("input_analyst", order)
         self.assertEqual(order[:2], ["apply", "gm"])
 
+    def test_run_round_reuses_existing_input_analysis_after_blocked_without_reapply(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "blocked"
+        manifest["critic_retry_count"] = 2
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(self.run_dir / "input_analysis.output.json", {"analysis": "already applied"})
+
+        order = []
+        dispatch_payloads = {
+            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
+            "player": {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
+            },
+            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
+            "critic": {
+                "decision": "pass",
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+            },
+        }
+
+        original_dispatch = self.module._dispatch_and_write
+        original_apply = getattr(self.module, "input_analysis_apply", None)
+
+        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            order.append(agent_key)
+            payload = dispatch_payloads[agent_key]
+            _write_json(Path(output_path), payload)
+            return payload
+
+        def fail_apply(card, root):
+            raise AssertionError("apply_current_run should not be called after blocked stage")
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        try:
+            self.module._dispatch_and_write = fake_dispatch
+            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fail_apply)
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda agent_key, prompt, cwd: "",
+                run_command=fake_delivery,
+            )
+        finally:
+            self.module._dispatch_and_write = original_dispatch
+            if original_apply is None:
+                delattr(self.module, "input_analysis_apply")
+            else:
+                self.module.input_analysis_apply = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(order[0], "gm")
+        self.assertNotIn("input_analyst", order)
+        final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(final_manifest.get("critic_retry_count"), 0)
+
+    def test_run_round_requires_input_analyst_prompt_when_expected_output_declared(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        manifest["prompts"].pop("input_analyst", None)
+        _write_json(self.run_dir / "manifest.json", manifest)
+
+        def fail_run_claude(agent_key, prompt, cwd):
+            raise AssertionError(f"{agent_key} should not run before input analysis validation")
+
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "manifest.prompts.input_analyst"):
+            self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=fail_run_claude,
+                run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
+            )
+
+    def test_run_round_rejects_existing_input_analysis_non_object(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        (self.run_dir / "input_analysis.output.json").write_text('["not", "object"]', encoding="utf-8")
+
+        def fail_run_claude(agent_key, prompt, cwd):
+            raise AssertionError(f"{agent_key} should not run with invalid existing input analysis")
+
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "input analysis output must be a JSON object"):
+            self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=fail_run_claude,
+                run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
+            )
+
+    def test_run_round_legacy_manifest_without_input_analysis_is_noop(self):
+        order = []
+        dispatch_payloads = {
+            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
+            "player": {
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
+            },
+            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
+            "critic": {
+                "decision": "pass",
+                "hard_failures": [],
+                "soft_issues": [],
+                "repair_instruction": "",
+                "system_iteration_suggestion": "",
+            },
+        }
+
+        original_dispatch = self.module._dispatch_and_write
+        original_apply = getattr(self.module, "input_analysis_apply", None)
+
+        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            order.append(agent_key)
+            payload = dispatch_payloads[agent_key]
+            _write_json(Path(output_path), payload)
+            return payload
+
+        def fail_apply(card, root):
+            raise AssertionError("apply_current_run should not be called for legacy manifests")
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        try:
+            self.module._dispatch_and_write = fake_dispatch
+            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fail_apply)
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda agent_key, prompt, cwd: "",
+                run_command=fake_delivery,
+            )
+        finally:
+            self.module._dispatch_and_write = original_dispatch
+            if original_apply is None:
+                delattr(self.module, "input_analysis_apply")
+            else:
+                self.module.input_analysis_apply = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(order, ["gm", "player", "story", "critic"])
+
     def test_run_round_accepts_direct_agent_plain_json_output(self):
         responses = {
             "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
