@@ -8,26 +8,21 @@ SCHEMA_VERSION = 1
 ANALYSIS_MODES = {"ai", "fallback", "fixture"}
 SEMANTIC_UNIT_TYPES = {
     "action",
-    "dialogue",
-    "thought",
-    "question",
-    "intent",
+    "synopsis",
+    "omniscient_setting",
     "hidden_setting",
     "character_declaration",
     "edit_request",
     "system_command",
-    "world_fact",
-    "public_fact",
-    "user_instruction",
-    "ooc_note",
-    "other",
+    "style_guidance",
+    "unclear",
 }
 VISIBILITIES = {
-    "player_pov",
     "gm_only",
-    "public",
-    "character_private",
-    "system_only",
+    "public_world",
+    "player_pov",
+    "character_pov",
+    "specific_characters",
 }
 WORLD_UPDATE_LIST_KEYS = (
     "hidden_facts",
@@ -184,7 +179,7 @@ def build_fallback_analysis(
             {
                 "id": "fallback-user-instruction-1",
                 "source_channel": "user_instruction",
-                "type": "user_instruction",
+                "type": "unclear",
                 "raw_excerpt": user_instruction_text,
                 "derived_summary": "Fallback preserved user instruction without persistence.",
                 "confidence": 0.0,

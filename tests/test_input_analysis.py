@@ -120,6 +120,56 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["analysis_mode"], "ai")
         self.assertEqual(result["semantic_units"][0]["type"], "action")
 
+    def test_validate_accepts_each_allowed_semantic_unit_type(self):
+        allowed_types = (
+            "action",
+            "synopsis",
+            "omniscient_setting",
+            "hidden_setting",
+            "character_declaration",
+            "edit_request",
+            "system_command",
+            "style_guidance",
+            "unclear",
+        )
+
+        for unit_type in allowed_types:
+            with self.subTest(unit_type=unit_type):
+                data = self._analysis()
+                data["semantic_units"][0]["type"] = unit_type
+
+                self._validate(data)
+
+    def test_validate_rejects_unknown_semantic_unit_type(self):
+        data = self._analysis()
+        data["semantic_units"][0]["type"] = "dialogue"
+
+        with self.assertRaises(self.mod.InputAnalysisError):
+            self._validate(data)
+
+    def test_validate_accepts_each_allowed_visibility(self):
+        allowed_visibilities = (
+            "gm_only",
+            "public_world",
+            "player_pov",
+            "character_pov",
+            "specific_characters",
+        )
+
+        for visibility in allowed_visibilities:
+            with self.subTest(visibility=visibility):
+                data = self._analysis()
+                data["semantic_units"][0]["visibility"] = visibility
+
+                self._validate(data)
+
+    def test_validate_rejects_unknown_visibility(self):
+        data = self._analysis()
+        data["semantic_units"][0]["visibility"] = "public"
+
+        with self.assertRaises(self.mod.InputAnalysisError):
+            self._validate(data)
+
     def test_validate_rejects_hash_mismatch(self):
         data = self._analysis()
         data["source_integrity"]["raw_text_sha256"] = hashlib.sha256(b"wrong").hexdigest()
