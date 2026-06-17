@@ -125,6 +125,82 @@ def _source_input_id(raw_request: Dict[str, Any]) -> str:
     return "" if value is None else str(value)
 
 
+def _clean_routed_character_names(routed_input: Dict[str, Any]) -> list[str]:
+    names = []
+    for value in routed_input.get("characters", []) if isinstance(routed_input, dict) else []:
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    if not isinstance(card_data, dict):
+        return names
+    orchestration = card_data.get("character_orchestration")
+    if isinstance(orchestration, dict):
+        for name in orchestration.get("major", []) or []:
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
+    for container in (card_data.get("characters"), (card_data.get("data") or {}).get("characters")):
+        if isinstance(container, dict):
+            for name in container.keys():
+                if isinstance(name, str) and name.strip():
+                    names.add(name.strip())
+        elif isinstance(container, list):
+            for item in container:
+                if isinstance(item, str) and item.strip():
+                    names.add(item.strip())
+                elif isinstance(item, dict):
+                    name = item.get("name") or item.get("character_name")
+                    if isinstance(name, str) and name.strip():
+                        names.add(name.strip())
+    return names
+
+
+def _character_memory_exists(card_folder: Any, name: str) -> bool:
+    char_dir = Path(card_folder) / "memory" / "characters" / agent_run.safe_name(name)
+    if not char_dir.exists() or not char_dir.is_dir():
+        return False
+    for filename in ("profile.md", "profile.json", "recent.md", "goals.md", "state.json"):
+        if (char_dir / filename).exists():
+            return True
+    return False
+
+
+def _with_existing_routed_characters(card_folder: Any, card_data: Dict[str, Any], routed_input: Dict[str, Any]) -> Dict[str, Any]:
+    routed_names = _clean_routed_character_names(routed_input)
+    if not routed_names:
+        return card_data
+
+    known_names = _known_card_character_names(card_data)
+    selected = [
+        name
+        for name in routed_names
+        if name in known_names or _character_memory_exists(card_folder, name)
+    ]
+    if not selected:
+        return card_data
+
+    data = dict(card_data)
+    original_orchestration = card_data.get("character_orchestration")
+    orchestration = dict(original_orchestration) if isinstance(original_orchestration, dict) else {}
+    major = [
+        name
+        for name in orchestration.get("major", []) or []
+        if isinstance(name, str) and name.strip()
+    ]
+    for name in selected:
+        if name not in major:
+            major.append(name)
+    orchestration["major"] = major
+    data["character_orchestration"] = orchestration
+    return data
+
+
 def apply_current_run(card_folder, root_dir=None):
     """Validate and apply `input_analysis.output.json` for the current run."""
     run_dir = agent_run.current_run_dir(card_folder)
@@ -180,9 +256,14 @@ def apply_current_run(card_folder, root_dir=None):
     if not isinstance(chat_log, list):
         chat_log = []
     hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
-    character_contexts = agent_packets.build_character_contexts_from_card(
+    context_card_data = _with_existing_routed_characters(
         card_folder,
         card_data,
+        routed_input,
+    )
+    character_contexts = agent_packets.build_character_contexts_from_card(
+        card_folder,
+        context_card_data,
         chat_log,
         raw_request.get("raw_text", ""),
     )

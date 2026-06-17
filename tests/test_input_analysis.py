@@ -67,7 +67,12 @@ class InputAnalysisTest(unittest.TestCase):
             ],
             "world_updates": {
                 "hidden_facts": [
-                    {"text": self.instruction, "visibility": "gm_only", "status": "active"}
+                    {
+                        "id": "hidden-1",
+                        "text": self.instruction,
+                        "visibility": "gm_only",
+                        "status": "active",
+                    }
                 ],
                 "public_facts": [],
                 "important_characters": [],
@@ -125,6 +130,100 @@ class InputAnalysisTest(unittest.TestCase):
         result = self._validate(self._analysis())
         self.assertEqual(result["analysis_mode"], "ai")
         self.assertEqual(result["semantic_units"][0]["type"], "action")
+
+    def test_validate_accepts_world_update_record_safe_status_variants(self):
+        for status in ("active", "superseded", "retracted", "", None):
+            with self.subTest(status=status):
+                data = self._analysis()
+                data["world_updates"] = {
+                    "hidden_facts": [
+                        {
+                            "id": "hidden-1",
+                            "text": "GM fact.",
+                            "visibility": "gm_only",
+                            "status": status,
+                        }
+                    ],
+                    "public_facts": [
+                        {
+                            "id": "public-1",
+                            "text": "Public fact.",
+                            "visibility": "public_world",
+                            "status": status,
+                        }
+                    ],
+                    "important_characters": [
+                        {
+                            "name": "Suli",
+                            "text": "Suli is a transfer student.",
+                            "visibility": "character_private_and_gm",
+                            "status": status,
+                        }
+                    ],
+                    "retcon_requests": [
+                        {
+                            "id": "retcon-1",
+                            "text": "Treat the prior answer as a dream.",
+                            "visibility": "gm_only",
+                            "status": status,
+                        }
+                    ],
+                }
+
+                self._validate(data)
+
+    def test_validate_rejects_invalid_world_update_records(self):
+        cases = [
+            ("hidden_facts", "not-object", r"hidden_facts\[0\] must be an object"),
+            (
+                "hidden_facts",
+                {"id": "", "text": "GM fact.", "visibility": "gm_only"},
+                r"hidden_facts\[0\]\.id",
+            ),
+            (
+                "hidden_facts",
+                {"id": "hidden-1", "text": "GM fact.", "visibility": "public_world"},
+                r"hidden_facts\[0\]\.visibility",
+            ),
+            (
+                "public_facts",
+                {"id": "public-1", "text": "", "visibility": "public_world"},
+                r"public_facts\[0\]\.text",
+            ),
+            (
+                "public_facts",
+                {"id": "public-1", "text": "Public fact.", "visibility": "gm_only"},
+                r"public_facts\[0\]\.visibility",
+            ),
+            (
+                "important_characters",
+                {"name": "Suli", "text": " ", "visibility": "character_private_and_gm"},
+                r"important_characters\[0\]\.text",
+            ),
+            (
+                "important_characters",
+                {"name": "Suli", "text": "Profile.", "visibility": "gm_only"},
+                r"important_characters\[0\]\.visibility",
+            ),
+            (
+                "retcon_requests",
+                {"id": "retcon-1", "text": "Retcon.", "visibility": "character_pov"},
+                r"retcon_requests\[0\]\.visibility",
+            ),
+            (
+                "retcon_requests",
+                {"id": "retcon-1", "text": "Retcon.", "status": "deleted"},
+                r"retcon_requests\[0\]\.status",
+            ),
+        ]
+
+        for key, record, pattern in cases:
+            with self.subTest(key=key, record=record):
+                data = self._analysis()
+                data["world_updates"][key] = [record]
+
+                with self.assertRaisesRegex(self.mod.InputAnalysisError, pattern):
+                    self._validate(data)
 
     def test_validate_accepts_each_allowed_semantic_unit_type(self):
         allowed_types = (
@@ -575,6 +674,41 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertNotIn("raw_text", gm_packet["input_analysis_request"])
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
+
+    def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
+        card_data = {
+            "mode": "story",
+            "source_type": "imported",
+            "character_orchestration": {
+                "major": [],
+                "minor_policy": "main_agent",
+                "max_parallel_subagents": 3,
+            },
+        }
+        (self.card / ".card_data.json").write_text(
+            json.dumps(card_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        ada_dir = self.card / "memory" / "characters" / "Ada"
+        ada_dir.mkdir(parents=True)
+        (ada_dir / "profile.md").write_text("Ada is already known.", encoding="utf-8")
+        analysis = self._analysis()
+        analysis["world_updates"]["hidden_facts"] = []
+        analysis["world_updates"]["important_characters"] = []
+        analysis["routing"]["characters"] = ["Ada"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        character_packet_path = self.run_dir / "characters" / "Ada.context.json"
+        character_packet = json.loads(character_packet_path.read_text(encoding="utf-8"))
+        card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["routed_input"]["characters"], ["Ada"])
+        self.assertEqual(character_packet["character_name"], "Ada")
+        self.assertIn("Ada is already known.", character_packet["character"]["profile_summary"])
+        self.assertFalse((ada_dir / "profile.json").exists())
+        self.assertEqual(card_data_after["character_orchestration"]["major"], [])
 
     def test_apply_current_run_rejects_after_story_ready_without_overwriting_manifest(self):
         self._write_analysis()

@@ -252,10 +252,71 @@ class RpGenerateCliTest(unittest.TestCase):
         manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
         manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
         _write_json(self.run_dir / "manifest.json", manifest)
+        raw_text = "I follow the noise."
+        _write_json(self.card / ".card_data.json", {"character_orchestration": {"major": []}})
+        input_analysis = self.module.input_analysis_apply.input_analysis
+        _write_json(
+            self.run_dir / "input.raw.json",
+            {
+                "round_id": "round-000002",
+                "raw_text": raw_text,
+                "explicit_payload": {},
+                "role_text": raw_text,
+                "user_instruction_text": "",
+                "source_integrity": {
+                    "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                    "role_text_sha256": input_analysis.sha256_text(raw_text),
+                    "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                    "raw_preserved": True,
+                },
+            },
+        )
 
         order = []
         dispatch_payloads = {
-            "input_analyst": {"analysis": "ok"},
+            "input_analyst": {
+                "schema_version": 1,
+                "round_id": "round-000002",
+                "analysis_mode": "fixture",
+                "source_integrity": {
+                    "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                    "role_text_sha256": input_analysis.sha256_text(raw_text),
+                    "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                    "raw_preserved": True,
+                },
+                "semantic_units": [
+                    {
+                        "id": "unit-action-1",
+                        "source_channel": "role_input",
+                        "type": "action",
+                        "raw_excerpt": raw_text,
+                        "derived_summary": "The player follows the noise.",
+                        "confidence": 0.9,
+                        "visibility": "player_pov",
+                        "persist": False,
+                    }
+                ],
+                "world_updates": {
+                    "hidden_facts": [],
+                    "public_facts": [],
+                    "important_characters": [],
+                    "retcon_requests": [],
+                },
+                "narrative_directives": {
+                    "rewrite_previous_output": False,
+                    "expand_synopsis_before_continue": False,
+                    "continue_after_player_action": True,
+                    "must_stop_for_player_decision": False,
+                },
+                "routing": {
+                    "role_channel": raw_text,
+                    "user_instruction_channel": "",
+                    "gm": False,
+                    "player": True,
+                    "characters": [],
+                },
+                "risks": [],
+            },
             "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
             "player": {
                 "agent": "player",
@@ -276,7 +337,6 @@ class RpGenerateCliTest(unittest.TestCase):
         }
 
         original_dispatch = self.module._dispatch_and_write
-        original_apply = getattr(self.module, "input_analysis_apply", None)
 
         def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
             order.append(agent_key)
@@ -284,16 +344,11 @@ class RpGenerateCliTest(unittest.TestCase):
             _write_json(Path(output_path), payload)
             return payload
 
-        def fake_apply(card, root):
-            order.append("apply")
-            return {"ok": True}
-
         def fake_delivery(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
         try:
             self.module._dispatch_and_write = fake_dispatch
-            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fake_apply)
             result = self.module.run_round(
                 self.card,
                 self.root,
@@ -302,13 +357,16 @@ class RpGenerateCliTest(unittest.TestCase):
             )
         finally:
             self.module._dispatch_and_write = original_dispatch
-            if original_apply is None:
-                delattr(self.module, "input_analysis_apply")
-            else:
-                self.module.input_analysis_apply = original_apply
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order[:3], ["input_analyst", "apply", "gm"])
+        self.assertEqual(order[:3], ["input_analyst", "gm", "player"])
+        applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        applied_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(applied_input["input_analysis"]["analysis_mode"], "fixture")
+        self.assertIn(
+            "analysis_applied",
+            [entry.get("stage") for entry in applied_manifest.get("status", [])],
+        )
 
     def test_run_round_applies_existing_input_analysis_without_dispatching_analyst(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")

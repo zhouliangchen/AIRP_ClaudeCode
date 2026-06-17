@@ -1085,6 +1085,37 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(called["input_payload"], explicit_payload)
 
+    def test_round_prepare_preserves_exact_current_input_for_non_explicit_analysis(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        raw_text = "\n  I step into the archive.  \n\n"
+        styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
+
+        round_prepare = _load_round_prepare()
+        round_prepare.agent_packets = _load_agent_packets()
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        payload = json.loads(stdout.getvalue())
+        run_dir = Path(payload["agent_run"])
+        raw_request = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(raw_request["raw_text"], raw_text)
+        self.assertEqual(
+            raw_request["source_integrity"]["raw_text_sha256"],
+            round_prepare.agent_packets.input_analysis.sha256_text(raw_text),
+        )
+
     def test_round_prepare_ignores_stale_dual_channel_payload_for_legacy_current_input(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
         styles_dir.joinpath("input.txt").write_text("Legacy current input.", encoding="utf-8")

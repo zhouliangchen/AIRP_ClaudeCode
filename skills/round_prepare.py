@@ -466,7 +466,8 @@ def main():
     # ── Gather data first ──
     input_path = styles_dir / "input.txt"
     user_input = read_file(input_path) or "(无输入)"
-    user_text = user_input.strip()
+    user_text = user_input
+    user_text_for_matching = user_text.strip()
 
     settings_path = styles_dir / "settings.json"
     settings = read_json(settings_path) or {}
@@ -530,14 +531,15 @@ def main():
         latest_raw_text = "" if latest_player_input.get("raw_text") is None else str(latest_player_input.get("raw_text"))
         latest_role_text = "" if latest_player_input.get("role_text") is None else str(latest_player_input.get("role_text"))
         current_user_text = "" if user_text is None else str(user_text)
+        current_user_text_for_matching = current_user_text.strip()
         if (
             latest_raw_text == current_user_text
-            or latest_raw_text.strip() == current_user_text
+            or latest_raw_text.strip() == current_user_text_for_matching
             or latest_role_text == current_user_text
-            or latest_role_text.strip() == current_user_text
+            or latest_role_text.strip() == current_user_text_for_matching
         ):
             explicit_input_payload = dict(latest_player_input)
-    input_plan = _analyze_player_input_for_plan(user_text, chat_log)
+    input_plan = _analyze_player_input_for_plan(user_text_for_matching, chat_log)
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
     except Exception:
@@ -631,11 +633,11 @@ def main():
     dynamic_parts.append("\n=== PLAYER_INPUT_INTERPRETATION ===")
     dynamic_parts.append("- 先分类，后创作；不要把混合输入整体当作 ACTION 直接推进。")
     dynamic_parts.append("- SYNOPSIS: 玩家给出的剧情梗概/已发生经过，必须先承认并按玩家顺序扩写；不得跳过梗概直接续写下一幕。")
-    dynamic_parts.append("- OMNISCIENT_SETTING: 玩家给出的括号设定、长期引导、世界规则、真相和代价，视为权威设定；不必一次性向角色揭示，但必须写入变量/记忆暗线。")
+    dynamic_parts.append("- OMNISCIENT_SETTING: heuristic classification is advisory only; do not write directly into variables, memory, hidden facts, or orchestration. Any persistence or promotion must come from validated input_analysis.output.json applied by input_analysis_apply.py.")
     dynamic_parts.append("- ACTION: 玩家当前行动只在处理完设定与梗概后推进；先给出该行动的直接后果，再引出新的变化。")
     dynamic_parts.append("- DERIVED_CONTENT_EDIT: 玩家要求修改第一段/首段/上一轮/前文/既有回复时，不是把指定内容写进最新回复；必须在 response.txt 写 <derived_content_edits> JSON，定点修正旧 AI 派生内容。")
-    dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: 玩家手动指定重要角色时，必须写入角色变量/记忆，并将其加入 character_orchestration.major；本轮若 scene_relevance=high/normal，应调用该角色 subagent，除非运行环境无法调用。")
-    dynamic_parts.append("- MIXED: 按 DERIVED_CONTENT_EDIT → IMPORTANT_CHARACTER_DECLARATION → OMNISCIENT_SETTING → SYNOPSIS → ACTION 的顺序逐项处理；必须在 <UpdateVariable> 的 Analysis 或 <derived_content_edits> 中列出识别到的类型和修正动作，不要把处理说明暴露给玩家。")
+    dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: heuristic classification is advisory only; do not add characters directly to memory or character_orchestration. Persist/promote only through validated world_updates.important_characters in input_analysis.output.json plus input_analysis_apply.py.")
+    dynamic_parts.append("- MIXED: process derived edits, character declarations, omniscient settings, synopsis, and actions in order, but treat heuristic labels as debug guidance. All durable changes must pass validated input_analysis.output.json and input_analysis_apply.py; do not expose processing notes to the player.")
 
     dynamic_parts.append("\n=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===")
     comps = input_plan.get("components", [])

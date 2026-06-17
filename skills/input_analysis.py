@@ -30,6 +30,29 @@ WORLD_UPDATE_LIST_KEYS = (
     "important_characters",
     "retcon_requests",
 )
+WORLD_UPDATE_SAFE_STATUSES = {
+    "active",
+    "superseded",
+    "retracted",
+}
+IMPORTANT_CHARACTER_VISIBILITIES = {
+    "character_private_and_gm",
+    "public_world",
+    "character_pov",
+    "specific_characters",
+}
+RETCON_VISIBILITIES = {
+    "gm_only",
+    "public_world",
+}
+IMPORTANT_CHARACTER_TEXT_KEYS = (
+    "text",
+    "setting_text",
+    "authoritative_setting",
+    "description",
+    "profile",
+    "summary",
+)
 NARRATIVE_DIRECTIVE_BOOL_KEYS = (
     "rewrite_previous_output",
     "expand_synopsis_before_continue",
@@ -102,6 +125,7 @@ def validate_input_analysis(data, *, raw_text, role_text="", user_instruction_te
     for key in WORLD_UPDATE_LIST_KEYS:
         if not isinstance(world_updates.get(key), list):
             raise InputAnalysisError(f"world_updates.{key} must be a list")
+    _validate_world_update_records(world_updates)
 
     _validate_narrative_directives(data.get("narrative_directives"))
     _validate_routing(data.get("routing"))
@@ -312,6 +336,92 @@ def _validate_routing(routing):
 
     if not isinstance(routing.get("characters"), list):
         raise InputAnalysisError("routing.characters must be a list")
+
+
+def _text(value):
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _nonblank(record, key, path):
+    value = record.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InputAnalysisError(f"{path}.{key} is required")
+    return value.strip()
+
+
+def _validate_status(record, path):
+    if "status" not in record:
+        return
+    status = _text(record.get("status")).strip()
+    if status and status not in WORLD_UPDATE_SAFE_STATUSES:
+        raise InputAnalysisError(f"{path}.status is invalid")
+
+
+def _validate_fixed_visibility(record, expected, path):
+    visibility = record.get("visibility")
+    if not isinstance(visibility, str) or visibility.strip() != expected:
+        raise InputAnalysisError(f"{path}.visibility must be {expected}")
+
+
+def _validate_record_object(record, path):
+    if not isinstance(record, dict):
+        raise InputAnalysisError(f"{path} must be an object")
+
+
+def _important_character_text(record):
+    for key in IMPORTANT_CHARACTER_TEXT_KEYS:
+        text = _text(record.get(key)).strip()
+        if text:
+            return text
+    return ""
+
+
+def _validate_world_update_records(world_updates):
+    for index, record in enumerate(world_updates.get("hidden_facts", [])):
+        path = f"world_updates.hidden_facts[{index}]"
+        _validate_record_object(record, path)
+        _nonblank(record, "id", path)
+        _nonblank(record, "text", path)
+        _validate_fixed_visibility(record, "gm_only", path)
+        _validate_status(record, path)
+
+    for index, record in enumerate(world_updates.get("public_facts", [])):
+        path = f"world_updates.public_facts[{index}]"
+        _validate_record_object(record, path)
+        _nonblank(record, "id", path)
+        _nonblank(record, "text", path)
+        _validate_fixed_visibility(record, "public_world", path)
+        _validate_status(record, path)
+
+    for index, record in enumerate(world_updates.get("important_characters", [])):
+        path = f"world_updates.important_characters[{index}]"
+        _validate_record_object(record, path)
+        _nonblank(record, "name", path)
+        if not _important_character_text(record):
+            raise InputAnalysisError(f"{path}.text is required")
+        visibility = record.get("visibility")
+        if (
+            not isinstance(visibility, str)
+            or visibility.strip() not in IMPORTANT_CHARACTER_VISIBILITIES
+        ):
+            raise InputAnalysisError(f"{path}.visibility is invalid: {_text(visibility).strip()}")
+        _validate_status(record, path)
+
+    for index, record in enumerate(world_updates.get("retcon_requests", [])):
+        path = f"world_updates.retcon_requests[{index}]"
+        _validate_record_object(record, path)
+        _nonblank(record, "id", path)
+        _nonblank(record, "text", path)
+        if "visibility" in record:
+            visibility = record.get("visibility")
+            if (
+                not isinstance(visibility, str)
+                or visibility.strip() not in RETCON_VISIBILITIES
+            ):
+                raise InputAnalysisError(f"{path}.visibility is invalid")
+        _validate_status(record, path)
 
 
 def _validate_fallback_has_no_high_risk_persistence(
