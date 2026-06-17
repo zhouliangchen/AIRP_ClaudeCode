@@ -132,7 +132,7 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["semantic_units"][0]["type"], "action")
 
     def test_validate_accepts_world_update_record_safe_status_variants(self):
-        for status in ("active", "superseded", "retracted", "", None):
+        for status in ("active", "superseded", "retracted"):
             with self.subTest(status=status):
                 data = self._analysis()
                 data["world_updates"] = {
@@ -172,48 +172,88 @@ class InputAnalysisTest(unittest.TestCase):
 
                 self._validate(data)
 
+    def test_validate_rejects_missing_blank_or_invalid_world_update_status(self):
+        base_records = {
+            "hidden_facts": {
+                "id": "hidden-1",
+                "text": "GM fact.",
+                "visibility": "gm_only",
+            },
+            "public_facts": {
+                "id": "public-1",
+                "text": "Public fact.",
+                "visibility": "public_world",
+            },
+            "important_characters": {
+                "name": "Suli",
+                "text": "Suli is a transfer student.",
+                "visibility": "character_private_and_gm",
+            },
+            "retcon_requests": {
+                "id": "retcon-1",
+                "text": "Treat the prior answer as a dream.",
+                "visibility": "gm_only",
+            },
+        }
+        bad_statuses = {
+            "missing": None,
+            "blank": " ",
+            "none": None,
+            "invalid": "deleted",
+        }
+
+        for key, base_record in base_records.items():
+            for case, status in bad_statuses.items():
+                with self.subTest(key=key, case=case):
+                    data = self._analysis()
+                    record = dict(base_record)
+                    if case != "missing":
+                        record["status"] = status
+                    data["world_updates"][key] = [record]
+
+                    with self.assertRaisesRegex(
+                        self.mod.InputAnalysisError,
+                        rf"{key}\[0\]\.status",
+                    ):
+                        self._validate(data)
+
     def test_validate_rejects_invalid_world_update_records(self):
         cases = [
             ("hidden_facts", "not-object", r"hidden_facts\[0\] must be an object"),
             (
                 "hidden_facts",
-                {"id": "", "text": "GM fact.", "visibility": "gm_only"},
+                {"id": "", "text": "GM fact.", "visibility": "gm_only", "status": "active"},
                 r"hidden_facts\[0\]\.id",
             ),
             (
                 "hidden_facts",
-                {"id": "hidden-1", "text": "GM fact.", "visibility": "public_world"},
+                {"id": "hidden-1", "text": "GM fact.", "visibility": "public_world", "status": "active"},
                 r"hidden_facts\[0\]\.visibility",
             ),
             (
                 "public_facts",
-                {"id": "public-1", "text": "", "visibility": "public_world"},
+                {"id": "public-1", "text": "", "visibility": "public_world", "status": "active"},
                 r"public_facts\[0\]\.text",
             ),
             (
                 "public_facts",
-                {"id": "public-1", "text": "Public fact.", "visibility": "gm_only"},
+                {"id": "public-1", "text": "Public fact.", "visibility": "gm_only", "status": "active"},
                 r"public_facts\[0\]\.visibility",
             ),
             (
                 "important_characters",
-                {"name": "Suli", "text": " ", "visibility": "character_private_and_gm"},
+                {"name": "Suli", "text": " ", "visibility": "character_private_and_gm", "status": "active"},
                 r"important_characters\[0\]\.text",
             ),
             (
                 "important_characters",
-                {"name": "Suli", "text": "Profile.", "visibility": "gm_only"},
+                {"name": "Suli", "text": "Profile.", "visibility": "gm_only", "status": "active"},
                 r"important_characters\[0\]\.visibility",
             ),
             (
                 "retcon_requests",
-                {"id": "retcon-1", "text": "Retcon.", "visibility": "character_pov"},
+                {"id": "retcon-1", "text": "Retcon.", "visibility": "character_pov", "status": "active"},
                 r"retcon_requests\[0\]\.visibility",
-            ),
-            (
-                "retcon_requests",
-                {"id": "retcon-1", "text": "Retcon.", "status": "deleted"},
-                r"retcon_requests\[0\]\.status",
             ),
         ]
 
@@ -710,6 +750,60 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertFalse((ada_dir / "profile.json").exists())
         self.assertEqual(card_data_after["character_orchestration"]["major"], [])
 
+    def test_apply_current_run_includes_routed_character_from_existing_run_context_only(self):
+        card_data = {
+            "mode": "story",
+            "source_type": "imported",
+            "character_orchestration": {
+                "major": [],
+                "minor_policy": "main_agent",
+                "max_parallel_subagents": 3,
+            },
+        }
+        (self.card / ".card_data.json").write_text(
+            json.dumps(card_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        existing_context = {
+            "agent": "character",
+            "character_name": "Ada",
+            "character": {
+                "name": "Ada",
+                "profile_summary": "Ada exists only in the prepared run context.",
+            },
+            "role_channel": self.role_text,
+            "recent_chat": [],
+            "components": [],
+        }
+        (self.run_dir / "characters").mkdir(exist_ok=True)
+        (self.run_dir / "characters" / "Ada.context.json").write_text(
+            json.dumps(existing_context, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        analysis = self._analysis()
+        analysis["world_updates"]["hidden_facts"] = []
+        analysis["world_updates"]["important_characters"] = []
+        analysis["routing"]["characters"] = ["Ada", "Unknown"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        ada_packet_path = self.run_dir / "characters" / "Ada.context.json"
+        unknown_packet_path = self.run_dir / "characters" / "Unknown.context.json"
+        ada_packet = json.loads(ada_packet_path.read_text(encoding="utf-8"))
+        card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["routed_input"]["characters"], ["Ada", "Unknown"])
+        self.assertEqual(ada_packet["character_name"], "Ada")
+        self.assertIn(
+            "prepared run context",
+            ada_packet["character"]["profile_summary"],
+        )
+        self.assertFalse(unknown_packet_path.exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Unknown").exists())
+        self.assertEqual(card_data_after["character_orchestration"]["major"], [])
+
     def test_apply_current_run_rejects_after_story_ready_without_overwriting_manifest(self):
         self._write_analysis()
         original_manifest = self._set_manifest_stage("story_ready")
@@ -747,6 +841,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 "name": "苏黎",
                 "setting_text": "秘密",
                 "visibility": "gm_only",
+                "status": "active",
             }
         ]
         self._write_analysis(analysis)
@@ -762,6 +857,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
             {
                 "name": "Suli",
                 "setting_text": "private setting",
+                "status": "active",
             }
         ]
         self._write_analysis(analysis)
@@ -778,6 +874,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 "name": "Suli",
                 "setting_text": "private setting",
                 "visibility": "  ",
+                "status": "active",
             }
         ]
         self._write_analysis(analysis)

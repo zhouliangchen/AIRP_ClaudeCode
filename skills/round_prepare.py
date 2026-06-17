@@ -465,7 +465,9 @@ def main():
 
     # ── Gather data first ──
     input_path = styles_dir / "input.txt"
-    user_input = read_file(input_path) or "(无输入)"
+    user_input = read_file(input_path)
+    if user_input is None:
+        user_input = ""
     user_text = user_input
     user_text_for_matching = user_text.strip()
 

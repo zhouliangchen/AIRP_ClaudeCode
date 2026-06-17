@@ -353,9 +353,12 @@ def _nonblank(record, key, path):
 
 def _validate_status(record, path):
     if "status" not in record:
-        return
-    status = _text(record.get("status")).strip()
-    if status and status not in WORLD_UPDATE_SAFE_STATUSES:
+        raise InputAnalysisError(f"{path}.status is required")
+    status_value = record.get("status")
+    if not isinstance(status_value, str) or not status_value.strip():
+        raise InputAnalysisError(f"{path}.status is required")
+    status = status_value.strip()
+    if status not in WORLD_UPDATE_SAFE_STATUSES:
         raise InputAnalysisError(f"{path}.status is invalid")
 
 

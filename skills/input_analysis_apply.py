@@ -201,6 +201,48 @@ def _with_existing_routed_characters(card_folder: Any, card_data: Dict[str, Any]
     return data
 
 
+def _load_existing_run_routed_character_contexts(run_dir: Path, routed_input: Dict[str, Any]) -> list[Dict[str, Any]]:
+    contexts: list[Dict[str, Any]] = []
+    for name in _clean_routed_character_names(routed_input):
+        path = run_dir / "characters" / f"{agent_run.safe_name(name)}.context.json"
+        try:
+            packet = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(packet, dict):
+            continue
+        character = packet.get("character")
+        if isinstance(character, dict):
+            context = dict(character)
+        else:
+            context = {}
+        context_name = context.get("name") or packet.get("character_name") or name
+        if not isinstance(context_name, str) or not context_name.strip():
+            continue
+        context["name"] = context_name.strip()
+        contexts.append(context)
+    return contexts
+
+
+def _merge_character_contexts(character_contexts: Dict[str, Any], extra_contexts: list[Dict[str, Any]]) -> Dict[str, Any]:
+    if not extra_contexts:
+        return character_contexts
+    merged = dict(character_contexts) if isinstance(character_contexts, dict) else {}
+    characters = list(merged.get("characters") or [])
+    existing_names = {
+        item.get("name")
+        for item in characters
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    for context in extra_contexts:
+        name = context.get("name")
+        if isinstance(name, str) and name not in existing_names:
+            characters.append(context)
+            existing_names.add(name)
+    merged["characters"] = characters
+    return merged
+
+
 def apply_current_run(card_folder, root_dir=None):
     """Validate and apply `input_analysis.output.json` for the current run."""
     run_dir = agent_run.current_run_dir(card_folder)
@@ -220,6 +262,10 @@ def apply_current_run(card_folder, root_dir=None):
     routed_input = input_analysis.analysis_to_routed_input(
         analysis,
         explicit_payload=raw_request.get("explicit_payload"),
+    )
+    existing_run_routed_contexts = _load_existing_run_routed_character_contexts(
+        run_dir,
+        routed_input,
     )
 
     source_input_id = _source_input_id(raw_request)
@@ -266,6 +312,10 @@ def apply_current_run(card_folder, root_dir=None):
         context_card_data,
         chat_log,
         raw_request.get("raw_text", ""),
+    )
+    character_contexts = _merge_character_contexts(
+        character_contexts,
+        existing_run_routed_contexts,
     )
     rebuilt = agent_packets.rebuild_agent_run_from_analysis(
         card_folder,
