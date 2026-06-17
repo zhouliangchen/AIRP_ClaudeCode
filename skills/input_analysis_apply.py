@@ -24,7 +24,6 @@ _ANALYSIS_APPLY_ALLOWED_STAGES = {
 }
 
 _PROFILE_SAFE_IMPORTANT_CHARACTER_VISIBILITIES = {
-    "",
     "character_private_and_gm",
     "public_world",
     "character_pov",
@@ -150,6 +149,8 @@ def apply_current_run(card_folder, root_dir=None):
     source_input_id = _source_input_id(raw_request)
     world_updates = analysis.get("world_updates", {})
     _validate_important_characters_for_profile(world_updates)
+    card_data = _read_card_data(card_folder)
+
     hidden_records = []
     for record in world_updates.get("hidden_facts", []) if isinstance(world_updates, dict) else []:
         persisted = hidden_settings.persist_hidden_setting_record(
@@ -161,7 +162,6 @@ def apply_current_run(card_folder, root_dir=None):
         if persisted:
             hidden_records.append(persisted)
 
-    card_data = _read_card_data(card_folder)
     important_records = (
         world_updates.get("important_characters", [])
         if isinstance(world_updates, dict)
@@ -174,7 +174,6 @@ def apply_current_run(card_folder, root_dir=None):
         source_input_id=source_input_id,
         round_id=run_dir.name,
     )
-    card_data = _read_card_data(card_folder)
 
     previous_input = agent_run.read_json(run_dir / "input.json", {}) or {}
     chat_log = previous_input.get("recent_chat", [])

@@ -622,6 +622,37 @@ class InputAnalysisApplyTest(unittest.TestCase):
 
         self.assertFalse((self.card / "memory" / "characters" / "苏黎").exists())
 
+    def test_apply_current_run_rejects_missing_important_character_visibility_without_profile(self):
+        analysis = self._analysis()
+        analysis["world_updates"]["important_characters"] = [
+            {
+                "name": "Suli",
+                "setting_text": "private setting",
+            }
+        ]
+        self._write_analysis(analysis)
+
+        with self.assertRaisesRegex(self.InputAnalysisError, "visibility"):
+            self.apply_mod.apply_current_run(self.card)
+
+        self.assertFalse((self.card / "memory" / "characters" / "Suli").exists())
+
+    def test_apply_current_run_rejects_blank_important_character_visibility_without_profile(self):
+        analysis = self._analysis()
+        analysis["world_updates"]["important_characters"] = [
+            {
+                "name": "Suli",
+                "setting_text": "private setting",
+                "visibility": "  ",
+            }
+        ]
+        self._write_analysis(analysis)
+
+        with self.assertRaisesRegex(self.InputAnalysisError, "visibility"):
+            self.apply_mod.apply_current_run(self.card)
+
+        self.assertFalse((self.card / "memory" / "characters" / "Suli").exists())
+
     def test_apply_current_run_rejects_invalid_card_data_without_overwriting_file(self):
         self._write_analysis()
         invalid_text = "{not valid json"
@@ -634,6 +665,8 @@ class InputAnalysisApplyTest(unittest.TestCase):
             (self.card / ".card_data.json").read_text(encoding="utf-8"),
             invalid_text,
         )
+        self.assertFalse((self.card / "memory" / "gm_only_hidden_truths.jsonl").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Suli").exists())
 
     def _write_analysis(self, analysis=None):
         (self.run_dir / "input_analysis.output.json").write_text(
