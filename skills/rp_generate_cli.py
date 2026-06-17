@@ -422,22 +422,90 @@ def _strip_tag(text: str, tag: str) -> str:
     return re.sub(rf"\s*<{tag}>.*?</{tag}>\s*", "\n", str(text or ""), flags=re.DOTALL)
 
 
+def _strip_tag_ci(text: str, tag: str) -> str:
+    return re.sub(rf"\s*<{tag}>.*?</{tag}>\s*", "\n", str(text or ""), flags=re.DOTALL | re.IGNORECASE)
+
+
 def _count_chinese_chars(text: str) -> int:
     clean = re.sub(r"<[^>]+>", "", str(text or ""))
     return sum(1 for ch in clean if "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf")
 
 
-def _normalize_story_output(story: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_update_variable_analysis(content: str) -> str:
+    fallback = (
+        "Time advances through the current player action. Dramatic updates are permitted. "
+        "Variables track location, player state, active character state, and immediate scene consequences "
+        "while preserving hidden truths."
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        body = match.group(1).strip()
+        word_count = len(re.findall(r"\b[\w'-]+\b", body))
+        has_cjk = any("\u3400" <= ch <= "\u9fff" for ch in body)
+        if body and not has_cjk and word_count <= 80:
+            return match.group(0)
+        return f"<Analysis>{fallback}</Analysis>"
+
+    return re.sub(r"<Analysis>(.*?)</Analysis>", replace, str(content or ""), flags=re.DOTALL | re.IGNORECASE)
+
+
+def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict[str, str]]:
+    if not isinstance(story_input, dict):
+        return []
+    actor_outputs = story_input.get("actor_outputs")
+    if not isinstance(actor_outputs, dict):
+        return []
+    characters = actor_outputs.get("characters")
+    if not isinstance(characters, dict):
+        return []
+
+    dialogues: list[Dict[str, str]] = []
+    for name, output in characters.items():
+        if str(name) == "_self" or not isinstance(output, dict):
+            continue
+        raw_dialogue = output.get("dialogue")
+        if not isinstance(raw_dialogue, list):
+            continue
+        line = ""
+        for item in raw_dialogue:
+            if isinstance(item, dict):
+                line = str(item.get("text") or item.get("line") or "").strip()
+            else:
+                line = str(item or "").strip()
+            if line:
+                break
+        if not line:
+            continue
+        perception = output.get("perception")
+        aside = ""
+        if isinstance(perception, list) and perception:
+            aside = str(perception[0] or "").strip()[:500]
+        entry = {"name": str(name), "source": "subagent", "line": line[:1000]}
+        if aside:
+            entry["aside"] = aside
+        dialogues.append(entry)
+        if len(dialogues) >= 6:
+            break
+    return dialogues
+
+
+def _normalize_story_output(story: Dict[str, Any], story_input: Dict[str, Any] | None = None) -> Dict[str, Any]:
     normalized = dict(story)
+    normalized.pop("tokens", None)
+    normalized.pop("token_usage", None)
+    normalized.pop("metadata_tokens", None)
     content = str(normalized.get("content") or "")
-    content = _strip_tag(content, "polished_input")
-    content = _strip_tag(content, "tokens")
-    content = _strip_tag(content, "metadata")
-    content = _strip_tag(content, "character_dialogues")
+    content = _strip_tag_ci(content, "polished_input")
+    content = _strip_tag_ci(content, "tokens")
+    content = _strip_tag_ci(content, "metadata")
+    content = _strip_tag_ci(content, "character_dialogues")
+    content = _normalize_update_variable_analysis(content)
 
     dialogues = normalized.get("character_dialogues")
     if not isinstance(dialogues, list):
         dialogues = []
+    if not dialogues:
+        dialogues = _dialogues_from_story_input(story_input)
     normalized["character_dialogues"] = dialogues
     dialogue_block = "<character_dialogues>" + json.dumps(dialogues, ensure_ascii=False) + "</character_dialogues>"
 
@@ -624,7 +692,7 @@ def run_round(
                 run_claude,
                 story_extra,
             )
-            next_story = _normalize_story_output(next_story)
+            next_story = _normalize_story_output(next_story, story_input)
             agent_run.write_json(story_path, next_story)
             issues = _story_preflight_issues(next_story, requirements)
             if not issues or preflight_attempt == MAX_STORY_PREFLIGHT_ATTEMPTS:

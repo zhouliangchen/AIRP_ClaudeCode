@@ -811,6 +811,42 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("Make the gate lead to orbit.", json.dumps(player_packet, ensure_ascii=False))
         self.assertNotIn("Make the gate lead to orbit.", json.dumps(character_packet, ensure_ascii=False))
 
+    def test_prepare_agent_run_includes_gm_only_hidden_settings_without_actor_leak(self):
+        hidden_text = (
+            "\u7528\u4e8e\u957f\u671f\u5267\u60c5\u5f15\u5bfc\u7684\u63d0\u793a\uff0c"
+            "\u4e0d\u9700\u8981\u7acb\u523b\u5728\u5267\u60c5\u4e2d\u4f53\u73b0\uff1a"
+            "\u540a\u5760\u4e3a\u53d8\u8eab\u5668\uff0c\u4ee3\u4ef7\u662f\u71c3\u70e7\u8eab\u4efd\u3002"
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="\u6211\u5c1d\u8bd5\u5c06\u540a\u5760\u6254\u6389\u3002",
+            chat_log=[],
+            card_data={"title": "\u9690\u85cf\u8bbe\u5b9a\u6d4b\u8bd5"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+            hidden_setting_records=[
+                {
+                    "id": "hidden-1",
+                    "visibility": "gm_only",
+                    "status": "active",
+                    "text": hidden_text,
+                }
+            ],
+        )
+
+        run_dir = Path(result["run_dir"])
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        safe_name = self.agent_run.safe_name("Ada")
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(input_json["gm_only_hidden_settings"][0]["text"], hidden_text)
+        self.assertIn(hidden_text, json.dumps(gm_packet, ensure_ascii=False))
+        self.assertNotIn(hidden_text, json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn(hidden_text, json.dumps(character_packet, ensure_ascii=False))
+
     def test_prepare_agent_run_ignores_metadata_dict_as_character_context(self):
         user_text = "I test metadata-only character context."
         result = self.agent_packets.prepare_agent_run(
@@ -1070,6 +1106,138 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         self.assertEqual(called["input_payload"], explicit_payload)
+
+    def test_round_prepare_persists_long_term_instruction_as_gm_only_hidden_setting(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        hidden_text = (
+            "\u7528\u4e8e\u957f\u671f\u5267\u60c5\u5f15\u5bfc\u7684\u63d0\u793a\uff0c"
+            "\u4e0d\u9700\u8981\u7acb\u523b\u5728\u5267\u60c5\u4e2d\u4f53\u73b0\uff1a"
+            "\u540a\u5760\u4e3a\u53d8\u8eab\u5668\uff0c\u4ee3\u4ef7\u662f\u71c3\u70e7\u8eab\u4efd\u3002"
+        )
+        role_text = "\u6211\u5c1d\u8bd5\u5c06\u540a\u5760\u6254\u6389\u3002"
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + hidden_text
+        styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
+        (self.card / ".card_data.json").write_text(
+            json.dumps({"mode": "blank_bootstrap", "source_type": "blank"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        explicit_payload = {
+            "id": "input-hidden-1",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": raw_text,
+            "display_text": role_text,
+            "role_text": role_text,
+            "user_instruction_text": hidden_text,
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(explicit_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        round_prepare.agent_packets = _load_agent_packets()
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        hidden_path = self.card / "memory" / "gm_only_hidden_truths.jsonl"
+        hidden_entries = [
+            json.loads(line)
+            for line in hidden_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        payload = json.loads(stdout.getvalue())
+        run_dir = Path(payload["agent_run"])
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        self_packet = json.loads((run_dir / "characters" / "_self.context.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(len(hidden_entries), 1)
+        self.assertEqual(hidden_entries[0]["text"], hidden_text)
+        self.assertEqual(hidden_entries[0]["source_input_id"], "input-hidden-1")
+        self.assertEqual(hidden_entries[0]["visibility"], "gm_only")
+        self.assertEqual(hidden_entries[0]["status"], "active")
+        self.assertIn(hidden_text, json.dumps(gm_packet, ensure_ascii=False))
+        self.assertNotIn(hidden_text, json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn(hidden_text, json.dumps(self_packet, ensure_ascii=False))
+
+    def test_round_prepare_persists_quoted_important_character_instruction(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        role_text = "\u6211\u7559\u610f\u73ed\u4e0a\u6709\u6ca1\u6709\u4eba\u770b\u5411\u540a\u5760\u3002"
+        important_text = (
+            "\u8bbe\u5b9a\u91cd\u8981\u89d2\u8272\uff1a\u201c\u82cf\u9ece\u201d\uff0c"
+            "\u73ed\u4e0a\u4e00\u4f4d\u5bf9\u795e\u79d8\u5b66\u9887\u6709\u7814\u7a76\u7684\u5973\u540c\u5b66\u3002"
+            "\u771f\u5b9e\u8eab\u4efd\u662f\u524d\u9b54\u6cd5\u5c11\u5973\u3002"
+        )
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + important_text
+        styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
+        (self.card / ".card_data.json").write_text(
+            json.dumps({"mode": "blank_bootstrap", "source_type": "blank"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        explicit_payload = {
+            "id": "input-important-1",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": raw_text,
+            "display_text": role_text,
+            "role_text": role_text,
+            "user_instruction_text": important_text,
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(explicit_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        round_prepare.agent_packets = _load_agent_packets()
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        profile_md = self.card / "memory" / "characters" / "\u82cf\u9ece" / "profile.md"
+        profile_json = self.card / "memory" / "characters" / "\u82cf\u9ece" / "profile.json"
+        payload = json.loads(stdout.getvalue())
+        run_dir = Path(payload["agent_run"])
+        suli_packet = json.loads((run_dir / "characters" / "\u82cf\u9ece.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        self_packet = json.loads((run_dir / "characters" / "_self.context.json").read_text(encoding="utf-8"))
+
+        self.assertIn("\u82cf\u9ece", card_data["character_orchestration"]["major"])
+        self.assertTrue(profile_md.exists())
+        self.assertTrue(profile_json.exists())
+        self.assertIn(important_text, profile_md.read_text(encoding="utf-8"))
+        self.assertEqual(
+            json.loads(profile_json.read_text(encoding="utf-8"))["authoritative_setting"],
+            important_text,
+        )
+        self.assertIn(important_text, json.dumps(suli_packet, ensure_ascii=False))
+        self.assertNotIn(important_text, json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn(important_text, json.dumps(self_packet, ensure_ascii=False))
 
     def test_round_prepare_continues_when_agent_run_packet_generation_fails(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()

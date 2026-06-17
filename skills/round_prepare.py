@@ -20,6 +20,7 @@ from pathlib import Path
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
 import agent_packets
 import agent_workflow
+import hidden_settings
 import match_worldbook
 import mvu_check
 from handler import apply_injections, write_progress
@@ -232,6 +233,112 @@ def _safe_name(name):
     return re.sub(r'[\\/:*?"<>|]+', "_", name.strip()) or "_unknown"
 
 
+_IMPORTANT_CHARACTER_RE = re.compile(
+    r"(?:(?:设定\s*)?(?:重要|核心)角色|important\s+character|core\s+character)"
+    r"\s*[：:，,\s]*[“\"'「『《【（(]*\s*"
+    r"(?P<name>[^”\"'」』》】）)\n，,。；;：:]{1,40})",
+    re.IGNORECASE,
+)
+
+
+def _normalize_declared_character_name(name):
+    text = str(name or "").strip()
+    text = text.strip(" \t\r\n“”\"'「」『』《》【】（）()")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:40]
+
+
+def _extract_important_character_declarations(text):
+    body = str(text or "").strip()
+    if not body:
+        return []
+    declarations = []
+    seen = set()
+    for match in _IMPORTANT_CHARACTER_RE.finditer(body):
+        name = _normalize_declared_character_name(match.group("name"))
+        if not name or name in seen:
+            continue
+        declarations.append({"name": name, "setting_text": body})
+        seen.add(name)
+    return declarations
+
+
+def _persist_important_character_declarations(
+    card_folder,
+    card_data,
+    declarations,
+    *,
+    source_input_id="",
+    round_id="",
+):
+    if not isinstance(card_data, dict) or not declarations:
+        return []
+
+    orchestration = card_data.setdefault("character_orchestration", {})
+    major = orchestration.setdefault("major", [])
+    if not isinstance(major, list):
+        major = []
+        orchestration["major"] = major
+    orchestration.setdefault("minor_policy", "main_agent")
+    orchestration.setdefault("max_parallel_subagents", 2)
+
+    persisted = []
+    changed_orchestration = False
+    for declaration in declarations:
+        name = _normalize_declared_character_name(declaration.get("name"))
+        if not name:
+            continue
+        setting_text = str(declaration.get("setting_text") or "").strip()
+        if name not in major:
+            major.append(name)
+            changed_orchestration = True
+
+        char_dir = Path(card_folder) / "memory" / "characters" / _safe_name(name)
+        char_dir.mkdir(parents=True, exist_ok=True)
+        profile_md = "\n".join(
+            [
+                f"# {name}",
+                "",
+                "## Authoritative Player Setting",
+                f"- source: user_instruction_channel",
+                f"- source_input_id: {source_input_id or ''}",
+                f"- round_id: {round_id or ''}",
+                "- importance: major",
+                "- visibility: character_private_and_gm",
+                "",
+                setting_text,
+                "",
+            ]
+        )
+        (char_dir / "profile.md").write_text(profile_md, encoding="utf-8")
+        (char_dir / "profile.json").write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "importance": "major",
+                    "source": "player_instruction",
+                    "source_input_id": source_input_id or "",
+                    "round_id": round_id or "",
+                    "visibility": "character_private_and_gm",
+                    "status": "active",
+                    "authoritative_setting": setting_text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        persisted.append(name)
+
+    if changed_orchestration:
+        try:
+            with open(Path(card_folder) / ".card_data.json", "w", encoding="utf-8") as f:
+                json.dump(card_data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return persisted
+
+
 def _read_character_file(card_folder, name, fname):
     path = Path(card_folder) / "memory" / "characters" / _safe_name(name) / fname
     if path.exists():
@@ -431,22 +538,47 @@ def main():
         ):
             explicit_input_payload = dict(latest_player_input)
     input_plan = _analyze_player_input_for_plan(user_text, chat_log)
-    if input_plan.get("declared_major_characters") and isinstance(card_data, dict):
-        orchestration = card_data.setdefault("character_orchestration", {})
-        major = orchestration.setdefault("major", [])
-        changed_orchestration = False
-        for name in input_plan.get("declared_major_characters", []):
-            if name and name not in major:
-                major.append(name)
-                changed_orchestration = True
-        orchestration.setdefault("minor_policy", "main_agent")
-        orchestration.setdefault("max_parallel_subagents", 2)
-        if changed_orchestration:
-            try:
-                with open(Path(card_folder) / ".card_data.json", "w", encoding="utf-8") as f:
-                    json.dump(card_data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+    routed_for_hidden = agent_packets.route_input_payload(user_text, explicit_input_payload or None)
+    hidden_instruction_text = routed_for_hidden.get("user_instruction_channel", "")
+    hidden_setting_records = []
+    if hidden_instruction_text:
+        try:
+            hidden_settings.persist_hidden_setting(
+                card_folder,
+                hidden_instruction_text,
+                source_input_id=latest_player_input.get("id", "") if isinstance(latest_player_input, dict) else "",
+                round_id=f"round-{len(chat_log) + 1:06d}",
+            )
+        except Exception:
+            pass
+    try:
+        hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
+    except Exception:
+        hidden_setting_records = []
+
+    declaration_source_text = hidden_instruction_text or user_text
+    important_declarations = _extract_important_character_declarations(declaration_source_text)
+    declared_major = []
+    for name in input_plan.get("declared_major_characters", []):
+        normalized = _normalize_declared_character_name(name)
+        if normalized and normalized not in declared_major:
+            declared_major.append(normalized)
+    for declaration in important_declarations:
+        name = declaration.get("name")
+        if name and name not in declared_major:
+            declared_major.append(name)
+    if declared_major:
+        input_plan["declared_major_characters"] = declared_major
+    for name in declared_major:
+        if not any(declaration.get("name") == name for declaration in important_declarations):
+            important_declarations.append({"name": name, "setting_text": declaration_source_text.strip()})
+    _persist_important_character_declarations(
+        card_folder,
+        card_data,
+        important_declarations,
+        source_input_id=latest_player_input.get("id", "") if isinstance(latest_player_input, dict) else "",
+        round_id=f"round-{len(chat_log) + 1:06d}",
+    )
 
     # Load reference.md once for O(1) section lookups this round
     ref_sections = _load_reference_sections(card_folder)
@@ -466,6 +598,7 @@ def main():
             character_contexts=character_contexts,
             turn_index=len(chat_log),
             input_payload=explicit_input_payload or None,
+            hidden_setting_records=hidden_setting_records,
         )
         run_dir = agent_run_info.get("run_dir") if isinstance(agent_run_info, dict) else None
         if run_dir:
@@ -552,6 +685,19 @@ def main():
             dynamic_parts.append("  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete; update variables so future turns follow the player's latest framing. Repair can be a small edit or a full rewrite of prior derived story/settings/memory, while preserving raw player inputs.")
     else:
         dynamic_parts.append("  conflict_cues: (none detected heuristically; still check manually)")
+
+    if hidden_setting_records:
+        dynamic_parts.append("\n=== GM_ONLY_HIDDEN_SETTINGS ===")
+        dynamic_parts.append("These are player-authored hidden or long-term facts. GM/story/critic may use them for continuity, but player/character agents must not receive knowledge their viewpoint cannot have.")
+        for item in hidden_setting_records[-10:]:
+            dynamic_parts.append(
+                "  - "
+                f"id={item.get('id', '')} "
+                f"round={item.get('round_id', '')} "
+                f"source_input_id={item.get('source_input_id', '')} "
+                f"status={item.get('status', 'active')} "
+                f"text={item.get('text', '')[:600]!r}"
+            )
 
     if player_input_history:
         dynamic_parts.append("\n=== PLAYER_INPUT_HISTORY (authoritative, recent) ===")

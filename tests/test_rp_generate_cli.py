@@ -626,16 +626,21 @@ class RpGenerateCliTest(unittest.TestCase):
         story = {
             "content": (
                 "<content>正文</content><summary>小结</summary><options>选项</options>"
-                "<tokens>\nin: 0\nout: 0\ntotal: 0\n</tokens><character_dialogues></character_dialogues>"
+                "<TOKENS>\nin: NNNN\nout: NNNN\ntotal: NNNN\n</TOKENS><character_dialogues></character_dialogues>"
             ),
             "character_dialogues": [],
             "metadata": {},
+            "tokens": {"in": "NNNN"},
+            "token_usage": {"total": "NNNN"},
         }
 
         normalized = self.module._normalize_story_output(story)
         content = normalized["content"]
 
         self.assertNotIn("<tokens>", content)
+        self.assertNotIn("<TOKENS>", content)
+        self.assertNotIn("tokens", normalized)
+        self.assertNotIn("token_usage", normalized)
         self.assertIn("<character_dialogues>[]</character_dialogues>", content)
         self.assertLess(content.index("<character_dialogues>"), content.index("<summary>"))
 
@@ -655,6 +660,58 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("<polished_input>", content)
         self.assertNotIn("玩家以第一人称提供开局设定", content)
         self.assertIn("<content>你在教室里醒来。</content>", content)
+
+    def test_normalize_story_output_rewrites_invalid_update_analysis(self):
+        story = {
+            "content": (
+                "<content>你走向苏黎。</content>"
+                "<UpdateVariable><Analysis>时间推进到走廊，状态发生变化。</Analysis>"
+                "<JSONPatch>[]</JSONPatch></UpdateVariable>"
+                "<summary>接触苏黎</summary><options>继续</options>"
+            ),
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_story_output(story)
+        content = normalized["content"]
+
+        self.assertNotIn("时间推进到走廊", content)
+        self.assertIn("Time advances through the current player action.", content)
+        self.assertIn("<JSONPatch>[]</JSONPatch>", content)
+
+    def test_normalize_story_output_fills_dialogues_from_character_outputs(self):
+        story = {
+            "content": "<content>你靠近苏黎。</content><summary>接触</summary><options>继续</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "actor_outputs": {
+                "characters": {
+                    "_self": {"dialogue": ["ignore self"]},
+                    "\u82cf\u9ece": {
+                        "dialogue": ["\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002"],
+                        "perception": ["\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002"],
+                    },
+                }
+            }
+        }
+
+        normalized = self.module._normalize_story_output(story, story_input)
+
+        self.assertEqual(normalized["character_dialogues"], [
+            {
+                "name": "\u82cf\u9ece",
+                "source": "subagent",
+                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                "aside": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
+            }
+        ])
+        self.assertIn(
+            '"source": "subagent"',
+            normalized["content"],
+        )
 
     def test_story_preflight_rejects_third_person_when_second_person_required(self):
         story = {

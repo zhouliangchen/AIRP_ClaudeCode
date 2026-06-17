@@ -192,13 +192,21 @@ def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]
     return [item for item in routed_input.get("components", []) if item.get("channel") == "role"]
 
 
-def build_gm_packet(card_folder, routed_input: Dict[str, Any], recent_chat, card_data=None, character_contexts=None):
+def build_gm_packet(
+    card_folder,
+    routed_input: Dict[str, Any],
+    recent_chat,
+    card_data=None,
+    character_contexts=None,
+    hidden_setting_records=None,
+):
     """Build GM packet with both role and instruction channels."""
     return {
         "agent": "gm",
         "card_folder": str(card_folder),
         "role_channel": _to_text(routed_input.get("role_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
+        "gm_only_hidden_settings": hidden_setting_records or [],
         "recent_chat": recent_chat or [],
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts or [],
@@ -270,21 +278,31 @@ def prepare_agent_run(
     character_contexts,
     turn_index=None,
     input_payload=None,
+    hidden_setting_records=None,
 ):
     """Create one round run directory and persist agent packets."""
     routed_input = route_input_payload(user_text, input_payload)
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
+    hidden_setting_records = hidden_setting_records or []
 
     input_json = input_payload if isinstance(input_payload, dict) else {"raw_text": _to_text(user_text)}
     input_json = dict(input_json)
     input_json["raw_text"] = _to_text(input_json.get("raw_text", user_text))
     input_json["routed_input"] = routed_input
+    input_json["gm_only_hidden_settings"] = hidden_setting_records
     input_json["recent_chat"] = chat_log or []
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
     agent_run.write_json(run_dir / "input.json", input_json)
 
-    gm_packet = build_gm_packet(card_folder, routed_input, chat_log, card_data, character_contexts)
+    gm_packet = build_gm_packet(
+        card_folder,
+        routed_input,
+        chat_log,
+        card_data,
+        character_contexts,
+        hidden_setting_records=hidden_setting_records,
+    )
     player_packet = build_player_packet(card_folder, routed_input, chat_log)
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)

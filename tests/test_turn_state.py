@@ -453,6 +453,38 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("课堂段落改定为梦境预示", log[0]["ai"])
         self.assertIn("derived_repairs", log[0])
 
+    def test_append_turn_retargers_current_index_derived_edit_to_prior_ai_when_reframing_previous_scene(self):
+        self.handler.write_chat_log(str(self.card), [
+            {
+                "index": 0,
+                "user": "first input",
+                "ai": "<p>Old classroom happened as reality.</p><summary>old</summary>",
+                "summary": "old",
+            }
+        ])
+
+        self.handler.append_turn(
+            str(self.card),
+            content="<p>You wake on the road and hold the pendant.</p>",
+            summary="woke",
+            derived_content_edits=[
+                {
+                    "turn_index": 1,
+                    "first_paragraph": "The classroom continuity is now only a dream preview.",
+                    "summary": "Previous classroom scene is now a dream preview.",
+                    "reason": "previous AI turn reframed as dream by player input",
+                }
+            ],
+        )
+
+        log = self.handler.read_chat_log(str(self.card))
+        self.assertIn("dream preview", log[0]["ai"])
+        self.assertEqual(log[0]["summary"], "Previous classroom scene is now a dream preview.")
+        self.assertNotIn("Old classroom happened", log[0]["ai"])
+        self.assertIn("You wake on the road", log[1]["ai"])
+        self.assertEqual(log[1]["derived_content_edits_applied"][0]["turn_index"], 0)
+        self.assertEqual(log[1]["derived_content_edits_applied"][0]["original_turn_index"], 1)
+
     def test_branch_submit_player_input_edit_truncates_and_pends_revised_turn(self):
         first = self.handler.record_player_input(str(self.card), "first input", "first input")
         second = self.handler.record_player_input(str(self.card), "second input", "second input")
@@ -670,6 +702,34 @@ class TurnStateTest(unittest.TestCase):
             {"name": "Ada", "source": "subagent", "line": "I will take point.", "aside": "steady"}
         ])
 
+    def test_append_turn_accepts_character_agent_dialogue_marker(self):
+        dialogues = [
+            {
+                "name": "\u82cf\u9ece",
+                "agent": "character",
+                "agent_id": "character:\u82cf\u9ece",
+                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                "aside": "\u51b7\u9759",
+            }
+        ]
+
+        self.handler.append_turn(
+            str(self.card),
+            content="<p>Main narration.</p>",
+            summary="summary",
+            character_dialogues=dialogues,
+        )
+
+        log = json.loads((self.card / "chat_log.json").read_text(encoding="utf-8"))
+        self.assertEqual(log[0]["character_dialogues"], [
+            {
+                "name": "\u82cf\u9ece",
+                "source": "subagent",
+                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                "aside": "\u51b7\u9759",
+            }
+        ])
+
     def test_content_js_renders_character_dialogues_as_independent_boxes(self):
         self.handler.write_chat_log(str(self.card), [{
             "index": 0,
@@ -688,6 +748,25 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("Ada", content_js)
         self.assertIn("I will take point.", content_js)
         self.assertIn("steady", content_js)
+
+    def test_content_js_inserts_character_dialogues_inside_ai_flow(self):
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "<p>Before.</p><p>After.</p>",
+            "summary": "summary",
+            "character_dialogues": [
+                {"name": "Ada", "source": "subagent", "line": "I will take point."}
+            ],
+        }])
+
+        self.handler.write_content_js(str(self.card))
+        content_js = (self.styles / "content.js").read_text(encoding="utf-8")
+
+        before_idx = content_js.index("Before.")
+        dialogue_idx = content_js.index("character-dialogues", before_idx)
+        after_idx = content_js.index("After.", before_idx)
+        self.assertLess(before_idx, dialogue_idx)
+        self.assertLess(dialogue_idx, after_idx)
 
     def test_docs_describe_character_dialogues_contract(self):
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")

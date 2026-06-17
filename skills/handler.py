@@ -356,7 +356,15 @@ def _normalize_character_dialogues(dialogues):
     for item in dialogues:
         if not isinstance(item, dict):
             continue
-        if item.get("source") != "subagent":
+        source = str(item.get("source", "") or "").strip()
+        agent = str(item.get("agent", "") or "").strip().lower()
+        agent_id = str(item.get("agent_id", "") or "").strip().lower()
+        if source != "subagent":
+            if agent == "character" or agent_id.startswith("character:"):
+                source = "subagent"
+            else:
+                continue
+        if source != "subagent":
             continue
         name = str(item.get("name", "") or "").strip()
         line = str(item.get("line", "") or "").strip()
@@ -393,6 +401,18 @@ def _render_character_dialogues(dialogues):
         parts.append('</div>')
     parts.append('</div>')
     return "".join(parts)
+
+
+def _insert_character_dialogues(ai_html, dialogues):
+    dialogue_html = _render_character_dialogues(dialogues)
+    if not dialogue_html:
+        return ai_html
+    html_text = str(ai_html or "")
+    paragraph_ends = [m.end() for m in re.finditer(r"</p\s*>", html_text, flags=re.IGNORECASE)]
+    if paragraph_ends:
+        insert_at = paragraph_ends[0]
+        return html_text[:insert_at] + dialogue_html + html_text[insert_at:]
+    return html_text + dialogue_html
 
 
 def _shorten(text, limit=600):
@@ -854,7 +874,7 @@ def write_content_js(card_folder):
             user_display = html.escape(user_raw).replace("\n", "<br>")
             wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + user_display + '</div></div>'
             user_turn_seq += 1
-        wrap += _render_character_dialogues(turn.get("character_dialogues", []))
+        ai_display = _insert_character_dialogues(ai_display, turn.get("character_dialogues", []))
         wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
         wrap += '</div>'
         html_parts.append(wrap)
@@ -1347,7 +1367,44 @@ def _dict_to_schema_node(d):
     return schema
 
 
-def apply_derived_content_edits(log, edits):
+def _looks_like_prior_reframe(edit):
+    probe_parts = []
+    if isinstance(edit, dict):
+        for key in ("reason", "summary", "first_paragraph", "new_first_paragraph", "ai", "content", "new_ai"):
+            value = edit.get(key)
+            if isinstance(value, str):
+                probe_parts.append(value)
+    probe = "\n".join(probe_parts).lower()
+    cues = (
+        "previous",
+        "prior",
+        "earlier",
+        "old",
+        "reframe",
+        "dream",
+        "\u4e0a\u4e00\u8f6e",
+        "\u5148\u524d",
+        "\u4e4b\u524d",
+        "\u524d\u6587",
+        "\u65e7",
+        "\u68a6",
+        "\u68a6\u5883",
+        "\u6539\u5b9a",
+        "\u4fee\u6b63",
+        "\u91cd\u5199",
+        "\u56de\u62e8",
+    )
+    return any(cue in probe for cue in cues)
+
+
+def _derived_edit_record(turn_index, op, reason, original_turn_index=None):
+    item = {"turn_index": turn_index, "op": op, "reason": reason}
+    if original_turn_index is not None and original_turn_index != turn_index:
+        item["original_turn_index"] = original_turn_index
+    return item
+
+
+def apply_derived_content_edits(log, edits, existing_turn_count=None):
     """Apply player-requested repairs to AI-derived turn content.
 
     Edits never touch player input fields. They are for cases where the user says
@@ -1363,6 +1420,12 @@ def apply_derived_content_edits(log, edits):
             turn_index = int(edit.get("turn_index", 0))
         except Exception:
             continue
+        original_turn_index = turn_index
+        if existing_turn_count is not None and turn_index >= existing_turn_count:
+            if existing_turn_count > 0 and turn_index == existing_turn_count and _looks_like_prior_reframe(edit):
+                turn_index = existing_turn_count - 1
+            else:
+                continue
         if turn_index < 0 or turn_index >= len(log):
             continue
         target = log[turn_index]
@@ -1375,7 +1438,7 @@ def apply_derived_content_edits(log, edits):
         new_ai = edit.get("ai") or edit.get("content") or edit.get("new_ai")
         if isinstance(new_ai, str) and new_ai.strip():
             target["ai"] = new_ai.strip()
-            applied.append({"turn_index": turn_index, "op": "replace_ai", "reason": reason})
+            applied.append(_derived_edit_record(turn_index, "replace_ai", reason, original_turn_index))
             applied_this_edit = True
 
         # Currently supported partial operation: replace the first narrative paragraph.
@@ -1389,14 +1452,14 @@ def apply_derived_content_edits(log, edits):
             else:
                 ai_text = para + "\n" + ai_text
             target["ai"] = ai_text
-            applied.append({"turn_index": turn_index, "op": "replace_first_paragraph", "reason": reason})
+            applied.append(_derived_edit_record(turn_index, "replace_first_paragraph", reason, original_turn_index))
             applied_this_edit = True
 
         new_summary = edit.get("summary")
         if isinstance(new_summary, str) and new_summary.strip():
             target["summary"] = new_summary.strip()
             target["ai"] = re.sub(r"<summary>.*?</summary>", "<summary>" + new_summary.strip() + "</summary>", target.get("ai", ""), flags=re.DOTALL)
-            applied.append({"turn_index": turn_index, "op": "replace_summary", "reason": reason})
+            applied.append(_derived_edit_record(turn_index, "replace_summary", reason, original_turn_index))
             applied_this_edit = True
 
         if applied_this_edit:
@@ -1499,8 +1562,9 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     elif prev_vars:
         entry["variables"] = {"stat_data": prev_vars}
 
+    existing_turn_count = len(log)
     log.append(entry)
-    applied_repairs = apply_derived_content_edits(log, derived_content_edits)
+    applied_repairs = apply_derived_content_edits(log, derived_content_edits, existing_turn_count=existing_turn_count)
     if applied_repairs:
         entry["derived_content_edits_applied"] = applied_repairs
     write_chat_log(card_folder, log)
