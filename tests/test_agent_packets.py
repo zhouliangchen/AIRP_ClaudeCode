@@ -759,9 +759,54 @@ class AgentPacketTest(unittest.TestCase):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["prompts"]["input_analyst"], "prompts/input_analyst.prompt.md")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
+
+        raw_record = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw_record["raw_text"], input_payload["raw_text"])
+        self.assertEqual(raw_record["role_text"], input_payload["role_text"])
+        self.assertEqual(raw_record["user_instruction_text"], input_payload["user_instruction_text"])
+        self.assertEqual(raw_record["explicit_payload"], input_payload)
+        self.assertEqual(
+            raw_record["source_integrity"]["raw_text_sha256"],
+            self.agent_packets.input_analysis.sha256_text(input_payload["raw_text"]),
+        )
+        self.assertEqual(
+            raw_record["source_integrity"]["role_text_sha256"],
+            self.agent_packets.input_analysis.sha256_text(input_payload["role_text"]),
+        )
+        self.assertEqual(
+            raw_record["source_integrity"]["user_instruction_text_sha256"],
+            self.agent_packets.input_analysis.sha256_text(input_payload["user_instruction_text"]),
+        )
+
         request = (run_dir / "input_analysis.request.md").read_text(encoding="utf-8")
         self.assertIn("raw_text", request)
         self.assertIn("设定：今天是梦境。", request)
+        prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
+        self.assertIn(".claude/skills/rp-input-analyst.md", prompt)
+        self.assertIn("input_analysis.output.json", prompt)
+        self.assertIn(json.dumps(input_payload["raw_text"], ensure_ascii=False)[1:-1], prompt)
+        self.assertIn(input_payload["role_text"], prompt)
+        self.assertIn(input_payload["user_instruction_text"], prompt)
+        self.assertTrue("source_integrity" in prompt or "raw_text_sha256" in prompt)
+        self.assertIn("semantic_units", prompt)
+
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        gm_input_request = gm_packet["input_analysis_request"]
+        self.assertEqual(
+            gm_input_request,
+            {
+                "round_id": "round-000002",
+                "request_path": "input_analysis.request.md",
+                "raw_path": "input.raw.json",
+                "output_path": "input_analysis.output.json",
+                "source_integrity": raw_record["source_integrity"],
+            },
+        )
+        for forbidden_key in ("recent_chat", "card_projection", "explicit_payload", "raw_text"):
+            self.assertNotIn(forbidden_key, gm_input_request)
+
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        self.assertNotIn(input_payload["user_instruction_text"], json.dumps(player_packet, ensure_ascii=False))
 
     def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(

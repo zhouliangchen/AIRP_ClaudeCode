@@ -213,13 +213,17 @@ def write_round_prompts(
     player_packet: Dict[str, Any],
     character_packets: Dict[str, Dict[str, Any]],
     card_folder: str | Path | None = None,
+    input_analysis_request: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Write prompt files and return the round manifest."""
     root = Path(run_dir)
     prompt_root = root / "prompts"
     characters_prompt_root = prompt_root / "characters"
 
-    input_request = gm_packet.get("input_analysis_request", {}) if isinstance(gm_packet, dict) else {}
+    if input_analysis_request is None:
+        input_request = gm_packet.get("input_analysis_request", {}) if isinstance(gm_packet, dict) else {}
+    else:
+        input_request = input_analysis_request
     input_analyst_prompt = prompt_root / "input_analyst.prompt.md"
     gm_prompt = prompt_root / "gm.prompt.md"
     player_prompt = prompt_root / "player.prompt.md"

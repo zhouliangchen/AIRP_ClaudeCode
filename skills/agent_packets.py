@@ -323,6 +323,16 @@ def _input_analysis_request_markdown(input_request: Dict[str, Any]) -> str:
     )
 
 
+def _input_analysis_request_reference(input_request: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "round_id": input_request.get("round_id", ""),
+        "request_path": "input_analysis.request.md",
+        "raw_path": "input.raw.json",
+        "output_path": "input_analysis.output.json",
+        "source_integrity": input_request.get("source_integrity", {}),
+    }
+
+
 def prepare_agent_run(
     card_folder,
     user_text,
@@ -359,7 +369,7 @@ def prepare_agent_run(
         character_contexts,
         hidden_setting_records=hidden_setting_records,
     )
-    gm_packet["input_analysis_request"] = input_request
+    gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log)
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)
@@ -379,6 +389,7 @@ def prepare_agent_run(
         player_packet,
         character_packets,
         card_folder=card_folder,
+        input_analysis_request=input_request,
     )
     return {
         "run_dir": str(run_dir.resolve()),
