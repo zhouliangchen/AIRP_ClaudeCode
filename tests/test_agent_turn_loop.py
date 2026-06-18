@@ -236,6 +236,52 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(result["gm_steps"], 3)
         self.assertEqual(len(calls), 3)
 
+    def test_max_steps_does_not_truncate_direct_gm_actor_fanout(self):
+        calls = []
+        actor_ids = [f"character:A{index}" for index in range(1, 6)]
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Five students react at once."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": f"call-character-A{index}-1",
+                            "actor_id": actor_id,
+                            "prompt": f"You hear your name called, A{index}.",
+                            "reason": "GM requested direct fanout.",
+                        }
+                        for index, actor_id in enumerate(actor_ids, start=1)
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            self.assertIn(agent_key, actor_ids)
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} looks up."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        actor_order = [agent_key for agent_key, _packet in calls if agent_key != "gm"]
+        self.assertEqual(actor_order, actor_ids)
+        self.assertEqual(result["called_actors"], actor_ids)
+        self.assertEqual(result["gm_steps"], 1)
+        self.assertEqual(result["stop_reason"], "max_steps")
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(sorted(actor_outputs), actor_ids)
+        for actor_id in actor_ids:
+            self.assertEqual(len(actor_outputs[actor_id]), 1)
+
     def test_invalid_gm_output_raises_clear_loop_error(self):
         def dispatch(agent_key, packet):
             self.assertEqual(agent_key, "gm")

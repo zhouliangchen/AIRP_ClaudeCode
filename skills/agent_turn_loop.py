@@ -13,7 +13,7 @@ import agent_schemas
 
 
 MAX_LOOP_STEPS = 8
-ACTOR_CALLS_PER_STEP = 4
+GENERATED_TRANSFERS_PER_STEP = 4
 STOP_REASONS = {"player_decision", "complete", "max_steps"}
 
 DispatchFn = Callable[[str, dict], dict]
@@ -315,7 +315,7 @@ def run_interactive_loop(
     _ensure_trace(root, input_payload)
 
     step_limit = max(1, int(max_steps or 0))
-    actor_call_limit = step_limit * ACTOR_CALLS_PER_STEP
+    generated_transfer_limit = step_limit * GENERATED_TRANSFERS_PER_STEP
     world_state = _initial_world_state(input_payload)
     gm_outputs: list[dict] = []
     actor_outputs: dict[str, list[dict]] = {}
@@ -324,7 +324,7 @@ def run_interactive_loop(
     seen_transfers: set[tuple[str, str, str]] = set()
     stop_reason = "continue"
     decision_point: Any = None
-    actor_calls_used = 0
+    generated_transfers_used = 0
 
     for step_index in range(step_limit):
         gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
@@ -347,11 +347,6 @@ def run_interactive_loop(
 
         actor_queue: Deque[dict] = deque(gm_output.get("actor_calls") or [])
         while actor_queue:
-            if actor_calls_used >= actor_call_limit:
-                stop_reason = "max_steps"
-                actor_queue.clear()
-                break
-
             call = actor_queue.popleft()
             actor_id = str(call.get("actor_id") or "")
             if not _important_actor(actor_id):
@@ -359,7 +354,6 @@ def run_interactive_loop(
             call_id = str(call.get("call_id") or "") or _safe_actor_call_id(actor_id, generated_call_counts)
             packet = _actor_packet(input_payload, world_state, actor_id, str(call.get("prompt") or ""))
             actor_output = _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
-            actor_calls_used += 1
             called_actors.append(actor_id)
             actor_outputs.setdefault(actor_id, []).append(actor_output)
 
@@ -376,15 +370,19 @@ def run_interactive_loop(
                     transfer_key = (actor_id, target, content)
                     if transfer_key not in seen_transfers:
                         seen_transfers.add(transfer_key)
-                        transfer_calls.append(
-                            _dialogue_transfer_call(
-                                actor_id,
-                                target,
-                                event,
-                                call_id,
-                                generated_call_counts,
+                        if generated_transfers_used < generated_transfer_limit:
+                            generated_transfers_used += 1
+                            transfer_calls.append(
+                                _dialogue_transfer_call(
+                                    actor_id,
+                                    target,
+                                    event,
+                                    call_id,
+                                    generated_call_counts,
+                                )
                             )
-                        )
+                        else:
+                            stop_reason = "max_steps"
                 elif event_type == "perceive_request":
                     _record_perception_continuation(root, actor_id, event, call_id, world_state)
                 elif event_type == "stop_for_player_decision":
