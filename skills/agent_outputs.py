@@ -176,10 +176,10 @@ def _require_called_actor_outputs(
         actual_counts = Counter(output_source_call_ids_by_actor.get(actor_id, []))
         for call_id, required_count in required_counts.items():
             actual_count = actual_counts.get(call_id, 0)
-            if actual_count < required_count:
+            if actual_count != required_count:
                 context = first_context[(actor_id, call_id)]
                 raise AgentOutputError(
-                    f"{context}.call_id: missing actor output for {actor_id} call_id {call_id!r}; "
+                    f"{context}.call_id: actor output count mismatch for {actor_id} call_id {call_id!r}; "
                     f"required {required_count}, found {actual_count}"
                 )
 

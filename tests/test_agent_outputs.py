@@ -1025,6 +1025,91 @@ class AgentOutputsTest(unittest.TestCase):
             sentinel,
         )
 
+    def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada is called once by the GM."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-character-Ada-1",
+                                "actor_id": "character:Ada",
+                                "prompt": "Answer the player once.",
+                                "reason": "Ada is present.",
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "First answer."}
+                        ],
+                        "stop_reason": "continue",
+                    },
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Second answer."}
+                        ],
+                        "stop_reason": "continue",
+                    },
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="First answer.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Second answer.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "call-character-Ada-1"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
+
     def test_build_story_input_allows_one_actor_output_for_one_gm_call(self):
         _write_json(
             self.run_dir / "gm.output.json",

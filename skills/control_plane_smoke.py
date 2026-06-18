@@ -102,42 +102,69 @@ def _write_agent_outputs(run_dir: Path) -> None:
     _write_json(
         run_dir / "gm.output.json",
         {
-            "agent": "gm",
-            "narration": "The archive door opens onto a quiet lamplit room.",
-            "npc_events": [{"npc": "archive", "event": "dust stirs in the entryway"}],
-            "world_state_delta": [{"scope": "archive", "fact": "the entry door is open"}],
-            "handoff": {"focus": "player decision at the archive threshold"},
-        },
-    )
-    _write_json(
-        run_dir / "player.output.json",
-        {
-            "agent": "player",
-            "agent_id": "player",
-            "action": "I step into the archive and keep close to Ada's lamp.",
-            "dialogue": [{"target": "Ada", "text": "I'll stay where I can see the light."}],
-            "perception": ["I smell paper dust and warm oil from the lamp."],
-            "memory_delta": [
+            "agent": "gm_loop",
+            "outputs": [
                 {
-                    "text": "I entered the archive while following Ada's lamp.",
-                    "source": "perceived",
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The archive door opens onto a quiet lamplit room."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "Respond to entering the archive from the player's first-person view.",
+                            "reason": "The player submitted the current action.",
+                        },
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "React as Ada while carrying the lamp.",
+                            "reason": "Ada is a current important character in the scene.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [{"scope": "archive", "fact": "the entry door is open"}],
+                    "decision_point": {
+                        "reason": "The player must choose whether to inspect the shelves.",
+                        "options": ["inspect shelves", "wait at threshold"],
+                    },
+                    "stop_reason": "player_decision",
                 }
             ],
         },
     )
     _write_json(
-        run_dir / "characters" / "Ada.output.json",
+        run_dir / "actor.outputs.json",
         {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "action": "I raise the lamp and watch the shelves for movement.",
-            "dialogue": [{"target": "player", "text": "Stay close to the lamp."}],
-            "perception": ["I see the player cross the archive threshold."],
-            "memory_delta": [
+            "player": [
                 {
-                    "text": "I saw the player enter the archive beside my lamp.",
-                    "source": "perceived",
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [
+                        {"type": "action", "target": "", "content": "I step into the archive and keep close to Ada's lamp."},
+                        {
+                            "type": "memory_delta",
+                            "target": "self",
+                            "content": "I entered the archive while following Ada's lamp.",
+                        },
+                    ],
+                    "stop_reason": "continue",
+                }
+            ],
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {"type": "dialogue", "target": "player", "content": "Stay close to the lamp."},
+                        {
+                            "type": "memory_delta",
+                            "target": "self",
+                            "content": "I saw the player enter the archive beside my lamp.",
+                        },
+                    ],
+                    "stop_reason": "continue",
                 }
             ],
         },
@@ -287,6 +314,34 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             visibility="world_visible",
             event_type="dialogue",
             content="Stay close to the lamp.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
+        agent_interactions.append_event(
+            run_dir,
+            actor="character:Ada",
+            visibility="actor_visible",
+            event_type="memory_delta",
+            content="I saw the player enter the archive beside my lamp.",
+            target="self",
+            source_call_id="call-character-Ada-1",
+        )
+        agent_interactions.append_event(
+            run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="action",
+            content="I step into the archive and keep close to Ada's lamp.",
+            source_call_id="call-player-1",
+        )
+        agent_interactions.append_event(
+            run_dir,
+            actor="player",
+            visibility="actor_visible",
+            event_type="memory_delta",
+            content="I entered the archive while following Ada's lamp.",
+            target="self",
+            source_call_id="call-player-1",
         )
         agent_interactions.append_event(
             run_dir,

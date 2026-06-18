@@ -869,6 +869,11 @@ class AgentPacketTest(unittest.TestCase):
             f"prompts/characters/{safe_name}.prompt.md",
         )
         self.assertEqual(manifest["expected_outputs"]["gm"], "gm.output.json")
+        self.assertEqual(manifest["expected_outputs"]["actors"], "actor.outputs.json")
+        self.assertNotIn("player", manifest["expected_outputs"])
+        self.assertNotIn("characters", manifest["expected_outputs"])
+        self.assertIn('"actors": "actor.outputs.json"', story_prompt)
+        self.assertIn('"actors": "actor.outputs.json"', critic_prompt)
         self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
         self.assertNotIn("interaction_trace", manifest.get("optional_inputs", {}))
 

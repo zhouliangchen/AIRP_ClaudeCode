@@ -28,20 +28,25 @@ Never use hidden GM truth, user_instruction_channel, or another character's priv
 
 ## Output Schema
 
-Write `characters/<safe_name>.output.json`:
+Return one character actor output object for aggregation into `actor.outputs.json`:
 
 ```json
 {
   "agent": "character",
   "agent_id": "character:<safe_name>",
   "character_name": "...",
-  "action": "...",
-  "dialogue": [],
-  "perception": [],
-  "memory_delta": []
+  "events": [
+    {
+      "type": "dialogue",
+      "target": "player",
+      "content": "first-person event content",
+      "metadata": {}
+    }
+  ],
+  "stop_reason": "continue"
 }
 ```
 
-Use only these top-level keys. Put private reaction, intent, sensory detail, and misunderstandings in `perception` or `action`; spoken lines in `dialogue`; relationship shifts, durable state changes, and remembered facts in `memory_delta`.
+Use only these top-level keys. Represent private reaction, intent, sensory detail, spoken lines, relationship shifts, durable state changes, and remembered facts as `events`. Allowed `stop_reason` values are `continue` and `stop_for_player_decision`.
 
 Do not write final narration. Do not duplicate another character's voice.

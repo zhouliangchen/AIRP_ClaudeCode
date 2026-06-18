@@ -23,24 +23,40 @@ You are the GM agent. You may see 完整剧情, hidden facts, current variables,
 During the turn, respond to subagent outputs:
 
 1. Read `gm.context.json`.
-2. Produce `gm.output.json` with world state and scene pressure.
+2. Return a GM output object with world state, actor calls, and scene pressure. The orchestrator persists it under `gm.output.json` as `{ "agent": "gm_loop", "outputs": [...] }`.
 3. After player/character outputs, update non-core NPC reactions and consequence notes if needed.
 4. Stop when the next unresolved issue is a real player decision or when the chapter word/scene target is met.
 
 ## Output Schema
 
-Write `gm.output.json`:
+Return one GM output object:
 
 ```json
 {
   "agent": "gm",
-  "narration": "...",
-  "npc_events": [],
+  "scene_beats": [
+    {
+      "content": "visible scene beat",
+      "metadata": {}
+    }
+  ],
+  "events": [],
+  "actor_calls": [
+    {
+      "call_id": "call-character-Ada-1",
+      "actor_id": "character:Ada",
+      "prompt": "second-person visible prompt for this actor",
+      "reason": "why this actor is needed now",
+      "metadata": {}
+    }
+  ],
+  "parallel_groups": [],
   "world_state_delta": [],
-  "handoff": {}
+  "decision_point": null,
+  "stop_reason": "continue"
 }
 ```
 
-Use only these top-level keys. Put scene pressure, stop/decision notes, conflict repair suggestions, and hidden/visible consequence routing inside `handoff`; put durable world facts in `world_state_delta`; put NPC and background action in `npc_events`.
+Use only these top-level keys. Put visible scene pressure in `scene_beats` or `events`, durable world facts in `world_state_delta`, and required player/character work in `actor_calls`. Use `decision_point` and `stop_reason` to stop at real player choices.
 
 Do not write `skills/styles/response.txt`. Do not impersonate player or core character inner voice.

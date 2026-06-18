@@ -30,9 +30,9 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 4. Validate and apply the analysis with `python "{ROOT}/skills/input_analysis_apply.py" "<card_folder>" "{ROOT}"`. This is the only normal path that persists hidden settings, important-character declarations, routed input components, and rebuilt agent packets.
 5. Use `rp-input-router` to confirm `role_channel` and `user_instruction_channel` from the routed artifacts.
 6. Use `rp-context-projector` to decide what GM, player, and character agents may see.
-7. Dispatch GM, player, and relevant character subagents from the rebuilt prompts/packets. Parallelize independent agents when possible to improve speed.
+7. Dispatch the GM loop and any required player/character actor turns from the rebuilt prompts/packets. Parallelize independent actor calls when possible to improve speed.
 8. Run an interaction loop / 交互循环: agents may respond to each other's world-visible actions and dialogue through the orchestrator until a real player 关键决策点 is reached, the 章节字数 or scene target is met, or the critic says enough.
-9. After GM/player/character outputs exist, build or request `story.input.json` as the canonical story bundle.
+9. After `gm.output.json`, `actor.outputs.json`, and trace v2 exist, build or request `story.input.json` as the canonical story bundle.
 10. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
 11. Ask `rp-critic-agent` to write `critic.report.json`.
 12. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` for repairable gates, and returns `action: blocked` when the critic retry limit requires manual intervention.
@@ -49,11 +49,11 @@ Use the current `.agent_runs/<round>/` folder as a mailbox:
 - `prompts/input_analyst.prompt.md`: prompt used for the input analyst subagent.
 - `input_analysis.output.json`: strict semantic analysis output validated by `input_analysis_apply.py`.
 - `input.json`: routed raw input and channel split.
-- `gm.context.json` -> `gm.output.json`
-- `player.context.json` -> `player.output.json`
-- `characters/*.context.json` -> `characters/*.output.json`
-- `interaction.trace.json`: optional visible/private interaction ledger; only sanitized summaries enter story input.
-- `story.input.json`
+- `gm.context.json`, `player.context.json`, and `characters/*.context.json`: context packets for the loop.
+- `gm.output.json`: current GM loop wrapper, shaped as `{ "agent": "gm_loop", "outputs": [...] }`.
+- `actor.outputs.json`: map of actor id to current event-protocol actor outputs, for example `player` and `character:Ada`.
+- `interaction.trace.json`: required trace v2 visible/private interaction ledger; only sanitized summaries enter story input.
+- `story.input.json`: canonical bundle containing `loop_outputs`, `memory_deltas`, and `interaction_trace`.
 - `story.output.json`
 - `critic.report.json`
 - `memory_summaries/*.summary.json`: scheduled actor self-summary outputs, usually every 6 rounds.

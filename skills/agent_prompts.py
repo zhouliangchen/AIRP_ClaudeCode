@@ -293,8 +293,7 @@ def write_round_prompts(
         "run_dir": str(root.resolve()),
         "inputs": {
             "gm": "gm.output.json",
-            "player": "player.output.json",
-            "characters": character_outputs,
+            "actors": "actor.outputs.json",
         },
         "story_input": "story.input.json",
     }
@@ -314,8 +313,7 @@ def write_round_prompts(
         "expected_outputs": {
             "input_analysis": "input_analysis.output.json",
             "gm": "gm.output.json",
-            "player": "player.output.json",
-            "characters": character_outputs,
+            "actors": "actor.outputs.json",
             "story": "story.output.json",
             "critic": "critic.report.json",
         },

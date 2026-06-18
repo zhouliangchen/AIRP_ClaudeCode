@@ -36,8 +36,7 @@ class AgentWorkflowTest(unittest.TestCase):
                 "stage": "awaiting_agent_outputs",
                 "expected_outputs": {
                     "gm": "gm.output.json",
-                    "player": "player.output.json",
-                    "characters": {"Ada": "characters/Ada.output.json"},
+                    "actors": "actor.outputs.json",
                     "story": "story.output.json",
                     "critic": "critic.report.json",
                 },
@@ -61,11 +60,22 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(advice["next_action"], "dispatch_agent_outputs")
         self.assertEqual(
             sorted(item["path"] for item in advice["missing_required"]),
-            ["characters/Ada.output.json", "gm.output.json", "player.output.json"],
+            ["actor.outputs.json", "gm.output.json"],
         )
 
+    def test_defaults_actor_outputs_path_when_manifest_omits_actor_key(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["expected_outputs"].pop("actors")
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(self.run_dir / "gm.output.json", {"agent": "fixture"})
+
+        advice = self.agent_workflow.advise_next_actions(self.run_dir)
+
+        self.assertEqual(advice["next_action"], "dispatch_agent_outputs")
+        self.assertEqual(advice["missing_required"], [{"agent": "actors", "path": "actor.outputs.json"}])
+
     def test_reports_build_story_input_when_actor_outputs_exist(self):
-        for rel in ["gm.output.json", "player.output.json", "characters/Ada.output.json"]:
+        for rel in ["gm.output.json", "actor.outputs.json"]:
             _write_json(self.run_dir / rel, {"agent": "fixture"})
         advice = self.agent_workflow.advise_next_actions(self.run_dir)
         self.assertEqual(advice["next_action"], "build_story_input")
@@ -128,8 +138,7 @@ class AgentWorkflowTest(unittest.TestCase):
     def test_reports_delivery_gate_when_all_artifacts_exist(self):
         for rel in [
             "gm.output.json",
-            "player.output.json",
-            "characters/Ada.output.json",
+            "actor.outputs.json",
             "story.input.json",
             "story.output.json",
         ]:

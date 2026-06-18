@@ -59,23 +59,13 @@ def _expected_artifacts(manifest: Dict[str, Any]) -> Tuple[List[PathSpec], List[
         return None
 
     gm_path = _expected_path(expected, "gm", "gm.output.json")
-    player_path = _expected_path(expected, "player", "player.output.json")
+    actors_path = _expected_path(expected, "actors", "actor.outputs.json")
     story_path = _expected_path(expected, "story", "story.output.json")
     critic_path = _expected_path(expected, "critic", "critic.report.json")
-    if not all([gm_path, player_path, story_path, critic_path]):
+    if not all([gm_path, actors_path, story_path, critic_path]):
         return None
 
-    characters = expected.get("characters") or {}
-    if not isinstance(characters, dict):
-        return None
-
-    actor_specs: List[PathSpec] = [("gm", gm_path), ("player", player_path)]
-    for name in sorted(characters):
-        relative_path = characters.get(name)
-        if not isinstance(relative_path, str) or not relative_path.strip():
-            return None
-        actor_specs.append((f"character:{name}", relative_path))
-
+    actor_specs: List[PathSpec] = [("gm", gm_path), ("actors", actors_path)]
     delivery_specs: List[PathSpec] = [("story", story_path), ("critic", critic_path)]
     return actor_specs, delivery_specs
 

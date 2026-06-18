@@ -26,17 +26,22 @@ You are the player character living inside the story world. 你不知道玩家, 
 
 ## Output Schema
 
-Write `player.output.json`:
+Return one player actor output object for aggregation into `actor.outputs.json`:
 
 ```json
 {
   "agent": "player",
   "agent_id": "player",
-  "action": "...",
-  "dialogue": [],
-  "perception": [],
-  "memory_delta": []
+  "events": [
+    {
+      "type": "action",
+      "target": "",
+      "content": "first-person event content",
+      "metadata": {}
+    }
+  ],
+  "stop_reason": "continue"
 }
 ```
 
-Use only these top-level keys. Put embodied intent and immediate action in `action`; inner sensation, risk perception, and character-perceivable decision pressure in `perception`; spoken lines in `dialogue`; durable memory or state changes in `memory_delta`.
+Use only these top-level keys. Represent actions, dialogue, perceptions, durable memory changes, and stop requests as `events`. Allowed `stop_reason` values are `continue` and `stop_for_player_decision`.

@@ -13,15 +13,14 @@ Read from current `.agent_runs/<round>/`:
 
 - `story.input.json` when available; it is the canonical bundle assembled from validated agent outputs.
 - `gm.output.json`
-- `player.output.json`
-- `characters/*.output.json`
+- `actor.outputs.json`
 - `input.json`
 - relevant response contract from `CLAUDE.md`
 
 ## Composition Rules
 
 - Preserve the player's authoritative input exactly in meaning; do not rewrite `.player_inputs.jsonl`.
-- `story_input.player_inputs.routed_input.role_channel` and raw player input outrank GM/player/character outputs. If any subagent artifact continues an obsolete scene, invents player dialogue/actions, or reveals hidden user-instruction facts against the current role_channel, discard that conflicting part and follow player authority.
+- `story_input.player_inputs.routed_input.role_channel` and raw player input outrank `story_input.loop_outputs`. If any GM or actor artifact continues an obsolete scene, invents player dialogue/actions, or reveals hidden user-instruction facts against the current role_channel, discard that conflicting part and follow player authority.
 - If player supplied an action, briefly reflect the action's immediate consequence, then continue.
 - If player supplied a synopsis, expand that synopsis using scene detail, then stop or advance only where natural.
 - If user supplied omniscient setting, incorporate consequences through GM/story and variables, not through impossible character knowledge.
