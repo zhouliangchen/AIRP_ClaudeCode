@@ -13,7 +13,6 @@ import agent_run
 
 CST = timezone(timedelta(hours=8))
 
-ACTOR_ALLOWED_SOURCES = {"perceived", "observed", "self", "dialogue"}
 ACTOR_FORBIDDEN_MARKERS = {
     "gm_only",
     "omniscient",
@@ -24,6 +23,7 @@ ACTOR_FORBIDDEN_MARKERS = {
 }
 SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
 ACTOR_MEMORY_EVENT_TYPES = {"memory_delta", "goal_update"}
+ACTOR_MEMORY_EVENT_KEYS = {"type", "target", "content", "metadata"}
 
 
 class MemoryIngestionError(RuntimeError):
@@ -64,6 +64,27 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
 
+def _snapshot_files(paths: Iterable[Path]) -> dict[Path, bytes | None]:
+    snapshots: dict[Path, bytes | None] = {}
+    for path in paths:
+        if path in snapshots:
+            continue
+        snapshots[path] = path.read_bytes() if path.exists() else None
+    return snapshots
+
+
+def _restore_files(snapshots: dict[Path, bytes | None]) -> None:
+    for path, content in snapshots.items():
+        try:
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        except OSError:
+            pass
+
+
 def _ledger_path(card: Path) -> Path:
     return card / "memory" / ".agent_memory_ingested.json"
 
@@ -94,6 +115,8 @@ def _validate_actor_delta(item: Any, path: str) -> str:
     if not isinstance(item, dict):
         raise MemoryIngestionError(f"{path}.type: actor memory event object is required")
 
+    _validate_no_forbidden_marker(item, path)
+
     event_type = item.get("type")
     if event_type not in ACTOR_MEMORY_EVENT_TYPES:
         raise MemoryIngestionError(f"{path}.type: actor memory delta type must be memory_delta or goal_update")
@@ -101,16 +124,13 @@ def _validate_actor_delta(item: Any, path: str) -> str:
     if not isinstance(content, str) or not content.strip():
         raise MemoryIngestionError(f"{path}.content: actor memory content is required")
 
-    for key, value in item.items():
-        marker = str(key).lower()
-        if marker in ACTOR_FORBIDDEN_MARKERS:
-            raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory field")
-        if isinstance(value, str) and value.lower() in ACTOR_FORBIDDEN_MARKERS:
-            raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory source {value}")
-    source = str(item.get("source", "perceived")).lower()
-    if source not in ACTOR_ALLOWED_SOURCES:
-        raise MemoryIngestionError(f"{path}.source: actor memory source {source} is not allowed")
-    _validate_no_forbidden_marker(item, path)
+    for key in sorted(item):
+        if key not in ACTOR_MEMORY_EVENT_KEYS:
+            raise MemoryIngestionError(f"{path}.{key}: actor memory event field is not allowed")
+    if "target" in item and not isinstance(item["target"], str):
+        raise MemoryIngestionError(f"{path}.target: actor memory target must be a string")
+    if "metadata" in item and not isinstance(item["metadata"], dict):
+        raise MemoryIngestionError(f"{path}.metadata: actor memory metadata must be an object")
     return content.strip()
 
 
@@ -476,8 +496,8 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
     pending_writes: list[tuple[Path, str, list[str]]] = []
     ingested: list[str] = []
 
-    actor_deltas = deltas.get("actors") or {}
-    if actor_deltas:
+    if "actors" in deltas:
+        actor_deltas = deltas["actors"]
         if not isinstance(actor_deltas, dict):
             raise MemoryIngestionError("memory_deltas.actors must be an object")
         for actor_id, items in actor_deltas.items():
@@ -495,8 +515,12 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
                 pending_writes.append((recent_path, header, lines))
                 next_ledger.add(key)
                 ingested.append(ingested_id)
-
-    world_items = deltas.get("world") or []
+    if "world" in deltas:
+        world_items = deltas["world"]
+        if not isinstance(world_items, list):
+            raise MemoryIngestionError("memory_deltas.world must be a list")
+    else:
+        world_items = []
     if world_items:
         key = f"{round_id}:world"
         if key not in next_ledger:
@@ -509,10 +533,16 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
             next_ledger.add(key)
             ingested.append("world")
 
-    for path, header, lines in pending_writes:
-        _append_lines(path, header, lines)
-
-    _save_ledger(card, next_ledger)
+    snapshot_paths = [path for path, _header, _lines in pending_writes]
+    snapshot_paths.append(_ledger_path(card))
+    snapshots = _snapshot_files(snapshot_paths)
+    try:
+        for path, header, lines in pending_writes:
+            _append_lines(path, header, lines)
+        _save_ledger(card, next_ledger)
+    except Exception:
+        _restore_files(snapshots)
+        raise
     return {
         "ok": True,
         "round_id": round_id,
