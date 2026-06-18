@@ -33,6 +33,17 @@ HIDDEN_TEXT_KEYS = {
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
 CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
+CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
+CJK_INSTRUCTION_SUFFIXES = (
+    "不要",
+    "不得",
+    "不能",
+    "请勿",
+    "不应",
+    "不需要",
+    "提前透露",
+    "透露给玩家",
+)
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -90,6 +101,38 @@ def _clean_hidden_phrase(value: str) -> str:
     return str(value or "").strip(HIDDEN_PHRASE_STRIP_CHARS)
 
 
+def _strip_cjk_instruction_suffix(value: str) -> str:
+    text = _clean_hidden_phrase(value)
+    indexes = [
+        index
+        for marker in CJK_INSTRUCTION_SUFFIXES
+        for index in [text.find(marker)]
+        if index > 0
+    ]
+    if indexes:
+        text = text[:min(indexes)]
+    return _clean_hidden_phrase(text)
+
+
+def _cjk_hidden_clause_candidates(value: str) -> set[str]:
+    candidates = set()
+    if not _has_cjk_text(value):
+        return candidates
+
+    fragments = {value}
+    fragments.update(CJK_CLAUSE_SPLIT_RE.split(value))
+    for fragment in list(fragments):
+        for separator in (":", "："):
+            if separator in fragment:
+                fragments.add(fragment.split(separator, 1)[1])
+
+    for fragment in fragments:
+        clean = _strip_cjk_instruction_suffix(fragment)
+        if clean and not any(clean.startswith(marker) for marker in CJK_INSTRUCTION_SUFFIXES):
+            candidates.add(clean)
+    return candidates
+
+
 def _hidden_phrases_from_text(value: str) -> set[str]:
     text = str(value or "").strip()
     if not text:
@@ -98,6 +141,7 @@ def _hidden_phrases_from_text(value: str) -> set[str]:
     for separator in (":", "："):
         if separator in text:
             phrases.add(text.split(separator, 1)[1].strip())
+    phrases.update(_cjk_hidden_clause_candidates(text))
 
     words = _text_words(text)
     for size in range(4, min(8, len(words)) + 1):

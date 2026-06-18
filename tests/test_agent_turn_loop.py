@@ -291,6 +291,56 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("门后是梦境", serialized)
         self.assertIn("门后有光", serialized)
 
+    def test_actor_call_prompt_extracts_cjk_hidden_fact_from_instruction_sentence(self):
+        hidden_sources = [
+            "隐藏设定：门后是梦境，不要提前透露。",
+            "门后是梦境，不要提前透露给玩家。",
+        ]
+        for hidden_source in hidden_sources:
+            with self.subTest(hidden_source=hidden_source):
+                self.agent_run.write_json(self.run_dir / "input.json", {
+                    "routed_input": {
+                        "role_channel": "我看向走廊。",
+                        "user_instruction_channel": hidden_source,
+                    },
+                    "hidden_facts": [hidden_source],
+                    "character_contexts": {"characters": [{"name": "SuLi"}]},
+                })
+                actor_packets = []
+
+                def dispatch(agent_key, packet):
+                    if agent_key == "gm":
+                        return {
+                            "agent": "gm",
+                            "scene_beats": [],
+                            "events": [],
+                            "actor_calls": [{
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "GM知道门后 是 梦境，但只能告诉玩家光线变亮。",
+                                "reason": "Prompt contains a fact embedded in a Chinese instruction.",
+                            }],
+                            "parallel_groups": [],
+                            "world_state_delta": [],
+                            "decision_point": None,
+                            "stop_reason": "word_target",
+                        }
+                    self.assertEqual(agent_key, "player")
+                    actor_packets.append(json_copy(packet))
+                    return {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [{"type": "action", "target": "", "content": "我停下。"}],
+                        "stop_reason": "continue",
+                    }
+
+                self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+                serialized = json.dumps(actor_packets, ensure_ascii=False)
+                self.assertNotIn("门后", serialized)
+                self.assertNotIn("梦境", serialized)
+                self.assertIn("光线变亮", serialized)
+
     def test_perception_requests_are_sent_to_next_gm_step_once(self):
         gm_packets = []
 
