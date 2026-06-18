@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -14,6 +15,7 @@ import agent_schemas
 
 
 MAX_CRITIC_RETRIES = 2
+ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 
 
 class AgentOutputError(RuntimeError):
@@ -92,6 +94,8 @@ def _validate_raw_trace(root: Path) -> Dict[str, Any]:
     normalized_status = status.strip().lower()
     if not normalized_status or normalized_status in {"missing", "invalid"}:
         raise AgentOutputError(f"{path}.status: required valid trace status, got {status!r}")
+    if normalized_status not in ALLOWED_RAW_TRACE_STATUSES:
+        raise AgentOutputError(f"{path}.status: unsupported trace status {status!r}")
 
     return trace
 
@@ -182,12 +186,36 @@ def _trace_source_call_ids_by_actor(raw_trace: Dict[str, Any]) -> Dict[str, set[
     return source_call_ids
 
 
+def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str]]:
+    event_sources: Counter[tuple[str, str, str]] = Counter()
+    for event in raw_trace["events"]:
+        if not isinstance(event, dict):
+            continue
+        actor = event.get("actor")
+        event_type = event.get("type")
+        content = event.get("content")
+        source_call_id = event.get("source_call_id")
+        if (
+            not isinstance(actor, str)
+            or not isinstance(event_type, str)
+            or not isinstance(content, str)
+            or not isinstance(source_call_id, str)
+        ):
+            continue
+        actor_key = actor.strip()
+        type_key = event_type.strip()
+        if actor_key and type_key and source_call_id.strip():
+            event_sources[(actor_key, type_key, content)] += 1
+    return event_sources
+
+
 def _validate_actor_output_provenance(
     root: Path,
     raw_trace: Dict[str, Any],
     actor_outputs: Dict[str, list[Dict[str, Any]]],
 ) -> None:
     source_call_ids = _trace_source_call_ids_by_actor(raw_trace)
+    event_sources = _trace_event_sources(raw_trace)
     actor_path = root / "actor.outputs.json"
     for actor_id, outputs in actor_outputs.items():
         context = f"{actor_path}.{actor_id}"
@@ -199,6 +227,16 @@ def _validate_actor_output_provenance(
                 f"{context}: actor outputs are not backed by raw trace source_call_id events; "
                 f"outputs={len(outputs)}, source_call_ids={source_count}"
             )
+        for output_index, output in enumerate(outputs):
+            for event_index, event in enumerate(output["events"]):
+                key = (actor_id, event["type"], event["content"])
+                if event_sources[key] <= 0:
+                    raise AgentOutputError(
+                        f"{context}[{output_index}].events[{event_index}]: actor event is not backed by "
+                        f"raw trace source_call_id event "
+                        f"(actor={actor_id!r}, type={event['type']!r}, content={event['content']!r})"
+                    )
+                event_sources[key] -= 1
 
 
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
