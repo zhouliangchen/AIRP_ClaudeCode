@@ -592,6 +592,25 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("dream echo", char_prompt)
         self.assertNotIn("moon base", char_prompt)
 
+    def test_prepare_agent_run_does_not_expose_private_role_text_to_character_context(self):
+        private_role_text = "I decide to lie while smiling."
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text=private_role_text,
+            chat_log=[],
+            card_data={"title": "Private Role Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada watches carefully."}]},
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        safe_name = self.agent_run.safe_name("Ada")
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(character_packet["visibility"], "first_person_character")
+        self.assertEqual(character_packet["visible_events"], [])
+        self.assertNotIn(private_role_text, json.dumps(character_packet, ensure_ascii=False))
+
     def test_prepare_agent_run_builds_expected_context_files(self):
         user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
         chat_log = [{"index": 3, "summary": "\u5f00\u542f\u7b2c\u4e00\u8f6e"}]
@@ -707,6 +726,8 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("dream echo", player_prompt)
         self.assertIn(".claude/skills/rp-character-agent.md", char_prompt)
         self.assertIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
+        self.assertIn('"agent_id": "character:Ada"', char_prompt)
+        self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertIn("story.input.json.interaction_trace", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
@@ -751,6 +772,12 @@ class AgentPacketTest(unittest.TestCase):
             for key in keys:
                 with self.subTest(prompt=prompt_name, required_key=key):
                     self.assertIn(f'"{key}"', prompt_texts[prompt_name])
+        self.assertIn('"stop_reason": "continue"', gm_prompt)
+        self.assertIn('"stop_reason": "continue"', player_prompt)
+        self.assertIn('"stop_reason": "continue"', char_prompt)
+        self.assertNotIn("continue|", gm_prompt)
+        self.assertNotIn("continue|", player_prompt)
+        self.assertNotIn("continue|", char_prompt)
 
         forbidden_prompt_keys = {
             "gm": (

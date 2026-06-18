@@ -195,20 +195,6 @@ def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]
     return [item for item in routed_input.get("components", []) if item.get("channel") == "role"]
 
 
-def _visible_role_events(routed_input: Dict[str, Any]) -> list[Dict[str, str]]:
-    role_channel = _to_text(routed_input.get("role_channel")).strip()
-    if not role_channel:
-        return []
-    return [
-        {
-            "actor": "player",
-            "type": "action",
-            "visibility": "world_visible",
-            "content": role_channel,
-        }
-    ]
-
-
 def _build_world_state(
     routed_input: Dict[str, Any],
     recent_chat,
@@ -221,7 +207,6 @@ def _build_world_state(
     events = []
     if isinstance(visible_events, list):
         events.extend(visible_events)
-    events.extend(_visible_role_events(routed_input))
     return {
         "role_channel": _to_text(routed_input.get("role_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
@@ -245,6 +230,48 @@ def _player_actor_state() -> Dict[str, Any]:
 def _character_actor_id(character: Dict[str, Any]) -> str:
     name = _to_text(character.get("name") or character.get("character_name")).strip()
     return f"character:{name}" if name else "character:unknown"
+
+
+def _as_memory_items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    text = _to_text(value).strip()
+    return [text] if text else []
+
+
+def _append_memory_value(memory: Dict[str, Any], key: str, value: Any) -> None:
+    items = _as_memory_items(memory.get(key))
+    for item in _as_memory_items(value):
+        if item not in items:
+            items.append(item)
+    if items:
+        memory[key] = items
+
+
+def _projectable_character_state(character: Dict[str, Any]) -> Dict[str, Any]:
+    state = dict(character or {})
+    memory_source = state.get("memory")
+    memory = dict(memory_source) if isinstance(memory_source, dict) else {}
+    if memory_source and not isinstance(memory_source, dict):
+        _append_memory_value(memory, "long_term", memory_source)
+
+    _append_memory_value(memory, "long_term", state.get("profile_summary"))
+    profile = state.get("profile")
+    if isinstance(profile, dict):
+        _append_memory_value(memory, "long_term", profile.get("authoritative_setting"))
+        _append_memory_value(memory, "long_term", profile.get("summary") or profile.get("description"))
+    else:
+        _append_memory_value(memory, "long_term", profile)
+    _append_memory_value(memory, "recent", state.get("recent_state"))
+    _append_memory_value(memory, "goals", state.get("goals"))
+
+    if memory:
+        state["memory"] = memory
+    return state
 
 
 def _actor_prompt_from_role(routed_input: Dict[str, Any], *, for_character: bool = False) -> str:
@@ -306,11 +333,12 @@ def build_character_packet(
     del card_folder
     character_data = character or {}
     world = world_state or _build_world_state(routed_input, recent_chat)
+    actor_state = _projectable_character_state(character_data)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input, for_character=True)
     return agent_projection.project_actor_context(
-        _character_actor_id(character_data),
+        _character_actor_id(actor_state),
         world,
-        character_data,
+        actor_state,
         prompt,
     )
 

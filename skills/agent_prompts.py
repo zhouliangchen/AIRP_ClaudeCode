@@ -148,7 +148,7 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "actor_calls": [
             {
                 "call_id": "call-1",
-                "actor_id": "player|character:<name>",
+                "actor_id": "character:Example",
                 "prompt": "second-person visible prompt for this actor only",
                 "reason": "why this actor is needed now",
                 "metadata": {},
@@ -157,7 +157,7 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "parallel_groups": [],
         "world_state_delta": [],
         "decision_point": None,
-        "stop_reason": "continue|player_decision|word_target|complete|max_steps",
+        "stop_reason": "continue",
     })
     return _base_prompt(
         "GM Agent Prompt",
@@ -165,7 +165,7 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "gm.output.json",
         contract,
         context,
-    )
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, `word_target`, `complete`, `max_steps`.\n"
 
 
 def _player_prompt(context: Dict[str, Any]) -> str:
@@ -180,7 +180,7 @@ def _player_prompt(context: Dict[str, Any]) -> str:
                 "metadata": {},
             }
         ],
-        "stop_reason": "continue|stop_for_player_decision",
+        "stop_reason": "continue",
     })
     return _base_prompt(
         "Player Agent Prompt",
@@ -188,17 +188,18 @@ def _player_prompt(context: Dict[str, Any]) -> str:
         "player.output.json",
         contract,
         context,
-    )
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
 
 
 def _character_prompt(context: Dict[str, Any], output_path: str) -> str:
     self_knowledge = context.get("self_knowledge", {}) if isinstance(context, dict) else {}
     if not isinstance(self_knowledge, dict):
         self_knowledge = {}
+    actor_id = context.get("actor_id") or "character:unknown"
     character_name = context.get("character_name") or self_knowledge.get("name", "")
     contract = _json_block({
         "agent": "character",
-        "agent_id": "character:<safe_name>",
+        "agent_id": actor_id,
         "character_name": character_name,
         "events": [
             {
@@ -208,7 +209,7 @@ def _character_prompt(context: Dict[str, Any], output_path: str) -> str:
                 "metadata": {},
             }
         ],
-        "stop_reason": "continue|stop_for_player_decision",
+        "stop_reason": "continue",
     })
     return _base_prompt(
         f"Character Agent Prompt: {character_name}",
@@ -216,7 +217,7 @@ def _character_prompt(context: Dict[str, Any], output_path: str) -> str:
         output_path,
         contract,
         context,
-    )
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
 
 
 def _story_prompt(run_summary: Dict[str, Any]) -> str:
