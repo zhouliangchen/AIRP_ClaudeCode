@@ -57,36 +57,55 @@ def _expected_outputs(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
-    gm_loop = _read_json_required(root / "gm.output.json")
-    actor_outputs = _read_json_required(root / "actor.outputs.json")
-    return {"gm": gm_loop, "actors": actor_outputs}
+    gm_path = root / "gm.output.json"
+    actor_path = root / "actor.outputs.json"
+    gm_loop = _read_json_required(gm_path)
+    actor_outputs = _read_json_required(actor_path)
+
+    if gm_loop.get("agent") != "gm_loop":
+        raise AgentOutputError(f"{gm_path}: agent must be 'gm_loop'")
+    gm_items = gm_loop.get("outputs")
+    if not isinstance(gm_items, list):
+        raise AgentOutputError(f"{gm_path}.outputs: must be a list")
+    normalized_gm_outputs = []
+    for index, item in enumerate(gm_items):
+        try:
+            normalized_gm_outputs.append(agent_schemas.validate_gm_output(item))
+        except agent_schemas.ValidationError as exc:
+            raise AgentOutputError(f"{gm_path}.outputs[{index}]: {exc}") from exc
+
+    normalized_actor_outputs = {}
+    for actor_id, outputs in actor_outputs.items():
+        actor_context = f"{actor_path}.{actor_id}"
+        if not isinstance(outputs, list):
+            raise AgentOutputError(f"{actor_context}: must be a list")
+        normalized_outputs = []
+        for index, item in enumerate(outputs):
+            try:
+                normalized_outputs.append(agent_schemas.validate_actor_output(item))
+            except agent_schemas.ValidationError as exc:
+                raise AgentOutputError(f"{actor_context}[{index}]: {exc}") from exc
+        normalized_actor_outputs[str(actor_id)] = normalized_outputs
+
+    return {
+        "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
+        "actors": normalized_actor_outputs,
+    }
 
 
 def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str, Any]) -> Dict[str, Any]:
     actor_memory: Dict[str, list[Any]] = {}
     for actor_id, outputs in actor_outputs.items():
         items = []
-        if isinstance(outputs, list):
-            for output in outputs:
-                if not isinstance(output, dict):
-                    continue
-                events = output.get("events", [])
-                if not isinstance(events, list):
-                    continue
-                for event in events:
-                    if isinstance(event, dict) and event.get("type") in {"memory_delta", "goal_update"}:
-                        items.append(event)
+        for output in outputs:
+            for event in output["events"]:
+                if event["type"] in {"memory_delta", "goal_update"}:
+                    items.append(event)
         actor_memory[str(actor_id)] = items
 
     world = []
-    gm_outputs = gm_loop.get("outputs", [])
-    if isinstance(gm_outputs, list):
-        for output in gm_outputs:
-            if not isinstance(output, dict):
-                continue
-            delta = output.get("world_state_delta", [])
-            if isinstance(delta, list):
-                world.extend(delta)
+    for output in gm_loop["outputs"]:
+        world.extend(output["world_state_delta"])
 
     return {"actors": actor_memory, "world": world}
 

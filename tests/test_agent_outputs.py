@@ -99,6 +99,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "events": [
                             {"type": "action", "target": "", "content": "I step through the door."},
                             {"type": "memory_delta", "target": "self", "content": "I opened the archive door."},
+                            {"type": "goal_update", "target": "self", "content": "Keep Ada close while exploring."},
                         ],
                         "stop_reason": "continue",
                     }
@@ -161,6 +162,10 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(
             story_input["memory_deltas"]["actors"]["character:Ada"][0]["content"],
             "I saw the player enter the archive.",
+        )
+        self.assertEqual(
+            [item["type"] for item in story_input["memory_deltas"]["actors"]["player"]],
+            ["memory_delta", "goal_update"],
         )
         self.assertEqual(
             story_input["memory_deltas"]["world"],
@@ -296,6 +301,58 @@ class AgentOutputsTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "actor.outputs.json"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_legacy_gm_output(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm",
+                "scene_beats": [{"content": "legacy direct gm output"}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "complete",
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm.output.json.*gm_loop"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_actor_outputs_value_that_is_not_a_list(self):
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "action", "target": "", "content": "I step forward."}],
+                    "stop_reason": "continue",
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json\.player.*list"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_legacy_actor_output_item(self):
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "dialogue": [{"target": "character:Ada", "text": "Stay close."}],
+                        "stop_reason": "continue",
+                    }
+                ]
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json\.player\[0\].*legacy"):
             self.agent_outputs.build_story_input(self.run_dir)
 
     def test_prepare_delivery_blocks_critic_block_decision(self):
