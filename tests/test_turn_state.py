@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -11,6 +12,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NON_ASCII_RE = re.compile(r"[^\x00-\x7f]")
+
+
+RP_INSTRUCTION_PATHS = [
+    ROOT / "CLAUDE.md",
+    ROOT / ".claude" / "commands" / "rp.md",
+    *sorted((ROOT / ".claude" / "skills").glob("rp*.md")),
+]
 
 
 def _load_handler():
@@ -52,10 +61,20 @@ def _load_server():
 
 class TurnStateTest(unittest.TestCase):
 
+    def test_project_level_rp_instruction_files_are_ascii_english_only(self):
+        offenders = []
+        for path in RP_INSTRUCTION_PATHS:
+            text = path.read_text(encoding="utf-8")
+            if NON_ASCII_RE.search(text):
+                offenders.append(path.relative_to(ROOT).as_posix())
+
+        self.assertEqual(offenders, [])
+
     def test_rp_skill_is_split_into_stage_skills(self):
         skills_dir = ROOT / ".claude" / "skills"
         expected = [
             "rp-orchestrator.md",
+            "rp-input-analyst.md",
             "rp-input-router.md",
             "rp-context-projector.md",
             "rp-gm-agent.md",
@@ -72,6 +91,7 @@ class TurnStateTest(unittest.TestCase):
 
         rp = (skills_dir / "rp.md").read_text(encoding="utf-8")
         self.assertIn("rp-orchestrator", rp)
+        self.assertIn("rp-input-analyst", rp)
 
     def test_claude_md_delegates_stage_details_to_skills(self):
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
@@ -104,6 +124,11 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("skills/styles/response.txt", delivery)
         self.assertIn('{ROOT}/skills/round_deliver.py', delivery)
         self.assertIn("round_deliver.py", delivery)
+        self.assertIn("revise", delivery)
+        self.assertIn("block", delivery)
+        self.assertIn("repair_history.jsonl", delivery)
+        self.assertIn("retry", delivery)
+        self.assertIn("blocked", delivery)
         self.assertNotIn('python skills/round_deliver.py "<card_folder>" "."', delivery)
         self.assertIn("story.output.json", delivery)
 
@@ -127,9 +152,7 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("gm.output.json", command)
         self.assertIn("actor.outputs.json", command)
         self.assertNotIn("player.output.json", command)
-        self.assertTrue("启动模式" in command or "startup" in command.lower())
-        self.assertNotIn("## 第一步", command)
-        self.assertNotIn("## 第二步", command)
+        self.assertIn("startup", command.lower())
 
     def test_rp_frontmatter_has_no_bom(self):
         for path in (ROOT / ".claude" / "skills").glob("rp*.md"):
@@ -166,66 +189,72 @@ class TurnStateTest(unittest.TestCase):
         assets = (skills_dir / "rp-assets-ui.md").read_text(encoding="utf-8")
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
-        self.assertIn("Claude Code 直驱", rp)
-        self.assertIn("主 agent 只负责编排", rp)
-        self.assertIn("按需导入", orchestrator)
-        self.assertIn("不得直接撰写常规叙事正文", orchestrator)
-        self.assertIn("交互循环", orchestrator)
-        self.assertIn("关键决策点", orchestrator)
-        self.assertIn("章节字数", orchestrator)
+        self.assertIn("Claude Code direct-driven RP engine", rp)
+        self.assertIn("The main agent coordinates", rp)
+        self.assertIn("rp-input-analyst", rp)
+        self.assertIn("load stage skills as needed", orchestrator)
+        self.assertIn("Never directly draft routine narrative prose", orchestrator)
+        self.assertIn("Run the GM loop", orchestrator)
+        self.assertIn("real player decision points", orchestrator)
+        self.assertIn("chapter word target", orchestrator)
         self.assertIn("improvement_queue.jsonl", orchestrator)
+        self.assertIn("revise", orchestrator)
+        self.assertIn("block", orchestrator)
+        self.assertIn("retry", orchestrator)
+        self.assertIn("blocked", orchestrator)
+        self.assertIn("repair_history.jsonl", orchestrator)
 
         self.assertIn("role_channel", router)
         self.assertIn("user_instruction_channel", router)
-        self.assertIn("第一人称剧情梗概", router)
-        self.assertIn("第三人称上帝视角设定", router)
-        self.assertIn("互不干扰", router)
+        self.assertIn("first-person synopsis", router)
+        self.assertIn("third-person omniscient setting", router)
+        self.assertIn("must not contaminate each other", router)
 
-        self.assertIn("GM agent 可以接收完整剧情", projector)
-        self.assertIn("严格独立的第一人称视角", projector)
-        self.assertIn("不得泄露", projector)
+        self.assertIn("GM agent may receive full story state", projector)
+        self.assertIn("strictly first-person projected context", projector)
+        self.assertIn("must not include", projector)
         self.assertIn("world-visible", projector)
 
-        self.assertIn("旁白和非核心角色", gm)
-        self.assertIn("实时运转", gm)
-        self.assertIn("完整剧情", gm)
+        self.assertIn("narrator-side pressure and non-core NPC simulation", gm)
+        self.assertIn("Simulate live world movement", gm)
+        self.assertIn("complete story state", gm)
         self.assertIn("gm.output.json", gm)
 
-        self.assertIn("不知道玩家", player)
-        self.assertIn("不知道 GM", player)
-        self.assertIn("关键决策点", player)
+        self.assertIn("do not know the real player", player)
+        self.assertIn("GM, Claude Code", player)
+        self.assertIn("irreversible decisions", player)
         self.assertIn("actor.outputs.json", player)
         self.assertNotIn("player.output.json", player)
 
-        self.assertIn("真正活在作品世界", character)
-        self.assertIn("角色独立的人格", character)
-        self.assertIn("感官", character)
+        self.assertIn("live inside the work", character)
+        self.assertIn("independent personality", character)
+        self.assertIn("sensory limits", character)
         self.assertIn("memory_delta", character)
 
-        self.assertIn("尽可能保留各 subagent", story)
+        self.assertIn("preserving subagent actions", story)
         self.assertIn("<character_dialogues>", story)
-        self.assertIn("整体性", story)
+        self.assertIn("read naturally", story)
         self.assertIn("story.output.json", story)
         self.assertIn("story.input.json", story)
 
-        self.assertIn("严谨的小说创作者", critic)
-        self.assertIn("叙事连贯", critic)
-        self.assertIn("逻辑严密", critic)
-        self.assertIn("角色生动", critic)
-        self.assertIn("系统迭代建议", critic)
+        self.assertIn("rigorous fiction editor", critic)
+        self.assertIn("Narrative continuity", critic)
+        self.assertIn("Logical consistency", critic)
+        self.assertIn("Character vividness", critic)
+        self.assertIn("system_iteration_suggestion", critic)
 
         self.assertIn("story.output.json", delivery)
         self.assertIn("skills/styles/response.txt", delivery)
         self.assertIn("round_deliver.py", delivery)
 
         self.assertIn("image_generate.py", assets)
-        self.assertIn("异步", assets)
-        self.assertIn("不得阻塞正文交付", assets)
+        self.assertIn("asynchronous", assets)
+        self.assertIn("must not block", assets)
         self.assertIn("ui_manifest.json", assets)
 
-        self.assertIn("Claude Code 直驱", claude)
-        self.assertIn("各阶段 skill 按需导入", claude)
-        self.assertIn("叙事创作和角色扮演任务必须交给 subagent", claude)
+        self.assertIn("Claude Code remains the direct driver", claude)
+        self.assertIn("stage skills as needed", claude)
+        self.assertIn("Routine narration and role embodiment must be delegated to subagents", claude)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

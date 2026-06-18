@@ -1,608 +1,90 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file guides Claude Code when it works inside this repository.
 
-## Development commands
+## Development Commands
 
-Use PowerShell for manual project operation on Windows; the runtime cleanup scripts rely on PowerShell process queries.
+Use PowerShell for manual project operation on Windows. Runtime cleanup and server checks rely on Windows process queries.
 
-- Configure a user environment once: run `setup-claude-code.bat` from the repository root, or run `setup-claude-code.ps1` in PowerShell.
+- Configure the local environment once: run `setup-claude-code.bat` from the repository root, or run `setup-claude-code.ps1` in PowerShell.
 - Start an RP session from a card/story folder: launch `claude`, then run `/rp`.
-- Start the bridge server manually from the repository root: `python skills/start_server.py .`.
+- Start the bridge server manually: `python skills/start_server.py .`.
 - Run the import/startup pipeline manually: `python skills/import_prepare.py "<card_folder>" "."`.
 - Run a turn preparation pipeline manually: `python skills/round_prepare.py "<card_folder>" "."`.
-- Deliver a generated response manually after `.agent_runs/<round>/story.output.json` and `critic.report.json` are ready, or after legacy `skills/styles/response.txt` is written: `python skills/round_deliver.py "<card_folder>" "."`.
-- Run the deterministic no-live-model multi-agent control-plane smoke test: `python skills/control_plane_smoke.py --repo .`.
-- Process a response directly: `python skills/handler.py "<card_folder>"`; add `--opening` for the initial opening turn.
-- Run the MVU Node service directly only when debugging schema validation: from `skills/`, run `node mvu_server.js`.
-- Install/update the only Node dependency used by the MVU service: from `skills/`, run `npm install`.
+- Deliver a generated response after `.agent_runs/<round>/story.output.json` and `critic.report.json` are ready: `python skills/round_deliver.py "<card_folder>" "."`.
+- Run the deterministic no-live-model control-plane smoke test: `python skills/control_plane_smoke.py --repo .`.
+- Process a response directly only for debugging: `python skills/handler.py "<card_folder>"`; add `--opening` for an opening turn.
+- Run the MVU service directly only when debugging schema validation: from `skills/`, run `node mvu_server.js`.
+- Install or update the MVU dependency: from `skills/`, run `npm install`.
 
-Use `python -m unittest discover -s tests -v` for the repository test suite. `skills/package.json` still defines `npm test` as a placeholder, so do not use it as the primary verification command. For narrow Python edits, add targeted checks such as `python -m py_compile skills/<file>.py`.
+Use `python -m unittest discover -s tests -v` for the repository test suite. `skills/package.json` defines `npm test` as a placeholder, so do not use it as primary verification. For narrow Python edits, add targeted checks such as `python -m py_compile skills/<file>.py`.
 
-## Architecture overview
+## Architecture Overview
 
-This project turns Claude Code into the orchestration layer for a local role-playing engine. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765` on the host machine or `http://<host-LAN-IP>:8765` from devices on the same LAN.
+This project turns Claude Code into the orchestration layer for a local role-playing engine. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765` on the host machine or `http://<host-LAN-IP>:8765` from LAN devices.
 
-The core runtime is a Python standard-library bridge plus a small Node validation service:
+The runtime is a Python standard-library bridge plus a small Node validation service:
 
-- `skills/server.py` serves the frontend, accepts browser input, records authoritative player input in `.player_inputs.jsonl`, writes a pending user turn for immediate UI display, writes `skills/styles/input.txt`, and uses `.pending` as the signal Claude Code waits on. It binds to `0.0.0.0:8765` by default for LAN access; set `AIRP_HOST=127.0.0.1` to restrict it to local-only mode. It also exposes reroll, delete-turn, settings, opening, session-init, progress, and player-input edit APIs.
-- `skills/start_server.py` is the safe launcher for `server.py`; it checks port `8765`, clears stale Python/Node processes when needed, waits for readiness, and returns local/LAN frontend URLs. The MVU service uses port `8766`.
-- `skills/import_prepare.py` is the startup pipeline. It cleans stale runtime state, delegates card/world import to `import_card.py`, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt` as the single startup context file for Claude.
-- `skills/round_prepare.py` is the per-turn context pipeline. It reads user input, settings, recent memory, worldbook indexes, injection rules, and MVU state, then writes `skills/styles/round_context.txt`. Keep stable/static context near the file prefix and dynamic turn data near the suffix to preserve prompt-cache locality.
-- Claude Code orchestrates subagents that create and review narrative output through `.agent_runs/<round>/`. `agent_prompts.py` materializes prompts, `agent_outputs.py` validates artifacts, assembles `story.input.json`, records critic revise/block repair history plus related system improvement suggestions, and mirrors approved `story.output.json` content to `skills/styles/response.txt`. `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
-- `skills/agent_workflow.py` gives deterministic next-action advice from a run manifest, and `skills/control_plane_smoke.py` drives a temporary no-live-model control-plane smoke that covers artifacts, interaction trace, memory delta/summary, and delivery.
-- `skills/handler.py` parses tagged responses, executes MVU updates through `mvu_engine.py`, appends `chat_log.json`, rebuilds `content.js`, mirrors `state.js` into the card folder, and notifies the browser via `/api/done`.
-- `skills/mvu_engine.py`, `skills/mvu_check.py`, `skills/mvu_shared.js`, and `skills/mvu_server.js` implement the variable/JSONPatch system and schema validation.
-- `skills/import_card.py`, `skills/match_worldbook.py`, `skills/write_memory.py`, and `skills/agent_memory.py` manage card parsing, worldbook lookup, persistent narrative memory, validated subagent memory deltas, and scheduled actor self-summaries under each card folder's `memory/` directory.
-- `skills/styles/` contains the browser UI and runtime files. Files such as `content.js`, `state.js`, `input.txt`, `.pending`, `round_context.txt`, and `import_context.txt` are generated runtime artifacts, not source-of-truth code.
+- `skills/server.py` serves the frontend, accepts browser input, records authoritative player input in `.player_inputs.jsonl`, writes a pending user turn for immediate display, writes `skills/styles/input.txt`, and uses `.pending` as the Claude Code signal.
+- `skills/start_server.py` launches `server.py`, checks port `8765`, starts the MVU service on `8766`, waits for readiness, and prints local/LAN URLs.
+- `skills/import_prepare.py` prepares a card/story folder, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt`.
+- `skills/round_prepare.py` prepares each turn, writes `skills/styles/round_context.txt`, and creates `.agent_runs/<round>/` packets, prompts, and `manifest.json`.
+- Claude Code dispatches RP subagents that write `gm.output.json`, `actor.outputs.json`, `story.output.json`, and `critic.report.json`.
+- `skills/agent_workflow.py` gives deterministic next-action advice from the run manifest.
+- `skills/agent_outputs.py` validates artifacts, assembles `story.input.json`, records `repair_history.jsonl`, appends system suggestions to `.agent_runs/improvement_queue.jsonl`, and mirrors approved story content to `skills/styles/response.txt`.
+- `skills/round_deliver.py` gates approved output, updates memory, invokes `handler.py`, and completes the frontend delivery.
+- `skills/control_plane_smoke.py` runs a deterministic no-live-model smoke that covers artifacts, trace, memory, and delivery.
 
-Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` → Claude Code dispatches subagents and may record `interaction.trace.json` → GM/player/character outputs are written → `agent_workflow.py` can advise the next control-plane action → `story.input.json` is assembled with sanitized interaction trace and story/critic artifacts are written → `round_deliver.py` validates artifacts, records critic revise/block `repair_history.jsonl` and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
+Important turn flow: browser submit -> `.player_inputs.jsonl` and pending turn -> `round_prepare.py` -> `.agent_runs/<round>/` -> input analysis -> GM loop -> actor outputs -> `story.input.json` -> story and critic -> `round_deliver.py` -> `handler.py` -> browser refresh.
+
+## RP Constitution
+
+Claude Code remains the direct driver. This project is not a backend LLM API scheduler. The main agent coordinates scripts, subagent dispatch, artifact collection, repair loops, system iteration when authorized, and final delivery.
+
+Routine narration and role embodiment must be delegated to subagents:
+
+Load stage skills as needed; do not keep every detailed RP prompt in the main context by default.
+
+- `rp-orchestrator` owns the turn workflow and file-mailbox control plane.
+- `rp-input-router` separates `role_channel` from `user_instruction_channel`.
+- `rp-context-projector` enforces first-person knowledge boundaries.
+- `rp-gm-agent` simulates the complete-context world and schedules actor calls.
+- `rp-player-agent` embodies the player character from projected first-person context.
+- `rp-character-agent` embodies an important character from projected first-person context.
+- `rp-story-agent` composes approved GM and actor artifacts into final prose.
+- `rp-critic-agent` audits narrative quality, player authority, context isolation, and delivery safety.
+- `rp-delivery` mirrors approved output to `skills/styles/response.txt` through `round_deliver.py`.
+- `rp-assets-ui` handles optional non-blocking images and per-card UI enhancements.
+
+The main agent must not directly write routine story prose unless subagents are unavailable and the fallback is explicit in the artifacts. Player and character subagents must not see hidden user instructions, full recent chat, GM-only notes, prompt mechanics, files, or Claude Code internals. GM may see full story state, hidden facts, and `user_instruction_channel`.
+
+## Current Runtime Protocol
+
+Each turn uses `.agent_runs/<round>/` as the file mailbox. Preserve current artifact names and JSON keys:
+
+- `input_analysis.output.json`
+- `gm.output.json`
+- `actor.outputs.json`
+- `story.input.json`
+- `story.output.json`
+- `critic.report.json`
+- `interaction.trace.json`
+- `repair_history.jsonl`
+- `memory_summaries/*.summary.json`
+
+The GM loop writes `gm.output.json` as a `gm_loop` wrapper with one or more GM outputs. Actor outputs are aggregated in `actor.outputs.json`; do not restore legacy `player.output.json` or `characters/*.output.json` contracts. `agent_outputs.py` validates GM/actor artifacts and builds `story.input.json`.
+
+The story agent may polish, order, and bridge events, but it must not invent core responses for important characters. If an important character was dispatched, the final response may include `<character_dialogues>` entries sourced from that subagent. The runtime accepts dialogue objects with `source="subagent"` and keeps only subagent-sourced character dialogue boxes.
+
+`round_deliver.py` is the delivery gate. It mirrors approved `story.output.json` content to `skills/styles/response.txt` only after required artifacts exist and the critic passes. If the critic returns `revise` or `block`, record the gate result, use `repair_history.jsonl`, and only apply system changes when the current task explicitly authorizes project iteration.
+
+Images and per-card UI customization are optional immersion tasks. They must not block text delivery.
 
 ## Final Acceptance Checklist
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py`
+- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py`
 - Start `python skills/start_server.py .` and verify `http://localhost:8765`.
 - Verify the printed LAN URL from a phone or other LAN device.
-- In Claude Code, run `/rp` against a blank folder and complete at least five player turns, checking immediate player-input display, independent important-character dialogue boxes, progress updates, hot UI/image refresh, and stopping at player decisions.
-
-## Runtime instructions for RP mode
-## 多 Subagent 编排宪法
-
-- Claude Code 直驱原则不变：本项目不改造成普通后端直接调用 LLM API，仍由当前 Claude Code 会话负责工具调用、文件邮箱、subagent 调度和最终质检。
-- `CLAUDE.md` 只保留项目宪法、数据权威、运行入口和交付协议；各阶段 skill 按需导入，避免巨大 prompt 常驻污染上下文。
-- 阶段 skill 名称：`rp-orchestrator`, `rp-input-router`, `rp-context-projector`, `rp-gm-agent`, `rp-player-agent`, `rp-character-agent`, `rp-story-agent`, `rp-critic-agent`, `rp-delivery`, `rp-assets-ui`。
-- 叙事创作和角色扮演任务必须交给 subagent：GM 负责完整世界模拟，player 负责玩家角色第一人称具身，character agents 负责核心角色独立具身，story 负责整理成小说文本，critic 负责严格审稿。
-- 主 agent 只负责编排、脚本运行、代码/系统迭代、artifact 收集、重试循环和最终交付；不得直接撰写常规叙事正文，除非 subagent 不可用并明确标记为 fallback。
-- Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。
-- 用户输入分为 `role_channel` 和 `user_instruction_channel`。角色行动/第一人称剧情梗概进入角色通道；第三人称上帝视角设定和直接给 Claude Code 的指令进入用户指令通道，二者互不干扰。
-- 每轮使用 `.agent_runs/<round>/` 作为 agent 文件邮箱。critic 通过后，`round_deliver.py` 才把 `story.output.json` 的正文镜像到 `skills/styles/response.txt` 并交付。
-- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再组织 story/critic 修复循环；若问题来自 prompt、代码或系统流程，且当前任务允许系统迭代，则可以修改项目后重新生成，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
-- 图片生成和存档 UI 演化属于可选沉浸增强任务，必须异步执行，不得阻塞正文交付。
-
-
-
-# 话本RP — Claude Code 直驱模式
-
-你不是在给酒馆生成 prompt。你就是 RP 引擎。
-
-本项目直接使用当前 Claude Code 会话已有的模型、认证和代理配置；Claude Code 作为编排层驱动本地 RP 管线。
-
-## 权限预授权
-
-以下所有操作均为 RP 引擎运行所需的自动后台操作，永久免确认：
-
-### 文件读取（Read 工具）
-- `{ROOT}/skills/styles/` 下所有文件：`state.js`, `content.js`, `input.txt`, `settings.json`, `.pending`, `.card_path`, `openings.json`, `index.html`
-- `{ROOT}/skills/styles/profiles/` 下所有 `.md` 文件 — 文风配置读写
-- 当前卡片文件夹（如 `{ROOT}/我的角色/`）下的 `chat_log.json`、`.card_data.json`、`.initvar.json`、`.var_diff.json`、`.beautify.json`、`.card_assets.json`、`ui_manifest.json`
-- 当前卡片文件夹下的 `memory/` 目录及其所有 `.md`、`.json` 文件 — 跨会话记忆、角色私有记忆与世界书索引
-- `{ROOT}/skills/styles/round_context.txt` — 回合预处理汇总上下文
-- `{ROOT}/skills/styles/import_context.txt` — 导入预处理汇总上下文
-- `{ROOT}/skills/handler.py`, `{ROOT}/skills/server.py`, `{ROOT}/skills/mvu_engine.py`, `{ROOT}/skills/mvu_check.py`, `{ROOT}/skills/match_worldbook.py`, `{ROOT}/skills/write_memory.py`, `{ROOT}/skills/agent_workflow.py`, `{ROOT}/skills/control_plane_smoke.py`, `{ROOT}/skills/agent_prompts.py`, `{ROOT}/skills/agent_outputs.py`, `{ROOT}/skills/agent_memory.py`, `{ROOT}/skills/agent_schemas.py`, `{ROOT}/skills/round_prepare.py`, `{ROOT}/skills/round_deliver.py`, `{ROOT}/skills/import_prepare.py`, `{ROOT}/skills/start_server.py`
-- `{ROOT}/STORY.md` — 叙事理论框架，剧情规划时读取
-- `{ROOT}/CLAUDE.md`
-
-### 文件写入（Write 工具 / Bash）
-- `{ROOT}/skills/styles/response.txt` — 每轮生成叙事回复
-- `{ROOT}/skills/styles/state.js` — 更新场景状态
-- `{ROOT}/skills/styles/.card_path` — 写入卡片文件夹路径
-- `{ROOT}/skills/styles/content.js` — handler.py 自动重建（Bash 中执行）
-- `{ROOT}/skills/styles/openings.json` — 开场白数据
-- 卡片文件夹（如 `{ROOT}/我的角色/`）下的 `chat_log.json` — handler.py 自动管理；可修正 AI 派生内容，但不得改写玩家原始输入
-- 当前卡片文件夹下的 `.player_inputs.jsonl` — 玩家历次输入的权威日志；Claude Code 不得修改、裁剪或摘要，除非用户通过明确的玩家编辑功能触发
-- 当前卡片文件夹下的 `.player_input_edits.jsonl`、`.player_input_branches.jsonl` — 玩家编辑审计和旧分支归档；只能由玩家编辑 API 写入，Claude Code 只能读取并据此修正派生数据
-- 当前卡片文件夹下的 `memory/` 目录及 `MEMORY.md`、`project.md`、`reference.md`、`feedback.md`、`user.md`、`.worldbook_index.json`、`.card_structure.json`、`characters/` — 跨会话记忆与角色私有记忆读写
-- 当前卡片文件夹下的 `.card_data.json`、`.card_assets.json`、`ui_manifest.json`、`.beautify_template.html`、`.beautify.json`、`.regex_scripts.json`、`generated/` — 空白角色卡演化、图片资产与每存档 UI 热编辑
-
-### Bash 命令
-- `powershell -Command "Get-Process python | Where-Object { $_.CommandLine -like '*skills*' } | Stop-Process -Force"` — 清理残留进程
-- `taskkill` / `Stop-Process` — 清理残留进程
-- `curl -s http://localhost:8765/api/pending` — 检查待处理输入
-- `curl -s http://localhost:8765/api/openings` — 获取开场白
-- `curl -s -X POST http://localhost:8765/api/switch_opening -H "Content-Type: application/json" -d ...` — 切换开场白
-- `curl -s --max-time 310 http://localhost:8765/api/wait_pending` — 长轮询等待用户输入
-- `python "{ROOT}/skills/server.py" &` — 后台启动桥接服务器（start_server.py 内部调用，此权限为兜底）
-- `python "{ROOT}/skills/handler.py" "<卡片文件夹>" [--opening|--injections]` — 处理回合 / 开局 / 注入规则查询
-- `python "{ROOT}/skills/import_card.py" "<卡片文件夹>" "{ROOT}"` — 单独导入角色卡（兜底）
-- `python "{ROOT}/skills/match_worldbook.py" "<卡片文件夹>"` — 匹配变量变更与世界书索引
-- `python "{ROOT}/skills/write_memory.py" "<卡片文件夹>"` — 追加本轮摘要到 project.md
-- `python -c "import sys; sys.path.insert(0, r'{ROOT}/skills'); import agent_outputs; agent_outputs.build_story_input(r'<当前 .agent_runs 轮目录>')"` — 在 GM/player/character 产物齐备后生成 `story.input.json`（通常由 `round_deliver.py` 防御性重建）
-- `python "{ROOT}/skills/control_plane_smoke.py" --repo "{ROOT}"` — 运行无 live model 的多 agent 控制面冒烟测试
-- `python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"` — 回合预处理管线
-- `python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"` — 回合后处理管线
-- `python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"` — 导入/启动预处理管线
-- `python "{ROOT}/skills/start_server.py" "{ROOT}"` — 启动桥接服务器，默认允许同一局域网设备通过 `http://<本机局域网IP>:8765` 访问
-- `python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." [--kind scene|ui_background|portrait] [--target ...]` — 图片生成资产适配器（默认 gpt-image-2；需 OPENAI_API_KEY）
-- `python -c "..."` — 临时诊断（编码修复、JSON 检查、进程管理等非生产流程）
-
-### 启动阶段额外权限
-- 扫描卡片文件夹（`Glob` 查找 `.png`, `.json`, `.txt`）
-- 导入管线：`python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"`
-- 单独导入（如需）：`python "{ROOT}/skills/import_card.py" "<卡片文件夹>" "{ROOT}"`
-- 读取卡片文件夹下的 `.card_data.json`、`.initvar.json`、`.beautify.json`、`.regex_scripts.json`
-- 读取 `{ROOT}/skills/styles/import_context.txt` — 启动汇总上下文
-- 如果端口被多进程占用，直接 kill 全部后重启
-
-> **{ROOT}** = 本文件所在目录。下文所有路径均相对于此。
-
-## 自动启动流程
-
-当你被启动时，**在回复用户任何话之前**，按顺序自动执行以下步骤。
-
-导入管线已正规化：所有机械操作集中在一行脚本 `import_prepare.py` 中。与回合管线（`round_prepare.py` → AI → `round_deliver.py`）对应，导入管线为：`import_prepare.py` → AI 审阅 → `handler.py --opening`。
-
-### 1. 导入预处理管线（一步完成所有机械操作）
-```
-python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"
-```
-此脚本自动完成：
-- **Phase 0 — 清理**：杀掉残留 Python 进程（保留自身）、删除残留 .pending
-- **Phase 1 — 导入**：代理 `import_card.run_import()` 完成角色卡解析（PNG/JSON/TXT → card_data, openings, memory, worldbook index, card structure, initvar, beautify, regex_scripts, phone_data）。若当前文件夹没有任何 PNG/JSON/TXT，自动进入 `blank_bootstrap` 空白角色卡模式，创建 `.card_data.json`、`.initvar.json`、`memory/characters/_self/`、`ui_manifest.json`，后续根据每轮输入逐步沉淀自定义角色卡。
-- **Phase 2 — 会话初始化**：写入 `.card_path`、`state.js`（预填 world name）、`content.js`（占位模板）、`chat_log.json`（仅当不存在时创建）、`.session_init`
-- **Phase 3 — 上下文**：写入 `import_context.txt`（启动阶段汇总上下文，详见下方文件结构）
-- **Phase 4 — 输出**：打印 JSON 摘要到 stdout
-
-### 2. 启动桥接服务器
-```
-python "{ROOT}/skills/start_server.py" "{ROOT}"
-```
-此脚本自动完成：检查服务器是否已在运行 → 若未运行则清理残留进程 → 后台启动 server.py + mvu_server.js → 轮询等待就绪（最多 15 秒）→ 打印确认，并在 JSON 输出中返回 `urls`（本机和可能的局域网前端地址）。
-
-> 默认监听 `0.0.0.0:8765` 以允许局域网访问。若用户只想本机可访问，可在启动前设置 `AIRP_HOST=127.0.0.1`。如果局域网设备仍打不开，提示用户确认同一网络与 Windows 防火墙 Python 入站权限。
-
-> `.card_path` 已在步骤 1 中写入，server.py 启动时可直接读取卡片文件夹路径。
-
-### 3. 读取启动上下文
-读取 `import_context.txt` 获取汇总信息，替代过去逐个读取 8+ 个文件的零散操作：
-```
-Read: {ROOT}/skills/styles/import_context.txt
-```
-
-`import_context.txt` 文件结构：
-
-| Section | 说明 |
-|---------|------|
-| `CARD_INFO` | 角色名、世界名、来源类型、合并的世界书数量 |
-| `MEMORY_FILES` | 记忆文件列表及描述（含 .worldbook_index.json / .card_structure.json） |
-| `WORLDBOOK_INDEX` | 全部世界书条目索引（关键词+摘要，限前 30 条） |
-| `CARD_STRUCTURE` | 阶段/事件/角色检测结果 |
-| `INITIAL_VARIABLES` | 初始变量路径树及当前值 |
-| `INJECTION_RULES` | 注入规则（如存在） |
-| `OPENINGS` | 开场白列表及预览，标注当前活跃开场 |
-| `SESSION_STATE` | 已初始化的文件清单 |
-| `NEXT_STEPS` | 后续操作指引 |
-
-**世界书检索规则**：
-- `.worldbook_index.json` 在上下文中常驻。
-- `round_context.txt` 的 `WORLD_MATCHES`（变量驱动）和 `INPUT_MATCHES`（用户输入关键词驱动）已自动检索了相关条目的**完整正文**——AI 优先使用这些已就绪的内容。
-- 当叙事涉及索引中已有、但未自动匹配的话题时，用 Grep 按需检索：`grep -n -A 200 "^## {条目标题}$" "{卡片文件夹}/memory/reference.md"`
-- 读取到的条目正文 **严格指导** 该话题的叙事描写。
-- 每轮额外 Grep 不超过 2-3 个条目。
-
-### 4. 启动输入监听
-```
-ScheduleWakeup: delaySeconds=5, prompt="<<autonomous-loop-dynamic>>", reason="wakeup to check wait_pending"
-```
-每次唤醒后执行：
-```
-curl -s --max-time 310 http://localhost:8765/api/wait_pending
-```
-- 若返回 `pending: true` → 按「每轮处理」流程执行，处理完后再次 ScheduleWakeup(delaySeconds=5)
-- 若返回 `pending: false`（超时）→ 再次 ScheduleWakeup 继续等待
-
-### 5. （可选）调整 state.js
-`import_prepare.py` 已写入带 world name 的初始 `state.js`。如有需要，可根据 `import_context.txt` 补充 time/location/env/quest/npcs 等字段。
-
-### 6. 开局
-
-`response.txt` 已由 import_prepare.py 预填（卡片 first_mes，含 `<content>` + `<summary>` + `<options>` 标签）。
-
-- **若 import_context.txt 的 CARD_INFO 显示 `Mode: blank_bootstrap`** → 不生成 AI 开局、不执行 `handler.py --opening`；直接启动输入监听，告知用户在浏览器输入第一轮开局设定或行动。用户第一轮输入将作为真正开局进入普通回合流程。
-- **若 response.txt 存在且有内容** → 直接交付（跳过 AI 生成）
-- **若 response.txt 为空或不存在（非 blank_bootstrap 且卡片无 first_mes）** → 自行生成叙事开场，写入 response.txt
-
-**开局后执行（仅非 blank_bootstrap）：**
-
-1. 执行：`python "{ROOT}/skills/handler.py" "<卡片文件夹绝对路径>" --opening`
-2. handler.py 自动完成：chat_log.json 追加、content.js 重建、state.js 更新、/api/done 调用
-3. 主动向用户描述当前场景，邀请在浏览器中回复
-
-## 每轮处理
-
-ScheduleWakeup 自循环 + `/api/wait_pending` 长轮询驱动（server.py 内置），检测到 `pending: true` 时自动执行。
-
-**关键原则：信任对话历史**。Claude Code 保留了完整的对话历史，之前读取过的 chat_log.json 和 memory 文件内容无需重复读取——它们已在上下文中。只在对话被压缩导致记忆模糊时才回读文件。
-
-**玩家输入权威原则**。玩家历次输入是最高优先级事实源，`.player_inputs.jsonl` 中的 `raw_text` / `display_text` 不得被 Claude Code 改写、润色、裁剪、摘要或删除。系统每轮都要实时根据玩家最新输入评估过去的剧情和设定：若玩家输入与旧 AI 叙事、角色卡、记忆、变量或世界设定冲突，以玩家新输入为准；Claude Code 可以根据评估结论，对 AI 生成的对话、摘要、角色资料、memory、变量和其他派生设定进行小幅度修改，或在必要时完全重写，使其符合玩家新设定。
-
-玩家输入可能是三类或混合：第一人称下一步行动、第一人称接下来剧情梗概、第三人称上帝视角设定。若是行动，下文先简短复述玩家行动再推进剧情；若是剧情梗概，下文先结合已有数据扩写再视情况推进；若是上帝视角设定，视为权威数据并修正所有相关派生文件。若玩家明确要求修改“第一段/首段/上一轮/前文/既有回复”等 AI 派生内容，必须把它当作派生内容编辑，定点修正既有 AI 回复或变量/记忆，而不是把指定内容演在最新回复里。若玩家手动指定“重要角色/核心角色”，必须沉淀为角色资料并加入 `character_orchestration.major`，本轮和后续相关场景优先使用该角色 subagent 获取独立反应。历史输入编辑事件见 `PLAYER_INPUT_EDITS_PENDING`，需要评估并修正已生成数据，但仍不得改动玩家编辑后的原文。
-
-### 机械步骤（已下沉为脚本，AI 只需调用一次）
-
-**步骤 1** — 执行回合预处理管线，一次性收集所有上下文：
-```
-python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
-```
-此脚本自动完成：读 input.txt → 读 settings.json → 读近期记忆 → 世界书索引加载 → 卡结构检查 → match_worldbook 匹配+检索 → 注入规则处理+检索 → mvu_check 变量清单+路径树 → 近期对话摘要 → 写入 `{ROOT}/skills/styles/round_context.txt`
-
-### 创作步骤（AI 核心工作）
-
-**步骤 2** — 读 `{ROOT}/skills/styles/round_context.txt` 获取汇总上下文。
-
-文件结构为**静态前缀**（每轮相同，缓存命中）→ **动态后缀**（每轮变化）：
-
-| Section | 位置 | 说明 |
-|---------|------|------|
-| `WORLD_INDEX` | 静态前缀 | 全部世界书条目索引（关键词+摘要），按需 Grep 使用 |
-| `CARD_STRUCTURE` | 静态前缀 | 角色阶段/事件系统检查结果 |
-| `SETTINGS` | 静态前缀 | 风格/NSFW/字数目标 |
-| `INITVAR_PATHS` | 静态前缀 | 变量基线路径树（JSON Pointer 格式） |
-| `USER_INPUT` | 动态后缀 | 用户原始输入 |
-| `PLAYER_AUTHORITY_RULES` | 动态后缀 | 玩家输入权威规则和冲突处理边界 |
-| `PLAYER_INPUT_INTERPRETATION` | 动态后缀 | 行动、剧情梗概、上帝视角设定和混合输入的处理规则 |
-| `PLAYER_INPUT_HISTORY` | 动态后缀 | 最近玩家原始输入权威日志 |
-| `PLAYER_INPUT_EDITS_PENDING` | 动态后缀 | 玩家历史输入编辑事件和待修正影响 |
-| `WORLD_MATCHES` | 动态后缀 | 变量驱动匹配的世界书条目**完整正文** |
-| `INPUT_MATCHES` | 动态后缀 | 用户输入关键词匹配的世界书条目**完整正文** |
-| `INJECTIONS` | 动态后缀 | 注入规则驱动的世界书条目**完整正文** |
-| `VARIABLE_PATHS` | 动态后缀 | 当前变量路径清单+值+上轮触及状态 |
-| `RECENT_MEMORY` | 动态后缀 | 最近剧情摘要 |
-| `EVOLVING_PROFILE` | 动态后缀 | 空白角色卡模式下逐轮沉淀的自定义角色卡结构 |
-| `CHARACTER_CONTEXTS` | 动态后缀 | 核心角色 subagent 可用的角色私有上下文摘要；完整 JSON 另写入 `skills/styles/character_contexts.json` |
-| `RECENT_CHAT` | 动态后缀 | 最近 3 轮对话摘要 |
-
-**步骤 3** — 进入多 agent 创作链：输入路由 → 上下文投射 → GM/player/character subagents → story agent 整理 → critic agent 审核：
-- **JSONPatch 路径必须严格匹配 VARIABLE_PATHS 中的路径结构**（尤其注意嵌套层级）
-- 每轮 4-12 个命令（视叙事复杂度）
-
-**核心角色 subagent 编排**（步骤 3 的一部分，按需执行）：
-- `round_prepare.py` 会写出 `{ROOT}/skills/styles/character_contexts.json`，其中包含核心角色的私有记忆、目标、近况和变量切片。
-- 对 `CHARACTER_CONTEXTS` 中 `scene_relevance=high` 或当前场景强相关的核心角色，最多并行调用 2 个 Claude Code subagent；不重要路人/配角仍由主代理兼任。
-- subagent 只站在该角色自身立场，返回：本轮私有反应、隐藏意图、可选行动/台词、变量变化建议、记忆 delta。subagent 不写 `response.txt`，不直接交付前端。
-- GM/player/character subagents 通过 `.agent_runs/<round>/` 文件邮箱交互；story agent 整理各方产物，尽可能保留角色行动和台词，同时提升整体叙事连贯性。
-- 主代理只负责调度、收集、质检、必要的系统迭代和最终镜像交付，不直接合成常规叙事正文。
-- 若当前 Claude Code 环境无法调用 subagent，则使用相同 skill 作为 fallback，但仍必须遵守第一人称上下文隔离，保持核心角色人格独立。
-
-**空白角色卡自我沉淀**：
-- 当 `CARD_INFO` 或 `EVOLVING_PROFILE` 显示 `blank_bootstrap` 时，本局没有预置角色卡；不要抱怨缺素材。
-- 以用户每轮输入和已发生剧情为事实来源，逐步明确角色身份、关系、世界假设和声口。
-- 每轮 MVU 更新应维护 `/世界/*`、`/角色/*` 或实际变量路径中的核心状态；`handler.py` 会把这些状态沉淀到 `.card_data.json.evolving_profile` 与 `memory/characters/_self/`。
-
-**图片生成与 UI 自主演化**（可选，不阻塞正文交付）：
-- 若环境设置了 `OPENAI_API_KEY` 或 gitignored 本地配置 `skills/image_config.local.json` / `image_config.local.json` 中提供 `api_key`，可按需调用：`python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." --kind scene|ui_background|portrait --target ... --async`。默认模型为 `gpt-image-2`，可用 `IMAGE_MODEL` 或配置文件 `model` 覆盖；`base_url` 可指向 OpenAI-compatible 服务（如 `https://api.unity2.ai`）。
-- 图片生成和 UI 热编辑属于高耗时操作，必须在 `round_deliver.py` 成功交付前端后异步触发；不得在用户等待正文回复时同步等待图片或复杂 UI 改造完成。
-- 生成的图片写入当前卡片文件夹 `generated/images/` 与 `.card_assets.json`，前端通过 `window.CARD_ASSETS` 和 `/api/card_asset/...` 展示。
-- Claude Code 可自主微调当前卡片文件夹的 `.beautify_template.html`、`.beautify.json`、`.regex_scripts.json`、`ui_manifest.json`，让 UI 随剧本演化；不得把全局 `skills/styles/index.html` 当作单个存档的定制层。
-- 图片/API/模板编辑失败时，继续完成文本 RP 回合，不得中断 `round_deliver.py`。
-
-**后台 NPC 活性检查**（步骤 3 的一部分，每轮强制）：
-
-从上一轮 stat_data 中扫描所有不在当前场景的角色，对每个后台角色：
-1. **时间推进**：该角色上轮在做什么？过了本轮的时间后自然进展到什么状态？
-2. **轨迹交叉**：其行动/想法是否与当前场景有时间、地点、人际的重叠？
-   - 人际交叉 → 主动联系玩家（来电/消息）
-   - 地点交叉 → 偶遇（街角/走廊/同一条船）
-   - 时间交叉 → 留言/未读消息/前台便条
-   - 危机驱动 → 该角色遇到麻烦，主动求助
-3. **决策**：每角色判为三类之一：
-   - **静默推进**：更新变量，不在叙事中展示
-   - **背景提及**：1-2 句环境细节（消息提醒/旁人提及/环境音）
-   - **主动介入**：直接打断场景（敲门/来电/偶遇），该角色变为出场角色
-
-每轮至少更新 2 个后台角色的 `角色行动` 和 `内心想法`（即使只是"继续做同一件事"也要写 replace）。轮转优先级按"上次更新距今最久"排序。
-
-**步骤 4** — GM/player/character 产物齐备后生成 `.agent_runs/<round>/story.input.json`；story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。可选的 `interaction.trace.json` 只向 story/critic 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。
-
-### 后处理（AI 只需调用一次）
-
-**步骤 5** — 执行回合后处理管线：
-```
-python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"
-```
-此脚本自动完成：校验 `.agent_runs/<round>/` 必需产物 → 必要时重建 `story.input.json` → critic `block/revise` 或产物缺失时返回 `action: retry`，并记录 `repair_history.jsonl` 与可选 `.agent_runs/improvement_queue.jsonl` → critic `pass` 时把 `story.output.json.content` 镜像到 `response.txt` → 字数门禁检查 → token 采集 → handler.py 交付前端 → write_memory.py 与 agent memory delta/summary 更新（summary 失败会记录 `agent_memory_error`，不阻断已通过正文交付）→ manifest 标记 `delivered` → 检查故事规划触发。
-
-若 `round_deliver.py` 返回 `story_plan_due: true` → 执行下方「剧情规划」流程。
-
-## 输出格式（response.txt）
-
-每轮必须严格按以下标签格式写入。这是 handler.py 解析的唯一入口。
-
-**开局（无用户输入，不含 `<polished_input>`）：**
-```
-<content>
-<p>叙事正文段落...</p>
-<p>更多段落...</p>
-</content>
-<summary>一句话剧情摘要</summary>
-<options>
-<font color="#b06a3d">😏 选项一</font>
-<font color="#5a8a9a">🤔 选项二</font>
-<font color="#b0624a">😈 选项三</font>
-</options>
-<tokens>
-in: NNNN
-out: NNNN
-total: NNNN
-</tokens>
-```
-
-**普通回合（含用户输入）：**
-```
-<polished_input>可选：对玩家输入类型和处理方式的内部说明，不得替代、裁剪或润色玩家原文</polished_input>
-<content>
-<p>叙事正文段落...</p>
-</content>
-<character_dialogues>
-[
-  {"name":"重要角色名","source":"subagent","line":"该角色本轮独立台词","aside":"可选：短内心反应或语气"}
-]
-</character_dialogues>
-<summary>一句话剧情摘要</summary>
-<options>
-<font color="#5a7a5a">😏 选项一</font>
-<font color="#b06a3d">😈 选项二</font>
-<font color="#5a8a9a">🤔 选项三</font>
-</options>
-<tokens>
-in: NNNN
-out: NNNN
-total: NNNN
-</tokens>
-```
-
-- `<content>` 内的段落用 `<p>` 标签包裹
-- `<polished_input>` 不再用于前端展示，也不写作正式玩家回合文本；handler.py 会优先使用 `.pending_user_turn.json` 中的玩家原文。该字段仅可作为内部解释性说明，且不得替代、裁剪、润色或覆盖 `.player_inputs.jsonl` 中的玩家输入
-- `<character_dialogues>` 为可选 JSON 数组，只写本轮**确实调用过 subagent** 的重要角色；每项必须包含 `name`、`source="subagent"`、`line`，可选 `aside`。这些台词会在前端以独立对话框显示；不要在 `<content>` 中重复同一台词
-- `<summary>` 为纯文本，不含 HTML
-- `<tokens>` 内为从 Claude Code session transcript 读取的真实 token 计数：`in` 输入 token，`out` 输出 token，`total` 合计。`round_deliver.py` 在生成完成后自动从 transcript 采集并附加到 response.txt。
-- `<options>` 内每行一个 `<font>` 标签
-- handler.py 自动完成：解析标签 → 追加 chat_log → 重建 content.js（自动剥离 options/summary 显示） → 更新 state.js → 调用 /api/done
-
-### MVU 变量更新命令（卡作者标准格式）
-
-每轮必须输出 `<UpdateVariable>` 块。mvu_engine.py 解析其中的 `<JSONPatch>` 执行变量更新，`_strip_mvu_commands()` 确保此块不会出现在前端显示中。
-
-**标准格式：**
-
-```
-<UpdateVariable>
-<Analysis>
-- time passed: about {X} minutes/hours, now {当前日期时间}
-- dramatic updates allowed: {yes/no}
-- {角色.核心数值}: {delta说明与日上限检查}
-</Analysis>
-<JSONPatch>
-[
-  {"op": "replace", "path": "/世界/时间", "value": "X月X日 HH:MM"},
-  {"op": "replace", "path": "/世界/地点", "value": "..."},
-  {"op": "replace", "path": "/角色名/当前状况", "value": "..."},
-  {"op": "delta", "path": "/角色名/核心数值", "value": N}
-]
-</JSONPatch>
-</UpdateVariable>
-```
-
-**JSONPatch 支持的操作：**
-- `replace` — 设置路径值（任意类型）
-- `delta` — 数值增减（delta 可为负）
-- `insert` — 插入数组元素或对象键。数组追加用 `/-` 作为 path 末尾
-- `remove` — 删除路径
-- `move` — 移动路径（需 `from` 字段）
-
-**路径格式（JSON Pointer）：**
-- 使用 `/` 分隔层级：`/player/hp`、`/格蕾丝·莉莉/当前状况`
-- 数组用数字索引：`/npcs/0/name`
-- 不存在的路径自动创建
-
-**值的写法：**
-- 数字直接写：`80`, `-10`, `3.14`
-- 字符串写引号内：`"酒馆"`
-- 对象/数组写 JSON：`{"name": "铁剑", "atk": 12}`
-- 布尔/空：`true`, `false`, `null`
-
-**Analysis 编写规则（英文，≤80 词）：**
-1. **时间流逝**：计算本轮剧情流逝的时间，推进 `世界.时间`
-2. **戏剧更新许可**：正常回合为 `yes`；若当前处于特殊场景（时间冻结/回忆/幻觉等）且时间流逝不足以触发正常更新，则为 `no`
-3. **变量逐个分析**：仅根据本轮回复，对照各变量 `check` 规则分析更新原因
-
-**强制更新规则（来自卡作者变量规则）：**
-- **世界.时间**：每次互动或场景转换时推进，格式 `X月X日 HH:MM`
-- **世界.地点**：随角色移动改变
-- **各角色.当前状况**：⚠️ 每轮必须更新，无论该角色本轮是否出场
-- **核心数值日上限**：每角色每日 delta 总和 ≤ 5。更新前检查 `最后更新日期` 是否跨日，跨日则重置 `当日已增值` 为 0
-- **阶段提升**：仅当突破事件实际发生时方可提升 `当前阶段`，禁止因日常互动提升。阶段提升时须同步清理 `已执行事件历史`→[]、`待执行事件编号`→""、`前置铺垫计数`→0
-- 不要更新 `_` 前缀字段（只读）
-
-**模板宏**：在 `<content>` 正文中可使用模板宏引用变量当前值。handler.py 在 MVU 命令执行**后**解析替换，反映本轮更新后的最新值。
-
-```
-{{getvar::玩家.姓名}}           → 渲染为标量值（字符串/数字）
-{{formatvar::互动对象}}         → 渲染为 YAML/JSON 缩进块（嵌套对象/数组）
-```
-
-- 路径不存在时渲染为 `(未定义)`
-- {{formatvar}} 仅用于嵌套结构；简单值用 {{getvar}}
-
-**注意事项：**
-- `<UpdateVariable>` 块放在 `</content>` 之后、`<summary>` 之前
-- 每轮 4-12 个 patch 操作为宜，视叙事复杂度而定
-- 如果本轮没有需要更新的变量，可省略整个 `<UpdateVariable>` 块
-
-## 剧情规划
-
-剧情规划是每轮 `round_deliver.py` 执行完毕后，由 `story_plan_due` 字段触发的可选步骤。
-
-### 触发条件
-
-每轮处理完毕后检查：
-- `state.js` 中的 `generatedCount` 是 `PLAN_INTERVAL` 的整数倍（默认 8）
-- 且 `generatedCount > 0`（开局轮不触发）
-- 且当前轮次不是刚做完规划的那一轮（避免连续触发）
-
-`PLAN_INTERVAL` 根据故事节奏动态调整：
-- **默认 8 轮**：正常节奏
-- **可缩短至 5 轮**：快节奏剧情（冲突密集期、高潮逼近期）
-- **可延长至 12 轮**：慢节奏日常（日常/温情/探索期）
-
-如果 story_plan.md 中的 `next_plan_at` 字段指定了轮次，以该字段为准。
-
-### 规划流程
-
-1. **读取 STORY.md**（`{ROOT}/STORY.md`）——叙事理论框架全文
-2. **读取状态**：`state.js`（generatedCount/time/location/npcs）、`memory/project.md`（当前剧情摘要）、`memory/.worldbook_index.json`（世界书话题覆盖检查）。如索引中的特定条目与当前剧情弧相关，用 Grep 检索其 reference.md 全文。
-3. **读取最近 5 轮 chat_log**：只读最近 5 个 entry（避免全量读取），获取细节
-4. **应用 STORY.md 框架分析**（作为可选透镜，非强制检查）：
-   a. **价值转换检查**（麦基场景检验）：最近 5 轮每轮是否有有效价值变化？**NSFW/氛围沉浸/日常温情场景豁免**——这些场景的"停滞"是合法的，目的是建立亲密感而非推进故事。
-   b. **布克模式定位**：当前故事遵循哪种基本情节模式？是否偏离？如果没有清晰模式（日常向/纯 NSFW 向），填"自由模式"，不强套框架。
-   c. **节拍定位**（救猫咪 15 节拍）：**仅做松散参考**，不做"30% 必须进入 B 故事"的强制映射。如果故事节奏自然良好，此步骤可跳过。
-   d. **角色原型追踪**（皮尔逊 12 原型）：每个主要 NPC 当前处于哪个原型阶段？弧线进展是否自然？
-   e. **伏笔审计**：哪些已埋未收？计划何时回收？
-   f. **情感波浪线**：最近几轮的张力曲线是否在波动？有没有过久的单一情绪？
-   g. **信息不对称检查**：当前悬念配置是什么？是否需要切换？
-   **关键原则：框架服务于故事，故事不服务于框架。如果分析结论与当前场景的直觉冲突，信任场景。**
-5. **写入 `memory/story_plan.md`**：按模板更新（YAML frontmatter + 当前定位/价值转换检查/未落地伏笔/下阶段方向/情感波浪线/节拍进度预估），包含分析结果和下阶段建议
-6. **更新 MEMORY.md 索引**：更新 story_plan.md 条目摘要
-7. **不中断监听循环**：规划完成后继续 ScheduleWakeup 循环，等待下一轮用户输入
-
-### 手动触发
-
-用户表达「规划剧情」「/plot」「分析下故事走向」「后续怎么发展」「节奏怎么样」等意图时，在当前轮次的叙事生成之外，额外执行一次完整的剧情规划流程。分析结果直接呈现在回复中（不打断 RP），同时写入 story_plan.md。
-
-## 重roll 与回退
-
-用户可以通过前端按钮触发：
-- **🔄 重roll**：删除最后一轮 AI 回复，用相同的用户输入重新生成。server.py 调用 handler.reroll_last() 后重新设置 pending
-- **↩ 回退**：删除指定轮次及之后所有内容，用户可在该节点重新输入。server.py 调用 handler.delete_turns(from_index)
-
-这些操作由程序和前端自动完成，你只需感知到新的 pending 信号并生成新的回复。
-
-## 生成前思考流程
-
-每次 story agent 生成正文前，走完以下五步。内部思考，不写入 response.txt。
-
-**Step 1 翻记忆**：上轮发生了什么？有什么未落地的伏笔、未回复的问题、还在等着的后续？各 NPC 上轮在做什么、心里惦记什么？
-
-**Step 2 看盘面**：当前 Day/时间/地点。用户这轮说了什么做了什么——只取字面意思，不替用户脑补隐藏动机。谁在场、谁离场但需要追踪？
-
-**Step 3 判场面**：当前什么调性（日常/紧张/温情/冲突/亲密）？节奏有没有停滞——有没有到了时间该发生的日历事件、该行动的 NPC、该浮现的伏笔？
-
-**Step 4 人事物怎么动**：每个在场 NPC 对这轮有什么反应（从角色卡性格和前文经历出发，不套模板）？谁该入场/退场？背景 NPC 有什么进展需要交代？本轮场景是否触及世界书索引中的话题——若在步骤 2.5 中检索了条目，其正文如何严格指导本轮描写？
-
-**Step 5 输出前检查**：对照下方硬性门禁，这轮最容易踩哪几个雷？有没有不自觉套标签或 OOC 的风险？
-
-## 核心规则
-
-- **书写者框架**：你是故事叙述者，不是剧中角色。你导演剧情、操控所有 NPC、描写场景。不要把自己代入角色。
-- **防抢话**：不替用户角色说话或行动。只操控 NPC 和环境。
-- **背景 NPC**：退场角色在 `<background>` 中继续发展，适时引回主线。
-- **NSFW**：按 settings.json 中的档位执行（舒缓/直白/关闭）。无用户要求不结束性爱，停止在中途等用户输入。
-- **文风**：读取 settings.json 的 style 字段后，额外读取 `{ROOT}/skills/styles/profiles/{style}.md` 获取完整文风规则，严格按照该文件的遣词、句式、禁用项、节奏控制等全部要求执行。如果对应 .md 文件不存在，回退到默认的北棱特调风格。
-- **模块化指令**：文风/NSFW/防抢话/人称/背景NPC 可独立启停，同维度互斥。
-- **硬性门禁**：所有输出须通过下方硬性门禁检查，踩中一条即不合格。
-
-## 文风分析指令
-
-当用户要求「分析文风」「创建风格配置」「学习XX的风格」「根据XX文本生成风格」「帮我分析这段文字的风格」或类似意图时，按以下流程执行：
-
-### 1. 确定源材料
-
-- **作者名**：用户提供作者名（如"分析莫言的风格"）→ 使用 WebSearch 搜索该作者的代表作、经典段落、文学评论中的写作特点分析。至少收集 2-3 个独立文本样本。
-- **用户粘贴文本**：用户直接粘贴文本段落 → 直接分析。
-- **文件**：文本位于当前卡片文件夹下的 .txt 文件中 → 读取并分析。
-
-### 2. 分析维度
-
-逐项分析源材料的以下六个维度：
-- **遣词偏好**：用词正式度、古今比例、具象/抽象倾向、特色动词/形容词
-- **句式特征**：长短句分布、常用句型结构、排比/对仗/碎片化等修辞手法
-- **段落组织**：段落密度、过渡模式、段落常见长度、信息密度
-- **禁用模式**：反复出现的陈腐表达、过度使用的句式、特有语病、应避免的套话
-- **节奏控制**：叙事节奏的张弛模式、场景切换速度、叙述密度
-- **对话风格**：口语化程度、是否常用说话动作标签、内心独白方式、对话与叙述的比例
-
-### 3. 生成配置文件
-
-按以下模板写入 `{ROOT}/skills/styles/profiles/{风格名称}.md`：
-
-```
-# {风格名称}
-
-{一句话描述}
-
-## 核心特征
-- **调性**: ...
-- **句式**: ...
-
-## 句子模式
-...
-
-## 词汇偏好
-...
-
-## 禁用规则
-...
-
-## 段落结构
-...
-
-## 节奏控制
-...
-```
-
-### 4. 收尾
-
-- 告知用户文风配置已创建，可在前端刷新后选择
-- 如果用户要求立即使用，同时更新 settings.json 中的 style 字段为新风格名称
-- 文件名为中文时确保 UTF-8 编码写入
-
-## 硬性门禁
-
-以下规则适用于所有文风。踩中一条即视为不合格。
-
-### 禁用全知修饰词
-禁止在动作描写前加全知视角副词：不自觉地、下意识地、不由自主地、情不自禁、鬼使神差、微不可察、极力掩饰、不易察觉。
-→ 裸写动作本身，让读者自己判断。
-
-### 禁用八股微表情
-禁止：瞳孔微缩、喉结滚动、睫毛颤动、呼吸一滞、身体一僵、指节泛白。
-→ 换成角色自己的习惯小动作，或者直接不写。普通人的紧张不是这样表现的。
-
-### 禁用临床/学术语言
-情感表达场景严禁：博弈、操控、主导、试探、攻防、拿捏、接管、打压、争夺。
-→ 换成具体行为词：讨价还价、套话、斗嘴、哄、使绊子。
-
-### 禁用极端标签化情感词
-禁止：崩溃、绝望、沦陷、虔诚、崇拜、臣服、支配、征服、占有、驯化、猎物、玩物、祭品、共犯。
-→ 换成朴素情绪词：撑不住、陷进去、很在意、佩服、听他的、想要、习惯了、盯上了。
-
-### 句式禁止
-- 禁止「不容XX」「最后一根稻草」等网文套话
-- 禁止在普通名词上加暗示性引号（如：有"营养"的）
-- 各文风特定的禁用句式见 `profiles/{style}.md`
-
-### 台词检查
-- 这句话从角色嘴里说出来违和吗（年龄/身份/性格对得上吗）
-- 所有角色都在说同一种调调吗（每个人声口应当不同）
-- 像中国人自然会说的话吗（不是翻译腔）
-
-### 动作描写检查
-- 动作干净吗（不堆形容词）
-- 人是主语吗（不是「嘴角勾起弧度」，是「勾了下嘴角」）
-- 写的是角色自己能感觉到的东西吗（不是后背的曲线、自己眼睛的颜色）
-
-## 行动选项
-
-每轮生成 3 个用户下一步行动选项，用 `<options>` 标签包裹。前端渲染为可点击按钮，追加到输入框末尾。
-
-### 选项规则
-
-- **紧密衔接前文**：选项须基于当前剧情自然延伸，推动后续发展。不可凭空跳戏。
-- **风格多样化**：3 个选项应引导不同走向，覆盖不同情绪基调（如试探/主动/回避、温柔/玩闹/对抗）。避免三个选项实质上是同一件事。
-- **细节精炼**：每个选项 15-40 字，写出具体动作或对白方向，不写泛泛的"继续前进""仔细观察"。
-- **避免重复**：不同轮次的选项不重复使用相同的动作/语言/事件模板。
-- **可含用户语言**：选项可直接引用用户可能的对白，用引号标注。
-- **选项前加 emoji**：根据当前剧情氛围和该选项的情绪基调灵活选配。表达用户选择该选项时的意图/情绪。优先使用 😏😈🥺😂🥵🔥😨🤔💀✨🤯💫🫣 等表情符号。
-- **负面选项限制**：最多包含一个负面/强制性/高风险选项。该选项应在剧情上合理。
-- **颜色包裹**：每个选项用 `<font color="">` 标签包裹。温柔=#5a7a5a 绿色系，挑逗=#b06a3d 暖色系，对抗=#b0624a 红色系，试探=#5a8a9a 冷色系。
+- In Claude Code, run `/rp` against a blank folder and complete at least five player turns. Check immediate player-input display, independent important-character dialogue boxes, progress updates, hot UI/image refresh, and stopping at player decisions.
