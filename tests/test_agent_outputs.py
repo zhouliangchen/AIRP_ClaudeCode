@@ -8,11 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_agent_outputs():
+def _load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_outputs", ROOT / "skills" / "agent_outputs.py")
+    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -40,7 +40,8 @@ class AgentOutputsTest(unittest.TestCase):
         self.run_dir.mkdir(parents=True)
         self.styles_dir.mkdir(parents=True)
         (self.card / ".agent_runs" / "current").write_text(str(self.run_dir.resolve()), encoding="utf-8")
-        self.agent_outputs = _load_agent_outputs()
+        self.agent_outputs = _load_module("agent_outputs")
+        self.agent_interactions = _load_module("agent_interactions")
         self._write_base_round()
 
     def tearDown(self):
@@ -54,8 +55,7 @@ class AgentOutputsTest(unittest.TestCase):
                 "stage": "prompts_ready",
                 "expected_outputs": {
                     "gm": "gm.output.json",
-                    "player": "player.output.json",
-                    "characters": {"Ada": "characters/Ada.output.json"},
+                    "actors": "actor.outputs.json",
                     "story": "story.output.json",
                     "critic": "critic.report.json",
                 },
@@ -74,34 +74,51 @@ class AgentOutputsTest(unittest.TestCase):
         _write_json(
             self.run_dir / "gm.output.json",
             {
-                "agent": "gm",
-                "narration": "The archive answers with stale air.",
-                "npc_events": [],
-                "world_state_delta": [{"scope": "room", "fact": "the door is open"}],
-                "handoff": {},
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive answers with stale air."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [{"scope": "room", "fact": "the door is open"}],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
             },
         )
         _write_json(
-            self.run_dir / "player.output.json",
+            self.run_dir / "actor.outputs.json",
             {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I step through the door.",
-                "dialogue": [],
-                "perception": ["I smell paper dust."],
-                "memory_delta": [{"text": "I opened the archive door.", "source": "perceived"}],
-            },
-        )
-        _write_json(
-            self.run_dir / "characters" / "Ada.output.json",
-            {
-                "agent": "character",
-                "agent_id": "character:ada",
-                "character_name": "Ada",
-                "action": "I lift the lamp.",
-                "dialogue": [{"target": "player", "text": "Stay close."}],
-                "perception": ["I see the player cross the threshold."],
-                "memory_delta": [{"text": "I saw the player enter the archive.", "source": "perceived"}],
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {"type": "action", "target": "", "content": "I step through the door."},
+                            {"type": "memory_delta", "target": "self", "content": "I opened the archive door."},
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Stay close."},
+                            {
+                                "type": "memory_delta",
+                                "target": "self",
+                                "content": "I saw the player enter the archive.",
+                            },
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
             },
         )
 
@@ -127,25 +144,100 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
 
-    def test_build_story_input_assembles_valid_agent_outputs(self):
+    def test_build_story_input_assembles_loop_outputs_and_memory_deltas(self):
         story_input = self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(story_input["round_id"], "round-000001")
         self.assertEqual(story_input["player_inputs"]["raw_text"], "I open the archive door.")
-        self.assertEqual(story_input["gm_output"]["world_state_delta"][0]["fact"], "the door is open")
-        self.assertEqual(story_input["actor_outputs"]["player"]["action"], "I step through the door.")
+        self.assertEqual(story_input["loop_outputs"]["gm"]["outputs"][0]["world_state_delta"][0]["fact"], "the door is open")
         self.assertEqual(
-            story_input["actor_outputs"]["characters"]["Ada"]["dialogue"][0]["text"],
+            story_input["loop_outputs"]["actors"]["player"][0]["events"][0]["content"],
+            "I step through the door.",
+        )
+        self.assertEqual(
+            story_input["loop_outputs"]["actors"]["character:Ada"][0]["events"][0]["content"],
             "Stay close.",
         )
         self.assertEqual(
-            story_input["memory_deltas"]["characters"]["Ada"][0]["text"],
+            story_input["memory_deltas"]["actors"]["character:Ada"][0]["content"],
             "I saw the player enter the archive.",
+        )
+        self.assertEqual(
+            story_input["memory_deltas"]["world"],
+            [{"scope": "room", "fact": "the door is open"}],
         )
         self.assertTrue((self.run_dir / "story.input.json").exists())
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
+
+    def test_build_story_input_uses_loop_outputs_and_trace_v2(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The classroom goes quiet."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {"type": "dialogue", "target": "character:SuLi", "content": "Do you know this?"}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+                "character:SuLi": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:SuLi",
+                        "character_name": "SuLi",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Where did you get that?"}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player", "character:SuLi"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Do you know this?",
+            target="character:SuLi",
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertIn("loop_outputs", story_input)
+        self.assertEqual(story_input["interaction_trace"]["schema_version"], 2)
+        self.assertEqual(
+            story_input["loop_outputs"]["actors"]["character:SuLi"][0]["events"][0]["content"],
+            "Where did you get that?",
+        )
 
     def test_build_story_input_preserves_input_analysis(self):
         input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
@@ -191,10 +283,19 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(story_input["interaction_trace"]["status"], "invalid")
         self.assertEqual(story_input["interaction_trace"]["visible_events"], [])
 
-    def test_build_story_input_blocks_missing_required_character_output(self):
-        (self.run_dir / "characters" / "Ada.output.json").unlink()
+    def test_build_story_input_blocks_missing_required_actor_outputs(self):
+        (self.run_dir / "actor.outputs.json").unlink()
+        _write_json(
+            self.run_dir / "player.output.json",
+            {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "action", "target": "", "content": "legacy fallback should not be used"}],
+                "stop_reason": "continue",
+            },
+        )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "characters/Ada.output.json"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "actor.outputs.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
     def test_prepare_delivery_blocks_critic_block_decision(self):

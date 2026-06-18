@@ -56,33 +56,51 @@ def _expected_outputs(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return expected
 
 
-def _memory_deltas(player_output: Dict[str, Any], character_outputs: Dict[str, Dict[str, Any]], gm_output: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "player": player_output.get("memory_delta", []),
-        "characters": {
-            name: output.get("memory_delta", [])
-            for name, output in character_outputs.items()
-        },
-        "world": gm_output.get("world_state_delta", []),
-    }
+def _load_loop_outputs(root: Path) -> Dict[str, Any]:
+    gm_loop = _read_json_required(root / "gm.output.json")
+    actor_outputs = _read_json_required(root / "actor.outputs.json")
+    return {"gm": gm_loop, "actors": actor_outputs}
+
+
+def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str, Any]) -> Dict[str, Any]:
+    actor_memory: Dict[str, list[Any]] = {}
+    for actor_id, outputs in actor_outputs.items():
+        items = []
+        if isinstance(outputs, list):
+            for output in outputs:
+                if not isinstance(output, dict):
+                    continue
+                events = output.get("events", [])
+                if not isinstance(events, list):
+                    continue
+                for event in events:
+                    if isinstance(event, dict) and event.get("type") in {"memory_delta", "goal_update"}:
+                        items.append(event)
+        actor_memory[str(actor_id)] = items
+
+    world = []
+    gm_outputs = gm_loop.get("outputs", [])
+    if isinstance(gm_outputs, list):
+        for output in gm_outputs:
+            if not isinstance(output, dict):
+                continue
+            delta = output.get("world_state_delta", [])
+            if isinstance(delta, list):
+                world.extend(delta)
+
+    return {"actors": actor_memory, "world": world}
 
 
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
-    """Validate required subagent outputs and write `story.input.json`."""
+    """Assemble story input from GM loop outputs and trace artifacts."""
     root = Path(run_dir)
     manifest = _load_manifest(root)
     if manifest is None:
         raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
 
-    expected = _expected_outputs(manifest)
+    _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
-
-    gm_output = _load_required(root / expected.get("gm", "gm.output.json"), agent_schemas.validate_gm_output)
-    player_output = _load_required(root / expected.get("player", "player.output.json"), agent_schemas.validate_actor_output)
-
-    character_outputs = {}
-    for name, relative_path in (expected.get("characters") or {}).items():
-        character_outputs[name] = _load_required(root / relative_path, agent_schemas.validate_actor_output)
+    loop_outputs = _load_loop_outputs(root)
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
@@ -92,12 +110,8 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "input_analysis": input_payload.get("input_analysis", {}),
             "components": (input_payload.get("routed_input") or {}).get("components", []),
         },
-        "gm_output": gm_output,
-        "actor_outputs": {
-            "player": player_output,
-            "characters": character_outputs,
-        },
-        "memory_deltas": _memory_deltas(player_output, character_outputs, gm_output),
+        "loop_outputs": loop_outputs,
+        "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"]),
         "interaction_trace": agent_interactions.summarize_for_story_input(root),
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
