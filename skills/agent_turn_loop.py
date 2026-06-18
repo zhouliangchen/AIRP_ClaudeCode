@@ -333,17 +333,8 @@ def run_interactive_loop(
         _update_visible_events(root, world_state)
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
-        if gm_output.get("decision_point") is not None or gm_stop == "player_decision":
-            decision_point = _mark_decision(
-                root,
-                gm_output.get("decision_point"),
-                "The player must make the next decision.",
-            )
-            stop_reason = "player_decision"
-            break
-        if gm_stop in STOP_REASONS:
-            stop_reason = gm_stop
-            break
+        gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
+        gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS else ""
 
         actor_queue: Deque[dict] = deque(gm_output.get("actor_calls") or [])
         while actor_queue:
@@ -399,6 +390,17 @@ def run_interactive_loop(
                 break
 
         if stop_reason in STOP_REASONS:
+            break
+        if gm_has_decision:
+            decision_point = _mark_decision(
+                root,
+                gm_output.get("decision_point"),
+                "The player must make the next decision.",
+            )
+            stop_reason = "player_decision"
+            break
+        if gm_terminal_stop:
+            stop_reason = gm_terminal_stop
             break
 
     if stop_reason == "continue":
