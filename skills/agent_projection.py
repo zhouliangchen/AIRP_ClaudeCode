@@ -105,7 +105,7 @@ def _sanitize_prompt(value: Any) -> str:
         if not segment:
             continue
         if _contains_forbidden_text(segment):
-            continue
+            break
         kept.append(segment)
     return " ".join(kept)
 

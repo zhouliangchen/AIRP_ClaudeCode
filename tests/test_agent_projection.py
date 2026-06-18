@@ -202,8 +202,7 @@ class AgentProjectionTest(unittest.TestCase):
         )
         serialized = _packet_json(packet)
 
-        self.assertIn("chalk dust", packet["gm_prompt"])
-        self.assertIn("You stand in class.", packet["gm_prompt"])
+        self.assertEqual(packet["gm_prompt"], "You see chalk dust in the late sun.")
         self.assertNotIn("user_instruction_channel", packet["gm_prompt"])
         self.assertNotIn("world_truth", packet["gm_prompt"])
         self.assertNotIn("GM_Only", packet["gm_prompt"])
@@ -211,9 +210,32 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("hidden_truth", packet["gm_prompt"])
         self.assertNotIn("GM only", packet["gm_prompt"])
         self.assertNotIn("teacher is an illusion", packet["gm_prompt"])
+        self.assertNotIn("You stand in class.", packet["gm_prompt"])
         self.assertNotIn("pendant burns identity", serialized)
         self.assertNotIn("room is false", serialized)
         self.assertNotIn("class is a trap", serialized)
+
+    def test_gm_prompt_drops_multi_sentence_hidden_blocks(self):
+        packet = self.agent_projection.project_actor_context(
+            "player",
+            {},
+            {},
+            (
+                "Hidden truth: the teacher is an illusion. "
+                "She plans to trap the class. "
+                "You hear rain outside. "
+                "GM only: the exit is locked. "
+                "The window is fake."
+            ),
+        )
+        serialized = _packet_json(packet)
+
+        self.assertEqual(packet["gm_prompt"], "")
+        self.assertNotIn("teacher is an illusion", serialized)
+        self.assertNotIn("She plans to trap the class", serialized)
+        self.assertNotIn("You hear rain outside", serialized)
+        self.assertNotIn("exit is locked", serialized)
+        self.assertNotIn("window is fake", serialized)
 
     def test_raw_packet_does_not_include_audit_or_hidden_categories(self):
         packet = self.agent_projection.project_actor_context(
