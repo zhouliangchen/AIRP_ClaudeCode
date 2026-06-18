@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+import character_promotions
+
 
 class ValidationError(ValueError):
     """Raised when an agent artifact does not match its file contract."""
@@ -245,6 +247,13 @@ def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_character_promotion(item: Any, path: str) -> Dict[str, Any]:
+    try:
+        return character_promotions.validate_promotion(item, path)
+    except character_promotions.CharacterPromotionError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
 def _normalize_list_items(
     items: list[Any],
     path: str,
@@ -275,6 +284,11 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         ),
         "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
+        "character_promotions": _normalize_list_items(
+            _optional_list(data, "character_promotions", "gm_output"),
+            "gm_output.character_promotions",
+            _normalize_character_promotion,
+        ),
         "decision_point": data.get("decision_point"),
         "stop_reason": _optional_str(data, "stop_reason", "continue", "gm_output"),
     }

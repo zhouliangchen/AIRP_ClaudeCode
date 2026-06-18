@@ -775,6 +775,7 @@ class AgentPacketTest(unittest.TestCase):
                 "actor_calls",
                 "parallel_groups",
                 "world_state_delta",
+                "character_promotions",
                 "decision_point",
                 "stop_reason",
             ),
@@ -807,6 +808,11 @@ class AgentPacketTest(unittest.TestCase):
                 with self.subTest(prompt=prompt_name, required_key=key):
                     self.assertIn(f'"{key}"', prompt_texts[prompt_name])
         self.assertIn('"stop_reason": "continue"', gm_prompt)
+        self.assertIn('"source_agent": "gm"', gm_prompt)
+        self.assertIn('"profile_seed"', gm_prompt)
+        self.assertIn("GM may emit `source_agent: \"gm\"`", gm_prompt)
+        self.assertIn("preprocess is handled by input analysis", gm_prompt)
+        self.assertIn("GM assistants must not emit promotion records", gm_prompt)
         self.assertIn('"stop_reason": "continue"', player_prompt)
         self.assertIn('"stop_reason": "continue"', char_prompt)
         self.assertNotIn("continue|", gm_prompt)

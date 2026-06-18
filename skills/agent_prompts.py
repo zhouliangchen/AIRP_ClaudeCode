@@ -165,6 +165,16 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         ],
         "parallel_groups": [],
         "world_state_delta": [],
+        "character_promotions": [
+            {
+                "name": "ExampleName",
+                "source_agent": "gm",
+                "reason": "why this character now needs independent agency",
+                "profile_seed": "seed used for profile text",
+                "visibility": "character_private_and_gm",
+                "activation": "current_turn",
+            }
+        ],
         "decision_point": None,
         "stop_reason": "continue",
     })
@@ -174,7 +184,13 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "gm.output.json",
         contract,
         context,
-    ) + "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, `word_target`, `complete`, `max_steps`.\n"
+    ) + (
+        "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, "
+        "`word_target`, `complete`, `max_steps`.\n"
+        "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
+        "inside `character_promotions`; preprocess is handled by input analysis; "
+        "GM assistants must not emit promotion records.\n"
+    )
 
 
 def _player_prompt(context: Dict[str, Any]) -> str:
@@ -231,6 +247,11 @@ def _character_prompt(context: Dict[str, Any]) -> str:
         "Use only the allowed context below and return exactly one JSON character actor output object. "
         "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
     ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+
+
+def character_prompt_text(context: Dict[str, Any]) -> str:
+    """Return the generated character prompt text for a projected loop packet."""
+    return _character_prompt(context if isinstance(context, dict) else {})
 
 
 def _story_prompt(run_summary: Dict[str, Any]) -> str:

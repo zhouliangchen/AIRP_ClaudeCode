@@ -21,6 +21,7 @@ def _clean_name(value: Any) -> str:
 
 def _authoritative_setting(record: Dict[str, Any]) -> str:
     for key in (
+        "profile_seed",
         "text",
         "setting_text",
         "authoritative_setting",
@@ -56,19 +57,38 @@ def _write_card_data(card_folder: Any, card_data: Dict[str, Any]) -> None:
     )
 
 
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _profile_markdown(
     *,
     name: str,
     setting_text: str,
     source_input_id: str,
     round_id: str,
+    source_agent: str,
 ) -> str:
+    if source_agent == "preprocess":
+        heading = "Authoritative Player Setting"
+        source = "input_analysis"
+        player_authoritative = "true"
+    else:
+        heading = "GM-Originated Promotion Seed"
+        source = "character_promotion"
+        player_authoritative = "false"
     return "\n".join(
         [
             f"# {name}",
             "",
-            "## Authoritative Player Setting",
-            "- source: input_analysis",
+            f"## {heading}",
+            f"- source: {source}",
+            f"- source_agent: {source_agent}",
+            f"- player_authoritative: {player_authoritative}",
             f"- source_input_id: {source_input_id}",
             f"- round_id: {round_id}",
             "- importance: major",
@@ -87,17 +107,27 @@ def _profile_json(
     source_input_id: str,
     round_id: str,
     source_unit_id: str,
+    source_agent: str,
 ) -> Dict[str, Any]:
+    history_entry = {
+        "source_agent": source_agent,
+        "source": "input_analysis" if source_agent == "preprocess" else "character_promotion",
+        "source_unit_id": source_unit_id,
+        "source_input_id": source_input_id,
+        "round_id": round_id,
+    }
     return {
         "name": name,
         "importance": "major",
-        "source": "input_analysis",
+        "source": history_entry["source"],
+        "source_agent": source_agent,
         "source_unit_id": source_unit_id,
         "source_input_id": source_input_id,
         "round_id": round_id,
         "visibility": "character_private_and_gm",
         "status": "active",
         "authoritative_setting": setting_text,
+        "history": [history_entry],
     }
 
 
@@ -108,6 +138,7 @@ def persist_important_characters(
     *,
     source_input_id: str = "",
     round_id: str = "",
+    source_agent: str = "preprocess",
 ) -> List[Dict[str, Any]]:
     """Persist input-analysis important/core character records.
 
@@ -129,6 +160,11 @@ def persist_important_characters(
     orchestration.setdefault("minor_policy", "main_agent")
     orchestration.setdefault("max_parallel_subagents", 2)
 
+    source_agent = _to_text(source_agent).strip() or "preprocess"
+    if source_agent == "input_analysis":
+        source_agent = "preprocess"
+    allow_profile_overwrite = source_agent == "preprocess"
+
     persisted: List[Dict[str, Any]] = []
     changed_card_data = False
     for record in records:
@@ -145,13 +181,32 @@ def persist_important_characters(
         safe = agent_run.safe_name(name)
         char_dir = Path(card_folder) / "memory" / "characters" / safe
         char_dir.mkdir(parents=True, exist_ok=True)
+        profile_md_path = char_dir / "profile.md"
+        profile_json_path = char_dir / "profile.json"
+        profile_exists = profile_md_path.exists() or profile_json_path.exists()
         source_unit_id = _to_text(record.get("id") or record.get("source_unit_id")).strip()
-        (char_dir / "profile.md").write_text(
+
+        if profile_exists and not allow_profile_overwrite:
+            existing = _read_json_object(profile_json_path)
+            persisted.append(
+                {
+                    "name": name,
+                    "safe_name": safe,
+                    "profile_md": str(profile_md_path.resolve()),
+                    "profile_json": str(profile_json_path.resolve()),
+                    "profile_preserved": True,
+                    "existing_source_agent": existing.get("source_agent") or existing.get("source") or "",
+                }
+            )
+            continue
+
+        profile_md_path.write_text(
             _profile_markdown(
                 name=name,
                 setting_text=setting_text,
                 source_input_id=_to_text(source_input_id),
                 round_id=_to_text(round_id),
+                source_agent=source_agent,
             ),
             encoding="utf-8",
         )
@@ -161,8 +216,9 @@ def persist_important_characters(
             source_input_id=_to_text(source_input_id),
             round_id=_to_text(round_id),
             source_unit_id=source_unit_id,
+            source_agent=source_agent,
         )
-        (char_dir / "profile.json").write_text(
+        profile_json_path.write_text(
             json.dumps(profile, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -170,8 +226,9 @@ def persist_important_characters(
             {
                 "name": name,
                 "safe_name": safe,
-                "profile_md": str((char_dir / "profile.md").resolve()),
-                "profile_json": str((char_dir / "profile.json").resolve()),
+                "profile_md": str(profile_md_path.resolve()),
+                "profile_json": str(profile_json_path.resolve()),
+                "profile_preserved": False,
             }
         )
 

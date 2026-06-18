@@ -37,6 +37,16 @@ class AgentSchemaTest(unittest.TestCase):
             ],
             "parallel_groups": [["character:SuLi", "character:ClassRep"]],
             "world_state_delta": [{"scope": "classroom", "fact": "The door is shut."}],
+            "character_promotions": [
+                {
+                    "name": "ClassRep",
+                    "source_agent": "gm",
+                    "reason": "ClassRep now needs independent agency.",
+                    "profile_seed": "Calm student monitor who tracks classroom rules.",
+                    "visibility": "character_private_and_gm",
+                    "activation": "current_turn",
+                }
+            ],
             "decision_point": None,
             "stop_reason": "continue",
         }
@@ -49,8 +59,50 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["actor_calls"][0]["actor_id"], "character:SuLi")
         self.assertEqual(normalized["parallel_groups"], payload["parallel_groups"])
         self.assertEqual(normalized["world_state_delta"], payload["world_state_delta"])
+        self.assertEqual(normalized["character_promotions"][0]["name"], "ClassRep")
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")
+
+    def test_validate_gm_output_defaults_character_promotions_to_empty_list(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_gm_output(payload)
+
+        self.assertEqual(normalized["character_promotions"], [])
+
+    def test_validate_gm_output_rejects_gm_assistant_character_promotions(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "character_promotions": [
+                {
+                    "name": "Side NPC",
+                    "source_agent": "gm_assistant:thread-1",
+                    "reason": "Assistant wants promotion.",
+                    "profile_seed": "Not allowed.",
+                    "visibility": "character_private_and_gm",
+                    "activation": "future_turn",
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "gm_assistant"):
+            self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_rejects_malformed_scene_beats(self):
         payload = {

@@ -756,6 +756,8 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertIn(self.important_text, profile_md.read_text(encoding="utf-8"))
         profile = json.loads(profile_json.read_text(encoding="utf-8"))
         self.assertEqual(profile["source"], "input_analysis")
+        self.assertEqual(profile["source_agent"], "preprocess")
+        self.assertEqual(profile["history"][-1]["source_agent"], "preprocess")
         self.assertEqual(profile["authoritative_setting"], self.important_text)
         self.assertEqual(input_json["raw_text"], self.raw_text)
         self.assertEqual(input_json["routed_input"]["role_channel"], self.role_text)

@@ -338,6 +338,7 @@ def apply_current_run(card_folder, root_dir=None):
         important_records,
         source_input_id=source_input_id,
         round_id=run_dir.name,
+        source_agent="preprocess",
     )
 
     previous_input = agent_run.read_json(run_dir / "input.json", {}) or {}

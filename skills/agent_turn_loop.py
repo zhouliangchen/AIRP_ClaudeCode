@@ -13,6 +13,7 @@ import agent_projection
 import agent_run
 import agent_schemas
 import agent_visibility_guard
+import character_promotions
 
 
 MAX_LOOP_STEPS = 8
@@ -67,6 +68,57 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
 
 def _registered_actor_targets(input_payload: dict) -> set[str]:
     return {"player", * _characters_by_actor_id(input_payload).keys()}
+
+
+def _card_folder_for_run(run_dir: Path) -> Path:
+    return run_dir.parent.parent if run_dir.parent.name == ".agent_runs" else run_dir.parent
+
+
+def _ensure_character_context(input_payload: dict, promotion: dict) -> None:
+    name = str(promotion.get("name") or "").strip()
+    if not name:
+        return
+    contexts = input_payload.get("character_contexts")
+    if not isinstance(contexts, dict):
+        contexts = {}
+        input_payload["character_contexts"] = contexts
+    characters = contexts.get("characters")
+    if isinstance(characters, dict):
+        characters = list(characters.values())
+    elif not isinstance(characters, list):
+        characters = []
+    existing_names = {
+        str(item.get("name") or item.get("character_name") or "").strip()
+        for item in characters
+        if isinstance(item, dict)
+    }
+    if name not in existing_names:
+        context = dict(promotion)
+        context["name"] = name
+        if "memory" not in context:
+            seed = str(context.get("profile_seed") or context.get("profile_summary") or "").strip()
+            context["profile_summary"] = seed
+            context["memory"] = {"long_term": [seed] if seed else [], "recent": [], "goals": []}
+        characters.append(context)
+    contexts["characters"] = characters
+
+
+def _apply_character_promotions(root: Path, input_payload: dict, gm_output: dict) -> dict:
+    records = gm_output.get("character_promotions", [])
+    if not records:
+        return {"promoted": [], "registered": [], "skipped": [], "records": []}
+    try:
+        result = character_promotions.apply_promotions(
+            _card_folder_for_run(root),
+            records,
+            round_id=root.name,
+        )
+    except character_promotions.CharacterPromotionError as exc:
+        raise AgentTurnLoopError(f"invalid character promotion: {exc}") from exc
+    for context in result.get("contexts", []):
+        if isinstance(context, dict):
+            _ensure_character_context(input_payload, context)
+    return result
 
 
 def _participants(input_payload: dict) -> list[str]:
@@ -377,6 +429,8 @@ def run_interactive_loop(
     for step_index in range(step_limit):
         raw_gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
         gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
+        _apply_character_promotions(root, input_payload, gm_output)
+        registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         gm_outputs.append(gm_output)
         _apply_world_state_delta(world_state, gm_output)

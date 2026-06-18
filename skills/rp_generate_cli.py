@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 import agent_outputs
+import agent_prompts
 import agent_run
 import agent_schemas
 import agent_turn_loop
@@ -302,7 +303,12 @@ def _dispatch_and_write(
     return normalized
 
 
-def _read_loop_prompt(run_dir: Path, manifest: Dict[str, Any], agent_key: str) -> str:
+def _read_loop_prompt(
+    run_dir: Path,
+    manifest: Dict[str, Any],
+    agent_key: str,
+    packet: Dict[str, Any] | None = None,
+) -> str:
     if agent_key in {"gm", "player"}:
         return _read_prompt(run_dir, manifest, agent_key)
     if not agent_key.startswith("character:"):
@@ -315,11 +321,15 @@ def _read_loop_prompt(run_dir: Path, manifest: Dict[str, Any], agent_key: str) -
     actor_name = agent_key.split(":", 1)[1]
     prompt_rel = character_prompts.get(actor_name) or character_prompts.get(agent_run.safe_name(actor_name))
     if not isinstance(prompt_rel, str) or not prompt_rel:
+        if packet is not None:
+            return agent_prompts.character_prompt_text(packet)
         raise AgentExecutionError(f"Missing prompt path for {agent_key}.")
     prompt_path = run_dir / prompt_rel
     try:
         return prompt_path.read_text(encoding="utf-8")
     except OSError as exc:
+        if packet is not None:
+            return agent_prompts.character_prompt_text(packet)
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
 
 
@@ -332,7 +342,7 @@ def _run_interactive_agent_loop(
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         return _dispatch_agent_payload(
             agent_key,
-            _read_loop_prompt(run_dir, manifest, agent_key),
+            _read_loop_prompt(run_dir, manifest, agent_key, packet),
             root,
             run_claude,
             extra_context={"loop_packet": packet},

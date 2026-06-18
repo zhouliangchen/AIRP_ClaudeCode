@@ -946,6 +946,126 @@ class AgentTurnLoopTest(unittest.TestCase):
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
         self.assertEqual(len(actor_outputs["character:SuLi"]), 1)
 
+    def test_gm_can_promote_and_call_new_character_in_same_turn(self):
+        self.agent_run.write_json(self.run_dir.parent / ".card_data.json", {
+            "character_orchestration": {"major": []},
+        })
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {"role_channel": "I notice the class rep watching.", "user_instruction_channel": ""},
+            "character_contexts": {"characters": []},
+        })
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, json_copy(packet)))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The class rep steps into the aisle."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-ClassRep-1",
+                        "actor_id": "character:ClassRep",
+                        "prompt": "You notice the player hiding the pendant.",
+                        "reason": "ClassRep now has independent agency.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "character_promotions": [{
+                        "name": "ClassRep",
+                        "source_agent": "gm",
+                        "reason": "ClassRep now drives the classroom consequence.",
+                        "profile_seed": "Rule-bound class monitor with a sharp eye.",
+                        "visibility": "character_private_and_gm",
+                        "activation": "current_turn",
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:ClassRep")
+            self.assertEqual(packet["actor_id"], "character:ClassRep")
+            self.assertEqual(packet["self_knowledge"]["name"], "ClassRep")
+            return {
+                "agent": "character",
+                "agent_id": "character:ClassRep",
+                "character_name": "ClassRep",
+                "events": [{"type": "action", "target": "", "content": "I mark the pendant in the attendance book."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "character:ClassRep"])
+        self.assertEqual(result["called_actors"], ["character:ClassRep"])
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertIn("character:ClassRep", actor_outputs)
+        card_data = self.agent_run.read_json(self.run_dir.parent / ".card_data.json")
+        self.assertIn("ClassRep", card_data["character_orchestration"]["major"])
+        self.assertTrue((self.run_dir.parent / "memory" / "characters" / "ClassRep" / "profile.json").exists())
+
+    def test_gm_same_turn_context_preserves_existing_preprocess_profile(self):
+        self.agent_run.write_json(self.run_dir.parent / ".card_data.json", {
+            "character_orchestration": {"major": []},
+        })
+        char_dir = self.run_dir.parent / "memory" / "characters" / "ClassRep"
+        char_dir.mkdir(parents=True)
+        self.agent_run.write_json(char_dir / "profile.json", {
+            "name": "ClassRep",
+            "source": "input_analysis",
+            "source_agent": "preprocess",
+            "authoritative_setting": "Preprocess authoritative class monitor profile.",
+            "visibility": "character_private_and_gm",
+        })
+        (char_dir / "profile.md").write_text("Preprocess authoritative class monitor profile.", encoding="utf-8")
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {"role_channel": "I notice the class rep watching.", "user_instruction_channel": ""},
+            "character_contexts": {"characters": []},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The class rep steps into the aisle."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-ClassRep-1",
+                        "actor_id": "character:ClassRep",
+                        "prompt": "You notice the player hiding the pendant.",
+                        "reason": "ClassRep now has independent agency.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "character_promotions": [{
+                        "name": "ClassRep",
+                        "source_agent": "gm",
+                        "reason": "ClassRep now drives the classroom consequence.",
+                        "profile_seed": "Weaker GM seed must not become actor memory.",
+                        "visibility": "character_private_and_gm",
+                        "activation": "current_turn",
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:ClassRep")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:ClassRep",
+                "character_name": "ClassRep",
+                "events": [{"type": "action", "target": "", "content": "I mark the pendant in the attendance book."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(result["called_actors"], ["character:ClassRep"])
+        self.assertEqual(len(actor_packets), 1)
+        serialized = json.dumps(actor_packets[0], ensure_ascii=False)
+        self.assertIn("Preprocess authoritative class monitor profile.", serialized)
+        self.assertNotIn("Weaker GM seed must not become actor memory.", serialized)
+
     def test_invalid_gm_output_raises_clear_loop_error(self):
         def dispatch(agent_key, packet):
             self.assertEqual(agent_key, "gm")
