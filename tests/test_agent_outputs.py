@@ -321,6 +321,18 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm.output.json.*gm_loop"):
             self.agent_outputs.build_story_input(self.run_dir)
 
+    def test_build_story_input_rejects_empty_gm_loop_outputs(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"gm\.output\.json\.outputs.*empty"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
     def test_build_story_input_rejects_actor_outputs_value_that_is_not_a_list(self):
         _write_json(
             self.run_dir / "actor.outputs.json",
@@ -335,6 +347,27 @@ class AgentOutputsTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json\.player.*list"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_actor_map_key_agent_id_mismatch(self):
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Eve",
+                        "character_name": "Eve",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "This came from Eve."}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ]
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "agent_id mismatch"):
             self.agent_outputs.build_story_input(self.run_dir)
 
     def test_build_story_input_rejects_legacy_actor_output_item(self):

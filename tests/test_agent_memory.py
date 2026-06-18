@@ -42,13 +42,21 @@ class AgentMemoryTest(unittest.TestCase):
                 "round_id": "round-000001",
                 "player_inputs": {"raw_text": "I open the archive door."},
                 "memory_deltas": {
-                    "player": [
-                        {"text": "I opened the archive door and smelled old paper.", "source": "perceived"}
-                    ],
-                    "characters": {
-                        "Ada": [
-                            {"text": "I saw the player enter the archive.", "source": "perceived"}
-                        ]
+                    "actors": {
+                        "player": [
+                            {
+                                "type": "memory_delta",
+                                "content": "I opened the archive door and smelled old paper.",
+                                "target": "self",
+                            }
+                        ],
+                        "character:Ada": [
+                            {
+                                "type": "goal_update",
+                                "content": "I saw the player enter the archive.",
+                                "target": "self",
+                            }
+                        ],
                     },
                     "world": [
                         {"scope": "room", "fact": "the archive door is open"}
@@ -89,12 +97,32 @@ class AgentMemoryTest(unittest.TestCase):
 
     def test_actor_memory_rejects_gm_only_source(self):
         story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
-        story_input["memory_deltas"]["characters"]["Ada"] = [
-            {"text": "The hidden vault was never real.", "source": "gm_only"}
+        story_input["memory_deltas"]["actors"]["character:Ada"] = [
+            {
+                "type": "memory_delta",
+                "content": "The hidden vault was never real.",
+                "target": "self",
+                "source": "gm_only",
+            }
         ]
         _write_json(self.run_dir / "story.input.json", story_input)
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "gm_only"):
+            self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
+
+    def test_actor_memory_rejects_forbidden_marker_field_on_event_delta(self):
+        story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+        story_input["memory_deltas"]["actors"]["player"] = [
+            {
+                "type": "memory_delta",
+                "content": "I should not persist hidden notes.",
+                "target": "self",
+                "hidden_note": "private GM-only marker",
+            }
+        ]
+        _write_json(self.run_dir / "story.input.json", story_input)
+
+        with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "hidden_note"):
             self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
 
     def test_ingest_memory_deltas_preserves_player_input_log(self):

@@ -81,7 +81,7 @@ def _text_from_delta(item: Any, path: str) -> str:
     if isinstance(item, str):
         text = item.strip()
     elif isinstance(item, dict):
-        text = str(item.get("text") or item.get("fact") or "").strip()
+        text = str(item.get("text") or item.get("fact") or item.get("content") or "").strip()
     else:
         text = ""
     if not text:
@@ -115,6 +115,43 @@ def _world_text(item: Any, path: str) -> str:
 
 def _dated_lines(date_str: str, round_id: str, agent_id: str, texts: list[str]) -> list[str]:
     return [f"- {date_str} [{round_id}/{agent_id}] {text}" for text in texts]
+
+
+def _ingest_actor_memory_delta(
+    card: Path,
+    ledger: set[str],
+    round_id: str,
+    date_str: str,
+    agent_id: str,
+    items: Any,
+    path: str,
+) -> str | None:
+    if not items:
+        return None
+    if not isinstance(items, list):
+        raise MemoryIngestionError(f"{path}: actor memory deltas must be a list")
+
+    actor_id = str(agent_id or "").strip()
+    if actor_id == "player":
+        normalized_id = "player"
+        recent_path = card / "memory" / "player" / "recent.md"
+        header = "# Player Agent Memory\n"
+    elif actor_id.startswith("character:"):
+        safe = _safe_name(actor_id.split(":", 1)[1])
+        normalized_id = f"character:{safe}"
+        recent_path = card / "memory" / "characters" / safe / "recent.md"
+        header = "# Character Recent Memory\n"
+    else:
+        raise MemoryIngestionError(f"{path}: unsupported actor memory id {actor_id}")
+
+    key = f"{round_id}:{normalized_id}"
+    if key in ledger:
+        return None
+
+    texts = [_validate_actor_delta(item, f"{path}[{index}]") for index, item in enumerate(items)]
+    _append_lines(recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts))
+    ledger.add(key)
+    return normalized_id
 
 
 def memory_summary_due(round_id: str, interval: int = 6) -> bool:
@@ -423,39 +460,50 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
     ledger = _load_ledger(card)
     ingested: list[str] = []
 
-    player_items = deltas.get("player") or []
-    if player_items:
-        key = f"{round_id}:player"
-        if key not in ledger:
-            texts = [_validate_actor_delta(item, f"memory_deltas.player[{index}]") for index, item in enumerate(player_items)]
-            _append_lines(
-                card / "memory" / "player" / "recent.md",
-                "# Player Agent Memory\n",
-                _dated_lines(now, round_id, "player", texts),
+    actor_deltas = deltas.get("actors") or {}
+    if actor_deltas:
+        if not isinstance(actor_deltas, dict):
+            raise MemoryIngestionError("memory_deltas.actors must be an object")
+        for actor_id, items in actor_deltas.items():
+            ingested_id = _ingest_actor_memory_delta(
+                card,
+                ledger,
+                round_id,
+                now,
+                str(actor_id),
+                items,
+                f"memory_deltas.actors.{actor_id}",
             )
-            ledger.add(key)
-            ingested.append("player")
+            if ingested_id:
+                ingested.append(ingested_id)
+
+    player_items = deltas.get("player") or []
+    ingested_id = _ingest_actor_memory_delta(
+        card,
+        ledger,
+        round_id,
+        now,
+        "player",
+        player_items,
+        "memory_deltas.player",
+    )
+    if ingested_id:
+        ingested.append(ingested_id)
 
     character_deltas = deltas.get("characters") or {}
     if isinstance(character_deltas, dict):
         for name, items in character_deltas.items():
-            if not items:
-                continue
-            safe = _safe_name(str(name))
-            key = f"{round_id}:character:{safe}"
-            if key in ledger:
-                continue
-            texts = [
-                _validate_actor_delta(item, f"memory_deltas.characters.{safe}[{index}]")
-                for index, item in enumerate(items)
-            ]
-            _append_lines(
-                card / "memory" / "characters" / safe / "recent.md",
-                "# Character Recent Memory\n",
-                _dated_lines(now, round_id, f"character:{safe}", texts),
+            ingested_id = _ingest_actor_memory_delta(
+                card,
+                ledger,
+                round_id,
+                now,
+                f"character:{name}",
+                items,
+                f"memory_deltas.characters.{_safe_name(str(name))}",
             )
-            ledger.add(key)
-            ingested.append(f"character:{safe}")
+            if ingested_id:
+                ingested.append(ingested_id)
 
     world_items = deltas.get("world") or []
     if world_items:

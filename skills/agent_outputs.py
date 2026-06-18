@@ -67,6 +67,8 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
     gm_items = gm_loop.get("outputs")
     if not isinstance(gm_items, list):
         raise AgentOutputError(f"{gm_path}.outputs: must be a list")
+    if not gm_items:
+        raise AgentOutputError(f"{gm_path}.outputs: must not be empty")
     normalized_gm_outputs = []
     for index, item in enumerate(gm_items):
         try:
@@ -76,16 +78,22 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
 
     normalized_actor_outputs = {}
     for actor_id, outputs in actor_outputs.items():
-        actor_context = f"{actor_path}.{actor_id}"
+        actor_key = str(actor_id)
+        actor_context = f"{actor_path}.{actor_key}"
         if not isinstance(outputs, list):
             raise AgentOutputError(f"{actor_context}: must be a list")
         normalized_outputs = []
         for index, item in enumerate(outputs):
             try:
-                normalized_outputs.append(agent_schemas.validate_actor_output(item))
+                normalized = agent_schemas.validate_actor_output(item)
             except agent_schemas.ValidationError as exc:
                 raise AgentOutputError(f"{actor_context}[{index}]: {exc}") from exc
-        normalized_actor_outputs[str(actor_id)] = normalized_outputs
+            if normalized["agent_id"] != actor_key:
+                raise AgentOutputError(
+                    f"{actor_context}[{index}].agent_id mismatch: expected {actor_key}, got {normalized['agent_id']}"
+                )
+            normalized_outputs.append(normalized)
+        normalized_actor_outputs[actor_key] = normalized_outputs
 
     return {
         "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
