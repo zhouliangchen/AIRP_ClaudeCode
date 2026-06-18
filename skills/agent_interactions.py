@@ -36,8 +36,38 @@ def _write(run_dir: str | Path, trace: Dict[str, Any]) -> Dict[str, Any]:
     return trace
 
 
-def _string_list(items: Iterable[str] | None) -> list[str]:
-    return [str(item) for item in (items or [])]
+def _schema_version(value: Any) -> int:
+    if isinstance(value, bool):
+        return 2
+    try:
+        version = int(value)
+    except (TypeError, ValueError):
+        return 2
+    return version if version > 0 else 2
+
+
+def _safe_id(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if all(ch.isalnum() or ch in "_:-" for ch in text):
+        return text
+    return ""
+
+
+def _safe_id_list(items: Iterable[str] | None) -> list[str]:
+    if items is None or isinstance(items, (str, bytes, dict)):
+        return []
+    if isinstance(items, set):
+        values = sorted(items, key=str)
+    else:
+        try:
+            values = list(items)
+        except TypeError:
+            return []
+    return [safe for safe in (_safe_id(item) for item in values) if safe]
 
 
 def _parallel_groups(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -48,9 +78,12 @@ def _parallel_groups(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
     for item in groups:
         if not isinstance(item, dict):
             continue
+        group_id = _safe_id(item.get("group_id", ""))
+        if not group_id:
+            continue
         normalized.append({
-            "group_id": str(item.get("group_id", "")),
-            "actors": _string_list(item.get("actors", [])),
+            "group_id": group_id,
+            "actors": _safe_id_list(item.get("actors", [])),
         })
     return normalized
 
@@ -102,9 +135,9 @@ def append_event(
         "visibility": str(visibility),
         "type": str(event_type),
         "content": str(content),
-        "target": str(target),
-        "source_call_id": str(source_call_id),
-        "causal_links": _string_list(causal_links),
+        "target": _safe_id(target),
+        "source_call_id": _safe_id(source_call_id),
+        "causal_links": _safe_id_list(causal_links),
     }
     events.append(event)
     trace["updated_at"] = _now()
@@ -122,10 +155,12 @@ def record_parallel_group(
     if not isinstance(groups, list):
         groups = []
         trace["parallel_groups"] = groups
-    groups.append({
-        "group_id": str(group_id),
-        "actors": _string_list(actors),
-    })
+    safe_group_id = _safe_id(group_id)
+    if safe_group_id:
+        groups.append({
+            "group_id": safe_group_id,
+            "actors": _safe_id_list(actors),
+        })
     trace["updated_at"] = _now()
     return _write(run_dir, trace)
 
@@ -191,9 +226,9 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "actor": str(item.get("actor", "")),
             "type": str(item.get("type", "")),
             "content": str(item.get("content", "")),
-            "target": str(item.get("target", "")),
-            "source_call_id": str(item.get("source_call_id", "")),
-            "causal_links": _string_list(item.get("causal_links", [])),
+            "target": _safe_id(item.get("target", "")),
+            "source_call_id": _safe_id(item.get("source_call_id", "")),
+            "causal_links": _safe_id_list(item.get("causal_links", [])),
         })
     private_count = len([
         item for item in events
@@ -213,7 +248,7 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
     else:
         decision_point = None
     return {
-        "schema_version": int(trace.get("schema_version", 2) or 2),
+        "schema_version": _schema_version(trace.get("schema_version", 2) or 2),
         "round_id": trace.get("round_id", Path(run_dir).name),
         "status": trace.get("status", ""),
         "visible_events": visible,

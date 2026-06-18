@@ -130,6 +130,110 @@ class AgentInteractionTraceTest(unittest.TestCase):
         self.assertEqual(summary["visible_events"], [])
         self.assertEqual(summary["private_event_count"], 0)
 
+    def test_summary_falls_back_when_schema_version_is_non_numeric(self):
+        trace = {
+            "schema_version": {"not": "a number"},
+            "round_id": "round-000001",
+            "status": "interacting",
+            "events": [],
+            "parallel_groups": [],
+        }
+        (self.run_dir / "interaction.trace.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(summary["schema_version"], 2)
+
+    def test_summary_drops_malformed_causal_links(self):
+        trace = {
+            "schema_version": 2,
+            "round_id": "round-000001",
+            "status": "interacting",
+            "events": [
+                {
+                    "actor": "character:Ada",
+                    "visibility": "world_visible",
+                    "type": "dialogue",
+                    "content": "Stay close.",
+                    "source_call_id": "call-player-1",
+                    "causal_links": "Hidden truth: event-0.",
+                },
+                {
+                    "actor": "character:Ada",
+                    "visibility": "world_visible",
+                    "type": "gesture",
+                    "content": "Ada points at the latch.",
+                    "source_call_id": "call-player-2",
+                    "causal_links": ["event-0", "GM only: moon base.", 42, {"id": "event-1"}],
+                },
+            ],
+            "parallel_groups": [],
+        }
+        (self.run_dir / "interaction.trace.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(summary["visible_events"][0]["causal_links"], [])
+        self.assertEqual(summary["visible_events"][1]["causal_links"], ["event-0"])
+
+    def test_summary_drops_malformed_parallel_groups(self):
+        trace = {
+            "schema_version": 2,
+            "round_id": "round-000001",
+            "status": "interacting",
+            "events": [],
+            "parallel_groups": [
+                "group-ignored",
+                {"group_id": "group-1", "actors": "character:A"},
+                {"group_id": "group-2", "actors": ["character:B", 42, {"id": "character:C"}]},
+                {"group_id": "Hidden truth: group.", "actors": ["character:D"]},
+            ],
+        }
+        (self.run_dir / "interaction.trace.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(summary["parallel_groups"], [
+            {"group_id": "group-1", "actors": []},
+            {"group_id": "group-2", "actors": ["character:B"]},
+        ])
+
+    def test_summary_drops_hidden_text_from_link_and_group_metadata(self):
+        trace = {
+            "schema_version": 2,
+            "round_id": "round-000001",
+            "status": "interacting",
+            "events": [
+                {
+                    "actor": "character:SuLi",
+                    "visibility": "world_visible",
+                    "type": "dialogue_transfer",
+                    "content": "I will take it from here.",
+                    "target": "character:SuLi",
+                    "source_call_id": "GM only: moon base.",
+                    "causal_links": ["event-0", "Hidden truth: moon base.", "call-player-1"],
+                },
+            ],
+            "parallel_groups": [
+                {"group_id": "Hidden truth: group.", "actors": ["character:A"]},
+                {"group_id": "group-1", "actors": ["player", "GM only: moon base.", "character:SuLi"]},
+            ],
+        }
+        (self.run_dir / "interaction.trace.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+        summary_text = json.dumps(summary, ensure_ascii=False)
+
+        self.assertEqual(summary["visible_events"][0]["source_call_id"], "")
+        self.assertEqual(summary["visible_events"][0]["causal_links"], ["event-0", "call-player-1"])
+        self.assertEqual(summary["parallel_groups"], [{
+            "group_id": "group-1",
+            "actors": ["player", "character:SuLi"],
+        }])
+        self.assertNotIn("Hidden truth", summary_text)
+        self.assertNotIn("GM only", summary_text)
+        self.assertNotIn("moon base", summary_text)
+
     def test_summary_sanitizes_private_decision_and_event_fields(self):
         trace = {
             "round_id": "round-000001",
