@@ -166,11 +166,20 @@ def _prepare_actor_memory_delta(
         recent_path = card / "memory" / "player" / "recent.md"
         header = "# Player Agent Memory\n"
     elif actor_id.startswith("character:"):
-        safe = _safe_name(actor_id.split(":", 1)[1])
+        name = actor_id.split(":", 1)[1].strip()
+        if not name:
+            raise MemoryIngestionError(f"{path}: unsupported actor memory id {actor_id}")
+        marker = _contains_forbidden_marker(name)
+        if marker:
+            raise MemoryIngestionError(f"{path}: forbidden actor marker {marker}")
+        safe = _safe_name(name)
         normalized_id = f"character:{safe}"
         recent_path = card / "memory" / "characters" / safe / "recent.md"
         header = "# Character Recent Memory\n"
     else:
+        marker = _contains_forbidden_marker(actor_id)
+        if marker:
+            raise MemoryIngestionError(f"{path}: forbidden actor marker {marker}")
         raise MemoryIngestionError(f"{path}: unsupported actor memory id {actor_id}")
 
     if not items:
@@ -320,16 +329,29 @@ def _as_text_list(value: Any) -> list[str]:
     return texts
 
 
-def _contains_forbidden_marker(text: str) -> str:
+def _canonical_tokens(text: str) -> list[str]:
     raw = str(text or "")
-    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw)
-    lowered = camel_separated.lower()
-    normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
-    compact = re.sub(r"[^a-z0-9]+", "", lowered)
-    for marker in ACTOR_FORBIDDEN_MARKERS:
-        marker_compact = re.sub(r"[^a-z0-9]+", "", marker)
-        if marker in lowered or marker in normalized or marker_compact in compact:
-            return marker
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+ACTOR_FORBIDDEN_MARKER_TOKENS = {
+    marker: tuple(_canonical_tokens(marker))
+    for marker in ACTOR_FORBIDDEN_MARKERS
+}
+
+
+def _contains_forbidden_marker(text: str) -> str:
+    tokens = _canonical_tokens(text)
+    if not tokens:
+        return ""
+    for marker, marker_tokens in ACTOR_FORBIDDEN_MARKER_TOKENS.items():
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                return marker
     return ""
 
 

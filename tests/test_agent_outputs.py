@@ -383,6 +383,27 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_build_story_input_rejects_hidden_marker_actor_map_keys_even_when_empty(self):
+        for actor_key, expected in (
+            ("character:", "character:"),
+            ("character:gmOnly", "gm_only"),
+            ("gm_only", "gm_only"),
+        ):
+            with self.subTest(actor_key=actor_key):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "actor.outputs.json",
+                    {
+                        actor_key: [],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, expected):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
     def test_build_story_input_rejects_gm_actor_call_without_actor_output(self):
         _write_json(
             self.run_dir / "gm.output.json",
@@ -429,6 +450,75 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_requires_actor_output_count_for_each_gm_call(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada answers once, then is asked again."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-ada-1",
+                                "actor_id": "character:Ada",
+                                "prompt": "React to the door opening.",
+                                "reason": "Ada is present.",
+                            },
+                            {
+                                "call_id": "call-ada-2",
+                                "actor_id": "character:Ada",
+                                "prompt": "React to the second question.",
+                                "reason": "The player keeps speaking to Ada.",
+                            },
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "character:Ada"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_allows_one_actor_output_for_one_gm_call(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada is close enough to respond."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-ada",
+                                "actor_id": "character:Ada",
+                                "prompt": "React to the player opening the archive door.",
+                                "reason": "Ada is present in the scene.",
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(len(story_input["loop_outputs"]["actors"]["character:Ada"]), 1)
 
     def test_build_story_input_rejects_memory_delta_event_source_field(self):
         _write_json(

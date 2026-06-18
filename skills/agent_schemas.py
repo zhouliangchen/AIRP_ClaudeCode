@@ -105,17 +105,62 @@ def _require_agent(payload: Dict[str, Any], expected: str, path: str = "") -> st
     return agent
 
 
-def _forbidden_actor_marker(text: str) -> str:
+def _canonical_tokens(text: str) -> list[str]:
     raw = str(text or "")
-    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw)
-    lowered = camel_separated.lower()
-    normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
-    compact = re.sub(r"[^a-z0-9]+", "", lowered)
-    for marker in FORBIDDEN_ACTOR_KEYS:
-        marker_compact = re.sub(r"[^a-z0-9]+", "", marker)
-        if marker in lowered or marker in normalized or marker_compact in compact:
-            return marker
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+FORBIDDEN_ACTOR_KEY_TOKENS = {
+    marker: tuple(_canonical_tokens(marker))
+    for marker in FORBIDDEN_ACTOR_KEYS
+}
+
+
+def _forbidden_actor_marker(text: str) -> str:
+    tokens = _canonical_tokens(text)
+    if not tokens:
+        return ""
+    for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                return marker
     return ""
+
+
+def _validate_actor_id_marker(actor_id: str, path: str) -> str:
+    actor_key = str(actor_id or "").strip()
+    if not actor_key:
+        raise ValidationError(f"{path} must not be blank")
+    marker_text = actor_key
+    if actor_key.startswith("character:"):
+        suffix = actor_key.split(":", 1)[1].strip()
+        if not suffix:
+            raise ValidationError(f"{path} must include a character id after 'character:'")
+        marker_text = suffix
+    marker = _forbidden_actor_marker(marker_text)
+    if marker:
+        raise ValidationError(f"{path}: forbidden actor marker {marker}")
+    return actor_key
+
+
+def _validate_actor_agent_id(agent: str, agent_id: str, path: str) -> str:
+    if agent == "player":
+        if agent_id != "player":
+            raise ValidationError("actor_output.agent_id must be 'player' when agent is 'player'")
+        return agent_id
+    if not agent_id.startswith("character:"):
+        raise ValidationError("actor_output.agent_id must start with 'character:' when agent is 'character'")
+    suffix = agent_id.split(":", 1)[1].strip()
+    if not suffix:
+        raise ValidationError(f"{path} must include a character id after 'character:'")
+    marker = _forbidden_actor_marker(suffix)
+    if marker:
+        raise ValidationError(f"{path}: forbidden actor marker {marker}")
+    return agent_id
 
 
 def _reject_forbidden_keys(value: Any, path: str = "") -> None:
@@ -188,9 +233,7 @@ def _normalize_gm_event(item: Any, path: str) -> Dict[str, Any]:
 
 def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
-    actor_id = _require_str(data, "actor_id", path).strip()
-    if not actor_id:
-        raise ValidationError(f"{_path(path, 'actor_id')} must not be blank")
+    actor_id = _validate_actor_id_marker(_require_str(data, "actor_id", path).strip(), _path(path, "actor_id"))
     normalized = {
         "call_id": _require_str(data, "call_id", path),
         "actor_id": actor_id,
@@ -246,11 +289,11 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
     agent = _require_str(data, "agent", "actor_output")
     if agent not in {"player", "character"}:
         raise ValidationError("actor_output.agent must be 'player' or 'character'")
-    agent_id = _require_str(data, "agent_id", "actor_output")
-    if agent == "player" and agent_id != "player":
-        raise ValidationError("actor_output.agent_id must be 'player' when agent is 'player'")
-    if agent == "character" and not agent_id.startswith("character:"):
-        raise ValidationError("actor_output.agent_id must start with 'character:' when agent is 'character'")
+    agent_id = _validate_actor_agent_id(
+        agent,
+        _require_str(data, "agent_id", "actor_output").strip(),
+        "actor_output.agent_id",
+    )
 
     normalized = {
         "agent": agent,

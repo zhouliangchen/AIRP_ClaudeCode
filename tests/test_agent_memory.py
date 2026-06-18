@@ -197,6 +197,85 @@ class AgentMemoryTest(unittest.TestCase):
 
                 self.assertFalse((card / "memory" / "player" / "recent.md").exists())
 
+    def test_actor_memory_rejects_explicit_hidden_marker_variants_in_event_content(self):
+        for marker, expected in (
+            ("gmOnly", "gm_only"),
+            ("gm-only", "gm_only"),
+            ("gm only", "gm_only"),
+            ("gm_only", "gm_only"),
+            ("worldTruth", "world_truth"),
+            ("hiddenNote", "hidden_note"),
+        ):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                run_dir = card / ".agent_runs" / "round-000001"
+                _write_json(
+                    run_dir / "story.input.json",
+                    {
+                        "round_id": "round-000001",
+                        "memory_deltas": {
+                            "actors": {
+                                "player": [
+                                    {
+                                        "type": "memory_delta",
+                                        "content": f"I should not persist {marker} knowledge.",
+                                        "target": "self",
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
+                    self.agent_memory.ingest_memory_deltas(card, run_dir)
+
+                self.assertFalse((card / "memory" / "player" / "recent.md").exists())
+
+    def test_actor_memory_allows_marker_words_inside_normal_prose(self):
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": "round-000001",
+                "memory_deltas": {
+                    "actors": {
+                        "player": [
+                            {
+                                "type": "memory_delta",
+                                "content": "I met a player named Ada",
+                                "target": "self",
+                            },
+                            {
+                                "type": "memory_delta",
+                                "content": "I found a hidden notebook",
+                                "target": "self",
+                            },
+                            {
+                                "type": "memory_delta",
+                                "content": "The world truthfully felt smaller.",
+                                "target": "self",
+                            },
+                        ]
+                    }
+                },
+            },
+        )
+
+        try:
+            result = self.agent_memory.ingest_memory_deltas(
+                self.card,
+                self.run_dir,
+                date_str="2026-06-16 12:00",
+            )
+        except self.agent_memory.MemoryIngestionError as exc:
+            self.fail(f"normal prose should be accepted: {exc}")
+
+        self.assertEqual(result["ingested"], ["player"])
+        player_recent = (self.card / "memory" / "player" / "recent.md").read_text(encoding="utf-8")
+        self.assertIn("I met a player named Ada", player_recent)
+        self.assertIn("I found a hidden notebook", player_recent)
+        self.assertIn("The world truthfully felt smaller.", player_recent)
+
     def test_ingest_memory_deltas_rejects_legacy_player_and_character_branches(self):
         _write_json(
             self.run_dir / "story.input.json",
@@ -281,6 +360,32 @@ class AgentMemoryTest(unittest.TestCase):
             self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
 
         self.assertFalse((self.card / "memory" / ".agent_memory_ingested.json").exists())
+
+    def test_ingest_memory_deltas_rejects_empty_hidden_marker_actor_branches(self):
+        for actor_key, expected in (
+            ("character:", "character:"),
+            ("character:gmOnly", "gm_only"),
+            ("gm_only", "gm_only"),
+        ):
+            with self.subTest(actor_key=actor_key), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                run_dir = card / ".agent_runs" / "round-000001"
+                _write_json(
+                    run_dir / "story.input.json",
+                    {
+                        "round_id": "round-000001",
+                        "memory_deltas": {
+                            "actors": {
+                                actor_key: [],
+                            },
+                        },
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
+                    self.agent_memory.ingest_memory_deltas(card, run_dir)
+
+                self.assertFalse((card / "memory" / ".agent_memory_ingested.json").exists())
 
     def test_actor_memory_rejects_old_item_shapes_under_actors(self):
         for item in ({"text": "old player memory"}, {"fact": "old player fact"}, "old player string"):

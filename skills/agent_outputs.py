@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -17,6 +18,32 @@ MAX_CRITIC_RETRIES = 2
 
 class AgentOutputError(RuntimeError):
     """Raised when a required agent artifact is missing or invalid."""
+
+
+def _canonical_tokens(text: str) -> list[str]:
+    raw = str(text or "")
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+FORBIDDEN_ACTOR_KEY_TOKENS = {
+    marker: tuple(_canonical_tokens(marker))
+    for marker in agent_schemas.FORBIDDEN_ACTOR_KEYS
+}
+
+
+def _forbidden_actor_marker(text: str) -> str:
+    tokens = _canonical_tokens(text)
+    if not tokens:
+        return ""
+    for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                return marker
+    return ""
 
 
 def _read_json_required(path: Path) -> Dict[str, Any]:
@@ -60,8 +87,17 @@ def _validate_actor_key(actor_id: Any, context: str) -> str:
     actor_key = str(actor_id or "").strip()
     if actor_key == "player":
         return actor_key
-    if actor_key.startswith("character:") and actor_key.split(":", 1)[1].strip():
+    if actor_key.startswith("character:"):
+        suffix = actor_key.split(":", 1)[1].strip()
+        if not suffix:
+            raise AgentOutputError(f"{context}: unsupported actor id {actor_key or '<blank>'}")
+        marker = _forbidden_actor_marker(suffix)
+        if marker:
+            raise AgentOutputError(f"{context}: forbidden actor marker {marker}")
         return actor_key
+    marker = _forbidden_actor_marker(actor_key)
+    if marker:
+        raise AgentOutputError(f"{context}: forbidden actor marker {marker}")
     raise AgentOutputError(f"{context}: unsupported actor id {actor_key or '<blank>'}")
 
 
@@ -70,12 +106,21 @@ def _require_called_actor_outputs(
     gm_outputs: list[Dict[str, Any]],
     actor_outputs: Dict[str, list[Dict[str, Any]]],
 ) -> None:
+    required_counts: Dict[str, int] = {}
+    first_context: Dict[str, str] = {}
     for gm_index, gm_output in enumerate(gm_outputs):
         for call_index, call in enumerate(gm_output.get("actor_calls", [])):
             context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}].actor_id"
             actor_id = _validate_actor_key(call.get("actor_id"), context)
-            if not actor_outputs.get(actor_id):
-                raise AgentOutputError(f"{context}: missing actor output for {actor_id}")
+            required_counts[actor_id] = required_counts.get(actor_id, 0) + 1
+            first_context.setdefault(actor_id, context)
+    for actor_id, required_count in required_counts.items():
+        actual_count = len(actor_outputs.get(actor_id) or [])
+        if actual_count < required_count:
+            raise AgentOutputError(
+                f"{first_context[actor_id]}: missing actor outputs for {actor_id}; "
+                f"required {required_count}, found {actual_count}"
+            )
 
 
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
