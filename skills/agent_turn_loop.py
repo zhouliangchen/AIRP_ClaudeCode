@@ -507,6 +507,16 @@ def _write_outputs(run_dir: Path, gm_outputs: list[dict], actor_outputs: dict[st
     agent_run.write_json(run_dir / "actor.outputs.json", actor_outputs)
 
 
+def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) -> dict:
+    filtered = dict(gm_output)
+    filtered["actor_calls"] = [
+        call
+        for call in gm_output.get("actor_calls", [])
+        if str(call.get("actor_id") or "") in registered_actor_targets
+    ]
+    return filtered
+
+
 def _decision_reason(decision_point: Any) -> str:
     if isinstance(decision_point, dict):
         return str(decision_point.get("reason") or "")
@@ -566,6 +576,7 @@ def run_interactive_loop(
 
     for step_index in range(step_limit):
         gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
+        gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         gm_outputs.append(gm_output)
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)

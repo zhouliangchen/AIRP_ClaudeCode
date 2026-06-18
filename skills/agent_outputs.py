@@ -187,6 +187,18 @@ def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str,
     return {"actors": actor_memory, "world": world}
 
 
+def _validate_trace_summary(root: Path) -> Dict[str, Any]:
+    summary = agent_interactions.summarize_for_story_input(root)
+    status = str(summary.get("status") or "").strip().lower()
+    schema_version = summary.get("schema_version")
+    if schema_version != 2 or not status or status in {"missing", "invalid"}:
+        raise AgentOutputError(
+            f"{root / 'interaction.trace.json'}: required trace v2 is missing or invalid "
+            f"(schema_version={schema_version!r}, status={status or '<missing>'})"
+        )
+    return summary
+
+
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     """Assemble story input from GM loop outputs and trace artifacts."""
     root = Path(run_dir)
@@ -197,6 +209,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
     loop_outputs = _load_loop_outputs(root)
+    trace_summary = _validate_trace_summary(root)
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
@@ -208,7 +221,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         },
         "loop_outputs": loop_outputs,
         "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"]),
-        "interaction_trace": agent_interactions.summarize_for_story_input(root),
+        "interaction_trace": trace_summary,
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
             "preserve_character_dialogue_metadata": True,

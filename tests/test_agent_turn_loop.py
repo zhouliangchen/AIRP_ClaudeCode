@@ -544,8 +544,34 @@ class AgentTurnLoopTest(unittest.TestCase):
             [agent_key for agent_key, _packet in calls],
             ["gm", "player", "character:SuLi"],
         )
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        persisted_actor_calls = gm_outputs["outputs"][0]["actor_calls"]
+        self.assertEqual(
+            [call["actor_id"] for call in persisted_actor_calls],
+            ["player", "character:SuLi"],
+        )
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
         self.assertEqual(sorted(actor_outputs), ["character:SuLi", "player"])
+        self.agent_run.write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "awaiting_agent_outputs",
+                "expected_outputs": {
+                    "gm": "gm.output.json",
+                    "actors": "actor.outputs.json",
+                    "story": "story.output.json",
+                    "critic": "critic.report.json",
+                },
+            },
+        )
+
+        story_input = load_module("agent_outputs").build_story_input(self.run_dir)
+
+        self.assertEqual(
+            [call["actor_id"] for call in story_input["loop_outputs"]["gm"]["outputs"][0]["actor_calls"]],
+            ["player", "character:SuLi"],
+        )
 
     def test_generated_transfer_source_call_id_is_ascii_safe_for_non_ascii_actor(self):
         self.agent_run.write_json(self.run_dir / "input.json", {

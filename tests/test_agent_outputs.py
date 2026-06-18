@@ -122,6 +122,11 @@ class AgentOutputsTest(unittest.TestCase):
                 ],
             },
         )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player", "character:Ada"],
+            chapter_target_words=1200,
+        )
 
     def _write_story_and_critic(self, decision="pass", system_iteration_suggestion=""):
         _write_json(
@@ -261,6 +266,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_includes_interaction_trace_summary(self):
         trace = {
+            "schema_version": 2,
             "round_id": "round-000001",
             "status": "decision_point",
             "participants": ["gm", "player", "character:Ada"],
@@ -280,13 +286,50 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(story_input["interaction_trace"]["visible_events"][0]["content"], "Stay close.")
         self.assertEqual(story_input["interaction_trace"]["private_event_count"], 1)
 
-    def test_build_story_input_degrades_malformed_interaction_trace(self):
+    def test_build_story_input_rejects_missing_interaction_trace_without_writing_story_input(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        (self.run_dir / "interaction.trace.json").unlink()
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
+
+    def test_build_story_input_rejects_malformed_interaction_trace(self):
+        if (self.run_dir / "story.input.json").exists():
+            (self.run_dir / "story.input.json").unlink()
         (self.run_dir / "interaction.trace.json").write_text("{bad json", encoding="utf-8")
 
-        story_input = self.agent_outputs.build_story_input(self.run_dir)
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
+            self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertEqual(story_input["interaction_trace"]["status"], "invalid")
-        self.assertEqual(story_input["interaction_trace"]["visible_events"], [])
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_legacy_interaction_trace_schema(self):
+        if (self.run_dir / "story.input.json").exists():
+            (self.run_dir / "story.input.json").unlink()
+        _write_json(
+            self.run_dir / "interaction.trace.json",
+            {
+                "schema_version": 1,
+                "round_id": "round-000001",
+                "status": "interacting",
+                "participants": ["gm", "player"],
+                "events": [],
+                "parallel_groups": [],
+                "decision_point": None,
+                "stop_reason": "",
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
 
     def test_build_story_input_blocks_missing_required_actor_outputs(self):
         (self.run_dir / "actor.outputs.json").unlink()
