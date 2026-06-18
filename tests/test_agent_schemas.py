@@ -22,55 +22,113 @@ class AgentSchemaTest(unittest.TestCase):
     def setUp(self):
         self.agent_schemas = _load_agent_schemas()
 
-    def test_valid_gm_output_is_normalized(self):
+    def test_validate_gm_output_uses_interactive_event_contract(self):
         payload = {
             "agent": "gm",
-            "narration": "The archive door opens from the inside.",
-            "npc_events": [{"actor": "clerk", "event": "raises a lamp"}],
-            "world_state_delta": [{"scope": "location", "fact": "the archive is lit"}],
-            "handoff": {"scene_goal": "let the player choose whether to enter"},
+            "scene_beats": [{"content": "The classroom clock clicks once."}],
+            "events": [{"type": "npc_action", "target": "", "content": "A student shuts the door."}],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "character:SuLi",
+                    "prompt": "You notice the pendant in his hand.",
+                    "reason": "SuLi can see the pendant.",
+                }
+            ],
+            "parallel_groups": [["character:SuLi", "character:ClassRep"]],
+            "world_state_delta": [{"scope": "classroom", "fact": "The door is shut."}],
+            "decision_point": None,
+            "stop_reason": "continue",
         }
 
         normalized = self.agent_schemas.validate_gm_output(payload)
 
         self.assertEqual(normalized["agent"], "gm")
-        self.assertEqual(normalized["narration"], payload["narration"])
-        self.assertEqual(normalized["npc_events"], payload["npc_events"])
+        self.assertEqual(normalized["scene_beats"], payload["scene_beats"])
+        self.assertEqual(normalized["events"], payload["events"])
+        self.assertEqual(normalized["actor_calls"][0]["actor_id"], "character:SuLi")
+        self.assertEqual(normalized["parallel_groups"], payload["parallel_groups"])
         self.assertEqual(normalized["world_state_delta"], payload["world_state_delta"])
-        self.assertEqual(normalized["handoff"], payload["handoff"])
+        self.assertIsNone(normalized["decision_point"])
+        self.assertEqual(normalized["stop_reason"], "continue")
 
-    def test_valid_actor_output_is_first_person_only(self):
+    def test_validate_actor_output_requires_events_protocol(self):
         payload = {
             "agent": "character",
             "agent_id": "character:ada",
             "character_name": "Ada",
-            "action": "I lift the lamp and wait by the threshold.",
-            "dialogue": [{"target": "player", "text": "Stay close."}],
-            "perception": ["I smell dust beyond the door."],
-            "memory_delta": [{"text": "I saw the archive door open.", "source": "perceived"}],
+            "events": [
+                {"type": "perceive_request", "content": "I listen for steps beyond the door."},
+                {"type": "dialogue", "target": "player", "content": "Stay close."},
+                {"type": "action", "target": "", "content": "I lift the lamp and wait by the threshold."},
+                {"type": "memory_delta", "target": "self", "content": "I saw the archive door open."},
+                {"type": "goal_update", "target": "self", "content": "Keep the player away from danger."},
+                {"type": "wait_for_gm", "target": "", "content": "I wait for what the lamp reveals."},
+                {"type": "stop_for_player_decision", "target": "player", "content": "The player must choose whether to enter."},
+            ],
+            "stop_reason": "continue",
         }
 
         normalized = self.agent_schemas.validate_actor_output(payload)
 
         self.assertEqual(normalized["agent"], "character")
         self.assertEqual(normalized["agent_id"], "character:ada")
-        self.assertEqual(normalized["dialogue"][0]["text"], "Stay close.")
-        self.assertEqual(normalized["memory_delta"][0]["source"], "perceived")
+        self.assertEqual(normalized["events"][0]["type"], "perceive_request")
+        self.assertEqual(normalized["events"][0]["target"], "")
+        self.assertEqual(normalized["events"][0]["metadata"], {})
+        self.assertEqual(normalized["events"][1]["target"], "player")
+        self.assertEqual(normalized["stop_reason"], "continue")
 
-    def test_actor_output_rejects_omniscient_or_control_fields(self):
-        base = {
+    def test_validate_actor_output_rejects_legacy_single_action_protocol(self):
+        payload = {
             "agent": "player",
             "agent_id": "player",
-            "action": "I step closer to the door.",
+            "action": "I walk forward.",
             "dialogue": [],
             "perception": [],
             "memory_delta": [],
         }
 
+        with self.assertRaises(self.agent_schemas.ValidationError):
+            self.agent_schemas.validate_actor_output(payload)
+
+    def test_validate_actor_output_rejects_unknown_event_type(self):
+        payload = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [{"type": "thought", "target": "", "content": "I know the hidden truth."}],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "allowed actor event type"):
+            self.agent_schemas.validate_actor_output(payload)
+
+    def test_actor_output_rejects_omniscient_or_control_fields(self):
+        base = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [
+                {
+                    "type": "action",
+                    "target": "",
+                    "content": "I step closer to the door.",
+                    "metadata": {},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
         for forbidden_key in ("gm_notes", "player_name", "world_truth"):
             with self.subTest(forbidden_key=forbidden_key):
                 payload = dict(base)
-                payload[forbidden_key] = "hidden fact"
+                payload["events"] = [
+                    {
+                        "type": "action",
+                        "target": "",
+                        "content": "I step closer to the door.",
+                        "metadata": {"nested": {forbidden_key: "hidden fact"}},
+                    }
+                ]
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
                     self.agent_schemas.validate_actor_output(payload)
 

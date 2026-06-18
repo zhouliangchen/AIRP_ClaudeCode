@@ -17,6 +17,23 @@ FORBIDDEN_ACTOR_KEYS = {
     "world_truth",
 }
 
+LEGACY_ACTOR_KEYS = {
+    "action",
+    "dialogue",
+    "perception",
+    "memory_delta",
+}
+
+ACTOR_EVENT_TYPES = {
+    "perceive_request",
+    "dialogue",
+    "action",
+    "memory_delta",
+    "goal_update",
+    "wait_for_gm",
+    "stop_for_player_decision",
+}
+
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 
 
@@ -93,15 +110,43 @@ def _reject_forbidden_keys(value: Any, path: str = "") -> None:
             _reject_forbidden_keys(child, f"{path}[{index}]")
 
 
+def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
+    for key in sorted(LEGACY_ACTOR_KEYS):
+        if key in payload:
+            raise ValidationError(f"{_path(path, key)} is a legacy actor output key")
+
+
+def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    event_type = _require_str(data, "type", path)
+    if event_type not in ACTOR_EVENT_TYPES:
+        raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
+    return {
+        "type": event_type,
+        "target": _optional_str(data, "target", "", path),
+        "content": _require_str(data, "content", path),
+        "metadata": _optional_dict(data, "metadata", path),
+    }
+
+
+def _normalize_actor_events(items: list[Any], path: str) -> list[Dict[str, Any]]:
+    if not items:
+        raise ValidationError(f"{path} must not be empty")
+    return [_normalize_actor_event(item, f"{path}[{index}]") for index, item in enumerate(items)]
+
+
 def validate_gm_output(payload: Any) -> Dict[str, Any]:
     """Validate and normalize `gm.output.json`."""
     data = _require_dict(payload, "gm_output")
     return {
         "agent": _require_agent(data, "gm", "gm_output"),
-        "narration": _require_str(data, "narration", "gm_output"),
-        "npc_events": _require_list(data, "npc_events", "gm_output"),
+        "scene_beats": _require_list(data, "scene_beats", "gm_output"),
+        "events": _require_list(data, "events", "gm_output"),
+        "actor_calls": _require_list(data, "actor_calls", "gm_output"),
+        "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
-        "handoff": _optional_dict(data, "handoff", "gm_output"),
+        "decision_point": data.get("decision_point"),
+        "stop_reason": _optional_str(data, "stop_reason", "continue", "gm_output"),
     }
 
 
@@ -109,6 +154,7 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
     """Validate and normalize player/character first-person output."""
     data = _require_dict(payload, "actor_output")
     _reject_forbidden_keys(data, "actor_output")
+    _reject_legacy_actor_keys(data, "actor_output")
 
     agent = _require_str(data, "agent", "actor_output")
     if agent not in {"player", "character"}:
@@ -117,10 +163,8 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
     normalized = {
         "agent": agent,
         "agent_id": _require_str(data, "agent_id", "actor_output"),
-        "action": _require_str(data, "action", "actor_output"),
-        "dialogue": _require_list(data, "dialogue", "actor_output"),
-        "perception": _require_list(data, "perception", "actor_output"),
-        "memory_delta": _require_list(data, "memory_delta", "actor_output"),
+        "events": _normalize_actor_events(_require_list(data, "events", "actor_output"), "actor_output.events"),
+        "stop_reason": _optional_str(data, "stop_reason", "continue", "actor_output"),
     }
     if agent == "character":
         normalized["character_name"] = _optional_str(data, "character_name", path="actor_output")
