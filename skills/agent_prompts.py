@@ -21,6 +21,8 @@ SKILL_PATHS = {
     "critic": ".claude/skills/rp-critic-agent.md",
 }
 
+AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character"}
+
 
 def _rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
@@ -30,12 +32,29 @@ def _json_block(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+def _strip_embedded_output_schema(text: str) -> str:
+    marker = "\n## Output Schema"
+    if marker not in text:
+        return text
+    before, after = text.split(marker, 1)
+    next_heading = after.find("\n## ", 1)
+    tail = after[next_heading:] if next_heading != -1 else ""
+    return (
+        before.rstrip()
+        + "\n\n## Output Schema\n\n"
+        + "Use the generated `Required Output Contract` above as the only JSON schema for this run.\n"
+        + tail
+    )
+
+
 def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
     relative = SKILL_PATHS[skill_key]
     path = REPO_ROOT / relative
     if not path.exists():
         return f"(missing skill file: {relative})"
     text = path.read_text(encoding="utf-8")
+    if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
+        text = _strip_embedded_output_schema(text)
     return text[:limit]
 
 
@@ -124,10 +143,21 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
 def _gm_prompt(context: Dict[str, Any]) -> str:
     contract = _json_block({
         "agent": "gm",
-        "narration": "brief neutral world narration",
-        "npc_events": [],
+        "scene_beats": [{"content": "brief visible scene beat", "metadata": {}}],
+        "events": [{"type": "world_event", "target": "", "content": "visible or routed event", "metadata": {}}],
+        "actor_calls": [
+            {
+                "call_id": "call-1",
+                "actor_id": "player|character:<name>",
+                "prompt": "second-person visible prompt for this actor only",
+                "reason": "why this actor is needed now",
+                "metadata": {},
+            }
+        ],
+        "parallel_groups": [],
         "world_state_delta": [],
-        "handoff": {},
+        "decision_point": None,
+        "stop_reason": "continue|player_decision|word_target|complete|max_steps",
     })
     return _base_prompt(
         "GM Agent Prompt",
@@ -142,10 +172,15 @@ def _player_prompt(context: Dict[str, Any]) -> str:
     contract = _json_block({
         "agent": "player",
         "agent_id": "player",
-        "action": "first-person action",
-        "dialogue": [],
-        "perception": [],
-        "memory_delta": [],
+        "events": [
+            {
+                "type": "wait_for_gm",
+                "target": "",
+                "content": "first-person event content",
+                "metadata": {},
+            }
+        ],
+        "stop_reason": "continue|stop_for_player_decision",
     })
     return _base_prompt(
         "Player Agent Prompt",
@@ -157,17 +192,26 @@ def _player_prompt(context: Dict[str, Any]) -> str:
 
 
 def _character_prompt(context: Dict[str, Any], output_path: str) -> str:
+    self_knowledge = context.get("self_knowledge", {}) if isinstance(context, dict) else {}
+    if not isinstance(self_knowledge, dict):
+        self_knowledge = {}
+    character_name = context.get("character_name") or self_knowledge.get("name", "")
     contract = _json_block({
         "agent": "character",
         "agent_id": "character:<safe_name>",
-        "character_name": context.get("character_name", ""),
-        "action": "first-person action",
-        "dialogue": [],
-        "perception": [],
-        "memory_delta": [],
+        "character_name": character_name,
+        "events": [
+            {
+                "type": "wait_for_gm",
+                "target": "",
+                "content": "first-person event content",
+                "metadata": {},
+            }
+        ],
+        "stop_reason": "continue|stop_for_player_decision",
     })
     return _base_prompt(
-        f"Character Agent Prompt: {context.get('character_name', '')}",
+        f"Character Agent Prompt: {character_name}",
         "character",
         output_path,
         contract,

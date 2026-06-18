@@ -516,7 +516,8 @@ class AgentPacketTest(unittest.TestCase):
         routed = self.agent_packets.route_player_input("\u6211\u62ab\u51fa\u77ed\u5251\u3002\n\uff08\u7cfb\u7edf\u6307\u4ee4\uff1a\u5c06\u57ce\u5821\u8bbe\u5b9a\u4e3a\u88ab\u9057\u5fd8\u7684\u6708\u9762\u57fa\u5730\u3002\uff09")
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
-        self.assertIn("\u62ab\u51fa\u77ed\u5251", packet["role_channel"])
+        self.assertEqual(packet["visibility"], "first_person_player")
+        self.assertIn("\u62ab\u51fa\u77ed\u5251", packet["role_channel_anchor"])
         self.assertNotIn("\u6708\u9762\u57fa\u5730", json.dumps(packet, ensure_ascii=False))
         self.assertNotIn("user_instruction_channel", packet)
         self.assertEqual(packet["agent"], "player")
@@ -527,8 +528,69 @@ class AgentPacketTest(unittest.TestCase):
         )
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
-        self.assertEqual(packet["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertEqual(packet["role_channel_anchor"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
         self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
+
+    def test_prepare_agent_run_projects_actor_context_without_hidden_channels(self):
+        hidden_text = "The archive hides a moon base under the floor."
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.\nOmniscient: The vault is a dream echo.",
+            chat_log=[
+                {
+                    "speaker": "gm",
+                    "summary": "GM-only recent chat says the moon base is active.",
+                    "visibility": "gm_only",
+                }
+            ],
+            card_data={"title": "Projection Test"},
+            character_contexts={
+                "characters": [
+                    {
+                        "name": "Ada",
+                        "role": "cautious archivist",
+                        "memory": {
+                            "long_term": ["I keep the archive keys."],
+                            "goals": ["Protect the player from danger."],
+                        },
+                    }
+                ],
+            },
+            turn_index=0,
+            hidden_setting_records=[{"visibility": "gm_only", "text": hidden_text}],
+        )
+
+        run_dir = Path(result["run_dir"])
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        safe_name = self.agent_run.safe_name("Ada")
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+        char_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertEqual(player_packet["visibility"], "first_person_player")
+        self.assertEqual(character_packet["visibility"], "first_person_character")
+        self.assertEqual(player_packet["role_channel_anchor"], "I open the archive door.")
+        self.assertEqual(character_packet["role_channel_anchor"], "")
+        self.assertEqual(character_packet["self_knowledge"]["name"], "Ada")
+        self.assertIn("I keep the archive keys.", json.dumps(character_packet, ensure_ascii=False))
+        self.assertIn("Protect the player", json.dumps(character_packet, ensure_ascii=False))
+        self.assertIn("The vault is a dream echo.", json.dumps(gm_packet, ensure_ascii=False))
+        self.assertIn(hidden_text, json.dumps(gm_packet, ensure_ascii=False))
+
+        for actor_payload in (player_packet, character_packet):
+            serialized = json.dumps(actor_payload, ensure_ascii=False)
+            self.assertNotIn("user_instruction_text", serialized)
+            self.assertNotIn("user_instruction_channel", serialized)
+            self.assertNotIn("dream echo", serialized)
+            self.assertNotIn("moon base", serialized)
+            self.assertNotIn("recent_chat", serialized)
+            self.assertNotIn("GM-only recent chat", serialized)
+
+        self.assertNotIn("dream echo", player_prompt)
+        self.assertNotIn("moon base", player_prompt)
+        self.assertNotIn("dream echo", char_prompt)
+        self.assertNotIn("moon base", char_prompt)
 
     def test_prepare_agent_run_builds_expected_context_files(self):
         user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
@@ -651,16 +713,23 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
         required_prompt_keys = {
-            "gm": ("agent", "narration", "npc_events", "world_state_delta", "handoff"),
-            "player": ("agent", "agent_id", "action", "dialogue", "perception", "memory_delta"),
+            "gm": (
+                "agent",
+                "scene_beats",
+                "events",
+                "actor_calls",
+                "parallel_groups",
+                "world_state_delta",
+                "decision_point",
+                "stop_reason",
+            ),
+            "player": ("agent", "agent_id", "events", "stop_reason"),
             "character": (
                 "agent",
                 "agent_id",
                 "character_name",
-                "action",
-                "dialogue",
-                "perception",
-                "memory_delta",
+                "events",
+                "stop_reason",
             ),
             "story": ("content", "character_dialogues", "metadata"),
             "critic": (
@@ -685,6 +754,9 @@ class AgentPacketTest(unittest.TestCase):
 
         forbidden_prompt_keys = {
             "gm": (
+                "narration",
+                "npc_events",
+                "handoff",
                 "scene_state",
                 "world_updates",
                 "non_core_characters",
@@ -695,6 +767,10 @@ class AgentPacketTest(unittest.TestCase):
                 "next_pressure",
             ),
             "player": (
+                "action",
+                "dialogue",
+                "perception",
+                "memory_delta",
                 "embodied_intent",
                 "immediate_action",
                 "inner_sensation",
@@ -702,9 +778,12 @@ class AgentPacketTest(unittest.TestCase):
                 "meaningful_player_decision",
                 "decision_reason",
                 "state_suggestions",
-                "stop_reason",
             ),
             "character": (
+                "action",
+                "dialogue",
+                "perception",
+                "memory_delta",
                 "private_reaction",
                 "intent",
                 "aside",
@@ -717,7 +796,7 @@ class AgentPacketTest(unittest.TestCase):
         for prompt_name, keys in forbidden_prompt_keys.items():
             for key in keys:
                 with self.subTest(prompt=prompt_name, forbidden_key=key):
-                    self.assertNotIn(f'"{key}"', prompt_texts[prompt_name])
+                    self.assertNotIn(f'"{key}":', prompt_texts[prompt_name])
 
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["round_id"], "round-000001")
@@ -940,7 +1019,8 @@ class AgentPacketTest(unittest.TestCase):
             routed,
             [],
         )
-        self.assertEqual(packet["role_channel"], "I step toward the gate.")
+        self.assertEqual(packet["visibility"], "first_person_character")
+        self.assertEqual(packet["role_channel_anchor"], "")
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
 
@@ -955,7 +1035,7 @@ class AgentPacketTest(unittest.TestCase):
             [],
         )
 
-        self.assertEqual(packet["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertEqual(packet["role_channel_anchor"], "")
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
 
