@@ -28,6 +28,49 @@ def _actor_call_id(actor_id):
     return f"call-{actor_id.replace(':', '-')}-1"
 
 
+def _structured_memory_summary_payload(agent_id, *, character_name="", key_memory="", active_goal=""):
+    if agent_id == "player":
+        self_understanding = "I remember opening the archive door and hearing machinery."
+        key_memory = key_memory or "I opened the archive door and heard machinery from inside."
+        short_term = "I am still deciding whether to cross the archive threshold."
+    else:
+        self_understanding = f"I remember seeing the player hesitate at the archive door as {character_name}."
+        key_memory = key_memory or f"I watched the player hesitate near the archive threshold as {character_name}."
+        short_term = f"I am watching the threshold as {character_name}."
+
+    payload = {
+        "agent_id": agent_id,
+        "source": "self",
+        "visibility": "actor",
+        "long_term": {
+            "self_understanding": [self_understanding],
+            "stable_beliefs": ["The archive threshold should be approached carefully."],
+            "relationship_models": ["The people at the threshold are watching each other closely."],
+        },
+        "key_memories": [
+            {
+                "content": key_memory,
+                "importance": "high",
+                "details": ["The air was cold.", "Machinery could be heard beyond the door."],
+            }
+        ],
+        "short_term": [
+            {
+                "content": short_term,
+                "expires_after": "scene_end",
+            }
+        ],
+        "goals": {
+            "active": [active_goal],
+            "paused": [],
+            "resolved": [],
+        },
+    }
+    if character_name:
+        payload["character_name"] = character_name
+    return payload
+
+
 class MultiAgentRoundE2ETest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -277,12 +320,17 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
 
         for agent_id, path in manifest["expected_outputs"]["memory_summaries"].items():
             if agent_id == "player":
-                summary = "I remember opening the archive door and hearing machinery."
-                payload = {"agent_id": "player", "summary": summary, "retained_goals": ["Decide whether to enter."], "forgotten_noise": [], "source": "self", "visibility": "actor"}
+                payload = _structured_memory_summary_payload(
+                    "player",
+                    active_goal="Decide whether to enter.",
+                )
             else:
                 character_name = agent_id.split(":", 1)[1]
-                summary = f"I remember seeing the player hesitate at the archive door as {character_name}."
-                payload = {"agent_id": agent_id, "character_name": character_name, "summary": summary, "retained_goals": ["Watch the threshold."], "forgotten_noise": [], "source": "self", "visibility": "actor"}
+                payload = _structured_memory_summary_payload(
+                    agent_id,
+                    character_name=character_name,
+                    active_goal="Watch the threshold.",
+                )
             _write_json(run_dir / path, payload)
 
         memory_delta = self.agent_memory.ingest_memory_deltas(self.card, run_dir, date_str="2026-06-16 12:00")
@@ -315,8 +363,26 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertEqual(repair_history[0]["attempt"], 1)
         self.assertEqual(repair_history[0]["decision"], "revise")
         self.assertEqual(improvement_queue[0]["suggestion"], "Add a fixture for critic repair history.")
-        self.assertIn("Decide whether to enter.", (self.card / "memory" / "player" / "summary.md").read_text(encoding="utf-8"))
-        self.assertIn("Watch the threshold.", (self.card / "memory" / "characters" / "Ada" / "summary.md").read_text(encoding="utf-8"))
+        player_memory_dir = self.card / "memory" / "player"
+        ada_memory_dir = self.card / "memory" / "characters" / "Ada"
+        player_long_term = (player_memory_dir / "long_term.md").read_text(encoding="utf-8")
+        player_key_memories = (player_memory_dir / "key_memories.md").read_text(encoding="utf-8")
+        player_short_term = (player_memory_dir / "short_term.md").read_text(encoding="utf-8")
+        player_goals = json.loads((player_memory_dir / "goals.json").read_text(encoding="utf-8"))
+        ada_long_term = (ada_memory_dir / "long_term.md").read_text(encoding="utf-8")
+        ada_key_memories = (ada_memory_dir / "key_memories.md").read_text(encoding="utf-8")
+        ada_short_term = (ada_memory_dir / "short_term.md").read_text(encoding="utf-8")
+        ada_goals = json.loads((ada_memory_dir / "goals.json").read_text(encoding="utf-8"))
+        self.assertIn("I remember opening the archive door", player_long_term)
+        self.assertIn("I opened the archive door", player_key_memories)
+        self.assertIn("scene_end", player_short_term)
+        self.assertEqual(player_goals["goals"]["active"], ["Decide whether to enter."])
+        self.assertIn("I remember seeing the player hesitate", ada_long_term)
+        self.assertIn("I watched the player hesitate", ada_key_memories)
+        self.assertIn("scene_end", ada_short_term)
+        self.assertEqual(ada_goals["goals"]["active"], ["Watch the threshold."])
+        self.assertFalse((player_memory_dir / "summary.md").exists())
+        self.assertFalse((ada_memory_dir / "summary.md").exists())
         self.assertEqual(final_manifest["stage"], "delivered")
         self.assertEqual((self.styles_dir / "response.txt").read_text(encoding="utf-8"), scenario["story_content"])
 

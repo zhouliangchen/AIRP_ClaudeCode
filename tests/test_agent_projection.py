@@ -41,9 +41,12 @@ class AgentProjectionTest(unittest.TestCase):
             "identity": "transfer student",
             "body_state": {"hands": "tense"},
             "relationships": {"SuLi": "classmate"},
-            "memory": ["I woke up on the road."],
-            "recent_memory": ["I reached the classroom."],
-            "goals": ["Reach school."],
+            "memory": {
+                "long_term": ["I woke up on the road."],
+                "key_memories": ["I first noticed the pendant near the school road."],
+                "short_term": ["I reached the classroom."],
+                "goals": ["Reach school."],
+            },
         }
 
         packet = self.agent_projection.project_actor_context(
@@ -57,9 +60,12 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertEqual(packet["actor_id"], "player")
         self.assertEqual(packet["agent"], "player")
         self.assertEqual(packet["visibility"], "first_person_player")
+        self.assertEqual(sorted(packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertIn("You stand near your desk", packet["gm_prompt"])
         self.assertEqual(packet["role_channel_anchor"], "I hide the pendant under my sleeve.")
         self.assertIn("I woke up on the road.", serialized)
+        self.assertIn("I first noticed the pendant", serialized)
+        self.assertIn("I reached the classroom.", serialized)
         self.assertIn("The classroom is noisy.", serialized)
         self.assertNotIn("user_instruction_channel", packet)
         self.assertNotIn("burns identity", serialized)
@@ -93,7 +99,8 @@ class AgentProjectionTest(unittest.TestCase):
             "role": "quiet classmate",
             "memory": {
                 "long_term": ["I know old rituals."],
-                "recent": ["I saw a flash of pink."],
+                "key_memories": ["I once sealed a ritual note in my desk."],
+                "short_term": ["I saw a flash of pink."],
                 "goals": ["Avoid attention."],
             },
             "hidden_identity": "former magical girl",
@@ -112,6 +119,7 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertEqual(packet["visibility"], "first_person_character")
         self.assertEqual(packet["role_channel_anchor"], "")
         self.assertIn("old rituals", serialized)
+        self.assertIn("ritual note", serialized)
         self.assertIn("Avoid attention", serialized)
         self.assertIn("He closes his hand", serialized)
         self.assertIn("chair beside you", serialized)
@@ -124,6 +132,56 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("hidden_identity_facts", serialized)
         self.assertNotIn("private_events", serialized)
         self.assertNotIn("user_instruction_channel", serialized)
+
+    def test_projection_ignores_old_actor_memory_aliases_and_bare_memory(self):
+        world = {"visible_events": [{"actor": "gm", "type": "scene", "content": "The lamp flickers."}]}
+        old_alias_actor = {
+            "name": "Ada",
+            "memory": {
+                "long_term_memory": ["old long-term alias"],
+                "recent": ["old recent alias"],
+                "recent_memory": ["old recent-memory alias"],
+                "short_term_memory": ["old short-term alias"],
+                "current_goals": ["old current-goals alias"],
+                "memories": ["old memories alias"],
+                "key_memory": ["old key-memory alias"],
+            },
+        }
+        bare_memory_actor = {
+            "name": "Ada",
+            "memory": ["old bare memory list"],
+        }
+
+        old_alias_packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            world,
+            old_alias_actor,
+            "You see the lamp flicker.",
+        )
+        bare_memory_packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            world,
+            bare_memory_actor,
+            "You see the lamp flicker.",
+        )
+        serialized = _packet_json([old_alias_packet["memory"], bare_memory_packet["memory"]])
+
+        self.assertEqual(
+            old_alias_packet["memory"],
+            {"long_term": [], "key_memories": [], "short_term": [], "goals": []},
+        )
+        self.assertEqual(
+            bare_memory_packet["memory"],
+            {"long_term": [], "key_memories": [], "short_term": [], "goals": []},
+        )
+        self.assertNotIn("old long-term alias", serialized)
+        self.assertNotIn("old recent alias", serialized)
+        self.assertNotIn("old recent-memory alias", serialized)
+        self.assertNotIn("old short-term alias", serialized)
+        self.assertNotIn("old current-goals alias", serialized)
+        self.assertNotIn("old memories alias", serialized)
+        self.assertNotIn("old key-memory alias", serialized)
+        self.assertNotIn("old bare memory list", serialized)
 
     def test_projection_handles_missing_inputs_with_stable_defaults(self):
         packet = self.agent_projection.project_actor_context("character:Missing", None, None, "")
@@ -145,7 +203,8 @@ class AgentProjectionTest(unittest.TestCase):
                 },
                 "memory": {
                     "long_term": [],
-                    "recent": [],
+                    "key_memories": [],
+                    "short_term": [],
                     "goals": [],
                 },
                 "sensory_context": {},
@@ -291,7 +350,8 @@ class AgentProjectionTest(unittest.TestCase):
                         {"content": "I remember the archive.", "hidden_note": "never show"},
                         {"content": "I once heard rain at school."},
                     ],
-                    "recent": [{"out_of_character": "debug"}, {"content": "The player arrived."}],
+                    "key_memories": [{"content": "I held the lamp steady."}],
+                    "short_term": [{"out_of_character": "debug"}, {"content": "The player arrived."}],
                 },
             },
             "You hear rain against the classroom window.",

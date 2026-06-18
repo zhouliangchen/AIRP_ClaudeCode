@@ -196,14 +196,34 @@ def _write_agent_outputs(run_dir: Path) -> None:
 
 
 def _summary_payload(agent_id: str) -> Dict[str, Any]:
+    goals = {"active": [], "paused": [], "resolved": []}
     if agent_id == "player":
         return {
             "agent_id": "player",
-            "summary": "I remember entering the archive beside Ada's lamp.",
-            "retained_goals": ["Stay close to Ada while exploring the archive."],
-            "forgotten_noise": ["The exact pattern of dust near the threshold."],
             "source": "self",
             "visibility": "actor",
+            "long_term": {
+                "self_understanding": ["I remember entering the archive beside Ada's lamp."],
+                "stable_beliefs": ["The archive should be explored carefully."],
+                "relationship_models": ["Ada is close enough to guide me with her lamp."],
+            },
+            "key_memories": [
+                {
+                    "content": "I entered the archive beside Ada's raised lamp.",
+                    "importance": "high",
+                    "details": ["Cold air leaked from the archive.", "I heard machinery behind the door."],
+                }
+            ],
+            "short_term": [
+                {
+                    "content": "I am still near Ada at the archive threshold.",
+                    "expires_after": "scene_end",
+                }
+            ],
+            "goals": {
+                **goals,
+                "active": ["Stay close to Ada while exploring the archive."],
+            },
         }
 
     if agent_id.startswith("character:"):
@@ -211,20 +231,44 @@ def _summary_payload(agent_id: str) -> Dict[str, Any]:
         return {
             "agent_id": agent_id,
             "character_name": character_name,
-            "summary": "I remember guiding the player into the archive with my lamp raised.",
-            "retained_goals": ["Keep the player close enough to protect."],
-            "forgotten_noise": [],
             "source": "self",
             "visibility": "actor",
+            "long_term": {
+                "self_understanding": ["I remember guiding the player into the archive with my lamp raised."],
+                "stable_beliefs": ["The player needs a steady guide near the archive threshold."],
+                "relationship_models": ["The player hesitates before entering unfamiliar spaces."],
+            },
+            "key_memories": [
+                {
+                    "content": "I raised my lamp and guided the player at the archive door.",
+                    "importance": "high",
+                    "details": ["The player stayed close.", "Cold air and machinery came from inside."],
+                }
+            ],
+            "short_term": [
+                {
+                    "content": "I am beside the player with my lamp raised.",
+                    "expires_after": "scene_end",
+                }
+            ],
+            "goals": {
+                **goals,
+                "active": ["Keep the player close enough to protect."],
+            },
         }
 
     return {
         "agent_id": agent_id,
-        "summary": f"{agent_id} completed the smoke memory summary.",
-        "retained_goals": [],
-        "forgotten_noise": [],
         "source": "self",
         "visibility": "actor",
+        "long_term": {
+            "self_understanding": [f"{agent_id} completed the smoke memory organization."],
+            "stable_beliefs": [],
+            "relationship_models": [],
+        },
+        "key_memories": [],
+        "short_term": [],
+        "goals": goals,
     }
 
 

@@ -32,6 +32,16 @@ def _load_agent_packets():
     return module
 
 
+def _load_agent_memory():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("agent_memory", ROOT / "skills" / "agent_memory.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_round_prepare():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
@@ -50,6 +60,11 @@ def _load_round_deliver():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class CriticGateSourceTest(unittest.TestCase):
@@ -447,6 +462,7 @@ class AgentPacketTest(unittest.TestCase):
         self.card.mkdir()
         self.agent_packets = _load_agent_packets()
         self.agent_run = _load_agent_run()
+        self.agent_memory = _load_agent_memory()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -580,6 +596,7 @@ class AgentPacketTest(unittest.TestCase):
 
         for actor_payload in (player_packet, character_packet):
             serialized = json.dumps(actor_payload, ensure_ascii=False)
+            self.assertEqual(sorted(actor_payload["memory"]), ["goals", "key_memories", "long_term", "short_term"])
             self.assertNotIn("user_instruction_text", serialized)
             self.assertNotIn("user_instruction_channel", serialized)
             self.assertNotIn("dream echo", serialized)
@@ -591,6 +608,155 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("moon base", player_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertNotIn("moon base", char_prompt)
+
+    def test_prepare_agent_run_reads_structured_actor_memory_files(self):
+        player_dir = self.card / "memory" / "player"
+        ada_dir = self.card / "memory" / "characters" / "Ada"
+        for directory in (player_dir, ada_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        (player_dir / "long_term.md").write_text("# Player Long-Term\n\nI remember the archive code.", encoding="utf-8")
+        (player_dir / "key_memories.md").write_text("# Player Key\n\nI found the sealed index.", encoding="utf-8")
+        (player_dir / "short_term.md").write_text("# Player Short\n\nI am holding the door open.", encoding="utf-8")
+        (player_dir / "recent.md").write_text("# Player Agent Memory\n\n- recent player delta", encoding="utf-8")
+        (player_dir / "summary.md").write_text("stale player summary should not be loaded", encoding="utf-8")
+        _write_json(
+            player_dir / "goals.json",
+            {"goals": {"active": ["Read the sealed index."], "paused": [], "resolved": []}},
+        )
+
+        (ada_dir / "long_term.md").write_text("# Ada Long-Term\n\nI remember lending my lamp.", encoding="utf-8")
+        (ada_dir / "key_memories.md").write_text("# Ada Key\n\nI saw the player at the threshold.", encoding="utf-8")
+        (ada_dir / "short_term.md").write_text("# Ada Short\n\nI am beside the player.", encoding="utf-8")
+        (ada_dir / "recent.md").write_text("# Character Recent Memory\n\n- recent Ada delta", encoding="utf-8")
+        (ada_dir / "summary.md").write_text("stale Ada summary should not be loaded", encoding="utf-8")
+        _write_json(
+            ada_dir / "goals.json",
+            {"goals": {"active": ["Keep the player close."], "paused": [], "resolved": []}},
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.",
+            chat_log=[],
+            card_data={"title": "Structured Memory Packet Test"},
+            character_contexts={"characters": [{"name": "Ada"}]},
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_packet = json.loads((run_dir / "characters" / "Ada.context.json").read_text(encoding="utf-8"))
+        player_memory = json.dumps(player_packet["memory"], ensure_ascii=False)
+        character_memory = json.dumps(character_packet["memory"], ensure_ascii=False)
+
+        self.assertEqual(sorted(player_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
+        self.assertEqual(sorted(character_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
+        self.assertIn("I remember the archive code.", player_memory)
+        self.assertIn("I found the sealed index.", player_memory)
+        self.assertIn("I am holding the door open.", player_memory)
+        self.assertIn("recent player delta", player_memory)
+        self.assertIn("Read the sealed index.", player_memory)
+        self.assertIn("I remember lending my lamp.", character_memory)
+        self.assertIn("I saw the player at the threshold.", character_memory)
+        self.assertIn("recent Ada delta", character_memory)
+        self.assertIn("Keep the player close.", character_memory)
+        self.assertNotIn("stale player summary", player_memory)
+        self.assertNotIn("stale Ada summary", character_memory)
+
+    def test_prepare_agent_run_does_not_project_old_actor_memory_aliases(self):
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.",
+            chat_log=[],
+            card_data={"title": "Old Memory Alias Test"},
+            character_contexts={
+                "characters": [
+                    {
+                        "name": "Ada",
+                        "memory": {
+                            "long_term_memory": ["old long-term alias"],
+                            "recent": ["old recent alias"],
+                            "recent_memory": ["old recent-memory alias"],
+                            "short_term_memory": ["old short-term alias"],
+                            "current_goals": ["old current-goals alias"],
+                            "memories": ["old memories alias"],
+                            "key_memory": ["old key-memory alias"],
+                        },
+                    },
+                    {
+                        "name": "Bert",
+                        "memory": ["old bare memory list"],
+                    },
+                ],
+            },
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        ada_packet = json.loads((run_dir / "characters" / "Ada.context.json").read_text(encoding="utf-8"))
+        bert_packet = json.loads((run_dir / "characters" / "Bert.context.json").read_text(encoding="utf-8"))
+        serialized = json.dumps([ada_packet["memory"], bert_packet["memory"]], ensure_ascii=False)
+
+        self.assertEqual(sorted(ada_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
+        self.assertEqual(sorted(bert_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
+        self.assertNotIn("old long-term alias", serialized)
+        self.assertNotIn("old recent alias", serialized)
+        self.assertNotIn("old recent-memory alias", serialized)
+        self.assertNotIn("old short-term alias", serialized)
+        self.assertNotIn("old current-goals alias", serialized)
+        self.assertNotIn("old memories alias", serialized)
+        self.assertNotIn("old key-memory alias", serialized)
+        self.assertNotIn("old bare memory list", serialized)
+
+    def test_prepare_agent_run_drops_stale_recent_after_summary_ingestion(self):
+        player_dir = self.card / "memory" / "player"
+        player_dir.mkdir(parents=True, exist_ok=True)
+        (player_dir / "recent.md").write_text(
+            "# Player Agent Memory\n\n- stale recent player delta\n",
+            encoding="utf-8",
+        )
+        summary_run = self.card / ".agent_runs" / "round-000006"
+        _write_json(
+            summary_run / "manifest.json",
+            {"expected_outputs": {"memory_summaries": {"player": "memory_summaries/player.summary.json"}}},
+        )
+        _write_json(
+            summary_run / "memory_summaries" / "player.summary.json",
+            {
+                "agent_id": "player",
+                "source": "self",
+                "visibility": "actor",
+                "long_term": {
+                    "self_understanding": ["I remember organizing the archive threshold."],
+                    "stable_beliefs": [],
+                    "relationship_models": [],
+                },
+                "key_memories": [],
+                "short_term": [
+                    {
+                        "content": "I am choosing what to inspect after the organization.",
+                        "expires_after": "scene_end",
+                    }
+                ],
+                "goals": {"active": ["Inspect the archive shelves."], "paused": [], "resolved": []},
+            },
+        )
+        self.agent_memory.ingest_memory_summaries(self.card, summary_run)
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I look toward the shelves.",
+            chat_log=[],
+            card_data={"title": "Recent Cleanup Packet Test"},
+            character_contexts={"characters": []},
+            turn_index=7,
+        )
+
+        memory = json.dumps(result["player_packet"]["memory"], ensure_ascii=False)
+        self.assertIn("I am choosing what to inspect after the organization.", memory)
+        self.assertIn("Inspect the archive shelves.", memory)
+        self.assertNotIn("stale recent player delta", memory)
 
     def test_prepare_agent_run_does_not_expose_private_role_text_to_character_context(self):
         private_role_text = "I decide to lie while smiling."
@@ -987,6 +1153,13 @@ class AgentPacketTest(unittest.TestCase):
             manifest["prompts"]["memory_summaries"]["character:Ada"],
             "prompts/memory/character_Ada.prompt.md",
         )
+        player_prompt = (run_dir / "prompts" / "memory" / "player.prompt.md").read_text(encoding="utf-8")
+        self.assertIn('"long_term"', player_prompt)
+        self.assertIn('"key_memories"', player_prompt)
+        self.assertIn('"short_term"', player_prompt)
+        self.assertIn('"goals"', player_prompt)
+        self.assertIn("organization is not compression", player_prompt)
+        self.assertIn("preserve enough details", player_prompt)
 
     def test_prepare_agent_run_prefers_explicit_dual_channel_payload(self):
         explicit_payload = {

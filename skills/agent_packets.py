@@ -219,17 +219,115 @@ def _build_world_state(
     }
 
 
-def _player_actor_state() -> Dict[str, Any]:
+STRUCTURED_MEMORY_KEYS = ("long_term", "key_memories", "short_term", "goals")
+
+
+def _empty_structured_memory() -> Dict[str, list[Any]]:
+    return {key: [] for key in STRUCTURED_MEMORY_KEYS}
+
+
+def _player_actor_state(card_folder=None) -> Dict[str, Any]:
     return {
         "name": "player",
-        "memory": [],
-        "goals": [],
+        "memory": _load_actor_memory(card_folder, "player"),
     }
 
 
 def _character_actor_id(character: Dict[str, Any]) -> str:
     name = _to_text(character.get("name") or character.get("character_name")).strip()
     return f"character:{agent_run.safe_name(name)}" if name else "character:unknown"
+
+
+def _actor_memory_dir(card_folder: Any, actor_id: str) -> Path | None:
+    if card_folder is None:
+        return None
+    card = Path(card_folder)
+    if actor_id == "player":
+        return card / "memory" / "player"
+    if actor_id.startswith("character:"):
+        safe = agent_run.safe_name(actor_id.split(":", 1)[1] or "_unknown")
+        return card / "memory" / "characters" / safe
+    return None
+
+
+def _read_optional_text(path: Path, limit: int = 12000) -> str:
+    try:
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")[:limit].strip()
+    except Exception:
+        return ""
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        if not path.exists():
+            return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _append_unique(items: list[Any], value: Any) -> None:
+    if value not in items:
+        items.append(value)
+
+
+def _append_structured_value(memory: Dict[str, list[Any]], key: str, value: Any) -> None:
+    if key not in memory:
+        return
+    for item in _as_memory_items(value):
+        _append_unique(memory[key], item)
+
+
+def _append_goals_json(memory: Dict[str, list[Any]], value: Any) -> None:
+    data = value if isinstance(value, dict) else {}
+    goals = data.get("goals", data)
+    if isinstance(goals, dict):
+        for status in ("active", "paused", "resolved"):
+            for item in _as_memory_items(goals.get(status)):
+                if isinstance(item, dict):
+                    entry = dict(item)
+                    entry.setdefault("status", status)
+                else:
+                    entry = {"status": status, "content": item}
+                _append_unique(memory["goals"], entry)
+        return
+    _append_structured_value(memory, "goals", goals)
+
+
+def _load_actor_memory(card_folder: Any, actor_id: str) -> Dict[str, list[Any]]:
+    memory = _empty_structured_memory()
+    memory_dir = _actor_memory_dir(card_folder, actor_id)
+    if memory_dir is None:
+        return memory
+
+    for filename, key in (
+        ("long_term.md", "long_term"),
+        ("key_memories.md", "key_memories"),
+        ("short_term.md", "short_term"),
+    ):
+        text = _read_optional_text(memory_dir / filename)
+        if text:
+            memory[key].append(text)
+
+    recent = _read_optional_text(memory_dir / "recent.md")
+    if recent:
+        memory["short_term"].append(recent)
+
+    goals_payload = _read_json(memory_dir / "goals.json", {})
+    if isinstance(goals_payload, dict):
+        _append_goals_json(memory, goals_payload)
+    return memory
+
+
+def _merge_memory(target: Dict[str, list[Any]], source: Any) -> None:
+    if not isinstance(source, dict):
+        return
+    _append_structured_value(target, "long_term", source.get("long_term"))
+    _append_structured_value(target, "key_memories", source.get("key_memories"))
+    _append_structured_value(target, "short_term", source.get("short_term"))
+    _append_goals_json(target, {"goals": source.get("goals")})
 
 
 def _as_memory_items(value: Any) -> list[Any]:
@@ -252,26 +350,35 @@ def _append_memory_value(memory: Dict[str, Any], key: str, value: Any) -> None:
         memory[key] = items
 
 
-def _projectable_character_state(character: Dict[str, Any]) -> Dict[str, Any]:
+def _projectable_character_state(character: Dict[str, Any], card_folder=None) -> Dict[str, Any]:
     state = dict(character or {})
-    memory_source = state.get("memory")
-    memory = dict(memory_source) if isinstance(memory_source, dict) else {}
-    if memory_source and not isinstance(memory_source, dict):
-        _append_memory_value(memory, "long_term", memory_source)
+    memory = _load_actor_memory(card_folder, _character_actor_id(state))
+    _merge_memory(memory, state.get("memory"))
 
-    _append_memory_value(memory, "long_term", state.get("profile_summary"))
+    _append_structured_value(memory, "long_term", state.get("profile_summary"))
     profile = state.get("profile")
     if isinstance(profile, dict):
-        _append_memory_value(memory, "long_term", profile.get("authoritative_setting"))
-        _append_memory_value(memory, "long_term", profile.get("summary") or profile.get("description"))
+        _append_structured_value(memory, "long_term", profile.get("authoritative_setting"))
+        _append_structured_value(memory, "long_term", profile.get("summary") or profile.get("description"))
     else:
-        _append_memory_value(memory, "long_term", profile)
-    _append_memory_value(memory, "recent", state.get("recent_state"))
-    _append_memory_value(memory, "goals", state.get("goals"))
+        _append_structured_value(memory, "long_term", profile)
+    _append_structured_value(memory, "short_term", state.get("recent_state"))
+    _append_goals_json(memory, {"goals": state.get("goals")})
 
-    if memory:
-        state["memory"] = memory
+    state["memory"] = memory
     return state
+
+
+def _projectable_player_state(card_folder, actor_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    if isinstance(actor_state, dict):
+        state = dict(actor_state)
+        memory = _load_actor_memory(card_folder, "player")
+        _merge_memory(memory, state.get("memory"))
+        _append_goals_json(memory, {"goals": state.get("goals")})
+        state["memory"] = memory
+        state.setdefault("name", "player")
+        return state
+    return _player_actor_state(card_folder)
 
 
 def _actor_prompt_from_role(routed_input: Dict[str, Any], *, for_character: bool = False) -> str:
@@ -314,9 +421,8 @@ def build_player_packet(
     gm_prompt: str | None = None,
 ):
     """Build first-person packet for player agent."""
-    del card_folder
     world = world_state or _build_world_state(routed_input, recent_chat)
-    actor = actor_state if isinstance(actor_state, dict) else _player_actor_state()
+    actor = _projectable_player_state(card_folder, actor_state)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input)
     return agent_projection.project_actor_context("player", world, actor, prompt)
 
@@ -330,10 +436,9 @@ def build_character_packet(
     gm_prompt: str | None = None,
 ):
     """Build first-person packet for a character subagent."""
-    del card_folder
     character_data = character or {}
     world = world_state or _build_world_state(routed_input, recent_chat)
-    actor_state = _projectable_character_state(character_data)
+    actor_state = _projectable_character_state(character_data, card_folder)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input, for_character=True)
     return agent_projection.project_actor_context(
         _character_actor_id(actor_state),

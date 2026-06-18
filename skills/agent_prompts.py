@@ -215,7 +215,11 @@ def _player_prompt(context: Dict[str, Any]) -> str:
         context,
         "Use only the allowed context below and return exactly one JSON player actor output object. "
         "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
-    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+    ) + (
+        "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+        "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
+        "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
+    )
 
 
 def _character_prompt(context: Dict[str, Any]) -> str:
@@ -246,7 +250,11 @@ def _character_prompt(context: Dict[str, Any]) -> str:
         context,
         "Use only the allowed context below and return exactly one JSON character actor output object. "
         "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
-    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+    ) + (
+        "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+        "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
+        "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
+    )
 
 
 def character_prompt_text(context: Dict[str, Any]) -> str:

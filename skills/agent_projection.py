@@ -179,23 +179,17 @@ def _self_knowledge(actor: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _memory(actor: Dict[str, Any]) -> Dict[str, Any]:
-    memory = actor.get("memory")
-    memory_dict = _as_dict(memory)
-    if memory_dict:
-        long_term = _first_present(memory_dict, "long_term", "long_term_memory", "memories", "memory")
-        recent = _first_present(memory_dict, "recent", "recent_memory")
-        goals = _first_present(memory_dict, "goals", "current_goals")
-    else:
-        long_term = _first_present(actor, "long_term", "long_term_memory", "memory", "memories")
-        recent = _first_present(actor, "recent", "recent_memory")
-        goals = _first_present(actor, "goals", "current_goals")
-
-    if goals is None:
-        goals = actor.get("goals")
+    raw_memory = actor.get("memory")
+    source = raw_memory if isinstance(raw_memory, dict) else actor
+    long_term = source.get("long_term")
+    key_memories = source.get("key_memories")
+    short_term = source.get("short_term")
+    goals = source.get("goals")
 
     return {
         "long_term": _as_list(long_term),
-        "recent": _as_list(recent),
+        "key_memories": _as_list(key_memories),
+        "short_term": _as_list(short_term),
         "goals": _as_list(goals),
     }
 

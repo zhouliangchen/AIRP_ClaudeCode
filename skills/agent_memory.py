@@ -8,19 +8,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+import agent_memory_model
 import agent_run
 
 
 CST = timezone(timedelta(hours=8))
 
-ACTOR_FORBIDDEN_MARKERS = {
-    "gm_only",
-    "omniscient",
-    "world_truth",
-    "gm_notes",
-    "hidden_note",
-    "out_of_character",
-}
+ACTOR_FORBIDDEN_MARKERS = agent_memory_model.ACTOR_FORBIDDEN_MARKERS
 SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
 ACTOR_MEMORY_EVENT_TYPES = {"memory_delta", "goal_update"}
 ACTOR_MEMORY_EVENT_KEYS = {"type", "target", "content", "metadata"}
@@ -62,6 +56,10 @@ def _append_lines(path: Path, header: str, lines: Iterable[str]) -> None:
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text.rstrip() + "\n", encoding="utf-8")
+
+
+def _delete_file(path: Path) -> None:
+    path.unlink(missing_ok=True)
 
 
 def _snapshot_files(paths: Iterable[Path]) -> dict[Path, bytes | None]:
@@ -218,13 +216,16 @@ def _summary_prompt_path(agent_id: str) -> str:
 
 def _actor_memory_paths(card: Path, agent_id: str) -> tuple[str, Path, Path]:
     if agent_id == "player":
-        return "player", card / "memory" / "player" / "summary.md", card / "memory" / "player" / "recent.md"
+        base = card / "memory" / "player"
+        return "player", base, base / "recent.md"
     if agent_id.startswith("character:"):
         name = agent_id.split(":", 1)[1] or "_unknown"
         safe = _safe_name(name)
-        return name, card / "memory" / "characters" / safe / "summary.md", card / "memory" / "characters" / safe / "recent.md"
+        base = card / "memory" / "characters" / safe
+        return name, base, base / "recent.md"
     safe = _safe_name(agent_id)
-    return agent_id, card / "memory" / "agent_summaries" / f"{safe}.md", card / "memory" / "agent_summaries" / f"{safe}.recent.md"
+    base = card / "memory" / "agent_summaries" / safe
+    return agent_id, base, base / "recent.md"
 
 
 def _read_optional_text(path: Path, limit: int = 12000) -> str:
@@ -237,17 +238,29 @@ def _read_optional_text(path: Path, limit: int = 12000) -> str:
 
 
 def _memory_summary_prompt(card: Path, run_dir: Path, agent_id: str, output_path: str) -> str:
-    actor_name, summary_path, recent_path = _actor_memory_paths(card, agent_id)
-    current_summary = _read_optional_text(summary_path)
+    actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
+    long_term = _read_optional_text(memory_dir / "long_term.md")
+    key_memories = _read_optional_text(memory_dir / "key_memories.md")
+    short_term = _read_optional_text(memory_dir / "short_term.md")
     recent_memory = _read_optional_text(recent_path)
+    goals = _read_optional_text(memory_dir / "goals.json")
     contract = {
         "agent_id": agent_id,
         "character_name": actor_name if agent_id.startswith("character:") else "",
-        "summary": "compact first-person memory summary",
-        "retained_goals": [],
-        "forgotten_noise": [],
         "source": "self",
         "visibility": "actor",
+        "long_term": {
+            "self_understanding": [],
+            "stable_beliefs": [],
+            "relationship_models": [],
+        },
+        "key_memories": [
+            {"content": "specific remembered event", "importance": "high", "details": []}
+        ],
+        "short_term": [
+            {"content": "current-scene memory", "expires_after": "scene_end"}
+        ],
+        "goals": {"active": [], "paused": [], "resolved": []},
     }
     return f"""
 # Memory Summary Prompt
@@ -256,9 +269,12 @@ Agent id: `{agent_id}`
 Round id: `{run_dir.name}`
 Required output: `{output_path}`
 
-You are summarizing only this actor's first-person memory. Do not add GM-only,
-omniscient, world-truth, hidden-note, or out-of-character knowledge. Preserve
-stable goals and emotionally important facts. Remove incidental sensory noise.
+You are organizing only this actor's first-person memory. organization is not compression:
+do not replace specific remembered events with vague summaries. Key memories should
+preserve enough details for the actor to recall what happened, who was involved, and
+why it mattered. You may organize memory and goals only. Do not edit profile,
+background, personality, body_facts, authoritative_setting, or character_sheet data.
+Do not add GM-only, omniscient, world-truth, hidden-note, or out-of-character knowledge.
 
 ## Required JSON Contract
 
@@ -266,16 +282,34 @@ stable goals and emotionally important facts. Remove incidental sensory noise.
 {json.dumps(contract, ensure_ascii=False, indent=2)}
 ```
 
-## Current Summary
+## Current Long-Term Memory
 
 ```markdown
-{current_summary or "(none)"}
+{long_term or "(none)"}
+```
+
+## Current Key Memories
+
+```markdown
+{key_memories or "(none)"}
+```
+
+## Current Short-Term Memory
+
+```markdown
+{short_term or "(none)"}
 ```
 
 ## Recent First-Person Memory
 
 ```markdown
 {recent_memory or "(none)"}
+```
+
+## Current Goals
+
+```json
+{goals or "{}"}
 ```
 """
 
@@ -308,25 +342,6 @@ def write_memory_summary_prompts(
         scheduled.append(agent_id)
 
     return {"ok": True, "scheduled": scheduled}
-
-
-def _summary_agent_id_from_path(path: Path) -> str:
-    name = path.name
-    suffix = ".summary.json"
-    if name.endswith(suffix):
-        return name[:-len(suffix)]
-    return path.stem
-
-
-def _as_text_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    texts = []
-    for item in value:
-        text = str(item).strip()
-        if text:
-            texts.append(text)
-    return texts
 
 
 def _canonical_tokens(text: str) -> list[str]:
@@ -373,36 +388,11 @@ def _validate_no_forbidden_marker(value: Any, path: str) -> None:
             raise MemoryIngestionError(f"{path}: forbidden summary marker {marker}")
 
 
-def _validate_memory_summary(payload: Dict[str, Any], path: Path) -> tuple[str, str, list[str], list[str]]:
-    _validate_no_forbidden_marker(payload, path.name)
-    for key, value in payload.items():
-        marker = str(key).lower()
-        if marker in ACTOR_FORBIDDEN_MARKERS:
-            raise MemoryIngestionError(f"{path.name}.{key}: forbidden summary field")
-        if isinstance(value, str) and value.lower() in ACTOR_FORBIDDEN_MARKERS:
-            raise MemoryIngestionError(f"{path.name}.{key}: forbidden summary marker {value}")
-
-    source = str(payload.get("source", "self")).lower()
-    if source in ACTOR_FORBIDDEN_MARKERS:
-        raise MemoryIngestionError(f"{path.name}.source: forbidden summary source {source}")
-    visibility = str(payload.get("visibility", "actor")).lower()
-    if visibility in ACTOR_FORBIDDEN_MARKERS:
-        raise MemoryIngestionError(f"{path.name}.visibility: forbidden summary visibility {visibility}")
-
-    agent_id = str(payload.get("agent_id") or _summary_agent_id_from_path(path)).strip() or "unknown"
-    summary = str(payload.get("summary") or "").strip()
-    if not summary:
-        raise MemoryIngestionError(f"{path.name}.summary: summary text is required")
-    return agent_id, summary, _as_text_list(payload.get("retained_goals")), _as_text_list(payload.get("forgotten_noise"))
-
-
-def _summary_destination(card: Path, agent_id: str, payload: Dict[str, Any]) -> Path:
-    if agent_id == "player":
-        return card / "memory" / "player" / "summary.md"
-    if agent_id.startswith("character:"):
-        name = agent_id.split(":", 1)[1] or "_unknown"
-        return card / "memory" / "characters" / _safe_name(name) / "summary.md"
-    return card / "memory" / "agent_summaries" / f"{_safe_name(agent_id)}.md"
+def _validate_memory_summary(payload: Dict[str, Any], path: Path) -> Dict[str, Any]:
+    try:
+        return agent_memory_model.validate_memory_update(payload)
+    except agent_memory_model.AgentMemoryModelError as exc:
+        raise MemoryIngestionError(f"{path.name}: {exc}") from exc
 
 
 def _validate_character_name_matches_agent_id(agent_id: str, payload: Dict[str, Any], path: Path) -> None:
@@ -413,17 +403,6 @@ def _validate_character_name_matches_agent_id(agent_id: str, payload: Dict[str, 
         raise MemoryIngestionError(
             f"{path.name}: character_name mismatch, expected {agent_id.split(':', 1)[1]}, got {declared}"
         )
-
-
-def _summary_markdown(agent_id: str, round_id: str, summary: str, retained_goals: list[str], forgotten_noise: list[str]) -> str:
-    lines = [f"# {agent_id} Memory Summary", "", f"Updated from `{round_id}`.", "", "## Summary", "", summary]
-    if retained_goals:
-        lines.extend(["", "## Retained Goals", ""])
-        lines.extend(f"- {item}" for item in retained_goals)
-    if forgotten_noise:
-        lines.extend(["", "## Dropped Noise", ""])
-        lines.extend(f"- {item}" for item in forgotten_noise)
-    return "\n".join(lines)
 
 
 def _scheduled_memory_summaries(root: Path) -> Dict[str, Path]:
@@ -475,24 +454,51 @@ def ingest_memory_summaries(card_folder: str | Path, run_dir: str | Path) -> Dic
         missing = ", ".join(f"{agent_id}:{path.relative_to(root).as_posix()}" for agent_id, path in missing_paths)
         raise MemoryIngestionError(f"missing scheduled memory summaries: {missing}")
 
-    records: list[tuple[str, Path, str, list[str], list[str], Dict[str, Any]]] = []
+    records: list[Dict[str, Any]] = []
     for expected_agent_id, path in sorted(scheduled.items(), key=_summary_sort_key):
         payload = _read_json(path, {})
         if not isinstance(payload, dict):
             raise MemoryIngestionError(f"{path.name}: summary payload must be an object")
-        agent_id, summary, retained_goals, forgotten_noise = _validate_memory_summary(payload, path)
+        update = _validate_memory_summary(payload, path)
+        agent_id = update["agent_id"]
         if agent_id != expected_agent_id:
             raise MemoryIngestionError(
                 f"{path.name}: agent_id mismatch, expected {expected_agent_id}, got {agent_id}"
             )
-        _validate_character_name_matches_agent_id(agent_id, payload, path)
-        records.append((agent_id, path, summary, retained_goals, forgotten_noise, payload))
+        _validate_character_name_matches_agent_id(agent_id, update, path)
+        records.append(update)
 
+    pending_writes: list[tuple[Path, str, Any]] = []
+    pending_deletes: list[Path] = []
     ingested: list[str] = []
-    for agent_id, _path, summary, retained_goals, forgotten_noise, payload in records:
-        destination = _summary_destination(card, agent_id, payload)
-        _write_text(destination, _summary_markdown(agent_id, root.name, summary, retained_goals, forgotten_noise))
+    for update in records:
+        agent_id = update["agent_id"]
+        _actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
+        pending_writes.extend(
+            [
+                (memory_dir / "long_term.md", "text", agent_memory_model.render_long_term_markdown(update)),
+                (memory_dir / "key_memories.md", "text", agent_memory_model.render_key_memories_markdown(update)),
+                (memory_dir / "short_term.md", "text", agent_memory_model.render_short_term_markdown(update)),
+                (memory_dir / "goals.json", "json", agent_memory_model.render_goals_json(update)),
+            ]
+        )
+        pending_deletes.append(recent_path)
         ingested.append(agent_id)
+
+    snapshot_paths = [path for path, _kind, _content in pending_writes]
+    snapshot_paths.extend(pending_deletes)
+    snapshots = _snapshot_files(snapshot_paths)
+    try:
+        for path, kind, content in pending_writes:
+            if kind == "json":
+                _write_json(path, content)
+            else:
+                _write_text(path, content)
+        for path in pending_deletes:
+            _delete_file(path)
+    except Exception:
+        _restore_files(snapshots)
+        raise
 
     return {"ok": True, "round_id": root.name, "ingested": ingested}
 

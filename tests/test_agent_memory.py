@@ -71,6 +71,49 @@ class AgentMemoryTest(unittest.TestCase):
             {"expected_outputs": {"memory_summaries": mapping}},
         )
 
+    def _structured_memory_update(
+        self,
+        agent_id="player",
+        *,
+        character_name="",
+        self_understanding="I remember the archive door opening under my hand.",
+        key_memory="I opened the archive door and noticed Ada's lamp behind me.",
+        short_term="I am still near the archive threshold.",
+        active_goal="Find the sealed index.",
+    ):
+        payload = {
+            "agent_id": agent_id,
+            "character_name": character_name,
+            "source": "self",
+            "visibility": "actor",
+            "long_term": {
+                "self_understanding": [self_understanding],
+                "stable_beliefs": ["The archive should be explored carefully."],
+                "relationship_models": ["Ada notices small changes in the room."],
+            },
+            "key_memories": [
+                {
+                    "content": key_memory,
+                    "importance": "high",
+                    "details": ["The threshold smelled like old paper."],
+                }
+            ],
+            "short_term": [
+                {
+                    "content": short_term,
+                    "expires_after": "scene_end",
+                }
+            ],
+            "goals": {
+                "active": [active_goal],
+                "paused": [],
+                "resolved": [],
+            },
+        }
+        if not character_name and not agent_id.startswith("character:"):
+            payload.pop("character_name")
+        return payload
+
     def test_ingest_memory_deltas_writes_player_character_and_world_memory(self):
         result = self.agent_memory.ingest_memory_deltas(
             self.card,
@@ -565,8 +608,16 @@ class AgentMemoryTest(unittest.TestCase):
             "prompts/memory/character_Ada.prompt.md",
         )
         self.assertEqual(result["scheduled"], ["player", "character:Ada"])
-        self.assertIn("first-person memory", player_prompt.read_text(encoding="utf-8"))
-        self.assertIn("character:Ada", character_prompt.read_text(encoding="utf-8"))
+        player_prompt_text = player_prompt.read_text(encoding="utf-8")
+        character_prompt_text = character_prompt.read_text(encoding="utf-8")
+        self.assertIn("first-person memory", player_prompt_text)
+        self.assertIn("organization is not compression", player_prompt_text)
+        self.assertIn("preserve enough details", player_prompt_text)
+        self.assertIn('"long_term"', player_prompt_text)
+        self.assertIn('"key_memories"', player_prompt_text)
+        self.assertIn('"short_term"', player_prompt_text)
+        self.assertIn('"goals"', player_prompt_text)
+        self.assertIn("character:Ada", character_prompt_text)
 
     def test_ingest_memory_summaries_writes_player_and_character_summary_files(self):
         self._write_memory_summary_manifest(
@@ -577,37 +628,113 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "player.summary.json",
-            {
-                "agent_id": "player",
-                "summary": "I remember the archive door opening under my hand.",
-                "retained_goals": ["Find the sealed index."],
-                "forgotten_noise": ["Dust motes in the west corner."],
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "player",
+                self_understanding="I remember the archive door opening under my hand.",
+                key_memory="I pushed the archive door open while Ada watched.",
+                active_goal="Find the sealed index.",
+            ),
         )
         _write_json(
             self.run_dir / "memory_summaries" / "character_Ada.summary.json",
-            {
-                "agent_id": "character:Ada",
-                "character_name": "Ada",
-                "summary": "I watched the player enter the archive and kept my distance.",
-                "retained_goals": ["Decide whether the player can be trusted."],
-                "forgotten_noise": [],
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "character:Ada",
+                character_name="Ada",
+                self_understanding="I watched the player enter the archive and kept my distance.",
+                key_memory="I raised my lamp as the player crossed the threshold.",
+                active_goal="Decide whether the player can be trusted.",
+            ),
         )
 
         result = self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
         self.assertEqual(result["ingested"], ["player", "character:Ada"])
-        player_summary = (self.card / "memory" / "player" / "summary.md").read_text(encoding="utf-8")
-        ada_summary = (self.card / "memory" / "characters" / "Ada" / "summary.md").read_text(encoding="utf-8")
-        self.assertIn("I remember the archive door", player_summary)
-        self.assertIn("Find the sealed index.", player_summary)
-        self.assertIn("I watched the player enter", ada_summary)
-        self.assertIn("Decide whether the player can be trusted.", ada_summary)
+        player_long_term = (self.card / "memory" / "player" / "long_term.md").read_text(encoding="utf-8")
+        player_key = (self.card / "memory" / "player" / "key_memories.md").read_text(encoding="utf-8")
+        player_short = (self.card / "memory" / "player" / "short_term.md").read_text(encoding="utf-8")
+        player_goals = json.loads((self.card / "memory" / "player" / "goals.json").read_text(encoding="utf-8"))
+        ada_long_term = (self.card / "memory" / "characters" / "Ada" / "long_term.md").read_text(encoding="utf-8")
+        ada_key = (self.card / "memory" / "characters" / "Ada" / "key_memories.md").read_text(encoding="utf-8")
+        ada_short = (self.card / "memory" / "characters" / "Ada" / "short_term.md").read_text(encoding="utf-8")
+        ada_goals = json.loads((self.card / "memory" / "characters" / "Ada" / "goals.json").read_text(encoding="utf-8"))
+        self.assertIn("I remember the archive door", player_long_term)
+        self.assertIn("I pushed the archive door open", player_key)
+        self.assertIn("scene_end", player_short)
+        self.assertEqual(player_goals["goals"]["active"], ["Find the sealed index."])
+        self.assertIn("I watched the player enter", ada_long_term)
+        self.assertIn("I raised my lamp", ada_key)
+        self.assertIn("scene_end", ada_short)
+        self.assertEqual(ada_goals["goals"]["active"], ["Decide whether the player can be trusted."])
+        self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "profile.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "profile.json").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "profile.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "profile.json").exists())
+
+    def test_ingest_memory_summaries_removes_recent_delta_after_organization(self):
+        player_dir = self.card / "memory" / "player"
+        player_dir.mkdir(parents=True, exist_ok=True)
+        (player_dir / "recent.md").write_text(
+            "# Player Agent Memory\n\n- stale recent player delta\n",
+            encoding="utf-8",
+        )
+        self._write_memory_summary_manifest(
+            {"player": "memory_summaries/player.summary.json"}
+        )
+        _write_json(
+            self.run_dir / "memory_summaries" / "player.summary.json",
+            self._structured_memory_update(
+                "player",
+                short_term="I have organized the current scene memory.",
+            ),
+        )
+
+        self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
+
+        self.assertFalse((player_dir / "recent.md").exists())
+        short_term = (player_dir / "short_term.md").read_text(encoding="utf-8")
+        self.assertIn("I have organized the current scene memory.", short_term)
+        self.assertNotIn("stale recent player delta", short_term)
+
+    def test_ingest_memory_summaries_rolls_back_bucket_files_when_later_write_fails(self):
+        player_dir = self.card / "memory" / "player"
+        player_dir.mkdir(parents=True, exist_ok=True)
+        existing_long_term = "existing long term\n"
+        existing_recent = "existing recent delta\n"
+        (player_dir / "long_term.md").write_text(existing_long_term, encoding="utf-8")
+        (player_dir / "recent.md").write_text(existing_recent, encoding="utf-8")
+        self._write_memory_summary_manifest(
+            {"player": "memory_summaries/player.summary.json"}
+        )
+        _write_json(
+            self.run_dir / "memory_summaries" / "player.summary.json",
+            self._structured_memory_update("player"),
+        )
+
+        original_write_text = self.agent_memory._write_text
+        calls = []
+
+        def fail_on_second_bucket(path, text):
+            calls.append(Path(path).name)
+            if Path(path).name == "key_memories.md":
+                raise OSError("simulated summary write failure")
+            return original_write_text(path, text)
+
+        self.agent_memory._write_text = fail_on_second_bucket
+        try:
+            with self.assertRaisesRegex(OSError, "simulated summary write failure"):
+                self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
+        finally:
+            self.agent_memory._write_text = original_write_text
+
+        self.assertIn("long_term.md", calls)
+        self.assertIn("key_memories.md", calls)
+        self.assertEqual((player_dir / "long_term.md").read_text(encoding="utf-8"), existing_long_term)
+        self.assertEqual((player_dir / "recent.md").read_text(encoding="utf-8"), existing_recent)
+        self.assertFalse((player_dir / "key_memories.md").exists())
+        self.assertFalse((player_dir / "short_term.md").exists())
+        self.assertFalse((player_dir / "goals.json").exists())
 
     def test_ingest_memory_summaries_rejects_path_payload_agent_mismatch(self):
         self._write_memory_summary_manifest(
@@ -615,18 +742,16 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "character_Ada.summary.json",
-            {
-                "agent_id": "player",
-                "summary": "I watched the archive from Ada's corner.",
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "player",
+                self_understanding="I watched the archive from Ada's corner.",
+            ),
         )
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "agent_id mismatch"):
             self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-        self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_character_name_mismatch(self):
         self._write_memory_summary_manifest(
@@ -634,20 +759,18 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "character_Ada.summary.json",
-            {
-                "agent_id": "character:Ada",
-                "character_name": "Bob",
-                "summary": "I watched the archive from Ada's corner.",
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "character:Ada",
+                character_name="Bob",
+                self_understanding="I watched the archive from Ada's corner.",
+            ),
         )
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "character_name mismatch"):
             self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "summary.md").exists())
-        self.assertFalse((self.card / "memory" / "characters" / "Bob" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "long_term.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Bob" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_unknown_extra_summary_files(self):
         self._write_memory_summary_manifest(
@@ -655,27 +778,21 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "player.summary.json",
-            {
-                "agent_id": "player",
-                "summary": "I remember the archive door.",
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update("player"),
         )
         _write_json(
             self.run_dir / "memory_summaries" / "character_Ada.summary.json",
-            {
-                "agent_id": "character:Ada",
-                "summary": "I should not be accepted because I was not scheduled.",
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "character:Ada",
+                character_name="Ada",
+                self_understanding="I should not be accepted because I was not scheduled.",
+            ),
         )
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "unscheduled"):
             self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-        self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_missing_scheduled_summary_files(self):
         self._write_memory_summary_manifest(
@@ -686,18 +803,13 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "player.summary.json",
-            {
-                "agent_id": "player",
-                "summary": "I remember the archive door.",
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update("player"),
         )
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "missing scheduled"):
             self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-        self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_gm_only_visibility(self):
         self._write_memory_summary_manifest(
@@ -706,9 +818,10 @@ class AgentMemoryTest(unittest.TestCase):
         _write_json(
             self.run_dir / "memory_summaries" / "player.summary.json",
             {
-                "agent_id": "player",
-                "summary": "I somehow know the hidden GM-only vault truth.",
-                "source": "self",
+                **self._structured_memory_update(
+                    "player",
+                    self_understanding="I remember the archive door.",
+                ),
                 "visibility": "gm_only",
             },
         )
@@ -722,43 +835,38 @@ class AgentMemoryTest(unittest.TestCase):
         )
         _write_json(
             self.run_dir / "memory_summaries" / "player.summary.json",
-            {
-                "agent_id": "player",
-                "summary": "I now remember the world_truth that only the GM should know.",
-                "retained_goals": ["Track the omniscient map."],
-                "forgotten_noise": ["gm_only breadcrumb"],
-                "source": "self",
-                "visibility": "actor",
-            },
+            self._structured_memory_update(
+                "player",
+                self_understanding="I now remember the world_truth that only the GM should know.",
+                active_goal="Track the normal archive map.",
+            ),
         )
 
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "world_truth"):
             self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-        self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+        self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_world_truth_aliases(self):
         for marker in ["world-truth", "world truth"]:
             with self.subTest(marker=marker):
-                if (self.card / "memory" / "player" / "summary.md").exists():
-                    (self.card / "memory" / "player" / "summary.md").unlink()
+                if (self.card / "memory" / "player" / "long_term.md").exists():
+                    (self.card / "memory" / "player" / "long_term.md").unlink()
                 self._write_memory_summary_manifest(
                     {"player": "memory_summaries/player.summary.json"}
                 )
                 _write_json(
                     self.run_dir / "memory_summaries" / "player.summary.json",
-                    {
-                        "agent_id": "player",
-                        "summary": f"I now know the hidden {marker}.",
-                        "source": "self",
-                        "visibility": "actor",
-                    },
+                    self._structured_memory_update(
+                        "player",
+                        self_understanding=f"I now know the hidden {marker}.",
+                    ),
                 )
 
                 with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "world_truth"):
                     self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-                self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+                self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
     def test_ingest_memory_summaries_rejects_prompt_declared_hidden_markers(self):
         for marker, expected in [
@@ -766,25 +874,23 @@ class AgentMemoryTest(unittest.TestCase):
             ("out-of-character", "out_of_character"),
         ]:
             with self.subTest(marker=marker):
-                if (self.card / "memory" / "player" / "summary.md").exists():
-                    (self.card / "memory" / "player" / "summary.md").unlink()
+                if (self.card / "memory" / "player" / "long_term.md").exists():
+                    (self.card / "memory" / "player" / "long_term.md").unlink()
                 self._write_memory_summary_manifest(
                     {"player": "memory_summaries/player.summary.json"}
                 )
                 _write_json(
                     self.run_dir / "memory_summaries" / "player.summary.json",
-                    {
-                        "agent_id": "player",
-                        "summary": f"I should not persist {marker} knowledge.",
-                        "source": "self",
-                        "visibility": "actor",
-                    },
+                    self._structured_memory_update(
+                        "player",
+                        self_understanding=f"I should not persist {marker} knowledge.",
+                    ),
                 )
 
                 with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
                     self.agent_memory.ingest_memory_summaries(self.card, self.run_dir)
 
-                self.assertFalse((self.card / "memory" / "player" / "summary.md").exists())
+                self.assertFalse((self.card / "memory" / "player" / "long_term.md").exists())
 
 
 if __name__ == "__main__":
