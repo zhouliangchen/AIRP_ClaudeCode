@@ -19,9 +19,12 @@ class ControlPlaneSmokeTest(unittest.TestCase):
 
         payload = json.loads(result.stdout)
 
-        self.assertIs(payload["ok"], True)
-        self.assertEqual(payload["delivery"]["mode"], "agent_run")
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["visibility_guard"]["redacted_actor_call"])
+        self.assertIn("SuLi", payload["promotions"]["promoted"])
+        self.assertTrue(payload["structured_memory"]["character:SuLi"])
         self.assertEqual(payload["manifest_stage"], "delivered")
+        self.assertEqual(payload["delivery"]["mode"], "agent_run")
         self.assertEqual(payload["trace"]["private_event_count"], 3)
         self.assertEqual(len(payload["trace"]["visible_events"]), 2)
         self.assertIn("player", payload["memory_summary"]["ingested"])

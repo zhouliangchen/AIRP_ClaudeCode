@@ -6,6 +6,10 @@
 
 本文只定义设计范围；具体实现需在后续 implementation plan 中拆分任务。
 
+## 实现状态更新（2026-06-19）
+
+Task 6 已把 deterministic control-plane smoke 扩展到已实现的硬化行为：GM actor call 中来自 `user_instruction_channel` 的隐藏短语会在进入 actor/story-facing loop output 前清理；主 GM 可通过 `character_promotions` 在当前回合提升 `SuLi` 并调用该角色；周期性 actor 记忆摘要会写入 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json` 结构化记忆桶；`gm_assistant:*` 仍不能直接应用 promotion，只能保留为主 GM 仲裁边界。该状态说明不表示完整 GM 助手 side-thread runner 已实现。
+
 ## 问题
 
 当前实现存在两个核心缺口：

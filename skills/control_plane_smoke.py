@@ -10,6 +10,18 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+HIDDEN_SMOKE_PHRASE = "the pendant burns identity"
+PROMOTED_CHARACTER = "SuLi"
+PROMOTION_RECORD = {
+    "name": PROMOTED_CHARACTER,
+    "source_agent": "gm",
+    "reason": "SuLi becomes central to the pendant scene.",
+    "profile_seed": "A reserved classmate with occult knowledge.",
+    "visibility": "character_private_and_gm",
+    "activation": "current_turn",
+}
+
+
 def _insert_skills_path(repo: Path) -> None:
     skills_dir = str((repo / "skills").resolve())
     if skills_dir not in sys.path:
@@ -23,6 +35,17 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _contains_text(value: Any, text: str) -> bool:
+    return str(text).lower() in json.dumps(value, ensure_ascii=False).lower()
 
 
 def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], input_analysis) -> Dict[str, Any]:
@@ -45,7 +68,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
                 "source_channel": "role_input",
                 "type": "action",
                 "raw_excerpt": role_text,
-                "derived_summary": "The player enters the archive.",
+                "derived_summary": "The player shows interest in the pendant.",
                 "confidence": 1.0,
                 "visibility": "player_pov",
                 "persist": False,
@@ -55,7 +78,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
                 "source_channel": "user_instruction",
                 "type": "style_guidance",
                 "raw_excerpt": user_instruction_text,
-                "derived_summary": "Keep the scene quiet and inspectable.",
+                "derived_summary": "Keep the hidden pendant truth out of actor-facing text.",
                 "confidence": 1.0,
                 "visibility": "gm_only",
                 "persist": False,
@@ -64,15 +87,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
         "world_updates": {
             "hidden_facts": [],
             "public_facts": [],
-            "important_characters": [
-                {
-                    "id": "fixture-character-ada",
-                    "name": "Ada",
-                    "text": "Ada is cautious and carries the lamp.",
-                    "visibility": "character_private_and_gm",
-                    "status": "active",
-                }
-            ],
+            "important_characters": [],
             "retcon_requests": [],
         },
         "narrative_directives": {
@@ -86,7 +101,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
             "user_instruction_channel": user_instruction_text,
             "gm": True,
             "player": True,
-            "characters": ["Ada"],
+            "characters": [],
         },
         "risks": [],
     }
@@ -98,86 +113,85 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
     )
 
 
-def _write_agent_outputs(run_dir: Path) -> None:
-    _write_json(
-        run_dir / "gm.output.json",
-        {
-            "agent": "gm_loop",
-            "outputs": [
-                {
-                    "agent": "gm",
-                    "scene_beats": [{"content": "The archive door opens onto a quiet lamplit room."}],
-                    "events": [],
-                    "actor_calls": [
-                        {
-                            "call_id": "call-player-1",
-                            "actor_id": "player",
-                            "prompt": "Respond to entering the archive from the player's first-person view.",
-                            "reason": "The player submitted the current action.",
-                        },
-                        {
-                            "call_id": "call-character-Ada-1",
-                            "actor_id": "character:Ada",
-                            "prompt": "React as Ada while carrying the lamp.",
-                            "reason": "Ada is a current important character in the scene.",
-                        },
-                    ],
-                    "parallel_groups": [],
-                    "world_state_delta": [{"scope": "archive", "fact": "the entry door is open"}],
-                    "decision_point": {
-                        "reason": "The player must choose whether to inspect the shelves.",
-                        "options": ["inspect shelves", "wait at threshold"],
+def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]:
+    raw_gm_output = {
+        "agent": "gm",
+        "scene_beats": [{"content": "SuLi notices the pendant before the player can hide it."}],
+        "events": [],
+        "actor_calls": [
+            {
+                "call_id": "call-character-SuLi-1",
+                "actor_id": "character:SuLi",
+                "prompt": (
+                    "You recognize the pendant burns identity, but respond only from "
+                    "what SuLi can safely perceive."
+                ),
+                "reason": "GM must test that the hidden pendant truth is redacted.",
+            }
+        ],
+        "parallel_groups": [],
+        "world_state_delta": [{"scope": "pendant", "fact": "SuLi notices the pendant publicly."}],
+        "character_promotions": [PROMOTION_RECORD],
+        "decision_point": {
+            "reason": "The player must choose whether to show SuLi the pendant.",
+            "options": ["show the pendant", "hide the pendant"],
+        },
+        "stop_reason": "player_decision",
+    }
+    captured: Dict[str, Any] = {"raw_gm_output": raw_gm_output, "actor_packets": []}
+
+    def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
+        if agent_key == "gm":
+            return raw_gm_output
+        if agent_key == "character:SuLi":
+            captured["actor_packets"].append(packet)
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [
+                    {
+                        "type": "dialogue",
+                        "target": "",
+                        "content": "That pendant is older than this school.",
                     },
-                    "stop_reason": "player_decision",
-                }
-            ],
-        },
-    )
-    _write_json(
-        run_dir / "actor.outputs.json",
-        {
-            "player": [
-                {
-                    "agent": "player",
-                    "agent_id": "player",
-                    "events": [
-                        {"type": "action", "target": "", "content": "I step into the archive and keep close to Ada's lamp."},
-                        {
-                            "type": "memory_delta",
-                            "target": "self",
-                            "content": "I entered the archive while following Ada's lamp.",
-                        },
-                    ],
-                    "stop_reason": "continue",
-                }
-            ],
-            "character:Ada": [
-                {
-                    "agent": "character",
-                    "agent_id": "character:Ada",
-                    "character_name": "Ada",
-                    "events": [
-                        {"type": "dialogue", "target": "player", "content": "Stay close to the lamp."},
-                        {
-                            "type": "memory_delta",
-                            "target": "self",
-                            "content": "I saw the player enter the archive beside my lamp.",
-                        },
-                    ],
-                    "stop_reason": "continue",
-                }
-            ],
-        },
-    )
+                    {
+                        "type": "memory_delta",
+                        "target": "self",
+                        "content": "I noticed the player carrying a pendant tied to old rites.",
+                    },
+                    {
+                        "type": "goal_update",
+                        "target": "self",
+                        "content": "Find out why the pendant reacted near the archive.",
+                    },
+                    {
+                        "type": "wait_for_gm",
+                        "target": "",
+                        "content": "I wait for the GM to confirm what my senses can safely know.",
+                    },
+                ],
+                "stop_reason": "continue",
+            }
+        raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
+
+    captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=1)
+    return captured
+
+
+def _write_story_and_critic_outputs(run_dir: Path) -> None:
     _write_json(
         run_dir / "story.output.json",
         {
-            "content": '<content>Ada raised the lamp. "Stay close to the lamp," she said, and the player stepped into the archive.</content>',
+            "content": (
+                '<content>SuLi lowered her voice. "That pendant is older than this school," '
+                "she said, stopping before the next choice belonged to the player.</content>"
+            ),
             "character_dialogues": [
                 {
-                    "character": "Ada",
-                    "text": "Stay close to the lamp.",
-                    "source_agent": "character:Ada",
+                    "character": "SuLi",
+                    "text": "That pendant is older than this school.",
+                    "source_agent": "character:SuLi",
                 }
             ],
             "metadata": {"round_id": run_dir.name, "source": "control_plane_smoke"},
@@ -223,6 +237,36 @@ def _summary_payload(agent_id: str) -> Dict[str, Any]:
             "goals": {
                 **goals,
                 "active": ["Stay close to Ada while exploring the archive."],
+            },
+        }
+
+    if agent_id == "character:SuLi":
+        return {
+            "agent_id": "character:SuLi",
+            "character_name": "SuLi",
+            "source": "self",
+            "visibility": "actor",
+            "long_term": {
+                "self_understanding": ["I am SuLi, a reserved classmate who knows old occult signs."],
+                "stable_beliefs": ["The pendant scene matters because old rites respond to attention."],
+                "relationship_models": ["The player may need careful warning before trusting the pendant."],
+            },
+            "key_memories": [
+                {
+                    "content": "I noticed the player carrying a pendant tied to old rites.",
+                    "importance": "high",
+                    "details": ["I warned that the pendant was older than the school.", "The next choice belonged to the player."],
+                }
+            ],
+            "short_term": [
+                {
+                    "content": "I am near the player while the pendant remains unresolved.",
+                    "expires_after": "scene_end",
+                }
+            ],
+            "goals": {
+                **goals,
+                "active": ["Find out why the pendant reacted near the archive."],
             },
         }
 
@@ -287,6 +331,73 @@ def _write_scheduled_memory_summaries(run_dir: Path) -> Dict[str, str]:
     return written
 
 
+def _schedule_suli_memory_summary(card: Path, run_dir: Path, agent_memory) -> None:
+    manifest = _read_json(run_dir / "manifest.json")
+    agent_memory.write_memory_summary_prompts(
+        card,
+        run_dir,
+        manifest,
+        ["player", "character:SuLi"],
+    )
+    _write_json(run_dir / "manifest.json", manifest)
+
+
+def _promotion_evidence(card: Path) -> Dict[str, Any]:
+    card_data = _read_json(card / ".card_data.json")
+    major = (
+        card_data.get("character_orchestration", {}).get("major", [])
+        if isinstance(card_data.get("character_orchestration"), dict)
+        else []
+    )
+    profile = _read_json(card / "memory" / "characters" / "SuLi" / "profile.json")
+    promoted = []
+    if (
+        PROMOTED_CHARACTER in major
+        and profile.get("source_agent") == "gm"
+        and profile.get("authoritative_setting") == PROMOTION_RECORD["profile_seed"]
+    ):
+        promoted.append(PROMOTED_CHARACTER)
+    return {
+        "promoted": promoted,
+        "registered": [name for name in major if name == PROMOTED_CHARACTER],
+        "profile_source_agent": profile.get("source_agent", ""),
+    }
+
+
+def _structured_memory_evidence(card: Path) -> Dict[str, Any]:
+    memory_dir = card / "memory" / "characters" / "SuLi"
+    long_term = _read_text(memory_dir / "long_term.md")
+    key_memories = _read_text(memory_dir / "key_memories.md")
+    short_term = _read_text(memory_dir / "short_term.md")
+    goals = _read_json(memory_dir / "goals.json") if (memory_dir / "goals.json").exists() else {}
+    has_suli_buckets = (
+        (memory_dir / "long_term.md").exists()
+        and (memory_dir / "key_memories.md").exists()
+        and (memory_dir / "short_term.md").exists()
+        and (memory_dir / "goals.json").exists()
+        and "character:SuLi" in long_term
+        and "pendant tied to old rites" in key_memories
+        and "pendant remains unresolved" in short_term
+        and "Find out why the pendant reacted near the archive." in json.dumps(goals, ensure_ascii=False)
+    )
+    return {"character:SuLi": has_suli_buckets}
+
+
+def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> Dict[str, Any]:
+    gm_output = _read_json(run_dir / "gm.output.json")
+    story_input = _read_json(run_dir / "story.input.json")
+    loop_outputs = story_input.get("loop_outputs", {})
+    actor_packets = captured_loop.get("actor_packets", [])
+    raw_exposed_phrase = _contains_text(captured_loop.get("raw_gm_output", {}), HIDDEN_SMOKE_PHRASE)
+    sanitized_actor_fields = [gm_output.get("outputs", []), loop_outputs.get("gm", {}), actor_packets]
+    redacted_actor_call = (
+        raw_exposed_phrase
+        and not any(_contains_text(field, HIDDEN_SMOKE_PHRASE) for field in sanitized_actor_fields)
+        and any(_contains_text(field, "[redacted]") for field in sanitized_actor_fields)
+    )
+    return {"redacted_actor_call": redacted_actor_call}
+
+
 def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
@@ -294,6 +405,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     import agent_memory
     import agent_outputs
     import agent_packets
+    import agent_turn_loop
 
     with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-") as tmp:
         temp_root = Path(tmp)
@@ -315,24 +427,20 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
 
         input_payload = {
             "input_schema": "dual_channel_v1",
-            "raw_text": "I enter the archive.\n\n[USER_INSTRUCTION]\nKeep the scene quiet and inspectable.",
-            "display_text": "I enter the archive.",
-            "role_text": "I enter the archive.",
-            "user_instruction_text": "Keep the scene quiet and inspectable.",
+            "raw_text": (
+                "I notice the old pendant in my hand.\n\n[USER_INSTRUCTION]\n"
+                f"Hidden truth: {HIDDEN_SMOKE_PHRASE}."
+            ),
+            "display_text": "I notice the old pendant in my hand.",
+            "role_text": "I notice the old pendant in my hand.",
+            "user_instruction_text": f"Hidden truth: {HIDDEN_SMOKE_PHRASE}.",
         }
         prepared = agent_packets.prepare_agent_run(
             card_folder=card,
             user_text="fallback text should not be routed",
-            chat_log=[{"index": 4, "summary": "The player reached the archive door."}],
+            chat_log=[{"index": 4, "summary": "The player reached the archive door with a pendant."}],
             card_data=card_data,
-            character_contexts={
-                "characters": [
-                    {
-                        "name": "Ada",
-                        "profile_summary": "Ada is cautious and carries the lamp.",
-                    }
-                ]
-            },
+            character_contexts={"characters": []},
             turn_index=5,
             input_payload=input_payload,
         )
@@ -347,60 +455,9 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         _write_json(run_dir / "input_analysis.output.json", analysis)
         applied_analysis = input_analysis_apply.apply_current_run(card, repo)
 
-        agent_interactions.init_trace(
-            run_dir,
-            participants=["gm", "player", "character:Ada"],
-            chapter_target_words=600,
-        )
-        agent_interactions.append_event(
-            run_dir,
-            actor="character:Ada",
-            visibility="world_visible",
-            event_type="dialogue",
-            content="Stay close to the lamp.",
-            target="player",
-            source_call_id="call-character-Ada-1",
-        )
-        agent_interactions.append_event(
-            run_dir,
-            actor="character:Ada",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I saw the player enter the archive beside my lamp.",
-            target="self",
-            source_call_id="call-character-Ada-1",
-        )
-        agent_interactions.append_event(
-            run_dir,
-            actor="player",
-            visibility="world_visible",
-            event_type="action",
-            content="I step into the archive and keep close to Ada's lamp.",
-            source_call_id="call-player-1",
-        )
-        agent_interactions.append_event(
-            run_dir,
-            actor="player",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I entered the archive while following Ada's lamp.",
-            target="self",
-            source_call_id="call-player-1",
-        )
-        agent_interactions.append_event(
-            run_dir,
-            actor="player",
-            visibility="private",
-            event_type="thought",
-            content="I am not sure what waits between the shelves.",
-        )
-        agent_interactions.mark_decision_point(
-            run_dir,
-            reason="The player must choose whether to inspect the shelves.",
-            options=["inspect shelves", "wait at threshold"],
-        )
-
-        _write_agent_outputs(run_dir)
+        captured_loop = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
+        _schedule_suli_memory_summary(card, run_dir, agent_memory)
+        _write_story_and_critic_outputs(run_dir)
         delivery = agent_outputs.prepare_delivery(card, styles_dir)
         if not delivery.get("ok"):
             raise RuntimeError(f"delivery failed: {delivery}")
@@ -429,12 +486,16 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "analysis_mode": story_input_analysis.get("analysis_mode"),
                 "stage": applied_analysis.get("stage"),
             },
+            "visibility_guard": _visibility_guard_evidence(run_dir, captured_loop),
+            "promotions": _promotion_evidence(card),
+            "structured_memory": _structured_memory_evidence(card),
             "delivery": {
                 "ok": bool(delivery.get("ok")),
                 "mode": delivery.get("mode"),
             },
             "manifest_stage": manifest.get("stage") or delivered.get("stage"),
             "trace": trace,
+            "loop": captured_loop.get("loop_result", {}),
             "memory_delta": {
                 "ok": bool(memory_delta.get("ok")),
                 "round_id": memory_delta.get("round_id"),
