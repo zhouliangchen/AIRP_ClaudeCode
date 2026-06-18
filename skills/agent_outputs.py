@@ -158,43 +158,46 @@ def _validate_actor_key(actor_id: Any, context: str) -> str:
 def _require_called_actor_outputs(
     gm_path: Path,
     gm_outputs: list[Dict[str, Any]],
-    actor_outputs: Dict[str, list[Dict[str, Any]]],
+    output_source_call_ids_by_actor: Dict[str, list[str]],
 ) -> None:
-    required_counts: Dict[str, int] = {}
-    first_context: Dict[str, str] = {}
+    required_call_counts: Dict[str, Counter[str]] = {}
+    first_context: Dict[tuple[str, str], str] = {}
     for gm_index, gm_output in enumerate(gm_outputs):
         for call_index, call in enumerate(gm_output.get("actor_calls", [])):
-            context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}].actor_id"
-            actor_id = _validate_actor_key(call.get("actor_id"), context)
-            required_counts[actor_id] = required_counts.get(actor_id, 0) + 1
-            first_context.setdefault(actor_id, context)
-    for actor_id, required_count in required_counts.items():
-        actual_count = len(actor_outputs.get(actor_id) or [])
-        if actual_count < required_count:
-            raise AgentOutputError(
-                f"{first_context[actor_id]}: missing actor outputs for {actor_id}; "
-                f"required {required_count}, found {actual_count}"
-            )
+            context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}]"
+            actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            call_id = str(call.get("call_id") or "").strip()
+            if not call_id:
+                raise AgentOutputError(f"{context}.call_id: persisted actor call id must be nonblank")
+            required_call_counts.setdefault(actor_id, Counter())[call_id] += 1
+            first_context.setdefault((actor_id, call_id), context)
+
+    for actor_id, required_counts in required_call_counts.items():
+        actual_counts = Counter(output_source_call_ids_by_actor.get(actor_id, []))
+        for call_id, required_count in required_counts.items():
+            actual_count = actual_counts.get(call_id, 0)
+            if actual_count < required_count:
+                context = first_context[(actor_id, call_id)]
+                raise AgentOutputError(
+                    f"{context}.call_id: missing actor output for {actor_id} call_id {call_id!r}; "
+                    f"required {required_count}, found {actual_count}"
+                )
 
 
-def _trace_source_call_ids_by_actor(raw_trace: Dict[str, Any]) -> Dict[str, set[str]]:
-    source_call_ids: Dict[str, set[str]] = {}
-    for event in raw_trace["events"]:
-        if not isinstance(event, dict):
-            continue
-        actor = event.get("actor")
-        source_call_id = event.get("source_call_id")
-        if not isinstance(actor, str) or not isinstance(source_call_id, str):
-            continue
-        actor_key = actor.strip()
-        source_key = source_call_id.strip()
-        if actor_key and source_key:
-            source_call_ids.setdefault(actor_key, set()).add(source_key)
-    return source_call_ids
+def _required_actor_call_counts(gm_outputs: list[Dict[str, Any]]) -> Dict[str, Counter[str]]:
+    required_call_counts: Dict[str, Counter[str]] = {}
+    for gm_index, gm_output in enumerate(gm_outputs):
+        for call_index, call in enumerate(gm_output.get("actor_calls", [])):
+            context = f"gm.output.json.outputs[{gm_index}].actor_calls[{call_index}]"
+            actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            call_id = str(call.get("call_id") or "").strip()
+            if call_id:
+                required_call_counts.setdefault(actor_id, Counter())[call_id] += 1
+    return required_call_counts
 
 
-def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str, str]]:
-    event_sources: Counter[tuple[str, str, str, str]] = Counter()
+def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str, str, str]]:
+    event_sources: Counter[tuple[str, str, str, str, str]] = Counter()
     for event in raw_trace["events"]:
         if not isinstance(event, dict):
             continue
@@ -212,41 +215,89 @@ def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, s
             continue
         actor_key = actor.strip()
         type_key = event_type.strip()
-        if actor_key and type_key and source_call_id.strip():
-            event_sources[(actor_key, type_key, content, _trace_preserved_target(target))] += 1
+        source_key = source_call_id.strip()
+        if actor_key and type_key and source_key:
+            event_sources[(actor_key, type_key, content, _trace_preserved_target(target), source_key)] += 1
     return event_sources
+
+
+def _candidate_source_call_ids(
+    event_sources: Counter[tuple[str, str, str, str, str]],
+    event_key: tuple[str, str, str, str],
+) -> set[str]:
+    candidates = set()
+    for source_key, count in event_sources.items():
+        if count > 0 and source_key[:4] == event_key:
+            candidates.add(source_key[4])
+    return candidates
+
+
+def _choose_source_call_id(
+    candidates: list[str],
+    preferred_counts: Counter[str],
+) -> str:
+    for source_call_id in sorted(candidates):
+        if preferred_counts.get(source_call_id, 0) > 0:
+            return source_call_id
+    return sorted(candidates)[0]
 
 
 def _validate_actor_output_provenance(
     root: Path,
     raw_trace: Dict[str, Any],
     actor_outputs: Dict[str, list[Dict[str, Any]]],
-) -> None:
-    source_call_ids = _trace_source_call_ids_by_actor(raw_trace)
+    preferred_call_counts: Dict[str, Counter[str]] | None = None,
+) -> Dict[str, list[str]]:
     event_sources = _trace_event_sources(raw_trace)
     actor_path = root / "actor.outputs.json"
+    output_source_call_ids_by_actor: Dict[str, list[str]] = {}
+    remaining_preferred = {
+        actor_id: Counter(counts)
+        for actor_id, counts in (preferred_call_counts or {}).items()
+    }
     for actor_id, outputs in actor_outputs.items():
         context = f"{actor_path}.{actor_id}"
         if not outputs:
             raise AgentOutputError(f"{context}: actor output branch is empty or unproven")
-        source_count = len(source_call_ids.get(actor_id, set()))
-        if len(outputs) > source_count:
-            raise AgentOutputError(
-                f"{context}: actor outputs are not backed by raw trace source_call_id events; "
-                f"outputs={len(outputs)}, source_call_ids={source_count}"
-            )
         for output_index, output in enumerate(outputs):
+            event_counts: Counter[tuple[str, str, str, str]] = Counter()
+            common_sources: set[str] | None = None
             for event_index, event in enumerate(output["events"]):
                 preserved_target = _trace_preserved_target(event.get("target"))
-                key = (actor_id, event["type"], event["content"], preserved_target)
-                if event_sources[key] <= 0:
+                event_key = (actor_id, event["type"], event["content"], preserved_target)
+                candidates = _candidate_source_call_ids(event_sources, event_key)
+                if not candidates:
                     raise AgentOutputError(
                         f"{context}[{output_index}].events[{event_index}]: actor event is not backed by "
                         f"raw trace source_call_id event "
                         f"(actor={actor_id!r}, type={event['type']!r}, target={preserved_target!r}, "
                         f"content={event['content']!r})"
                     )
-                event_sources[key] -= 1
+                common_sources = candidates if common_sources is None else common_sources & candidates
+                event_counts[event_key] += 1
+
+            eligible_sources = []
+            for source_call_id in common_sources or set():
+                if all(
+                    event_sources[(*event_key, source_call_id)] >= event_count
+                    for event_key, event_count in event_counts.items()
+                ):
+                    eligible_sources.append(source_call_id)
+            if not eligible_sources:
+                raise AgentOutputError(
+                    f"{context}[{output_index}]: actor output events must share one nonblank "
+                    f"raw trace source_call_id"
+                )
+
+            actor_preferred = remaining_preferred.setdefault(actor_id, Counter())
+            output_source_call_id = _choose_source_call_id(eligible_sources, actor_preferred)
+            if actor_preferred.get(output_source_call_id, 0) > 0:
+                actor_preferred[output_source_call_id] -= 1
+            for event_key, event_count in event_counts.items():
+                event_sources[(*event_key, output_source_call_id)] -= event_count
+            output_source_call_ids_by_actor.setdefault(actor_id, []).append(output_source_call_id)
+    return output_source_call_ids_by_actor
+
 
 
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
@@ -287,8 +338,6 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
                 )
             normalized_outputs.append(normalized)
         normalized_actor_outputs[actor_key] = normalized_outputs
-
-    _require_called_actor_outputs(gm_path, normalized_gm_outputs, normalized_actor_outputs)
 
     return {
         "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
@@ -337,7 +386,17 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     input_payload = _read_json_required(root / "input.json")
     raw_trace, trace_summary = _validate_trace_artifacts(root)
     loop_outputs = _load_loop_outputs(root)
-    _validate_actor_output_provenance(root, raw_trace, loop_outputs["actors"])
+    output_source_call_ids_by_actor = _validate_actor_output_provenance(
+        root,
+        raw_trace,
+        loop_outputs["actors"],
+        _required_actor_call_counts(loop_outputs["gm"]["outputs"]),
+    )
+    _require_called_actor_outputs(
+        root / "gm.output.json",
+        loop_outputs["gm"]["outputs"],
+        output_source_call_ids_by_actor,
+    )
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),

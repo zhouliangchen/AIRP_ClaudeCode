@@ -624,7 +624,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "events": [],
                         "actor_calls": [
                             {
-                                "call_id": "call-ada",
+                                "call_id": "call-character-Ada-1",
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the player opening the archive door.",
                                 "reason": "Ada is present in the scene.",
@@ -722,6 +722,74 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_actor_output_mixing_trace_source_call_ids(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive asks for a careful answer."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {"type": "action", "target": "", "content": "I step through the door."},
+                            {"type": "memory_delta", "target": "self", "content": "I remember the door."},
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="action",
+            content="I step through the door.",
+            source_call_id="call-player-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="actor_visible",
+            event_type="memory_delta",
+            content="I remember the door.",
+            target="self",
+            source_call_id="call-player-2",
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source_call_id"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
 
     def test_build_story_input_rejects_trace_backed_event_with_changed_safe_target(self):
         sentinel = {"existing": "do not replace"}
@@ -838,6 +906,10 @@ class AgentOutputsTest(unittest.TestCase):
             story_input["loop_outputs"]["actors"]["character:SuLi"][0]["events"][0]["content"],
             "Where did you get that?",
         )
+        self.assertEqual(
+            story_input["interaction_trace"]["visible_events"][0]["source_call_id"],
+            "call-character-SuLi-1",
+        )
 
     def test_build_story_input_requires_actor_output_count_for_each_gm_call(self):
         _write_json(
@@ -877,6 +949,82 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_build_story_input_rejects_gm_actor_call_backed_by_different_trace_source_call_id(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada is called by the GM."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-character-Ada-real",
+                                "actor_id": "character:Ada",
+                                "prompt": "Answer the player.",
+                                "reason": "Ada is present.",
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Stay close."}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "interaction.trace.json",
+            {
+                "schema_version": 2,
+                "round_id": "round-000001",
+                "status": "interacting",
+                "participants": ["gm", "character:Ada"],
+                "chapter_target_words": 1200,
+                "events": [
+                    {
+                        "actor": "character:Ada",
+                        "visibility": "world_visible",
+                        "type": "dialogue",
+                        "content": "Stay close.",
+                        "target": "player",
+                        "source_call_id": "call-character-Ada-other",
+                    }
+                ],
+                "parallel_groups": [],
+                "decision_point": None,
+                "stop_reason": "",
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "call-character-Ada-real"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
+
     def test_build_story_input_allows_one_actor_output_for_one_gm_call(self):
         _write_json(
             self.run_dir / "gm.output.json",
@@ -889,7 +1037,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "events": [],
                         "actor_calls": [
                             {
-                                "call_id": "call-ada",
+                                "call_id": "call-character-Ada-1",
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the player opening the archive door.",
                                 "reason": "Ada is present in the scene.",
@@ -907,6 +1055,91 @@ class AgentOutputsTest(unittest.TestCase):
         story_input = self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(len(story_input["loop_outputs"]["actors"]["character:Ada"]), 1)
+
+    def test_build_story_input_allows_multiple_actor_outputs_for_exact_gm_call_ids(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada is called twice by the GM."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-character-Ada-1",
+                                "actor_id": "character:Ada",
+                                "prompt": "React first.",
+                                "reason": "Ada is nearby.",
+                            },
+                            {
+                                "call_id": "call-character-Ada-2",
+                                "actor_id": "character:Ada",
+                                "prompt": "React again.",
+                                "reason": "The exchange continues.",
+                            },
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "First answer."}
+                        ],
+                        "stop_reason": "continue",
+                    },
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Second answer."}
+                        ],
+                        "stop_reason": "continue",
+                    },
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="First answer.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Second answer.",
+            target="player",
+            source_call_id="call-character-Ada-2",
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(len(story_input["loop_outputs"]["actors"]["character:Ada"]), 2)
 
     def test_build_story_input_rejects_memory_delta_event_source_field(self):
         _write_json(
