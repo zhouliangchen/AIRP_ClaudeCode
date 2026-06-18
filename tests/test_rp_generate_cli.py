@@ -50,6 +50,80 @@ def _agent_stream(text):
     )
 
 
+def _gm_output(
+    *,
+    scene_beats=None,
+    events=None,
+    actor_calls=None,
+    world_state_delta=None,
+    decision_point=None,
+    stop_reason="player_decision",
+):
+    if actor_calls is None:
+        actor_calls = [
+            {
+                "call_id": "call-player-1",
+                "actor_id": "player",
+                "prompt": "Respond to the current player action.",
+                "reason": "The player is the only required actor for this turn.",
+                "metadata": {},
+            }
+        ]
+    return {
+        "agent": "gm",
+        "scene_beats": scene_beats if scene_beats is not None else [{"content": "The alley light flickers."}],
+        "events": events if events is not None else [],
+        "actor_calls": actor_calls,
+        "parallel_groups": [],
+        "world_state_delta": world_state_delta if world_state_delta is not None else [],
+        "decision_point": decision_point if decision_point is not None else {"prompt": "What do you do next?"},
+        "stop_reason": stop_reason,
+    }
+
+
+def _player_output(content="I wait.", *, stop_reason="continue"):
+    return {
+        "agent": "player",
+        "agent_id": "player",
+        "events": [{"type": "action", "target": "", "content": content, "metadata": {}}],
+        "stop_reason": stop_reason,
+    }
+
+
+def _character_output(agent_id="character:Ada", content="Stay close."):
+    character_name = agent_id.split(":", 1)[1] if ":" in agent_id else agent_id
+    return {
+        "agent": "character",
+        "agent_id": agent_id,
+        "character_name": character_name,
+        "events": [{"type": "dialogue", "target": "player", "content": content, "metadata": {}}],
+        "stop_reason": "continue",
+    }
+
+
+def _story_output(content="<content>ok</content>", *, metadata=None):
+    return {"content": content, "character_dialogues": [], "metadata": metadata or {}}
+
+
+def _critic_pass():
+    return {
+        "decision": "pass",
+        "hard_failures": [],
+        "soft_issues": [],
+        "repair_instruction": "",
+        "system_iteration_suggestion": "",
+    }
+
+
+def _basic_responses(*, gm=None, player=None, story=None, critic=None):
+    return {
+        "gm": gm if gm is not None else _gm_output(),
+        "player": player if player is not None else _player_output(),
+        "story": story if story is not None else _story_output(),
+        "critic": critic if critic is not None else _critic_pass(),
+    }
+
+
 class RpGenerateCliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -77,8 +151,7 @@ class RpGenerateCliTest(unittest.TestCase):
                 },
                 "expected_outputs": {
                     "gm": "gm.output.json",
-                    "player": "player.output.json",
-                    "characters": {},
+                    "actors": "actor.outputs.json",
                     "story": "story.output.json",
                     "critic": "critic.report.json",
                 },
@@ -100,7 +173,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_extract_agent_text_requires_local_agent_task(self):
-        payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+        payload = _gm_output(actor_calls=[], stop_reason="complete")
         text = self.module.extract_agent_text(_agent_stream(json.dumps(payload)))
         self.assertEqual(json.loads(text)["agent"], "gm")
 
@@ -131,15 +204,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn('{"role_channel":"I ask."}', outer)
 
     def test_validate_accepts_common_artifact_wrapper_keys(self):
-        gm_payload = {
-            "gm_output": {
-                "agent": "gm",
-                "narration": "ok",
-                "npc_events": [],
-                "world_state_delta": [],
-                "handoff": {},
-            }
-        }
+        gm_payload = {"gm_output": _gm_output(actor_calls=[], stop_reason="complete")}
         story_payload = {
             "story_output": {
                 "content": "<content>ok</content>",
@@ -152,36 +217,30 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(self.module._validate("story", story_payload)["content"], "<content>ok</content>")
 
     def test_validate_normalizes_gm_world_state_delta_for_memory(self):
-        payload = {
-            "agent": "gm",
-            "narration": "ok",
-            "npc_events": [],
-            "world_state_delta": [{"path": "/scene/position", "value": "Uiharu is by the window."}],
-            "handoff": {},
-        }
+        payload = _gm_output(
+            actor_calls=[],
+            world_state_delta=[{"path": "/scene/position", "value": "Uiharu is by the window."}],
+            stop_reason="complete",
+        )
 
         normalized = self.module._validate("gm", payload)
 
         self.assertEqual(normalized["world_state_delta"], [{"scope": "/scene/position", "fact": "Uiharu is by the window."}])
 
-    def test_validate_normalizes_legacy_actor_output_shape(self):
+    def test_validate_rejects_legacy_actor_output_shape(self):
         payload = {
             "actor_output": {
-                "embodied_intent": "I help Uiharu to the window.",
-                "immediate_action": "I steady Uiharu and guide her toward the window.",
-                "inner_sensation": "I stay alert to the classroom.",
-                "spoken_line": "Let's keep this quiet.",
-                "state_suggestions": ["I decide to avoid drawing attention."],
+                "agent": "player",
+                "agent_id": "player",
+                "action": "I wait.",
+                "dialogue": [],
+                "perception": [],
+                "memory_delta": [],
             }
         }
 
-        normalized = self.module._validate("player", payload)
-
-        self.assertEqual(normalized["agent"], "player")
-        self.assertEqual(normalized["agent_id"], "player")
-        self.assertIn("guide her toward the window", normalized["action"])
-        self.assertEqual(normalized["dialogue"], [{"text": "Let's keep this quiet."}])
-        self.assertIn("classroom", normalized["perception"][0])
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "legacy actor output key"):
+            self.module._validate("player", payload)
 
     def test_stdout_json_is_ascii_safe_for_windows_console(self):
         text = self.module._stdout_json({"ok": True, "text": "中文\ufffd"})
@@ -190,35 +249,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(json.loads(text)["text"], "中文\ufffd")
 
     def test_run_round_writes_subagent_artifacts_and_invokes_delivery(self):
-        responses = {
-            "gm": {
-                "agent": "gm",
-                "narration": "The alley light flickers.",
-                "npc_events": [],
-                "world_state_delta": [],
-                "handoff": {},
-            },
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I follow the noise.",
-                "dialogue": [],
-                "perception": ["I see a flickering alley light."],
-                "memory_delta": [],
-            },
-            "story": {
-                "content": "<content>I followed the noise toward the flickering alley light.</content>",
-                "character_dialogues": [],
-                "metadata": {},
-            },
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>I followed the noise toward the flickering alley light.</content>"),
+        )
         calls = []
         delivery_calls = []
 
@@ -240,10 +274,21 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([call[0] for call in calls], ["gm", "player", "story", "critic"])
         self.assertTrue((self.run_dir / "gm.output.json").exists())
-        self.assertTrue((self.run_dir / "player.output.json").exists())
+        self.assertTrue((self.run_dir / "actor.outputs.json").exists())
+        self.assertTrue((self.run_dir / "interaction.trace.json").exists())
         self.assertTrue((self.run_dir / "story.input.json").exists())
         self.assertTrue((self.run_dir / "story.output.json").exists())
         self.assertTrue((self.run_dir / "critic.report.json").exists())
+        self.assertFalse((self.run_dir / "player.output.json").exists())
+        self.assertNotIn("player", result["artifacts"])
+        self.assertNotIn("characters", result["artifacts"])
+        self.assertEqual(result["artifacts"]["called_actors"], ["player"])
+        gm_loop = json.loads((self.run_dir / "gm.output.json").read_text(encoding="utf-8"))
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(gm_loop["agent"], "gm_loop")
+        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I follow the noise.")
+        self.assertEqual(trace["schema_version"], 2)
         self.assertTrue(any("round_deliver.py" in " ".join(command) for command in delivery_calls))
 
     def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
@@ -317,46 +362,23 @@ class RpGenerateCliTest(unittest.TestCase):
                 },
                 "risks": [],
             },
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I wait.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
+            **_basic_responses(),
         }
 
-        original_dispatch = self.module._dispatch_and_write
-
-        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+        def fake_run_claude(agent_key, prompt, cwd):
             order.append(agent_key)
             payload = dispatch_payloads[agent_key]
-            _write_json(Path(output_path), payload)
-            return payload
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
-        try:
-            self.module._dispatch_and_write = fake_dispatch
-            result = self.module.run_round(
-                self.card,
-                self.root,
-                run_claude=lambda agent_key, prompt, cwd: "",
-                run_command=fake_delivery,
-            )
-        finally:
-            self.module._dispatch_and_write = original_dispatch
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
 
         self.assertTrue(result["ok"])
         self.assertEqual(order[:3], ["input_analyst", "gm", "player"])
@@ -441,25 +463,7 @@ class RpGenerateCliTest(unittest.TestCase):
         }
         invalid_analysis = json.loads(json.dumps(valid_analysis))
         invalid_analysis["source_integrity"]["raw_text_sha256"] = "bad-hash"
-        responses = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I wait.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
+        responses = _basic_responses()
         order = []
         analyst_attempts = {"count": 0}
 
@@ -495,34 +499,13 @@ class RpGenerateCliTest(unittest.TestCase):
         _write_json(self.run_dir / "input_analysis.output.json", {"analysis": "already available"})
 
         order = []
-        dispatch_payloads = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I wait.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
-
-        original_dispatch = self.module._dispatch_and_write
+        dispatch_payloads = _basic_responses()
         original_apply = getattr(self.module, "input_analysis_apply", None)
 
-        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+        def fake_run_claude(agent_key, prompt, cwd):
             order.append(agent_key)
             payload = dispatch_payloads[agent_key]
-            _write_json(Path(output_path), payload)
-            return payload
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_apply(card, root):
             order.append("apply")
@@ -532,16 +515,14 @@ class RpGenerateCliTest(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
         try:
-            self.module._dispatch_and_write = fake_dispatch
             self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fake_apply)
             result = self.module.run_round(
                 self.card,
                 self.root,
-                run_claude=lambda agent_key, prompt, cwd: "",
+                run_claude=fake_run_claude,
                 run_command=fake_delivery,
             )
         finally:
-            self.module._dispatch_and_write = original_dispatch
             if original_apply is None:
                 delattr(self.module, "input_analysis_apply")
             else:
@@ -562,34 +543,13 @@ class RpGenerateCliTest(unittest.TestCase):
         _write_json(self.run_dir / "input_analysis.output.json", {"analysis": "already applied"})
 
         order = []
-        dispatch_payloads = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I wait.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
-
-        original_dispatch = self.module._dispatch_and_write
+        dispatch_payloads = _basic_responses()
         original_apply = getattr(self.module, "input_analysis_apply", None)
 
-        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+        def fake_run_claude(agent_key, prompt, cwd):
             order.append(agent_key)
             payload = dispatch_payloads[agent_key]
-            _write_json(Path(output_path), payload)
-            return payload
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fail_apply(card, root):
             raise AssertionError("apply_current_run should not be called after blocked stage")
@@ -598,16 +558,14 @@ class RpGenerateCliTest(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
         try:
-            self.module._dispatch_and_write = fake_dispatch
             self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fail_apply)
             result = self.module.run_round(
                 self.card,
                 self.root,
-                run_claude=lambda agent_key, prompt, cwd: "",
+                run_claude=fake_run_claude,
                 run_command=fake_delivery,
             )
         finally:
-            self.module._dispatch_and_write = original_dispatch
             if original_apply is None:
                 delattr(self.module, "input_analysis_apply")
             else:
@@ -655,54 +613,31 @@ class RpGenerateCliTest(unittest.TestCase):
                 run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
             )
 
-    def test_run_round_legacy_manifest_without_input_analysis_is_noop(self):
+    def test_run_round_without_input_analysis_expected_output_is_noop(self):
         order = []
-        dispatch_payloads = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I wait.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
-
-        original_dispatch = self.module._dispatch_and_write
+        dispatch_payloads = _basic_responses()
         original_apply = getattr(self.module, "input_analysis_apply", None)
 
-        def fake_dispatch(agent_key, output_path, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+        def fake_run_claude(agent_key, prompt, cwd):
             order.append(agent_key)
             payload = dispatch_payloads[agent_key]
-            _write_json(Path(output_path), payload)
-            return payload
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fail_apply(card, root):
-            raise AssertionError("apply_current_run should not be called for legacy manifests")
+            raise AssertionError("apply_current_run should not be called when input_analysis is not expected")
 
         def fake_delivery(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
         try:
-            self.module._dispatch_and_write = fake_dispatch
             self.module.input_analysis_apply = SimpleNamespace(apply_current_run=fail_apply)
             result = self.module.run_round(
                 self.card,
                 self.root,
-                run_claude=lambda agent_key, prompt, cwd: "",
+                run_claude=fake_run_claude,
                 run_command=fake_delivery,
             )
         finally:
-            self.module._dispatch_and_write = original_dispatch
             if original_apply is None:
                 delattr(self.module, "input_analysis_apply")
             else:
@@ -712,12 +647,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(order, ["gm", "player", "story", "critic"])
 
     def test_run_round_accepts_direct_agent_plain_json_output(self):
-        responses = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []},
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
-        }
+        responses = _basic_responses()
 
         def fake_run_claude(agent_key, prompt, cwd):
             return json.dumps(responses[agent_key], ensure_ascii=False)
@@ -733,38 +663,15 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(json.loads((self.run_dir / "player.output.json").read_text(encoding="utf-8"))["action"], "I wait.")
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I wait.")
+        self.assertFalse((self.run_dir / "player.output.json").exists())
 
     def test_run_round_treats_delivery_retry_as_not_ok(self):
-        responses = {
-            "gm": {
-                "agent": "gm",
-                "narration": "The alley light flickers.",
-                "npc_events": [],
-                "world_state_delta": [],
-                "handoff": {},
-            },
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I follow the noise.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {
-                "content": "<content>Too short.</content>",
-                "character_dialogues": [],
-                "metadata": {},
-            },
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>Too short.</content>"),
+        )
 
         def fake_run_claude(agent_key, prompt, cwd):
             return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
@@ -783,35 +690,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(result["delivery"]["result"]["action"], "retry")
 
     def test_run_round_retries_once_when_outer_model_skips_task(self):
-        valid = {
-            "gm": {
-                "agent": "gm",
-                "narration": "The alley light flickers.",
-                "npc_events": [],
-                "world_state_delta": [],
-                "handoff": {},
-            },
-            "player": {
-                "agent": "player",
-                "agent_id": "player",
-                "action": "I follow the noise.",
-                "dialogue": [],
-                "perception": [],
-                "memory_delta": [],
-            },
-            "story": {
-                "content": "<content>I followed the noise.</content>",
-                "character_dialogues": [],
-                "metadata": {},
-            },
-            "critic": {
-                "decision": "pass",
-                "hard_failures": [],
-                "soft_issues": [],
-                "repair_instruction": "",
-                "system_iteration_suggestion": "",
-            },
-        }
+        valid = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>I followed the noise.</content>"),
+        )
         calls = []
 
         def fake_run_claude(agent_key, prompt, cwd):
@@ -841,13 +723,13 @@ class RpGenerateCliTest(unittest.TestCase):
             if agent_key == "gm" and calls.count("gm") == 1:
                 payload = {"gm_output": {"scene_state": {}, "notes": "old schema"}}
             elif agent_key == "gm":
-                payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+                payload = _gm_output()
             elif agent_key == "player":
-                payload = {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []}
+                payload = _player_output()
             elif agent_key == "story":
-                payload = {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}}
+                payload = _story_output()
             else:
-                payload = {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""}
+                payload = _critic_pass()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -862,6 +744,93 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls.count("gm"), 2)
+
+    def test_run_round_retries_actor_output_with_wrong_agent_id(self):
+        calls = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = _gm_output()
+            elif agent_key == "player" and calls.count("player") == 1:
+                payload = dict(_player_output("I wait."))
+                payload["agent_id"] = "character:Ada"
+            elif agent_key == "player":
+                payload = _player_output("I correct myself.")
+            elif agent_key == "story":
+                payload = _story_output()
+            else:
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("player"), 2)
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I correct myself.")
+
+    def test_run_round_retries_character_output_with_wrong_agent_id(self):
+        (self.run_dir / "prompts" / "characters").mkdir()
+        (self.run_dir / "prompts" / "characters" / "Ada.prompt.md").write_text("# Ada\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["characters"] = {"Ada": "prompts/characters/Ada.prompt.md"}
+        _write_json(self.run_dir / "manifest.json", manifest)
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["character_contexts"] = {"characters": [{"name": "Ada"}]}
+        _write_json(self.run_dir / "input.json", input_payload)
+
+        calls = []
+        gm_payload = _gm_output(
+            actor_calls=[
+                {
+                    "call_id": "call-character-Ada-1",
+                    "actor_id": "character:Ada",
+                    "prompt": "Ada sees the player enter.",
+                    "reason": "Ada is present.",
+                    "metadata": {},
+                }
+            ],
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = gm_payload
+            elif agent_key == "character:Ada" and calls.count("character:Ada") == 1:
+                payload = _character_output("character:Bob", "This should be retried.")
+            elif agent_key == "character:Ada":
+                payload = _character_output("character:Ada", "Stay close.")
+            elif agent_key == "player":
+                payload = _player_output("I stay close.")
+            elif agent_key == "story":
+                payload = _story_output()
+            else:
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("character:Ada"), 2)
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(actor_outputs["character:Ada"][0]["events"][0]["content"], "Stay close.")
 
     def test_run_round_rewrites_story_once_when_delivery_requests_retry(self):
         calls = []
@@ -881,13 +850,13 @@ class RpGenerateCliTest(unittest.TestCase):
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+                payload = _gm_output()
             elif agent_key == "player":
-                payload = {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []}
+                payload = _player_output()
             elif agent_key == "story":
                 payload = story_payloads.pop(0)
             else:
-                payload = {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""}
+                payload = _critic_pass()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -930,14 +899,14 @@ class RpGenerateCliTest(unittest.TestCase):
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+                payload = _gm_output()
             elif agent_key == "player":
-                payload = {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []}
+                payload = _player_output()
             elif agent_key == "story":
                 story_prompts.append(prompt)
                 payload = story_payloads.pop(0)
             else:
-                payload = {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""}
+                payload = _critic_pass()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1000,13 +969,13 @@ class RpGenerateCliTest(unittest.TestCase):
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+                payload = _gm_output()
             elif agent_key == "player":
-                payload = {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []}
+                payload = _player_output()
             elif agent_key == "story":
                 payload = story_payloads.pop(0)
             else:
-                payload = {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""}
+                payload = _critic_pass()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1062,13 +1031,13 @@ class RpGenerateCliTest(unittest.TestCase):
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}}
+                payload = _gm_output()
             elif agent_key == "player":
-                payload = {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []}
+                payload = _player_output()
             elif agent_key == "story":
                 payload = stories.pop(0)
             else:
-                payload = {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""}
+                payload = _critic_pass()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1152,13 +1121,37 @@ class RpGenerateCliTest(unittest.TestCase):
             "metadata": {},
         }
         story_input = {
-            "actor_outputs": {
-                "characters": {
-                    "_self": {"dialogue": ["ignore self"]},
-                    "\u82cf\u9ece": {
-                        "dialogue": ["\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002"],
-                        "perception": ["\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002"],
-                    },
+            "loop_outputs": {
+                "actors": {
+                    "player": [_player_output("ignore self")],
+                    "character:\u82cf\u9ece": [
+                        {
+                            "agent": "character",
+                            "agent_id": "character:\u82cf\u9ece",
+                            "character_name": "\u82cf\u9ece",
+                            "events": [
+                                {
+                                    "type": "dialogue",
+                                    "target": "player",
+                                    "content": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                                    "metadata": {},
+                                },
+                                {
+                                    "type": "perceive_request",
+                                    "target": "hallway",
+                                    "content": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
+                                    "metadata": {},
+                                },
+                                {
+                                    "type": "memory_delta",
+                                    "target": "self",
+                                    "content": "\u6211\u8bb0\u4f4f\u4e86\u8fd9\u4ef6\u4e8b\u4e0d\u80fd\u544a\u8bc9\u4ed6\u3002",
+                                    "metadata": {},
+                                },
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
                 }
             }
         }
@@ -1177,6 +1170,53 @@ class RpGenerateCliTest(unittest.TestCase):
             '"source": "subagent"',
             normalized["content"],
         )
+        self.assertNotIn("\u4e0d\u80fd\u544a\u8bc9\u4ed6", normalized["content"])
+
+    def test_normalize_story_output_does_not_expose_private_actor_events_as_dialogue_aside(self):
+        story = {
+            "content": "<content>你靠近苏黎。</content><summary>接触</summary><options>继续</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "loop_outputs": {
+                "actors": {
+                    "character:SuLi": [
+                        {
+                            "agent": "character",
+                            "agent_id": "character:SuLi",
+                            "character_name": "SuLi",
+                            "events": [
+                                {
+                                    "type": "dialogue",
+                                    "target": "player",
+                                    "content": "Where did you get that?",
+                                    "metadata": {},
+                                },
+                                {
+                                    "type": "memory_delta",
+                                    "target": "self",
+                                    "content": "I must not tell him about the old ritual.",
+                                    "metadata": {},
+                                },
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
+                }
+            }
+        }
+
+        normalized = self.module._normalize_story_output(story, story_input)
+
+        self.assertEqual(normalized["character_dialogues"], [
+            {
+                "name": "SuLi",
+                "source": "subagent",
+                "line": "Where did you get that?",
+            }
+        ])
+        self.assertNotIn("old ritual", normalized["content"])
 
     def test_story_preflight_rejects_third_person_when_second_person_required(self):
         story = {
@@ -1190,6 +1230,20 @@ class RpGenerateCliTest(unittest.TestCase):
         issues = self.module._story_preflight_issues(story, requirements)
 
         self.assertTrue(any("second_person" in issue for issue in issues), issues)
+
+    def test_story_preflight_repair_context_uses_current_loop_sources(self):
+        context = self.module._story_preflight_repair_context(
+            {"content": "<content>bad draft</content>"},
+            ["content_chinese_chars 3 is below required minimum 10"],
+            {"minimum_chinese_chars": 10},
+            1,
+            None,
+        )
+
+        self.assertIn("loop_outputs", context["authoritative_sources"])
+        self.assertIn("actor.outputs.json", context["authoritative_sources"])
+        self.assertNotIn("player_output", context["authoritative_sources"])
+        self.assertNotIn("character_outputs", context["authoritative_sources"])
 
     def test_critic_skill_does_not_require_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
@@ -1217,12 +1271,7 @@ class RpGenerateCliTest(unittest.TestCase):
         manifest["stage"] = "blocked"
         manifest["critic_retry_count"] = 2
         _write_json(self.run_dir / "manifest.json", manifest)
-        responses = {
-            "gm": {"agent": "gm", "narration": "ok", "npc_events": [], "world_state_delta": [], "handoff": {}},
-            "player": {"agent": "player", "agent_id": "player", "action": "I wait.", "dialogue": [], "perception": [], "memory_delta": []},
-            "story": {"content": "<content>ok</content>", "character_dialogues": [], "metadata": {}},
-            "critic": {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
-        }
+        responses = _basic_responses()
 
         def fake_run_claude(agent_key, prompt, cwd):
             return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
@@ -1253,6 +1302,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("previous_rejected_story_output", context)
         self.assertTrue(context["do_not_preserve_rejected_content"])
         self.assertIn("story_input", context["authoritative_sources"])
+        self.assertIn("loop_outputs", context["authoritative_sources"])
+        self.assertIn("actor.outputs.json", context["authoritative_sources"])
+        self.assertNotIn("player_output", context["authoritative_sources"])
+        self.assertNotIn("character_outputs", context["authoritative_sources"])
 
 
 if __name__ == "__main__":

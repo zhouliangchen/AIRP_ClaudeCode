@@ -21,6 +21,8 @@ SKILL_PATHS = {
     "critic": ".claude/skills/rp-critic-agent.md",
 }
 
+AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character"}
+
 
 def _rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
@@ -30,12 +32,29 @@ def _json_block(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+def _strip_embedded_output_schema(text: str) -> str:
+    marker = "\n## Output Schema"
+    if marker not in text:
+        return text
+    before, after = text.split(marker, 1)
+    next_heading = after.find("\n## ", 1)
+    tail = after[next_heading:] if next_heading != -1 else ""
+    return (
+        before.rstrip()
+        + "\n\n## Output Schema\n\n"
+        + "Use the generated `Required Output Contract` above as the only JSON schema for this run.\n"
+        + tail
+    )
+
+
 def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
     relative = SKILL_PATHS[skill_key]
     path = REPO_ROOT / relative
     if not path.exists():
         return f"(missing skill file: {relative})"
     text = path.read_text(encoding="utf-8")
+    if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
+        text = _strip_embedded_output_schema(text)
     return text[:limit]
 
 
@@ -43,8 +62,17 @@ def _write_prompt(path: Path, body: str) -> None:
     agent_run.write_text(path, body.strip() + "\n")
 
 
-def _base_prompt(title: str, skill_key: str, output_path: str, contract: str, context: Dict[str, Any]) -> str:
+def _base_prompt(
+    title: str,
+    skill_key: str,
+    output_path: str,
+    contract: str,
+    context: Dict[str, Any],
+    output_instruction: str | None = None,
+) -> str:
     skill_path = SKILL_PATHS[skill_key]
+    if output_instruction is None:
+        output_instruction = f"Use only the allowed context below and write the required JSON artifact to `{output_path}`."
     return f"""
 # {title}
 
@@ -53,7 +81,7 @@ Skill reference: `{skill_path}`
 ## Operating Rule
 
 You are a Claude Code subagent working through the file mailbox for this RP round.
-Use only the allowed context below and write the required JSON artifact to `{output_path}`.
+{output_instruction}
 Do not write final prose unless this is the story agent.
 
 ## Required Output Contract
@@ -124,10 +152,21 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
 def _gm_prompt(context: Dict[str, Any]) -> str:
     contract = _json_block({
         "agent": "gm",
-        "narration": "brief neutral world narration",
-        "npc_events": [],
+        "scene_beats": [{"content": "brief visible scene beat", "metadata": {}}],
+        "events": [{"type": "world_event", "target": "", "content": "visible or routed event", "metadata": {}}],
+        "actor_calls": [
+            {
+                "call_id": "call-1",
+                "actor_id": "character:Example",
+                "prompt": "second-person visible prompt for this actor only",
+                "reason": "why this actor is needed now",
+                "metadata": {},
+            }
+        ],
+        "parallel_groups": [],
         "world_state_delta": [],
-        "handoff": {},
+        "decision_point": None,
+        "stop_reason": "continue",
     })
     return _base_prompt(
         "GM Agent Prompt",
@@ -135,44 +174,63 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "gm.output.json",
         contract,
         context,
-    )
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, `word_target`, `complete`, `max_steps`.\n"
 
 
 def _player_prompt(context: Dict[str, Any]) -> str:
     contract = _json_block({
         "agent": "player",
         "agent_id": "player",
-        "action": "first-person action",
-        "dialogue": [],
-        "perception": [],
-        "memory_delta": [],
+        "events": [
+            {
+                "type": "wait_for_gm",
+                "target": "",
+                "content": "first-person event content",
+                "metadata": {},
+            }
+        ],
+        "stop_reason": "continue",
     })
     return _base_prompt(
         "Player Agent Prompt",
         "player",
-        "player.output.json",
+        "actor.outputs.json",
         contract,
         context,
-    )
+        "Use only the allowed context below and return exactly one JSON player actor output object. "
+        "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
 
 
-def _character_prompt(context: Dict[str, Any], output_path: str) -> str:
+def _character_prompt(context: Dict[str, Any]) -> str:
+    self_knowledge = context.get("self_knowledge", {}) if isinstance(context, dict) else {}
+    if not isinstance(self_knowledge, dict):
+        self_knowledge = {}
+    actor_id = context.get("actor_id") or "character:unknown"
+    character_name = context.get("character_name") or self_knowledge.get("name", "")
     contract = _json_block({
         "agent": "character",
-        "agent_id": "character:<safe_name>",
-        "character_name": context.get("character_name", ""),
-        "action": "first-person action",
-        "dialogue": [],
-        "perception": [],
-        "memory_delta": [],
+        "agent_id": actor_id,
+        "character_name": character_name,
+        "events": [
+            {
+                "type": "wait_for_gm",
+                "target": "",
+                "content": "first-person event content",
+                "metadata": {},
+            }
+        ],
+        "stop_reason": "continue",
     })
     return _base_prompt(
-        f"Character Agent Prompt: {context.get('character_name', '')}",
+        f"Character Agent Prompt: {character_name}",
         "character",
-        output_path,
+        "actor.outputs.json",
         contract,
         context,
-    )
+        "Use only the allowed context below and return exactly one JSON character actor output object. "
+        "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
+    ) + "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
 
 
 def _story_prompt(run_summary: Dict[str, Any]) -> str:
@@ -231,25 +289,21 @@ def write_round_prompts(
     critic_prompt = prompt_root / "critic.prompt.md"
 
     character_prompts: Dict[str, str] = {}
-    character_outputs: Dict[str, str] = {}
 
     _write_prompt(input_analyst_prompt, _input_analyst_prompt(input_request))
     _write_prompt(gm_prompt, _gm_prompt(gm_packet))
     _write_prompt(player_prompt, _player_prompt(player_packet))
 
     for safe_name, packet in character_packets.items():
-        output_path = f"characters/{safe_name}.output.json"
         prompt_path = characters_prompt_root / f"{safe_name}.prompt.md"
-        _write_prompt(prompt_path, _character_prompt(packet, output_path))
+        _write_prompt(prompt_path, _character_prompt(packet))
         character_prompts[safe_name] = _rel(prompt_path, root)
-        character_outputs[safe_name] = output_path
 
     run_summary = {
         "run_dir": str(root.resolve()),
         "inputs": {
             "gm": "gm.output.json",
-            "player": "player.output.json",
-            "characters": character_outputs,
+            "actors": "actor.outputs.json",
         },
         "story_input": "story.input.json",
     }
@@ -269,14 +323,13 @@ def write_round_prompts(
         "expected_outputs": {
             "input_analysis": "input_analysis.output.json",
             "gm": "gm.output.json",
-            "player": "player.output.json",
-            "characters": character_outputs,
+            "actors": "actor.outputs.json",
             "story": "story.output.json",
             "critic": "critic.report.json",
         },
     }
     if card_folder is not None and agent_memory.memory_summary_due(root.name):
-        summary_agents = ["player"] + [f"character:{name}" for name in character_outputs.keys()]
+        summary_agents = ["player"] + [f"character:{name}" for name in character_prompts.keys()]
         agent_memory.write_memory_summary_prompts(card_folder, root, manifest, summary_agents)
 
     agent_run.append_manifest_stage(manifest, "prepared", "Agent run directory and context packets are prepared.")

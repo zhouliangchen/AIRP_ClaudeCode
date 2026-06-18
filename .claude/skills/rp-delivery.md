@@ -1,30 +1,37 @@
 ---
 name: rp-delivery
-description: Use when a critic-approved RP response must be mirrored to response.txt and handed to the runtime pipeline.
+description: Use when RP story and critic artifacts must pass the delivery gate or record a repair/block decision.
 ---
 
 ## RP Delivery
 
-Delivery is a mechanical final step. It must not rewrite prose, alter player input, or add new plot.
+Delivery is a mechanical gate. It must not rewrite prose, alter player input, or add new plot.
 
-## Preconditions
+## Contract
 
-- `story.output.json` exists and its `content` field matches the response tag contract.
-- `critic.report.json` exists. `decision="pass"` is required for successful frontend delivery; `revise` / `block` reports still run through this gate to record retry state.
-- Any `<character_dialogues>` entries correspond to actual subagent outputs.
-- No image/UI job is still blocking text delivery.
+- Verify `story.output.json` exists.
+- Verify `critic.report.json` exists.
+- Use `{ROOT}/skills/round_deliver.py` for delivery.
+- Invoke the gate even when the critic decision is `revise` or `block`.
+- Let `round_deliver.py` record `repair_history.jsonl`, append any `system_iteration_suggestion`, and return `retry` or `blocked` for failed gates.
+- Let `round_deliver.py` mirror approved content to `skills/styles/response.txt` only when the critic passes.
+- Let `handler.py` update `chat_log.json`, clear pending state, rebuild `content.js`, update `state.js`, and notify the frontend.
+- Preserve `<character_dialogues>` and `source="subagent"` metadata.
 
-## Delivery Steps
-
-1. Confirm `.agent_runs/<round>/manifest.json` points to the expected outputs.
-2. Run:
+Run the gate from a resolved repository root and card folder:
 
 ```powershell
 python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"
 ```
 
-3. `round_deliver.py` validates GM/player/character/story/critic artifacts, rebuilds `story.input.json` if needed, mirrors `story.output.json.content` to `skills/styles/response.txt`, invokes `handler.py`, ingests subagent memory deltas plus scheduled `memory_summaries/*.summary.json`, and marks the manifest `delivered`. Summary ingestion failures are reported as `agent_memory_error` without blocking an already approved text delivery.
-4. If `round_deliver.py` returns `{"action":"retry"}`, pass the reason back to the orchestrator and do not fabricate success. If it returns `{"action":"blocked"}`, stop automatic delivery/repair and surface the terminal reason for manual intervention. Critic `revise` / `block` reports are recorded in `repair_history.jsonl`; on those recorded reports, non-empty `system_iteration_suggestion` entries are appended to `.agent_runs/improvement_queue.jsonl`.
-5. If delivery succeeds, optional `rp-assets-ui` work may continue asynchronously.
+## Result Handling
 
-Only the orchestrator/main agent performs these steps. Subagents never write `skills/styles/response.txt`.
+- `pass`: text was delivered. Continue waiting for player input.
+- `retry`: repair the rejected story or agent artifacts using critic instructions, rebuild `story.output.json` and `critic.report.json`, then run the gate again.
+- `blocked`: stop automatic repair and surface the terminal reason before any project-level prompt or code changes.
+
+Do not run delivery from an unknown directory or rely on implicit repository resolution. Resolve `{ROOT}` and the card folder explicitly.
+
+Delivery must never be blocked by optional image generation or per-card UI work.
+
+Only the orchestrator or main agent performs delivery. Subagents never write `skills/styles/response.txt`.

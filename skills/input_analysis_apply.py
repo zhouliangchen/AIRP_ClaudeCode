@@ -211,17 +211,59 @@ def _load_existing_run_routed_character_contexts(run_dir: Path, routed_input: Di
             continue
         if not isinstance(packet, dict):
             continue
-        character = packet.get("character")
-        if isinstance(character, dict):
-            context = dict(character)
-        else:
-            context = {}
-        context_name = context.get("name") or packet.get("character_name") or name
+        context = _character_context_from_packet(packet, name)
+        context_name = context.get("name")
         if not isinstance(context_name, str) or not context_name.strip():
             continue
         context["name"] = context_name.strip()
         contexts.append(context)
     return contexts
+
+
+def _projected_packet_name(packet: Dict[str, Any], fallback_name: str) -> str:
+    self_knowledge = packet.get("self_knowledge")
+    if isinstance(self_knowledge, dict):
+        name = self_knowledge.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    name = packet.get("character_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    actor_id = packet.get("actor_id")
+    if isinstance(actor_id, str) and actor_id.startswith("character:"):
+        name = actor_id.split(":", 1)[1].strip()
+        if name:
+            return name
+    return fallback_name
+
+
+def _character_context_from_packet(packet: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
+    character = packet.get("character")
+    context = dict(character) if isinstance(character, dict) else {}
+
+    self_knowledge = packet.get("self_knowledge")
+    if isinstance(self_knowledge, dict):
+        for source_key, target_key in (
+            ("identity", "identity"),
+            ("role", "role"),
+            ("body_state", "body_state"),
+            ("relationships", "relationships"),
+        ):
+            value = self_knowledge.get(source_key)
+            if value not in (None, "", {}, []):
+                context.setdefault(target_key, value)
+
+    memory = packet.get("memory")
+    if isinstance(memory, dict):
+        context.setdefault("memory", memory)
+
+    for key in ("sensory_context", "misconceptions"):
+        value = packet.get(key)
+        if value not in (None, "", {}, []):
+            context.setdefault(key, value)
+
+    context["name"] = context.get("name") or _projected_packet_name(packet, fallback_name)
+    return context
 
 
 def _merge_character_contexts(character_contexts: Dict[str, Any], extra_contexts: list[Dict[str, Any]]) -> Dict[str, Any]:

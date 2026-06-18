@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -13,10 +15,38 @@ import agent_schemas
 
 
 MAX_CRITIC_RETRIES = 2
+ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
+TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
 
 
 class AgentOutputError(RuntimeError):
     """Raised when a required agent artifact is missing or invalid."""
+
+
+def _canonical_tokens(text: str) -> list[str]:
+    raw = str(text or "")
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+FORBIDDEN_ACTOR_KEY_TOKENS = {
+    marker: tuple(_canonical_tokens(marker))
+    for marker in agent_schemas.FORBIDDEN_ACTOR_KEYS
+}
+
+
+def _forbidden_actor_marker(text: str) -> str:
+    tokens = _canonical_tokens(text)
+    if not tokens:
+        return ""
+    for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                return marker
+    return ""
 
 
 def _read_json_required(path: Path) -> Dict[str, Any]:
@@ -24,6 +54,57 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise AgentOutputError(f"{path}: required JSON object is missing or invalid")
     return data
+
+
+def _read_raw_trace(root: Path) -> Dict[str, Any]:
+    path = root / "interaction.trace.json"
+    if not path.exists():
+        raise AgentOutputError(f"{path}: required trace v2 is missing")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise AgentOutputError(f"{path}: invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise AgentOutputError(f"{path}: could not read trace: {exc}") from exc
+    if not isinstance(data, dict):
+        raise AgentOutputError(f"{path}: trace must be a JSON object")
+    return data
+
+
+def _validate_raw_trace(root: Path) -> Dict[str, Any]:
+    path = root / "interaction.trace.json"
+    trace = _read_raw_trace(root)
+
+    if "schema_version" not in trace:
+        raise AgentOutputError(f"{path}.schema_version: required trace v2 schema_version is missing")
+    schema_version = trace.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise AgentOutputError(f"{path}.schema_version: must be integer 2")
+    if schema_version != 2:
+        raise AgentOutputError(f"{path}.schema_version: required trace v2, got {schema_version!r}")
+
+    if not isinstance(trace.get("events"), list):
+        raise AgentOutputError(f"{path}.events: must be a list")
+    if "parallel_groups" in trace and not isinstance(trace.get("parallel_groups"), list):
+        raise AgentOutputError(f"{path}.parallel_groups: must be a list")
+
+    status = trace.get("status")
+    if not isinstance(status, str):
+        raise AgentOutputError(f"{path}.status: must be exactly one of {sorted(ALLOWED_RAW_TRACE_STATUSES)!r}")
+    if status not in ALLOWED_RAW_TRACE_STATUSES:
+        raise AgentOutputError(f"{path}.status: unsupported trace status {status!r}")
+
+    return trace
+
+
+def _trace_preserved_target(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    target = value.strip()
+    if TRACE_PRESERVED_TARGET_RE.fullmatch(target):
+        return target
+    return ""
 
 
 def _load_required(path: Path, validator) -> Dict[str, Any]:
@@ -56,33 +137,266 @@ def _expected_outputs(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return expected
 
 
-def _memory_deltas(player_output: Dict[str, Any], character_outputs: Dict[str, Dict[str, Any]], gm_output: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_actor_key(actor_id: Any, context: str) -> str:
+    actor_key = str(actor_id or "").strip()
+    if actor_key == "player":
+        return actor_key
+    if actor_key.startswith("character:"):
+        suffix = actor_key.split(":", 1)[1].strip()
+        if not suffix:
+            raise AgentOutputError(f"{context}: unsupported actor id {actor_key or '<blank>'}")
+        marker = _forbidden_actor_marker(suffix)
+        if marker:
+            raise AgentOutputError(f"{context}: forbidden actor marker {marker}")
+        return actor_key
+    marker = _forbidden_actor_marker(actor_key)
+    if marker:
+        raise AgentOutputError(f"{context}: forbidden actor marker {marker}")
+    raise AgentOutputError(f"{context}: unsupported actor id {actor_key or '<blank>'}")
+
+
+def _require_called_actor_outputs(
+    gm_path: Path,
+    gm_outputs: list[Dict[str, Any]],
+    output_source_call_ids_by_actor: Dict[str, list[str]],
+) -> None:
+    required_call_counts: Dict[str, Counter[str]] = {}
+    first_context: Dict[tuple[str, str], str] = {}
+    for gm_index, gm_output in enumerate(gm_outputs):
+        for call_index, call in enumerate(gm_output.get("actor_calls", [])):
+            context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}]"
+            actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            call_id = str(call.get("call_id") or "").strip()
+            if not call_id:
+                raise AgentOutputError(f"{context}.call_id: persisted actor call id must be nonblank")
+            required_call_counts.setdefault(actor_id, Counter())[call_id] += 1
+            first_context.setdefault((actor_id, call_id), context)
+
+    for actor_id, required_counts in required_call_counts.items():
+        actual_counts = Counter(output_source_call_ids_by_actor.get(actor_id, []))
+        for call_id, required_count in required_counts.items():
+            actual_count = actual_counts.get(call_id, 0)
+            if actual_count != required_count:
+                context = first_context[(actor_id, call_id)]
+                raise AgentOutputError(
+                    f"{context}.call_id: actor output count mismatch for {actor_id} call_id {call_id!r}; "
+                    f"required {required_count}, found {actual_count}"
+                )
+
+
+def _required_actor_call_counts(gm_outputs: list[Dict[str, Any]]) -> Dict[str, Counter[str]]:
+    required_call_counts: Dict[str, Counter[str]] = {}
+    for gm_index, gm_output in enumerate(gm_outputs):
+        for call_index, call in enumerate(gm_output.get("actor_calls", [])):
+            context = f"gm.output.json.outputs[{gm_index}].actor_calls[{call_index}]"
+            actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            call_id = str(call.get("call_id") or "").strip()
+            if call_id:
+                required_call_counts.setdefault(actor_id, Counter())[call_id] += 1
+    return required_call_counts
+
+
+def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str, str, str]]:
+    event_sources: Counter[tuple[str, str, str, str, str]] = Counter()
+    for event in raw_trace["events"]:
+        if not isinstance(event, dict):
+            continue
+        actor = event.get("actor")
+        event_type = event.get("type")
+        content = event.get("content")
+        source_call_id = event.get("source_call_id")
+        target = event.get("target")
+        if (
+            not isinstance(actor, str)
+            or not isinstance(event_type, str)
+            or not isinstance(content, str)
+            or not isinstance(source_call_id, str)
+        ):
+            continue
+        actor_key = actor.strip()
+        type_key = event_type.strip()
+        source_key = source_call_id.strip()
+        if actor_key and type_key and source_key:
+            event_sources[(actor_key, type_key, content, _trace_preserved_target(target), source_key)] += 1
+    return event_sources
+
+
+def _candidate_source_call_ids(
+    event_sources: Counter[tuple[str, str, str, str, str]],
+    event_key: tuple[str, str, str, str],
+) -> set[str]:
+    candidates = set()
+    for source_key, count in event_sources.items():
+        if count > 0 and source_key[:4] == event_key:
+            candidates.add(source_key[4])
+    return candidates
+
+
+def _choose_source_call_id(
+    candidates: list[str],
+    preferred_counts: Counter[str],
+) -> str:
+    for source_call_id in sorted(candidates):
+        if preferred_counts.get(source_call_id, 0) > 0:
+            return source_call_id
+    return sorted(candidates)[0]
+
+
+def _validate_actor_output_provenance(
+    root: Path,
+    raw_trace: Dict[str, Any],
+    actor_outputs: Dict[str, list[Dict[str, Any]]],
+    preferred_call_counts: Dict[str, Counter[str]] | None = None,
+) -> Dict[str, list[str]]:
+    event_sources = _trace_event_sources(raw_trace)
+    actor_path = root / "actor.outputs.json"
+    output_source_call_ids_by_actor: Dict[str, list[str]] = {}
+    remaining_preferred = {
+        actor_id: Counter(counts)
+        for actor_id, counts in (preferred_call_counts or {}).items()
+    }
+    for actor_id, outputs in actor_outputs.items():
+        context = f"{actor_path}.{actor_id}"
+        if not outputs:
+            raise AgentOutputError(f"{context}: actor output branch is empty or unproven")
+        for output_index, output in enumerate(outputs):
+            event_counts: Counter[tuple[str, str, str, str]] = Counter()
+            common_sources: set[str] | None = None
+            for event_index, event in enumerate(output["events"]):
+                preserved_target = _trace_preserved_target(event.get("target"))
+                event_key = (actor_id, event["type"], event["content"], preserved_target)
+                candidates = _candidate_source_call_ids(event_sources, event_key)
+                if not candidates:
+                    raise AgentOutputError(
+                        f"{context}[{output_index}].events[{event_index}]: actor event is not backed by "
+                        f"raw trace source_call_id event "
+                        f"(actor={actor_id!r}, type={event['type']!r}, target={preserved_target!r}, "
+                        f"content={event['content']!r})"
+                    )
+                common_sources = candidates if common_sources is None else common_sources & candidates
+                event_counts[event_key] += 1
+
+            eligible_sources = []
+            for source_call_id in common_sources or set():
+                if all(
+                    event_sources[(*event_key, source_call_id)] >= event_count
+                    for event_key, event_count in event_counts.items()
+                ):
+                    eligible_sources.append(source_call_id)
+            if not eligible_sources:
+                raise AgentOutputError(
+                    f"{context}[{output_index}]: actor output events must share one nonblank "
+                    f"raw trace source_call_id"
+                )
+
+            actor_preferred = remaining_preferred.setdefault(actor_id, Counter())
+            output_source_call_id = _choose_source_call_id(eligible_sources, actor_preferred)
+            if actor_preferred.get(output_source_call_id, 0) > 0:
+                actor_preferred[output_source_call_id] -= 1
+            for event_key, event_count in event_counts.items():
+                event_sources[(*event_key, output_source_call_id)] -= event_count
+            output_source_call_ids_by_actor.setdefault(actor_id, []).append(output_source_call_id)
+    return output_source_call_ids_by_actor
+
+
+
+def _load_loop_outputs(root: Path) -> Dict[str, Any]:
+    gm_path = root / "gm.output.json"
+    actor_path = root / "actor.outputs.json"
+    gm_loop = _read_json_required(gm_path)
+    actor_outputs = _read_json_required(actor_path)
+
+    if gm_loop.get("agent") != "gm_loop":
+        raise AgentOutputError(f"{gm_path}: agent must be 'gm_loop'")
+    gm_items = gm_loop.get("outputs")
+    if not isinstance(gm_items, list):
+        raise AgentOutputError(f"{gm_path}.outputs: must be a list")
+    if not gm_items:
+        raise AgentOutputError(f"{gm_path}.outputs: must not be empty")
+    normalized_gm_outputs = []
+    for index, item in enumerate(gm_items):
+        try:
+            normalized_gm_outputs.append(agent_schemas.validate_gm_output(item))
+        except agent_schemas.ValidationError as exc:
+            raise AgentOutputError(f"{gm_path}.outputs[{index}]: {exc}") from exc
+
+    normalized_actor_outputs = {}
+    for actor_id, outputs in actor_outputs.items():
+        actor_key = _validate_actor_key(actor_id, f"{actor_path}.{actor_id}")
+        actor_context = f"{actor_path}.{actor_key}"
+        if not isinstance(outputs, list):
+            raise AgentOutputError(f"{actor_context}: must be a list")
+        normalized_outputs = []
+        for index, item in enumerate(outputs):
+            try:
+                normalized = agent_schemas.validate_actor_output(item)
+            except agent_schemas.ValidationError as exc:
+                raise AgentOutputError(f"{actor_context}[{index}]: {exc}") from exc
+            if normalized["agent_id"] != actor_key:
+                raise AgentOutputError(
+                    f"{actor_context}[{index}].agent_id mismatch: expected {actor_key}, got {normalized['agent_id']}"
+                )
+            normalized_outputs.append(normalized)
+        normalized_actor_outputs[actor_key] = normalized_outputs
+
     return {
-        "player": player_output.get("memory_delta", []),
-        "characters": {
-            name: output.get("memory_delta", [])
-            for name, output in character_outputs.items()
-        },
-        "world": gm_output.get("world_state_delta", []),
+        "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
+        "actors": normalized_actor_outputs,
     }
 
 
+def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str, Any]) -> Dict[str, Any]:
+    actor_memory: Dict[str, list[Any]] = {}
+    for actor_id, outputs in actor_outputs.items():
+        items = []
+        for output in outputs:
+            for event in output["events"]:
+                if event["type"] in {"memory_delta", "goal_update"}:
+                    items.append(event)
+        actor_memory[str(actor_id)] = items
+
+    world = []
+    for output in gm_loop["outputs"]:
+        world.extend(output["world_state_delta"])
+
+    return {"actors": actor_memory, "world": world}
+
+
+def _validate_trace_artifacts(root: Path) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    raw_trace = _validate_raw_trace(root)
+    summary = agent_interactions.summarize_for_story_input(root)
+    status = str(summary.get("status") or "").strip().lower()
+    schema_version = summary.get("schema_version")
+    if schema_version != 2 or not status or status in {"missing", "invalid"}:
+        raise AgentOutputError(
+            f"{root / 'interaction.trace.json'}: required trace v2 is missing or invalid "
+            f"(schema_version={schema_version!r}, status={status or '<missing>'})"
+        )
+    return raw_trace, summary
+
+
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
-    """Validate required subagent outputs and write `story.input.json`."""
+    """Assemble story input from GM loop outputs and trace artifacts."""
     root = Path(run_dir)
     manifest = _load_manifest(root)
     if manifest is None:
         raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
 
-    expected = _expected_outputs(manifest)
+    _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
-
-    gm_output = _load_required(root / expected.get("gm", "gm.output.json"), agent_schemas.validate_gm_output)
-    player_output = _load_required(root / expected.get("player", "player.output.json"), agent_schemas.validate_actor_output)
-
-    character_outputs = {}
-    for name, relative_path in (expected.get("characters") or {}).items():
-        character_outputs[name] = _load_required(root / relative_path, agent_schemas.validate_actor_output)
+    raw_trace, trace_summary = _validate_trace_artifacts(root)
+    loop_outputs = _load_loop_outputs(root)
+    output_source_call_ids_by_actor = _validate_actor_output_provenance(
+        root,
+        raw_trace,
+        loop_outputs["actors"],
+        _required_actor_call_counts(loop_outputs["gm"]["outputs"]),
+    )
+    _require_called_actor_outputs(
+        root / "gm.output.json",
+        loop_outputs["gm"]["outputs"],
+        output_source_call_ids_by_actor,
+    )
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
@@ -92,13 +406,9 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "input_analysis": input_payload.get("input_analysis", {}),
             "components": (input_payload.get("routed_input") or {}).get("components", []),
         },
-        "gm_output": gm_output,
-        "actor_outputs": {
-            "player": player_output,
-            "characters": character_outputs,
-        },
-        "memory_deltas": _memory_deltas(player_output, character_outputs, gm_output),
-        "interaction_trace": agent_interactions.summarize_for_story_input(root),
+        "loop_outputs": loop_outputs,
+        "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"]),
+        "interaction_trace": trace_summary,
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
             "preserve_character_dialogue_metadata": True,

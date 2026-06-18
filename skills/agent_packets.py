@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+import agent_projection
 import agent_run
 import agent_prompts
 import input_analysis
@@ -194,6 +195,94 @@ def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]
     return [item for item in routed_input.get("components", []) if item.get("channel") == "role"]
 
 
+def _build_world_state(
+    routed_input: Dict[str, Any],
+    recent_chat,
+    *,
+    hidden_setting_records=None,
+    visible_events=None,
+    card_data=None,
+    character_contexts=None,
+) -> Dict[str, Any]:
+    events = []
+    if isinstance(visible_events, list):
+        events.extend(visible_events)
+    return {
+        "role_channel": _to_text(routed_input.get("role_channel")),
+        "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
+        "recent_chat": recent_chat or [],
+        "gm_only_hidden_settings": hidden_setting_records or [],
+        "visible_events": events,
+        "card_data": compact_card_data(card_data),
+        "character_contexts": character_contexts or {},
+        "components": routed_input.get("components", []),
+    }
+
+
+def _player_actor_state() -> Dict[str, Any]:
+    return {
+        "name": "player",
+        "memory": [],
+        "goals": [],
+    }
+
+
+def _character_actor_id(character: Dict[str, Any]) -> str:
+    name = _to_text(character.get("name") or character.get("character_name")).strip()
+    return f"character:{agent_run.safe_name(name)}" if name else "character:unknown"
+
+
+def _as_memory_items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    text = _to_text(value).strip()
+    return [text] if text else []
+
+
+def _append_memory_value(memory: Dict[str, Any], key: str, value: Any) -> None:
+    items = _as_memory_items(memory.get(key))
+    for item in _as_memory_items(value):
+        if item not in items:
+            items.append(item)
+    if items:
+        memory[key] = items
+
+
+def _projectable_character_state(character: Dict[str, Any]) -> Dict[str, Any]:
+    state = dict(character or {})
+    memory_source = state.get("memory")
+    memory = dict(memory_source) if isinstance(memory_source, dict) else {}
+    if memory_source and not isinstance(memory_source, dict):
+        _append_memory_value(memory, "long_term", memory_source)
+
+    _append_memory_value(memory, "long_term", state.get("profile_summary"))
+    profile = state.get("profile")
+    if isinstance(profile, dict):
+        _append_memory_value(memory, "long_term", profile.get("authoritative_setting"))
+        _append_memory_value(memory, "long_term", profile.get("summary") or profile.get("description"))
+    else:
+        _append_memory_value(memory, "long_term", profile)
+    _append_memory_value(memory, "recent", state.get("recent_state"))
+    _append_memory_value(memory, "goals", state.get("goals"))
+
+    if memory:
+        state["memory"] = memory
+    return state
+
+
+def _actor_prompt_from_role(routed_input: Dict[str, Any], *, for_character: bool = False) -> str:
+    role_channel = _to_text(routed_input.get("role_channel")).strip()
+    if not role_channel:
+        return "Use only your projected first-person context for this turn."
+    if for_character:
+        return "React only to visible events and your own memory for this turn."
+    return f"Current first-person role-channel anchor: {role_channel}"
+
+
 def build_gm_packet(
     card_folder,
     routed_input: Dict[str, Any],
@@ -216,33 +305,42 @@ def build_gm_packet(
     }
 
 
-def build_player_packet(card_folder, routed_input: Dict[str, Any], recent_chat):
+def build_player_packet(
+    card_folder,
+    routed_input: Dict[str, Any],
+    recent_chat,
+    world_state: Dict[str, Any] | None = None,
+    actor_state: Dict[str, Any] | None = None,
+    gm_prompt: str | None = None,
+):
     """Build first-person packet for player agent."""
-    return {
-        "agent": "player",
-        "card_folder": str(card_folder),
-        "role_channel": _to_text(routed_input.get("role_channel")),
-        "recent_chat": recent_chat or [],
-        "components": _filter_role_components(routed_input),
-    }
+    del card_folder
+    world = world_state or _build_world_state(routed_input, recent_chat)
+    actor = actor_state if isinstance(actor_state, dict) else _player_actor_state()
+    prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input)
+    return agent_projection.project_actor_context("player", world, actor, prompt)
 
 
-def build_character_packet(card_folder, character: Dict[str, Any], routed_input: Dict[str, Any], recent_chat):
+def build_character_packet(
+    card_folder,
+    character: Dict[str, Any],
+    routed_input: Dict[str, Any],
+    recent_chat,
+    world_state: Dict[str, Any] | None = None,
+    gm_prompt: str | None = None,
+):
     """Build first-person packet for a character subagent."""
+    del card_folder
     character_data = character or {}
-    character_name = character_data.get("name", "")
-    role_hint = character_data.get("role") or character_data.get("position") or character_data.get("identity") or ""
-
-    return {
-        "agent": "character",
-        "card_folder": str(card_folder),
-        "character": character_data,
-        "character_name": _to_text(character_name),
-        "role_hint": _to_text(role_hint),
-        "role_channel": _to_text(routed_input.get("role_channel")),
-        "recent_chat": recent_chat or [],
-        "components": _filter_role_components(routed_input),
-    }
+    world = world_state or _build_world_state(routed_input, recent_chat)
+    actor_state = _projectable_character_state(character_data)
+    prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input, for_character=True)
+    return agent_projection.project_actor_context(
+        _character_actor_id(actor_state),
+        world,
+        actor_state,
+        prompt,
+    )
 
 
 def _iter_characters(character_contexts: Any) -> Iterable[Dict[str, Any]]:
@@ -371,6 +469,13 @@ def prepare_agent_run(
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
     hidden_setting_records = hidden_setting_records or []
     input_request = build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data)
+    world_state = _build_world_state(
+        routed_input,
+        chat_log,
+        hidden_setting_records=hidden_setting_records,
+        card_data=card_data,
+        character_contexts=character_contexts,
+    )
     agent_run.write_json(run_dir / "input.raw.json", _input_raw_record(input_request))
     agent_run.write_text(run_dir / "input_analysis.request.md", _input_analysis_request_markdown(input_request))
 
@@ -382,6 +487,7 @@ def prepare_agent_run(
     input_json["recent_chat"] = chat_log or []
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
+    input_json["visible_events"] = world_state["visible_events"]
     agent_run.write_json(run_dir / "input.json", input_json)
 
     gm_packet = build_gm_packet(
@@ -393,7 +499,7 @@ def prepare_agent_run(
         hidden_setting_records=hidden_setting_records,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
-    player_packet = build_player_packet(card_folder, routed_input, chat_log)
+    player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)
 
@@ -401,7 +507,7 @@ def prepare_agent_run(
     for character in _iter_characters(character_contexts):
         name = character.get("name") if isinstance(character, dict) else ""
         safe = agent_run.safe_name(name)
-        packet = build_character_packet(card_folder, character, routed_input, chat_log)
+        packet = build_character_packet(card_folder, character, routed_input, chat_log, world_state=world_state)
         agent_run.write_json(run_dir / "characters" / f"{safe}.context.json", packet)
         character_packets[safe] = packet
 
@@ -453,6 +559,13 @@ def rebuild_agent_run_from_analysis(
     hidden_setting_records = hidden_setting_records or []
     card_data = card_data if isinstance(card_data, dict) else {}
     character_contexts = character_contexts or {"characters": []}
+    world_state = _build_world_state(
+        routed_input,
+        chat_log,
+        hidden_setting_records=hidden_setting_records,
+        card_data=card_data,
+        character_contexts=character_contexts,
+    )
     _clear_generated_character_files(root)
 
     input_json = {
@@ -465,6 +578,7 @@ def rebuild_agent_run_from_analysis(
         "gm_only_hidden_settings": hidden_setting_records,
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts,
+        "visible_events": world_state["visible_events"],
     }
     agent_run.write_json(root / "input.json", input_json)
 
@@ -477,7 +591,7 @@ def rebuild_agent_run_from_analysis(
         hidden_setting_records=hidden_setting_records,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(raw_request)
-    player_packet = build_player_packet(card_folder, routed_input, chat_log)
+    player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
     agent_run.write_json(root / "gm.context.json", gm_packet)
     agent_run.write_json(root / "player.context.json", player_packet)
 
@@ -485,7 +599,7 @@ def rebuild_agent_run_from_analysis(
     for character in _iter_characters(character_contexts):
         name = character.get("name") if isinstance(character, dict) else ""
         safe = agent_run.safe_name(name)
-        packet = build_character_packet(card_folder, character, routed_input, chat_log)
+        packet = build_character_packet(card_folder, character, routed_input, chat_log, world_state=world_state)
         agent_run.write_json(root / "characters" / f"{safe}.context.json", packet)
         character_packets[safe] = packet
 

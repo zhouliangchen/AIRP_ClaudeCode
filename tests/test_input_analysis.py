@@ -766,7 +766,10 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(input_json["input_analysis"]["analysis_mode"], "fixture")
         self.assertIn(self.hidden_text, json.dumps(gm_packet, ensure_ascii=False))
         self.assertNotIn(self.hidden_text, json.dumps(player_packet, ensure_ascii=False))
-        self.assertIn(self.important_text, json.dumps(character_packet, ensure_ascii=False))
+        self.assertEqual(character_packet["actor_id"], "character:Suli")
+        self.assertEqual(character_packet["self_knowledge"]["name"], "Suli")
+        self.assertIn(self.important_text, json.dumps(character_packet["memory"], ensure_ascii=False))
+        self.assertNotIn(self.role_text, json.dumps(character_packet, ensure_ascii=False))
         self.assertNotIn("raw_text", gm_packet["input_analysis_request"])
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
@@ -801,8 +804,10 @@ class InputAnalysisApplyTest(unittest.TestCase):
         card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result["routed_input"]["characters"], ["Ada"])
-        self.assertEqual(character_packet["character_name"], "Ada")
-        self.assertIn("Ada is already known.", character_packet["character"]["profile_summary"])
+        self.assertEqual(character_packet["actor_id"], "character:Ada")
+        self.assertEqual(character_packet["self_knowledge"]["name"], "Ada")
+        self.assertIn("Ada is already known.", json.dumps(character_packet["memory"], ensure_ascii=False))
+        self.assertNotIn(self.role_text, json.dumps(character_packet, ensure_ascii=False))
         self.assertFalse((ada_dir / "profile.json").exists())
         self.assertEqual(card_data_after["character_orchestration"]["major"], [])
 
@@ -821,15 +826,23 @@ class InputAnalysisApplyTest(unittest.TestCase):
             encoding="utf-8",
         )
         existing_context = {
+            "actor_id": "character:Ada",
             "agent": "character",
-            "character_name": "Ada",
-            "character": {
+            "visibility": "first_person_character",
+            "self_knowledge": {
                 "name": "Ada",
-                "profile_summary": "Ada exists only in the prepared run context.",
+                "identity": "",
+                "role": "",
+                "body_state": {},
+                "relationships": {},
             },
-            "role_channel": self.role_text,
-            "recent_chat": [],
-            "components": [],
+            "memory": {
+                "long_term": ["Ada exists only in the prepared run context."],
+                "recent": [],
+                "goals": [],
+            },
+            "visible_events": [],
+            "role_channel_anchor": "",
         }
         (self.run_dir / "characters").mkdir(exist_ok=True)
         (self.run_dir / "characters" / "Ada.context.json").write_text(
@@ -850,11 +863,13 @@ class InputAnalysisApplyTest(unittest.TestCase):
         card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result["routed_input"]["characters"], ["Ada", "Unknown"])
-        self.assertEqual(ada_packet["character_name"], "Ada")
+        self.assertEqual(ada_packet["actor_id"], "character:Ada")
+        self.assertEqual(ada_packet["self_knowledge"]["name"], "Ada")
         self.assertIn(
             "prepared run context",
-            ada_packet["character"]["profile_summary"],
+            json.dumps(ada_packet["memory"], ensure_ascii=False),
         )
+        self.assertNotIn(self.role_text, json.dumps(ada_packet, ensure_ascii=False))
         self.assertFalse(unknown_packet_path.exists())
         self.assertFalse((self.card / "memory" / "characters" / "Ada").exists())
         self.assertFalse((self.card / "memory" / "characters" / "Unknown").exists())
