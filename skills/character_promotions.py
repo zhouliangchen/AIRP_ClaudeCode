@@ -16,6 +16,10 @@ class CharacterPromotionError(RuntimeError):
 ALLOWED_SOURCE_AGENTS = {"preprocess", "gm"}
 ALLOWED_VISIBILITIES = {"character_private_and_gm"}
 ALLOWED_ACTIVATIONS = {"current_turn", "future_turn"}
+GM_ASSISTANT_PROMOTION_ERROR = (
+    "gm_assistant sources cannot be applied as character_promotions; "
+    "GM assistants may only emit promotion_suggestion records for the main GM to consider"
+)
 
 
 def _text(value: Any) -> str:
@@ -38,7 +42,9 @@ def validate_promotion(record: Any, path: str) -> dict:
     if not source_agent:
         raise CharacterPromotionError(f"{path}.source_agent is required")
     if source_agent.startswith("gm_assistant"):
-        raise CharacterPromotionError(f"{path}.source_agent cannot be {source_agent!r}")
+        raise CharacterPromotionError(
+            f"{path}.source_agent {source_agent!r} is not allowed: {GM_ASSISTANT_PROMOTION_ERROR}"
+        )
     if source_agent not in ALLOWED_SOURCE_AGENTS:
         raise CharacterPromotionError(f"{path}.source_agent is not allowed: {source_agent}")
 

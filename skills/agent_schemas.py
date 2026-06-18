@@ -251,7 +251,10 @@ def _normalize_character_promotion(item: Any, path: str) -> Dict[str, Any]:
     try:
         return character_promotions.validate_promotion(item, path)
     except character_promotions.CharacterPromotionError as exc:
-        raise ValidationError(str(exc)) from exc
+        message = str(exc)
+        if "gm_assistant" in message:
+            message = f"{message}; gm_output.character_promotions accepts applied promotion records only"
+        raise ValidationError(message) from exc
 
 
 def _normalize_list_items(

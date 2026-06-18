@@ -13,6 +13,19 @@ Allowed promotion sources: preprocess, gm
 
 GM assistants must not create or promote important characters. Actor, story, critic, and other assistant discoveries are only suggestions to the main GM. The main GM must decide whether the entity is important enough, currently scene-relevant, and safe to route as an independent actor.
 
+Future GM assistants may emit only suggestion records for main GM review:
+
+```json
+{
+  "type": "promotion_suggestion",
+  "candidate_name": "Side NPC",
+  "reason": "why main GM should consider promotion",
+  "source_agent": "gm_assistant:thread-1"
+}
+```
+
+This record must not be applied directly. Only the main GM may turn it into a promotion record with `source_agent: "gm"`.
+
 ## Criteria
 
 Promote only when independent agency matters to the next scene: the entity has a distinct voice, durable goal, memory, relationship, or decision-making role that cannot be represented as background NPC narration.
