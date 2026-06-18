@@ -36,6 +36,25 @@ def _write(run_dir: str | Path, trace: Dict[str, Any]) -> Dict[str, Any]:
     return trace
 
 
+def _string_list(items: Iterable[str] | None) -> list[str]:
+    return [str(item) for item in (items or [])]
+
+
+def _parallel_groups(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
+    groups = trace.get("parallel_groups", [])
+    if not isinstance(groups, list):
+        return []
+    normalized = []
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        normalized.append({
+            "group_id": str(item.get("group_id", "")),
+            "actors": _string_list(item.get("actors", [])),
+        })
+    return normalized
+
+
 def init_trace(
     run_dir: str | Path,
     participants: Iterable[str] | None = None,
@@ -43,6 +62,7 @@ def init_trace(
 ) -> Dict[str, Any]:
     now = _now()
     trace = {
+        "schema_version": 2,
         "round_id": Path(run_dir).name,
         "created_at": now,
         "updated_at": now,
@@ -50,6 +70,7 @@ def init_trace(
         "participants": list(participants or []),
         "chapter_target_words": int(chapter_target_words or 0),
         "events": [],
+        "parallel_groups": [],
         "decision_point": None,
         "stop_reason": "",
     }
@@ -62,8 +83,14 @@ def append_event(
     visibility: str,
     event_type: str,
     content: str,
+    target: str = "",
+    source_call_id: str = "",
+    causal_links: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     trace = _read(run_dir) or init_trace(run_dir)
+    trace["schema_version"] = 2
+    if not isinstance(trace.get("parallel_groups"), list):
+        trace["parallel_groups"] = []
     events = trace.get("events")
     if not isinstance(events, list):
         events = []
@@ -75,8 +102,30 @@ def append_event(
         "visibility": str(visibility),
         "type": str(event_type),
         "content": str(content),
+        "target": str(target),
+        "source_call_id": str(source_call_id),
+        "causal_links": _string_list(causal_links),
     }
     events.append(event)
+    trace["updated_at"] = _now()
+    return _write(run_dir, trace)
+
+
+def record_parallel_group(
+    run_dir: str | Path,
+    group_id: str,
+    actors: Iterable[str],
+) -> Dict[str, Any]:
+    trace = _read(run_dir) or init_trace(run_dir)
+    trace["schema_version"] = 2
+    groups = trace.get("parallel_groups")
+    if not isinstance(groups, list):
+        groups = []
+        trace["parallel_groups"] = groups
+    groups.append({
+        "group_id": str(group_id),
+        "actors": _string_list(actors),
+    })
     trace["updated_at"] = _now()
     return _write(run_dir, trace)
 
@@ -87,6 +136,9 @@ def mark_decision_point(
     options: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     trace = _read(run_dir) or init_trace(run_dir)
+    trace["schema_version"] = 2
+    if not isinstance(trace.get("parallel_groups"), list):
+        trace["parallel_groups"] = []
     trace["status"] = "decision_point"
     trace["decision_point"] = {
         "reason": str(reason),
@@ -105,20 +157,24 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
     trace = _read(run_dir)
     if not trace:
         return {
+            "schema_version": 2,
             "round_id": Path(run_dir).name,
             "status": "missing",
             "visible_events": [],
             "private_event_count": 0,
+            "parallel_groups": [],
             "decision_point": None,
             "stop_reason": "",
             "chapter_target_words": 0,
         }
     if trace.get("_invalid_trace"):
         return {
+            "schema_version": 2,
             "round_id": Path(run_dir).name,
             "status": "invalid",
             "visible_events": [],
             "private_event_count": 0,
+            "parallel_groups": [],
             "decision_point": None,
             "stop_reason": "",
             "chapter_target_words": 0,
@@ -135,6 +191,9 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "actor": str(item.get("actor", "")),
             "type": str(item.get("type", "")),
             "content": str(item.get("content", "")),
+            "target": str(item.get("target", "")),
+            "source_call_id": str(item.get("source_call_id", "")),
+            "causal_links": _string_list(item.get("causal_links", [])),
         })
     private_count = len([
         item for item in events
@@ -154,10 +213,12 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
     else:
         decision_point = None
     return {
+        "schema_version": int(trace.get("schema_version", 2) or 2),
         "round_id": trace.get("round_id", Path(run_dir).name),
         "status": trace.get("status", ""),
         "visible_events": visible,
         "private_event_count": private_count,
+        "parallel_groups": _parallel_groups(trace),
         "decision_point": decision_point,
         "stop_reason": trace.get("public_stop_reason", ""),
         "chapter_target_words": trace.get("chapter_target_words", 0),

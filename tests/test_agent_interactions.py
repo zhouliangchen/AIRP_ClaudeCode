@@ -50,10 +50,57 @@ class AgentInteractionTraceTest(unittest.TestCase):
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
 
         self.assertEqual(trace["round_id"], "round-000001")
+        self.assertEqual(trace["schema_version"], 2)
         self.assertEqual(trace["participants"], ["gm", "player", "character:Ada"])
+        self.assertEqual(trace["parallel_groups"], [])
         self.assertEqual(trace["events"][0]["actor"], "character:Ada")
         self.assertEqual(trace["decision_point"]["reason"], "player must choose whether to enter")
         self.assertEqual(trace["status"], "decision_point")
+
+    def test_trace_records_v2_event_links_and_parallel_groups(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player", "character:SuLi"],
+            chapter_target_words=1800,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:SuLi",
+            visibility="world_visible",
+            event_type="dialogue_transfer",
+            content="I will take it from here.",
+            target="character:SuLi",
+            source_call_id="call-player-1",
+            causal_links=["event-0"],
+        )
+        self.agent_interactions.record_parallel_group(
+            self.run_dir,
+            "group-1",
+            ["character:A", "character:B"],
+        )
+
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(trace["schema_version"], 2)
+        self.assertEqual(trace["events"][0]["index"], 0)
+        self.assertEqual(trace["events"][0]["target"], "character:SuLi")
+        self.assertEqual(trace["events"][0]["source_call_id"], "call-player-1")
+        self.assertEqual(trace["events"][0]["causal_links"], ["event-0"])
+        self.assertEqual(trace["parallel_groups"], [{
+            "group_id": "group-1",
+            "actors": ["character:A", "character:B"],
+        }])
+        self.assertEqual(summary["schema_version"], 2)
+        self.assertEqual(summary["parallel_groups"], trace["parallel_groups"])
+        self.assertEqual(summary["visible_events"][0], {
+            "actor": "character:SuLi",
+            "type": "dialogue_transfer",
+            "content": "I will take it from here.",
+            "target": "character:SuLi",
+            "source_call_id": "call-player-1",
+            "causal_links": ["event-0"],
+        })
 
     def test_trace_summary_filters_private_events_for_story_input(self):
         self.agent_interactions.init_trace(
@@ -67,6 +114,9 @@ class AgentInteractionTraceTest(unittest.TestCase):
         summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
 
         self.assertEqual(summary["visible_events"][0]["content"], "Stay close.")
+        self.assertEqual(summary["visible_events"][0]["target"], "")
+        self.assertEqual(summary["visible_events"][0]["source_call_id"], "")
+        self.assertEqual(summary["visible_events"][0]["causal_links"], [])
         self.assertEqual(summary["private_event_count"], 1)
 
     def test_malformed_trace_summarizes_as_invalid(self):
@@ -74,6 +124,8 @@ class AgentInteractionTraceTest(unittest.TestCase):
 
         summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
 
+        self.assertEqual(summary["schema_version"], 2)
+        self.assertEqual(summary["parallel_groups"], [])
         self.assertEqual(summary["status"], "invalid")
         self.assertEqual(summary["visible_events"], [])
         self.assertEqual(summary["private_event_count"], 0)
@@ -116,6 +168,9 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "actor": "character:Ada",
             "type": "dialogue",
             "content": "Stay close.",
+            "target": "",
+            "source_call_id": "",
+            "causal_links": [],
         })
         self.assertEqual(summary["decision_point"]["reason"], "player must choose whether to enter")
         self.assertEqual(summary["stop_reason"], "player must choose whether to enter")
