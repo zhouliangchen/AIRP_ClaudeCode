@@ -38,6 +38,8 @@ ACTOR_EVENT_TYPES = {
     "stop_for_player_decision",
 }
 
+ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
+
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 
 
@@ -122,6 +124,9 @@ def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
 
 def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
+    for key in sorted(data):
+        if key not in ACTOR_EVENT_KEYS:
+            raise ValidationError(f"{_path(path, str(key))} is not an allowed actor event field")
     event_type = _require_str(data, "type", path)
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")

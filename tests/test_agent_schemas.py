@@ -148,6 +148,31 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "allowed actor event type"):
             self.agent_schemas.validate_actor_output(payload)
 
+    def test_validate_actor_output_rejects_unknown_event_fields(self):
+        base_event = {
+            "type": "memory_delta",
+            "target": "self",
+            "content": "I saw the archive door open.",
+            "metadata": {"tone": "cautious"},
+        }
+        payload = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [base_event],
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(payload)
+        self.assertEqual(normalized["events"][0]["metadata"], {"tone": "cautious"})
+
+        for extra_key, extra_value in (("source", "gm_only"), ("confidence", "high")):
+            with self.subTest(extra_key=extra_key):
+                event = dict(base_event)
+                event[extra_key] = extra_value
+                payload["events"] = [event]
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, extra_key):
+                    self.agent_schemas.validate_actor_output(payload)
+
     def test_actor_output_rejects_omniscient_or_control_fields(self):
         base = {
             "agent": "player",

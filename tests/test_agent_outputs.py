@@ -370,6 +370,31 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "agent_id mismatch"):
             self.agent_outputs.build_story_input(self.run_dir)
 
+    def test_build_story_input_rejects_memory_delta_event_source_field(self):
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {
+                                "type": "memory_delta",
+                                "target": "self",
+                                "content": "I remember the archive door.",
+                                "source": "gm_only",
+                            }
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ]
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
     def test_build_story_input_rejects_legacy_actor_output_item(self):
         _write_json(
             self.run_dir / "actor.outputs.json",

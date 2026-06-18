@@ -100,6 +100,7 @@ def _validate_actor_delta(item: Any, path: str) -> str:
         source = str(item.get("source", "perceived")).lower()
         if source not in ACTOR_ALLOWED_SOURCES:
             raise MemoryIngestionError(f"{path}.source: actor memory source {source} is not allowed")
+    _validate_no_forbidden_marker(item, path)
     return _text_from_delta(item, path)
 
 
@@ -455,6 +456,11 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
     deltas = story_input.get("memory_deltas", {})
     if not isinstance(deltas, dict):
         raise MemoryIngestionError("story_input.memory_deltas must be an object")
+    legacy_keys = sorted(key for key in ("characters", "player") if key in deltas)
+    if legacy_keys:
+        raise MemoryIngestionError(
+            f"legacy memory_deltas branches are not supported: {', '.join(legacy_keys)}"
+        )
 
     now = date_str or datetime.now(CST).strftime("%Y-%m-%d %H:%M")
     ledger = _load_ledger(card)
@@ -473,34 +479,6 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
                 str(actor_id),
                 items,
                 f"memory_deltas.actors.{actor_id}",
-            )
-            if ingested_id:
-                ingested.append(ingested_id)
-
-    player_items = deltas.get("player") or []
-    ingested_id = _ingest_actor_memory_delta(
-        card,
-        ledger,
-        round_id,
-        now,
-        "player",
-        player_items,
-        "memory_deltas.player",
-    )
-    if ingested_id:
-        ingested.append(ingested_id)
-
-    character_deltas = deltas.get("characters") or {}
-    if isinstance(character_deltas, dict):
-        for name, items in character_deltas.items():
-            ingested_id = _ingest_actor_memory_delta(
-                card,
-                ledger,
-                round_id,
-                now,
-                f"character:{name}",
-                items,
-                f"memory_deltas.characters.{_safe_name(str(name))}",
             )
             if ingested_id:
                 ingested.append(ingested_id)

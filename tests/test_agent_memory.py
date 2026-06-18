@@ -125,6 +125,44 @@ class AgentMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "hidden_note"):
             self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
 
+    def test_actor_memory_rejects_hidden_markers_in_event_content(self):
+        for marker, expected in (("world_truth", "world_truth"), ("hidden-note", "hidden_note")):
+            with self.subTest(marker=marker):
+                story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+                story_input["memory_deltas"]["actors"]["player"] = [
+                    {
+                        "type": "memory_delta",
+                        "content": f"I should not persist {marker} knowledge.",
+                        "target": "self",
+                    }
+                ]
+                _write_json(self.run_dir / "story.input.json", story_input)
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
+                    self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
+
+                self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
+
+    def test_ingest_memory_deltas_rejects_legacy_player_and_character_branches(self):
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": "round-000001",
+                "memory_deltas": {
+                    "player": [{"text": "Old player branch should not write."}],
+                    "characters": {
+                        "Ada": [{"text": "Old character branch should not write."}]
+                    },
+                },
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "legacy"):
+            self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
+
+        self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
+
     def test_ingest_memory_deltas_preserves_player_input_log(self):
         input_log = self.card / ".player_inputs.jsonl"
         original = '{"id":"p1","raw_text":"  keep exact spaces  ","display_text":"  keep exact spaces  "}\n'
