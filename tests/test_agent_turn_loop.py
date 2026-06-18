@@ -174,7 +174,8 @@ class AgentTurnLoopTest(unittest.TestCase):
                             "The clock remembers blood. "
                             "Ask SuLi what she sees."
                         ),
-                        "reason": "Prompt contains hidden material to redact.",
+                        "reason": "The moon is painted glass, so prompt carefully.",
+                        "metadata": {"note": "The teacher is an illusion."},
                     }],
                     "parallel_groups": [],
                     "world_state_delta": [],
@@ -197,6 +198,15 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("hallway eats names", serialized)
         self.assertNotIn("clock remembers blood", serialized)
         self.assertIn("ask suli what she sees", serialized)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        persisted = json.dumps(gm_outputs, ensure_ascii=False).lower()
+        self.assertNotIn("the pendant burns identity", persisted)
+        self.assertNotIn("hallway eats names", persisted)
+        self.assertNotIn("clock remembers blood", persisted)
+        self.assertNotIn("moon is painted glass", persisted)
+        self.assertNotIn("teacher is an illusion", persisted)
+        self.assertIn("[redacted]", persisted)
 
     def test_actor_call_prompt_redacts_short_cjk_hidden_phrase(self):
         self.agent_run.write_json(self.run_dir / "input.json", {

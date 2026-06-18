@@ -12,6 +12,7 @@ from typing import Any, Dict
 import agent_run
 import agent_interactions
 import agent_schemas
+import agent_visibility_guard
 
 
 MAX_CRITIC_RETRIES = 2
@@ -47,6 +48,54 @@ def _forbidden_actor_marker(text: str) -> str:
             if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
                 return marker
     return ""
+
+
+def _reject_actor_facing_gm_value(value: Any, path: str, hidden_phrases: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            marker = _forbidden_actor_marker(str(key))
+            if marker:
+                raise AgentOutputError(f"{child_path}: forbidden actor marker {marker}")
+            _reject_actor_facing_gm_value(child, child_path, hidden_phrases)
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_actor_facing_gm_value(child, f"{path}[{index}]", hidden_phrases)
+        return
+    if not isinstance(value, str):
+        return
+
+    marker = _forbidden_actor_marker(value)
+    if marker:
+        raise AgentOutputError(f"{path}: forbidden actor marker {marker}")
+    if hidden_phrases and agent_visibility_guard.redact_text(value, hidden_phrases) != value:
+        raise AgentOutputError(f"{path}: contains copied hidden phrase")
+
+
+def _validate_gm_output_visibility(
+    gm_path: Path,
+    gm_outputs: list[Dict[str, Any]],
+    input_payload: Dict[str, Any],
+) -> None:
+    hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
+    for gm_index, gm_output in enumerate(gm_outputs):
+        output_context = f"{gm_path}.outputs[{gm_index}]"
+        for beat_index, beat in enumerate(gm_output.get("scene_beats", [])):
+            context = f"{output_context}.scene_beats[{beat_index}]"
+            for field in ("content", "metadata"):
+                if field in beat:
+                    _reject_actor_facing_gm_value(beat[field], f"{context}.{field}", hidden_phrases)
+        for event_index, event in enumerate(gm_output.get("events", [])):
+            context = f"{output_context}.events[{event_index}]"
+            for field in ("content", "metadata"):
+                if field in event:
+                    _reject_actor_facing_gm_value(event[field], f"{context}.{field}", hidden_phrases)
+        for call_index, call in enumerate(gm_output.get("actor_calls", [])):
+            context = f"{output_context}.actor_calls[{call_index}]"
+            for field in ("prompt", "reason", "metadata"):
+                if field in call:
+                    _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
 
 
 def _read_json_required(path: Path) -> Dict[str, Any]:
@@ -386,6 +435,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     input_payload = _read_json_required(root / "input.json")
     raw_trace, trace_summary = _validate_trace_artifacts(root)
     loop_outputs = _load_loop_outputs(root)
+    _validate_gm_output_visibility(root / "gm.output.json", loop_outputs["gm"]["outputs"], input_payload)
     output_source_call_ids_by_actor = _validate_actor_output_provenance(
         root,
         raw_trace,

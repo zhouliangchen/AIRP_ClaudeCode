@@ -12,6 +12,7 @@ import agent_interactions
 import agent_projection
 import agent_run
 import agent_schemas
+import agent_visibility_guard
 
 
 MAX_LOOP_STEPS = 8
@@ -19,46 +20,6 @@ GENERATED_TRANSFERS_PER_STEP = 4
 STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 
 DispatchFn = Callable[[str, dict], dict]
-HIDDEN_TEXT_KEYS = {
-    "ai",
-    "gm",
-    "gm_only",
-    "gm_only_text",
-    "hidden",
-    "hidden_text",
-    "private",
-    "private_notes",
-    "world_truth",
-}
-HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
-CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
-CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
-CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
-CJK_INSTRUCTION_SUFFIXES = (
-    "不要",
-    "不得",
-    "不能",
-    "请勿",
-    "不应",
-    "不需要",
-    "提前透露",
-    "透露给玩家",
-)
-CJK_HIDDEN_LABELS = (
-    "隐藏事实",
-    "隐藏设定",
-    "秘密",
-    "世界真相",
-    "真相",
-    "幕后事实",
-    "GM知道",
-    "GM已知",
-)
-CJK_HIDDEN_PREFIX_RE = re.compile(
-    r"^(?:"
-    + "|".join(re.escape(label) for label in sorted(CJK_HIDDEN_LABELS, key=len, reverse=True))
-    + r")(?:是|为|[:：]|\s+)"
-)
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -71,167 +32,6 @@ def _dict(value: Any) -> dict:
 
 def _list(value: Any) -> list:
     return value if isinstance(value, list) else []
-
-
-def _string_leaves(value: Any) -> list[str]:
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if isinstance(value, dict):
-        texts = []
-        for child in value.values():
-            texts.extend(_string_leaves(child))
-        return texts
-    if isinstance(value, list):
-        texts = []
-        for child in value:
-            texts.extend(_string_leaves(child))
-        return texts
-    return []
-
-
-def _text_words(value: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9]+", value.lower())
-
-
-def _has_non_ascii_text(value: str) -> bool:
-    return any(ord(char) > 127 and not char.isspace() for char in value)
-
-
-def _is_cjk_char(char: str) -> bool:
-    return (
-        "\u3400" <= char <= "\u4dbf"
-        or "\u4e00" <= char <= "\u9fff"
-        or "\uf900" <= char <= "\ufaff"
-        or "\u3040" <= char <= "\u30ff"
-        or "\uac00" <= char <= "\ud7af"
-    )
-
-
-def _has_cjk_text(value: str) -> bool:
-    return any(_is_cjk_char(char) for char in value)
-
-
-def _clean_hidden_phrase(value: str) -> str:
-    return str(value or "").strip(HIDDEN_PHRASE_STRIP_CHARS)
-
-
-def _strip_cjk_instruction_suffix(value: str) -> str:
-    text = _clean_hidden_phrase(value)
-    indexes = [
-        index
-        for marker in CJK_INSTRUCTION_SUFFIXES
-        for index in [text.find(marker)]
-        if index > 0
-    ]
-    if indexes:
-        text = text[:min(indexes)]
-    return _clean_hidden_phrase(text)
-
-
-def _strip_cjk_hidden_prefix(value: str) -> str:
-    text = _clean_hidden_phrase(value)
-    return _clean_hidden_phrase(CJK_HIDDEN_PREFIX_RE.sub("", text, count=1))
-
-
-def _cjk_hidden_clause_candidates(value: str) -> set[str]:
-    candidates = set()
-    if not _has_cjk_text(value):
-        return candidates
-
-    fragments = {value}
-    fragments.update(CJK_CLAUSE_SPLIT_RE.split(value))
-    for fragment in list(fragments):
-        for separator in (":", "："):
-            if separator in fragment:
-                fragments.add(fragment.split(separator, 1)[1])
-
-    for fragment in fragments:
-        clean = _strip_cjk_instruction_suffix(_strip_cjk_hidden_prefix(fragment))
-        if clean and not any(clean.startswith(marker) for marker in CJK_INSTRUCTION_SUFFIXES):
-            candidates.add(clean)
-    return candidates
-
-
-def _hidden_phrases_from_text(value: str) -> set[str]:
-    text = str(value or "").strip()
-    if not text:
-        return set()
-    phrases = {text}
-    for separator in (":", "："):
-        if separator in text:
-            phrases.add(text.split(separator, 1)[1].strip())
-    phrases.update(_cjk_hidden_clause_candidates(text))
-
-    words = _text_words(text)
-    for size in range(4, min(8, len(words)) + 1):
-        for index in range(0, len(words) - size + 1):
-            phrases.add(" ".join(words[index:index + size]))
-
-    kept = set()
-    for phrase in phrases:
-        clean = _clean_hidden_phrase(phrase)
-        if len(clean) >= 12 or (_has_non_ascii_text(clean) and len(clean) >= 2):
-            kept.add(clean)
-    return kept
-
-
-def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
-    texts = []
-    for item in _list(input_payload.get("recent_chat")):
-        if isinstance(item, str):
-            if "gm" in item.lower() or "hidden" in item.lower() or "private" in item.lower():
-                texts.append(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        hidden_visibility = str(item.get("visibility", "")).lower() in {"gm_only", "hidden", "private"}
-        for key, value in item.items():
-            if hidden_visibility or str(key).lower() in HIDDEN_TEXT_KEYS:
-                texts.extend(_string_leaves(value))
-    return texts
-
-
-def _hidden_prompt_phrases(input_payload: dict) -> list[str]:
-    routed = _dict(input_payload.get("routed_input"))
-    hidden_sources = []
-    hidden_sources.extend(_string_leaves(routed.get("user_instruction_channel")))
-    hidden_sources.extend(_string_leaves(input_payload.get("user_instruction_channel")))
-    hidden_sources.extend(_string_leaves(input_payload.get("gm_only_hidden_settings")))
-    hidden_sources.extend(_string_leaves(input_payload.get("hidden_facts")))
-    hidden_sources.extend(_string_leaves(input_payload.get("world_truth")))
-    hidden_sources.extend(_string_leaves(input_payload.get("gm_only_recent_chat")))
-    hidden_sources.extend(_string_leaves(input_payload.get("hidden_recent_chat")))
-    hidden_sources.extend(_string_leaves(input_payload.get("private_recent_chat")))
-    hidden_sources.extend(_recent_chat_hidden_texts(input_payload))
-
-    phrases = set()
-    for text in hidden_sources:
-        phrases.update(_hidden_phrases_from_text(text))
-    return sorted(phrases, key=lambda phrase: (-len(phrase), phrase))
-
-
-def _redact_hidden_prompt_text(prompt: str, hidden_phrases: Iterable[str]) -> str:
-    redacted = str(prompt or "")
-    for phrase in hidden_phrases:
-        pattern = _hidden_phrase_pattern(str(phrase))
-        redacted = pattern.sub("[redacted]", redacted)
-    return redacted
-
-
-def _hidden_phrase_pattern(phrase: str) -> re.Pattern:
-    if _has_cjk_text(phrase):
-        units = [
-            char
-            for char in phrase
-            if not char.isspace() and char not in CJK_FUZZY_SEPARATOR_CHARS
-        ]
-        if units:
-            return re.compile(
-                CJK_FUZZY_SEPARATOR_RE.join(re.escape(char) for char in units),
-                re.IGNORECASE,
-            )
-    return re.compile(re.escape(str(phrase)), re.IGNORECASE)
 
 
 def _read_input(run_dir: Path) -> dict:
@@ -489,7 +289,7 @@ def _actor_packet(
     prompt: str,
     hidden_phrases: Iterable[str],
 ) -> dict:
-    safe_prompt = _redact_hidden_prompt_text(prompt, hidden_phrases)
+    safe_prompt = agent_visibility_guard.redact_text(prompt, hidden_phrases)
     return agent_projection.project_actor_context(
         actor_id,
         world_state,
@@ -563,7 +363,7 @@ def run_interactive_loop(
     step_limit = max(1, int(max_steps or 0))
     generated_transfer_limit = step_limit * GENERATED_TRANSFERS_PER_STEP
     world_state = _initial_world_state(input_payload)
-    hidden_phrases = _hidden_prompt_phrases(input_payload)
+    hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     registered_actor_targets = _registered_actor_targets(input_payload)
     gm_outputs: list[dict] = []
     actor_outputs: dict[str, list[dict]] = {}
@@ -575,7 +375,8 @@ def run_interactive_loop(
     generated_transfers_used = 0
 
     for step_index in range(step_limit):
-        gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
+        raw_gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
+        gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         gm_outputs.append(gm_output)
         _apply_world_state_delta(world_state, gm_output)

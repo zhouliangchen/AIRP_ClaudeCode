@@ -1025,6 +1025,183 @@ class AgentOutputsTest(unittest.TestCase):
             sentinel,
         )
 
+    def test_build_story_input_rejects_gm_actor_call_copied_hidden_phrase(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I look at the pendant.",
+                "routed_input": {
+                    "role_channel": "I look at the pendant.",
+                    "user_instruction_channel": "Hidden truth: the pendant burns identity.",
+                },
+                "hidden_facts": [{"fact": "The pendant burns identity."}],
+            },
+        )
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "You notice that the pendant burns identity.",
+                                "reason": "The player can feel the pendant.",
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "hidden phrase"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_actor_call_hidden_markers_in_prompt_reason_and_metadata(self):
+        cases = (
+            ("prompt", "This prompt includes gm_only material.", "Visible reason.", {}),
+            ("reason", "Visible prompt.", "world_truth is not actor-facing.", {}),
+            ("metadata", "Visible prompt.", "Visible reason.", {"hidden_note": "private"}),
+        )
+        for field, prompt, reason, metadata in cases:
+            with self.subTest(field=field):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [],
+                                "actor_calls": [
+                                    {
+                                        "call_id": "call-player-1",
+                                        "actor_id": "player",
+                                        "prompt": prompt,
+                                        "reason": reason,
+                                        "metadata": metadata,
+                                    }
+                                ],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, field):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_scene_beat_hidden_phrase_and_marker_fields(self):
+        cases = (
+            ("content", "The pendant burns identity.", {}),
+            ("metadata", "Visible scene beat.", {"hidden_note": "The bell remembers blood."}),
+        )
+        for field, content, metadata in cases:
+            with self.subTest(field=field):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I look at the pendant.",
+                        "routed_input": {
+                            "role_channel": "I look at the pendant.",
+                            "user_instruction_channel": "Hidden truth: the pendant burns identity.",
+                        },
+                        "hidden_facts": [{"fact": "The pendant burns identity."}],
+                    },
+                )
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [{"content": content, "metadata": metadata}],
+                                "events": [],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"scene_beats\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_event_hidden_phrase_and_marker_fields(self):
+        cases = (
+            ("content", "The pendant burns identity.", {}),
+            ("metadata", "Visible event.", {"world_truth": "The bell remembers blood."}),
+        )
+        for field, content, metadata in cases:
+            with self.subTest(field=field):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I look at the pendant.",
+                        "routed_input": {
+                            "role_channel": "I look at the pendant.",
+                            "user_instruction_channel": "Hidden truth: the pendant burns identity.",
+                        },
+                        "hidden_facts": [{"fact": "The pendant burns identity."}],
+                    },
+                )
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [{
+                                    "type": "npc_action",
+                                    "content": content,
+                                    "metadata": metadata,
+                                }],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}
         _write_json(self.run_dir / "story.input.json", sentinel)
