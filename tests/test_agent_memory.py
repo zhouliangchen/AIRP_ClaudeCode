@@ -163,6 +163,63 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
         self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
 
+    def test_actor_memory_rejects_old_item_shapes_under_actors(self):
+        for item in ({"text": "old player memory"}, {"fact": "old player fact"}, "old player string"):
+            with self.subTest(item=item), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                run_dir = card / ".agent_runs" / "round-000001"
+                _write_json(
+                    run_dir / "story.input.json",
+                    {
+                        "round_id": "round-000001",
+                        "memory_deltas": {
+                            "actors": {
+                                "player": [item],
+                            },
+                        },
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "type"):
+                    self.agent_memory.ingest_memory_deltas(card, run_dir)
+
+                self.assertFalse((card / "memory" / "player" / "recent.md").exists())
+
+    def test_ingest_memory_deltas_is_atomic_when_later_actor_fails_validation(self):
+        story_input = {
+            "round_id": "round-000001",
+            "memory_deltas": {
+                "actors": {
+                    "player": [
+                        {
+                            "type": "memory_delta",
+                            "content": "I opened the archive door.",
+                            "target": "self",
+                        }
+                    ],
+                    "character:Ada": [
+                        {
+                            "type": "memory_delta",
+                            "content": "I should not persist world_truth knowledge.",
+                            "target": "self",
+                        }
+                    ],
+                },
+                "world": [
+                    {"scope": "room", "fact": "the archive door is open"}
+                ],
+            },
+        }
+        _write_json(self.run_dir / "story.input.json", story_input)
+
+        for _attempt in range(2):
+            with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "world_truth"):
+                self.agent_memory.ingest_memory_deltas(self.card, self.run_dir, date_str="2026-06-16 12:00")
+
+        self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "world_delta.md").exists())
+
     def test_ingest_memory_deltas_preserves_player_input_log(self):
         input_log = self.card / ".player_inputs.jsonl"
         original = '{"id":"p1","raw_text":"  keep exact spaces  ","display_text":"  keep exact spaces  "}\n'

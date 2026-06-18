@@ -231,6 +231,37 @@ class AgentSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
                     self.agent_schemas.validate_actor_output(payload)
 
+    def test_actor_output_rejects_hidden_marker_values_in_metadata(self):
+        base = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [
+                {
+                    "type": "memory_delta",
+                    "target": "self",
+                    "content": "I remember the archive door.",
+                    "metadata": {"tone": "cautious"},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(base)
+        self.assertEqual(normalized["events"][0]["metadata"], {"tone": "cautious"})
+
+        for metadata, expected in (
+            ({"source": "gm_only"}, "gm_only"),
+            ({"nested": {"note": "world_truth"}}, "world_truth"),
+        ):
+            with self.subTest(metadata=metadata):
+                payload = dict(base)
+                event = dict(base["events"][0])
+                event["metadata"] = metadata
+                payload["events"] = [event]
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                    self.agent_schemas.validate_actor_output(payload)
+
     def test_valid_story_output_preserves_character_dialogue_metadata(self):
         payload = {
             "content": "Ada lifted the lamp. \"Stay close,\" she said.",

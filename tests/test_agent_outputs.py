@@ -395,6 +395,33 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source"):
             self.agent_outputs.build_story_input(self.run_dir)
 
+    def test_build_story_input_rejects_actor_event_metadata_hidden_marker(self):
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {
+                                "type": "memory_delta",
+                                "target": "self",
+                                "content": "I remember the archive door.",
+                                "metadata": {"source": "gm_only"},
+                            }
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ]
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm_only"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
     def test_build_story_input_rejects_legacy_actor_output_item(self):
         _write_json(
             self.run_dir / "actor.outputs.json",

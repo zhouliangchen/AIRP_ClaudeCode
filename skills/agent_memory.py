@@ -23,6 +23,7 @@ ACTOR_FORBIDDEN_MARKERS = {
     "out_of_character",
 }
 SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
+ACTOR_MEMORY_EVENT_TYPES = {"memory_delta", "goal_update"}
 
 
 class MemoryIngestionError(RuntimeError):
@@ -90,18 +91,27 @@ def _text_from_delta(item: Any, path: str) -> str:
 
 
 def _validate_actor_delta(item: Any, path: str) -> str:
-    if isinstance(item, dict):
-        for key, value in item.items():
-            marker = str(key).lower()
-            if marker in ACTOR_FORBIDDEN_MARKERS:
-                raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory field")
-            if isinstance(value, str) and value.lower() in ACTOR_FORBIDDEN_MARKERS:
-                raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory source {value}")
-        source = str(item.get("source", "perceived")).lower()
-        if source not in ACTOR_ALLOWED_SOURCES:
-            raise MemoryIngestionError(f"{path}.source: actor memory source {source} is not allowed")
+    if not isinstance(item, dict):
+        raise MemoryIngestionError(f"{path}.type: actor memory event object is required")
+
+    event_type = item.get("type")
+    if event_type not in ACTOR_MEMORY_EVENT_TYPES:
+        raise MemoryIngestionError(f"{path}.type: actor memory delta type must be memory_delta or goal_update")
+    content = item.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise MemoryIngestionError(f"{path}.content: actor memory content is required")
+
+    for key, value in item.items():
+        marker = str(key).lower()
+        if marker in ACTOR_FORBIDDEN_MARKERS:
+            raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory field")
+        if isinstance(value, str) and value.lower() in ACTOR_FORBIDDEN_MARKERS:
+            raise MemoryIngestionError(f"{path}.{key}: forbidden actor memory source {value}")
+    source = str(item.get("source", "perceived")).lower()
+    if source not in ACTOR_ALLOWED_SOURCES:
+        raise MemoryIngestionError(f"{path}.source: actor memory source {source} is not allowed")
     _validate_no_forbidden_marker(item, path)
-    return _text_from_delta(item, path)
+    return content.strip()
 
 
 def _world_text(item: Any, path: str) -> str:
@@ -118,7 +128,7 @@ def _dated_lines(date_str: str, round_id: str, agent_id: str, texts: list[str]) 
     return [f"- {date_str} [{round_id}/{agent_id}] {text}" for text in texts]
 
 
-def _ingest_actor_memory_delta(
+def _prepare_actor_memory_delta(
     card: Path,
     ledger: set[str],
     round_id: str,
@@ -126,7 +136,7 @@ def _ingest_actor_memory_delta(
     agent_id: str,
     items: Any,
     path: str,
-) -> str | None:
+) -> tuple[Path, str, list[str], str, str] | None:
     if not items:
         return None
     if not isinstance(items, list):
@@ -150,9 +160,7 @@ def _ingest_actor_memory_delta(
         return None
 
     texts = [_validate_actor_delta(item, f"{path}[{index}]") for index, item in enumerate(items)]
-    _append_lines(recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts))
-    ledger.add(key)
-    return normalized_id
+    return recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts), key, normalized_id
 
 
 def memory_summary_due(round_id: str, interval: int = 6) -> bool:
@@ -464,6 +472,8 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
 
     now = date_str or datetime.now(CST).strftime("%Y-%m-%d %H:%M")
     ledger = _load_ledger(card)
+    next_ledger = set(ledger)
+    pending_writes: list[tuple[Path, str, list[str]]] = []
     ingested: list[str] = []
 
     actor_deltas = deltas.get("actors") or {}
@@ -471,32 +481,38 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
         if not isinstance(actor_deltas, dict):
             raise MemoryIngestionError("memory_deltas.actors must be an object")
         for actor_id, items in actor_deltas.items():
-            ingested_id = _ingest_actor_memory_delta(
+            prepared = _prepare_actor_memory_delta(
                 card,
-                ledger,
+                next_ledger,
                 round_id,
                 now,
                 str(actor_id),
                 items,
                 f"memory_deltas.actors.{actor_id}",
             )
-            if ingested_id:
+            if prepared:
+                recent_path, header, lines, key, ingested_id = prepared
+                pending_writes.append((recent_path, header, lines))
+                next_ledger.add(key)
                 ingested.append(ingested_id)
 
     world_items = deltas.get("world") or []
     if world_items:
         key = f"{round_id}:world"
-        if key not in ledger:
+        if key not in next_ledger:
             texts = [_world_text(item, f"memory_deltas.world[{index}]") for index, item in enumerate(world_items)]
-            _append_lines(
+            pending_writes.append((
                 card / "memory" / "world_delta.md",
                 "# World State Deltas\n",
                 _dated_lines(now, round_id, "world", texts),
-            )
-            ledger.add(key)
+            ))
+            next_ledger.add(key)
             ingested.append("world")
 
-    _save_ledger(card, ledger)
+    for path, header, lines in pending_writes:
+        _append_lines(path, header, lines)
+
+    _save_ledger(card, next_ledger)
     return {
         "ok": True,
         "round_id": round_id,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -104,16 +105,30 @@ def _require_agent(payload: Dict[str, Any], expected: str, path: str = "") -> st
     return agent
 
 
+def _forbidden_actor_marker(text: str) -> str:
+    lowered = str(text or "").lower()
+    normalized = re.sub(r"[\s-]+", "_", lowered)
+    for marker in FORBIDDEN_ACTOR_KEYS:
+        if marker in lowered or marker in normalized:
+            return marker
+    return ""
+
+
 def _reject_forbidden_keys(value: Any, path: str = "") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             child_path = _path(path, str(key))
-            if key in FORBIDDEN_ACTOR_KEYS:
+            marker = _forbidden_actor_marker(str(key))
+            if marker:
                 raise ValidationError(f"{child_path} is forbidden in actor output")
             _reject_forbidden_keys(child, child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_forbidden_keys(child, f"{path}[{index}]")
+    elif isinstance(value, str):
+        marker = _forbidden_actor_marker(value)
+        if marker:
+            raise ValidationError(f"{path}: forbidden actor marker {marker}")
 
 
 def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
