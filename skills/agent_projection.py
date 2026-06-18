@@ -22,6 +22,7 @@ FORBIDDEN_WORLD_KEYS = {
     "omniscient",
     "out_of_character",
     "hidden_note",
+    "hidden_truth",
     "gm_only",
     "hidden_identity_facts",
 }
@@ -68,7 +69,6 @@ def _canonical_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
 
-FORBIDDEN_WORLD_KEY_MARKERS = {_canonical_marker(key) for key in FORBIDDEN_WORLD_KEYS}
 FORBIDDEN_NESTED_KEY_MARKERS = {_canonical_marker(key) for key in FORBIDDEN_NESTED_KEYS}
 
 
@@ -84,10 +84,6 @@ def _is_forbidden_key(key: Any) -> bool:
     return _canonical_marker(key) in FORBIDDEN_NESTED_KEY_MARKERS
 
 
-def _is_forbidden_world_key(key: Any) -> bool:
-    return _canonical_marker(key) in FORBIDDEN_WORLD_KEY_MARKERS
-
-
 def _contains_forbidden_text(value: Any) -> bool:
     canonical = _canonical_marker(value)
     return any(marker and marker in canonical for marker in FORBIDDEN_NESTED_KEY_MARKERS)
@@ -98,22 +94,20 @@ def _safe_text(value: Any) -> str:
     return "" if _contains_forbidden_text(text) else text
 
 
-def _sanitize_prompt(value: Any) -> tuple[str, int]:
+def _sanitize_prompt(value: Any) -> str:
     text = _text(value).strip()
     if not text:
-        return "", 0
+        return ""
 
     kept = []
-    dropped = 0
     for match in SEGMENT_RE.finditer(text):
         segment = match.group(0).strip()
         if not segment:
             continue
         if _contains_forbidden_text(segment):
-            dropped += 1
             continue
         kept.append(segment)
-    return " ".join(kept), dropped
+    return " ".join(kept)
 
 
 def _json_safe(value: Any) -> Any:
@@ -272,58 +266,43 @@ def _iter_raw_items(value: Any) -> list[Any]:
     return [value]
 
 
-def _collect_events(value: Any, actor_id: str) -> tuple[list[Any], int]:
+def _collect_events(value: Any, actor_id: str) -> list[Any]:
     events = []
-    dropped = 0
     for item in _iter_raw_items(value):
         if not isinstance(item, dict):
-            dropped += 1
             continue
         if _event_visible_to_actor(item, actor_id):
             events.append(_json_safe(item))
-        else:
-            dropped += 1
-    return events, dropped
+    return events
 
 
-def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> tuple[list[Any], int]:
+def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
     actor_visible = _as_dict(world.get("actor_visible_events"))
     events = []
-    dropped = 0
     checked_keys = []
     for key in (actor_id, _agent_type(actor_id), "all", "public"):
         if key not in checked_keys:
             checked_keys.append(key)
     for key in checked_keys:
         if key in actor_visible:
-            collected, count = _collect_events(actor_visible.get(key), actor_id)
-            events.extend(collected)
-            dropped += count
-    return events, dropped
+            events.extend(_collect_events(actor_visible.get(key), actor_id))
+    return events
 
 
-def _visible_events(world: Dict[str, Any], actor_id: str) -> tuple[list[Any], int]:
+def _visible_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
     events = []
-    dropped = 0
     for key in ("visible_events", "world_visible_events", "public_events"):
         if key in world:
-            collected, count = _collect_events(world.get(key), actor_id)
-            events.extend(collected)
-            dropped += count
+            events.extend(_collect_events(world.get(key), actor_id))
     if "events" in world:
         for item in _iter_raw_items(world.get("events")):
             if not isinstance(item, dict):
-                dropped += 1
                 continue
             visibility = str(item.get("visibility", "")).lower()
             if visibility in PUBLIC_VISIBLE_MARKERS and _event_visible_to_actor(item, actor_id):
                 events.append(_json_safe(item))
-            else:
-                dropped += 1
-    collected, count = _actor_specific_events(world, actor_id)
-    events.extend(collected)
-    dropped += count
-    return events, dropped
+    events.extend(_actor_specific_events(world, actor_id))
+    return events
 
 
 def project_actor_context(
@@ -336,27 +315,19 @@ def project_actor_context(
     actor_key = _text(actor_id)
     world = _as_dict(world_state)
     actor = _as_dict(actor_state)
-    forbidden_removed = sorted({_canonical_marker(key) for key in world if _is_forbidden_world_key(key)})
-    prompt, redacted_prompt_segments = _sanitize_prompt(gm_prompt)
-    visible_events, dropped_visible_events = _visible_events(world, actor_key)
 
     return {
         "actor_id": actor_key,
         "agent": _agent_type(actor_key),
         "visibility": _actor_visibility(actor_key),
-        "gm_prompt": prompt,
+        "gm_prompt": _sanitize_prompt(gm_prompt),
         "address_mode": ADDRESS_MODE,
         "self_knowledge": _self_knowledge(actor),
         "memory": _memory(actor),
         "sensory_context": _sensory_context(world, actor, actor_key),
-        "visible_events": visible_events,
+        "visible_events": _visible_events(world, actor_key),
         "misconceptions": _as_list(actor.get("misconceptions")),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
-        "audit": {
-            "forbidden_removed": forbidden_removed,
-            "dropped_visible_events": dropped_visible_events,
-            "redacted_prompt_segments": redacted_prompt_segments,
-        },
     }
 
 
