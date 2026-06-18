@@ -752,10 +752,14 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("gm.output.json", gm_prompt)
         self.assertIn("dream echo", gm_prompt)
         self.assertIn(".claude/skills/rp-player-agent.md", player_prompt)
-        self.assertIn("player.output.json", player_prompt)
+        self.assertIn("actor.outputs.json", player_prompt)
+        self.assertIn("runtime loop", player_prompt)
+        self.assertNotIn("player.output.json", player_prompt)
         self.assertNotIn("dream echo", player_prompt)
         self.assertIn(".claude/skills/rp-character-agent.md", char_prompt)
-        self.assertIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
+        self.assertIn("actor.outputs.json", char_prompt)
+        self.assertIn("runtime loop", char_prompt)
+        self.assertNotIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
         self.assertIn('"agent_id": "character:Ada"', char_prompt)
         self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
@@ -1118,8 +1122,7 @@ class AgentPacketTest(unittest.TestCase):
                         "stage": "awaiting_agent_outputs",
                         "expected_outputs": {
                             "gm": "gm.output.json",
-                            "player": "player.output.json",
-                            "characters": {},
+                            "actors": "actor.outputs.json",
                             "story": "story.output.json",
                             "critic": "critic.report.json",
                         },

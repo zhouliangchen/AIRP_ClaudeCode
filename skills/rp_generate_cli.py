@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict
 import agent_outputs
 import agent_run
 import agent_schemas
+import agent_turn_loop
 import input_analysis_apply
 
 
@@ -212,61 +213,6 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _listify(value: Any) -> list[Any]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def _normalize_legacy_actor(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if "agent" in payload:
-        return payload
-    legacy_keys = {
-        "embodied_intent",
-        "immediate_action",
-        "inner_sensation",
-        "spoken_line",
-        "state_suggestions",
-        "private_reaction",
-        "intent",
-    }
-    if not any(key in payload for key in legacy_keys):
-        return payload
-
-    agent = "character" if agent_key.startswith("character:") else "player"
-    agent_id = agent_key if agent == "character" else "player"
-    action = payload.get("immediate_action") or payload.get("embodied_intent") or payload.get("intent") or ""
-    dialogue = []
-    for line in _listify(payload.get("spoken_line") or payload.get("dialogue")):
-        if isinstance(line, dict):
-            dialogue.append(line)
-        elif str(line).strip():
-            dialogue.append({"text": str(line).strip()})
-    perception = []
-    for item in (
-        _listify(payload.get("inner_sensation"))
-        + _listify(payload.get("private_reaction"))
-        + _listify(payload.get("risk_perception"))
-        + _listify(payload.get("perception"))
-    ):
-        if str(item).strip():
-            perception.append(str(item).strip())
-    memory_delta = _listify(payload.get("memory_delta")) or _listify(payload.get("state_suggestions"))
-    normalized: Dict[str, Any] = {
-        "agent": agent,
-        "agent_id": agent_id,
-        "action": str(action).strip(),
-        "dialogue": dialogue,
-        "perception": perception,
-        "memory_delta": memory_delta,
-    }
-    if agent == "character":
-        normalized["character_name"] = str(payload.get("character_name") or agent_key.split(":", 1)[-1])
-    return normalized
-
-
 def _normalize_world_state_delta(items: list[Any]) -> list[Any]:
     normalized = []
     for item in items:
@@ -286,8 +232,6 @@ def _normalize_world_state_delta(items: list[Any]) -> list[Any]:
 
 def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = _unwrap_payload(agent_key, payload)
-    if agent_key in {"player"} or agent_key.startswith("character:"):
-        payload = _normalize_legacy_actor(agent_key, payload)
     try:
         if agent_key == "gm":
             normalized = agent_schemas.validate_gm_output(payload)
@@ -306,9 +250,8 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise AgentExecutionError(f"Unknown agent key: {agent_key}")
 
 
-def _dispatch_and_write(
+def _dispatch_agent_payload(
     agent_key: str,
-    output_path: Path,
     prompt_text: str,
     cwd: Path,
     run_claude: Callable[[str, str, str | Path], str],
@@ -322,14 +265,75 @@ def _dispatch_and_write(
         try:
             text = _extract_agent_or_direct_text(stream)
             payload = _extract_json_object(text)
-            normalized = _validate(agent_key, payload)
-            agent_run.write_json(output_path, normalized)
-            return normalized
+            return _validate(agent_key, payload)
         except AgentExecutionError as exc:
             last_error = exc
             if attempt == attempts - 1:
                 raise
     raise last_error or AgentExecutionError("Claude Code local_agent task did not complete.")
+
+
+def _dispatch_and_write(
+    agent_key: str,
+    output_path: Path,
+    prompt_text: str,
+    cwd: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+    extra_context: Dict[str, Any] | None = None,
+    attempts: int = 2,
+) -> Dict[str, Any]:
+    normalized = _dispatch_agent_payload(
+        agent_key,
+        prompt_text,
+        cwd,
+        run_claude,
+        extra_context=extra_context,
+        attempts=attempts,
+    )
+    agent_run.write_json(output_path, normalized)
+    return normalized
+
+
+def _read_loop_prompt(run_dir: Path, manifest: Dict[str, Any], agent_key: str) -> str:
+    if agent_key in {"gm", "player"}:
+        return _read_prompt(run_dir, manifest, agent_key)
+    if not agent_key.startswith("character:"):
+        raise AgentExecutionError(f"Unknown loop agent key: {agent_key}")
+
+    prompts = manifest.get("prompts") or {}
+    character_prompts = prompts.get("characters") if isinstance(prompts, dict) else None
+    if not isinstance(character_prompts, dict):
+        raise AgentExecutionError("manifest.prompts.characters is required.")
+    actor_name = agent_key.split(":", 1)[1]
+    prompt_rel = character_prompts.get(actor_name) or character_prompts.get(agent_run.safe_name(actor_name))
+    if not isinstance(prompt_rel, str) or not prompt_rel:
+        raise AgentExecutionError(f"Missing prompt path for {agent_key}.")
+    prompt_path = run_dir / prompt_rel
+    try:
+        return prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
+
+
+def _run_interactive_agent_loop(
+    run_dir: Path,
+    manifest: Dict[str, Any],
+    root: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+) -> Dict[str, Any]:
+    def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
+        return _dispatch_agent_payload(
+            agent_key,
+            _read_loop_prompt(run_dir, manifest, agent_key),
+            root,
+            run_claude,
+            extra_context={"loop_packet": packet},
+        )
+
+    try:
+        return agent_turn_loop.run_interactive_loop(run_dir, dispatch)
+    except agent_turn_loop.AgentTurnLoopError as exc:
+        raise AgentExecutionError(str(exc)) from exc
 
 
 def _run_delivery(card_folder: Path, root: Path, run_command: Callable[..., Any]) -> Dict[str, Any]:
@@ -739,40 +743,7 @@ def run_round(
     if not isinstance(expected, dict):
         raise AgentExecutionError("manifest.expected_outputs is required.")
 
-    gm = _dispatch_and_write(
-        "gm",
-        _relative_path(run_dir, str(expected.get("gm") or "gm.output.json"), "gm.output.json"),
-        _read_prompt(run_dir, manifest, "gm"),
-        root,
-        run_claude,
-    )
-    player = _dispatch_and_write(
-        "player",
-        _relative_path(run_dir, str(expected.get("player") or "player.output.json"), "player.output.json"),
-        _read_prompt(run_dir, manifest, "player"),
-        root,
-        run_claude,
-    )
-
-    prompt_characters = (manifest.get("prompts") or {}).get("characters") or {}
-    output_characters = expected.get("characters") or {}
-    if not isinstance(prompt_characters, dict) or not isinstance(output_characters, dict):
-        raise AgentExecutionError("manifest character prompt/output maps must be objects.")
-    characters = {}
-    for name in sorted(output_characters):
-        prompt_rel = prompt_characters.get(name)
-        if not isinstance(prompt_rel, str) or not prompt_rel:
-            raise AgentExecutionError(f"Missing prompt path for character {name}.")
-        prompt_text = (run_dir / prompt_rel).read_text(encoding="utf-8")
-        output_rel = output_characters[name]
-        characters[name] = _dispatch_and_write(
-            f"character:{name}",
-            run_dir / output_rel,
-            prompt_text,
-            root,
-            run_claude,
-        )
-
+    loop_result = _run_interactive_agent_loop(run_dir, manifest, root, run_claude)
     story_input = agent_outputs.build_story_input(run_dir)
     story_path = _relative_path(run_dir, str(expected.get("story") or "story.output.json"), "story.output.json")
     critic_path = _relative_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
@@ -843,9 +814,9 @@ def run_round(
         "action": "generated",
         "run_dir": str(run_dir),
         "artifacts": {
-            "gm": bool(gm),
-            "player": bool(player),
-            "characters": sorted(characters.keys()),
+            "gm": int(loop_result.get("gm_steps", 0) or 0),
+            "actors": sorted(set(loop_result.get("called_actors", []) or [])),
+            "called_actors": list(loop_result.get("called_actors", []) or []),
             "story": bool(story),
             "critic": bool(critic),
         },
