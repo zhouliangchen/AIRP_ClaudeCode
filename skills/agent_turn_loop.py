@@ -30,6 +30,7 @@ HIDDEN_TEXT_KEYS = {
     "private_notes",
     "world_truth",
 }
+HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -65,19 +66,34 @@ def _text_words(value: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9]+", value.lower())
 
 
+def _has_non_ascii_text(value: str) -> bool:
+    return any(ord(char) > 127 and not char.isspace() for char in value)
+
+
+def _clean_hidden_phrase(value: str) -> str:
+    return str(value or "").strip(HIDDEN_PHRASE_STRIP_CHARS)
+
+
 def _hidden_phrases_from_text(value: str) -> set[str]:
     text = str(value or "").strip()
     if not text:
         return set()
     phrases = {text}
-    if ":" in text:
-        phrases.add(text.split(":", 1)[1].strip())
+    for separator in (":", "："):
+        if separator in text:
+            phrases.add(text.split(separator, 1)[1].strip())
 
     words = _text_words(text)
     for size in range(4, min(8, len(words)) + 1):
         for index in range(0, len(words) - size + 1):
             phrases.add(" ".join(words[index:index + size]))
-    return {phrase.strip(" .,:;!?") for phrase in phrases if len(phrase.strip(" .,:;!?")) >= 12}
+
+    kept = set()
+    for phrase in phrases:
+        clean = _clean_hidden_phrase(phrase)
+        if len(clean) >= 12 or (_has_non_ascii_text(clean) and len(clean) >= 2):
+            kept.add(clean)
+    return kept
 
 
 def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
@@ -154,7 +170,7 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
     return result
 
 
-def _registered_transfer_targets(input_payload: dict) -> set[str]:
+def _registered_actor_targets(input_payload: dict) -> set[str]:
     return {"player", * _characters_by_actor_id(input_payload).keys()}
 
 
@@ -275,10 +291,6 @@ def _record_actor_event(
         target=str(event.get("target") or ""),
         source_call_id=source_call_id,
     )
-
-
-def _important_actor(actor_id: str) -> bool:
-    return actor_id == "player" or actor_id.startswith("character:")
 
 
 def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
@@ -447,7 +459,7 @@ def run_interactive_loop(
     generated_transfer_limit = step_limit * GENERATED_TRANSFERS_PER_STEP
     world_state = _initial_world_state(input_payload)
     hidden_phrases = _hidden_prompt_phrases(input_payload)
-    registered_transfer_targets = _registered_transfer_targets(input_payload)
+    registered_actor_targets = _registered_actor_targets(input_payload)
     gm_outputs: list[dict] = []
     actor_outputs: dict[str, list[dict]] = {}
     called_actors: list[str] = []
@@ -472,7 +484,7 @@ def run_interactive_loop(
         while actor_queue:
             call = actor_queue.popleft()
             actor_id = str(call.get("actor_id") or "")
-            if not _important_actor(actor_id):
+            if actor_id not in registered_actor_targets:
                 continue
             call_id = str(call.get("call_id") or "") or _safe_actor_call_id(actor_id, generated_call_counts)
             packet = _actor_packet(
@@ -496,7 +508,7 @@ def run_interactive_loop(
 
                 if (
                     event_type == "dialogue"
-                    and target in registered_transfer_targets
+                    and target in registered_actor_targets
                     and target != actor_id
                 ):
                     _record_dialogue_transfer(root, actor_id, target, content, call_id)

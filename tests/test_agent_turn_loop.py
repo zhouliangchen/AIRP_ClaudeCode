@@ -47,6 +47,11 @@ class AgentTurnLoopTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def register_characters(self, *names):
+        payload = self.agent_run.read_json(self.run_dir / "input.json")
+        payload["character_contexts"] = {"characters": [{"name": name} for name in names]}
+        self.agent_run.write_json(self.run_dir / "input.json", payload)
+
     def test_loop_routes_dialogue_to_target_character_and_stops_at_decision(self):
         calls = []
 
@@ -193,6 +198,49 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("clock remembers blood", serialized)
         self.assertIn("ask suli what she sees", serialized)
 
+    def test_actor_call_prompt_redacts_short_cjk_hidden_phrase(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "我看向门后。",
+                "user_instruction_channel": "门后是梦境",
+            },
+            "hidden_facts": ["门后是梦境"],
+            "character_contexts": {"characters": [{"name": "SuLi"}]},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "你知道门后是梦境，但只能告诉玩家门后有光。",
+                        "reason": "Prompt contains short CJK hidden material.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            self.assertEqual(agent_key, "player")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "action", "target": "", "content": "我停在门前。"}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        serialized = json.dumps(actor_packets, ensure_ascii=False)
+        self.assertNotIn("门后是梦境", serialized)
+        self.assertIn("门后有光", serialized)
+
     def test_perception_requests_are_sent_to_next_gm_step_once(self):
         gm_packets = []
 
@@ -326,6 +374,74 @@ class AgentTurnLoopTest(unittest.TestCase):
         event_types = [event["type"] for event in trace["events"]]
         self.assertIn("dialogue", event_types)
         self.assertNotIn("dialogue_transfer", event_types)
+
+    def test_direct_gm_actor_call_to_unregistered_character_is_not_dispatched(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-NotRegistered-1",
+                            "actor_id": "character:NotRegistered",
+                            "prompt": "This character is not in character_contexts.",
+                            "reason": "Unknown direct actor must be skipped.",
+                        },
+                        {
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You hear a registered voice.",
+                            "reason": "Player is always registered.",
+                        },
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You answer the player.",
+                            "reason": "Registered direct character.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            if agent_key == "character:NotRegistered":
+                return {
+                    "agent": "character",
+                    "agent_id": "character:NotRegistered",
+                    "character_name": "NotRegistered",
+                    "events": [{"type": "action", "target": "", "content": "I should not run."}],
+                    "stop_reason": "continue",
+                }
+            if agent_key == "player":
+                return {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "action", "target": "", "content": "I listen."}],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I stay close."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(
+            [agent_key for agent_key, _packet in calls],
+            ["gm", "player", "character:SuLi"],
+        )
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(sorted(actor_outputs), ["character:SuLi", "player"])
 
     def test_generated_transfer_source_call_id_is_ascii_safe_for_non_ascii_actor(self):
         self.agent_run.write_json(self.run_dir / "input.json", {
@@ -482,6 +598,7 @@ class AgentTurnLoopTest(unittest.TestCase):
     def test_max_steps_does_not_truncate_direct_gm_actor_fanout(self):
         calls = []
         actor_ids = [f"character:A{index}" for index in range(1, 6)]
+        self.register_characters(*[actor_id.split(":", 1)[1] for actor_id in actor_ids])
 
         def dispatch(agent_key, packet):
             calls.append((agent_key, packet))
@@ -528,6 +645,7 @@ class AgentTurnLoopTest(unittest.TestCase):
     def test_complete_stop_reason_does_not_skip_direct_gm_actor_calls(self):
         calls = []
         actor_ids = [f"character:A{index}" for index in range(1, 6)]
+        self.register_characters(*[actor_id.split(":", 1)[1] for actor_id in actor_ids])
 
         def dispatch(agent_key, packet):
             calls.append((agent_key, packet))
@@ -598,6 +716,7 @@ class AgentTurnLoopTest(unittest.TestCase):
     def test_word_target_stop_reason_drains_direct_actor_calls_first(self):
         calls = []
         actor_ids = ["character:Ada", "character:Bea"]
+        self.register_characters("Ada", "Bea")
 
         def dispatch(agent_key, packet):
             calls.append((agent_key, packet))
