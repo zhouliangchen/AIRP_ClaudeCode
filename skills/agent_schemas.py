@@ -12,7 +12,11 @@ class ValidationError(ValueError):
 
 
 FORBIDDEN_ACTOR_KEYS = {
+    "gm_only",
     "gm_notes",
+    "hidden_note",
+    "omniscient",
+    "out_of_character",
     "player_name",
     "world_truth",
 }
@@ -135,14 +139,70 @@ def _normalize_actor_events(items: list[Any], path: str) -> list[Dict[str, Any]]
     return [_normalize_actor_event(item, f"{path}[{index}]") for index, item in enumerate(items)]
 
 
+def _normalize_gm_scene_beat(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    normalized = {"content": _require_str(data, "content", path)}
+    if "metadata" in data:
+        normalized["metadata"] = _optional_dict(data, "metadata", path)
+    return normalized
+
+
+def _normalize_gm_event(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    normalized = {
+        "type": _require_str(data, "type", path),
+        "content": _require_str(data, "content", path),
+    }
+    if "target" in data:
+        normalized["target"] = _optional_str(data, "target", "", path)
+    if "source_call_id" in data:
+        normalized["source_call_id"] = _optional_str(data, "source_call_id", "", path)
+    if "metadata" in data:
+        normalized["metadata"] = _optional_dict(data, "metadata", path)
+    return normalized
+
+
+def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    normalized = {
+        "call_id": _require_str(data, "call_id", path),
+        "actor_id": _require_str(data, "actor_id", path),
+        "prompt": _require_str(data, "prompt", path),
+        "reason": _require_str(data, "reason", path),
+    }
+    if "metadata" in data:
+        normalized["metadata"] = _optional_dict(data, "metadata", path)
+    return normalized
+
+
+def _normalize_list_items(
+    items: list[Any],
+    path: str,
+    normalizer: Callable[[Any, str], Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    return [normalizer(item, f"{path}[{index}]") for index, item in enumerate(items)]
+
+
 def validate_gm_output(payload: Any) -> Dict[str, Any]:
     """Validate and normalize `gm.output.json`."""
     data = _require_dict(payload, "gm_output")
     return {
         "agent": _require_agent(data, "gm", "gm_output"),
-        "scene_beats": _require_list(data, "scene_beats", "gm_output"),
-        "events": _require_list(data, "events", "gm_output"),
-        "actor_calls": _require_list(data, "actor_calls", "gm_output"),
+        "scene_beats": _normalize_list_items(
+            _require_list(data, "scene_beats", "gm_output"),
+            "gm_output.scene_beats",
+            _normalize_gm_scene_beat,
+        ),
+        "events": _normalize_list_items(
+            _require_list(data, "events", "gm_output"),
+            "gm_output.events",
+            _normalize_gm_event,
+        ),
+        "actor_calls": _normalize_list_items(
+            _require_list(data, "actor_calls", "gm_output"),
+            "gm_output.actor_calls",
+            _normalize_gm_actor_call,
+        ),
         "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
         "decision_point": data.get("decision_point"),

@@ -52,6 +52,51 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")
 
+    def test_validate_gm_output_rejects_malformed_scene_beats(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"metadata": {"beat": 1}}],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "scene_beats"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_malformed_events(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [{"type": "npc_action", "content": 123}],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "events"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_malformed_actor_calls(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [],
+            "actor_calls": [{"call_id": "call-1", "actor_id": "player", "prompt": "You look up."}],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "actor_calls"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_actor_output_requires_events_protocol(self):
         payload = {
             "agent": "character",
@@ -127,6 +172,35 @@ class AgentSchemaTest(unittest.TestCase):
                         "target": "",
                         "content": "I step closer to the door.",
                         "metadata": {"nested": {forbidden_key: "hidden fact"}},
+                    }
+                ]
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
+                    self.agent_schemas.validate_actor_output(payload)
+
+    def test_actor_output_rejects_documented_hidden_markers_in_nested_metadata(self):
+        base = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [
+                {
+                    "type": "action",
+                    "target": "",
+                    "content": "I step closer to the door.",
+                    "metadata": {},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        for forbidden_key in ("gm_only", "omniscient", "hidden_note", "out_of_character"):
+            with self.subTest(forbidden_key=forbidden_key):
+                payload = dict(base)
+                payload["events"] = [
+                    {
+                        "type": "action",
+                        "target": "",
+                        "content": "I step closer to the door.",
+                        "metadata": {"nested": {"audit": {forbidden_key: "hidden fact"}}},
                     }
                 ]
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
