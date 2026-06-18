@@ -70,24 +70,35 @@
 
 ```text
 .agent_runs/
+  current
   round-000123/
+    input.raw.json
+    input_analysis.request.md
+    input_analysis.output.json
     input.json
     gm.context.json
-    gm.output.json
     player.context.json
-    player.output.json
     characters/
       <name>.context.json
-      <name>.output.json
+    prompts/
+      input_analyst.prompt.md
+      gm.prompt.md
+      story.prompt.md
+      critic.prompt.md
+    gm.output.json
+    actor.outputs.json
+    interaction.trace.json
     story.input.json
-    story.output.txt
+    story.output.json
     critic.report.json
-    final.response.txt
+    repair_history.jsonl
+    memory_summaries/
+      <actor>.summary.json
 ```
 
-`round_prepare.py` 继续负责读取运行状态，但输出重点从单一大 `round_context.txt` 转为多个 agent packet。`round_context.txt` 保留为调试产物和兼容兜底。
+`round_prepare.py` 继续负责读取运行状态，但输出重点从单一大 `round_context.txt` 转为多个 agent packet。`round_context.txt` 保留为调试产物和兜底排查材料。当前 manifest 的 `expected_outputs` 使用 `input_analysis`、`gm`、`actors`、`story`、`critic` 和可选 `memory_summaries`；不再要求独立的 `player.output.json` 或 `characters/*.output.json`。
 
-`round_deliver.py` 在 critic 报告存在硬失败时拒绝交付。软问题记录到 run folder，并反馈给主 agent 或 story agent 修正。
+`round_deliver.py` 是统一交付门禁。critic 通过时才镜像 `story.output.json` 到 `response.txt`；critic 要求 `revise` 或 `block` 时也必须运行门禁，写入 `repair_history.jsonl`，返回 `retry` 或 `blocked`，并在存在 `system_iteration_suggestion` 时追加 `.agent_runs/improvement_queue.jsonl`。
 
 ## 上下文隔离
 
@@ -105,12 +116,12 @@ Player 与 character context 必须是视角投影：
 
 ## 质量循环
 
-第一期支持一次自动修复循环：
+当前流程支持受控自动修复循环：
 
 1. Story agent 生成候选最终回复。
 2. Critic agent 评估候选回复。
-3. 若存在硬失败，主 agent 将 critic 报告交回 story agent 进行一次修复。
-4. 若第二次仍失败，主 agent 将失败写入 `.agent_runs/.../critic.report.json`，进度标记为 error 或 retry，并请求用户介入，避免无限循环。
+3. 若 critic 返回 `revise`，主 agent 通过 `round_deliver.py` 记录修复历史，并将 critic 报告交回 story agent 进行有限次数修复。
+4. 若 critic 返回 `block` 或重试仍失败，`round_deliver.py` 标记 manifest 为 `blocked`，保留失败报告和 `repair_history.jsonl`，避免无限循环。
 
 源码级改进建议写入 `improvement_queue.jsonl`，普通游玩回合不自动应用。
 
