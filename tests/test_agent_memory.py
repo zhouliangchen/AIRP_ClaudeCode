@@ -209,6 +209,29 @@ class AgentMemoryTest(unittest.TestCase):
                 self.assertFalse((card / "memory" / "world_delta.md").exists())
                 self.assertFalse((card / "memory" / ".agent_memory_ingested.json").exists())
 
+    def test_ingest_memory_deltas_rejects_falsy_malformed_actor_values(self):
+        for actor_value in ({}, "", None, 0):
+            with self.subTest(actor_value=actor_value), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                run_dir = card / ".agent_runs" / "round-000001"
+                _write_json(
+                    run_dir / "story.input.json",
+                    {
+                        "round_id": "round-000001",
+                        "memory_deltas": {
+                            "actors": {
+                                "player": actor_value,
+                            },
+                        },
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "memory_deltas.actors.player"):
+                    self.agent_memory.ingest_memory_deltas(card, run_dir)
+
+                self.assertFalse((card / "memory" / "player" / "recent.md").exists())
+                self.assertFalse((card / "memory" / ".agent_memory_ingested.json").exists())
+
     def test_actor_memory_rejects_old_item_shapes_under_actors(self):
         for item in ({"text": "old player memory"}, {"fact": "old player fact"}, "old player string"):
             with self.subTest(item=item), tempfile.TemporaryDirectory() as tmp:

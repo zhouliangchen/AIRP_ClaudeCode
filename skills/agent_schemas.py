@@ -239,10 +239,15 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
     agent = _require_str(data, "agent", "actor_output")
     if agent not in {"player", "character"}:
         raise ValidationError("actor_output.agent must be 'player' or 'character'")
+    agent_id = _require_str(data, "agent_id", "actor_output")
+    if agent == "player" and agent_id != "player":
+        raise ValidationError("actor_output.agent_id must be 'player' when agent is 'player'")
+    if agent == "character" and not agent_id.startswith("character:"):
+        raise ValidationError("actor_output.agent_id must start with 'character:' when agent is 'character'")
 
     normalized = {
         "agent": agent,
-        "agent_id": _require_str(data, "agent_id", "actor_output"),
+        "agent_id": agent_id,
         "events": _normalize_actor_events(_require_list(data, "events", "actor_output"), "actor_output.events"),
         "stop_reason": _optional_str(data, "stop_reason", "continue", "actor_output"),
     }

@@ -124,6 +124,43 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["events"][1]["target"], "player")
         self.assertEqual(normalized["stop_reason"], "continue")
 
+    def test_validate_actor_output_rejects_character_agent_with_player_id(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "player",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "action",
+                    "target": "",
+                    "content": "I lift the lamp.",
+                    "metadata": {},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "agent_id"):
+            self.agent_schemas.validate_actor_output(payload)
+
+    def test_validate_actor_output_rejects_player_agent_with_character_id(self):
+        payload = {
+            "agent": "player",
+            "agent_id": "character:Ada",
+            "events": [
+                {
+                    "type": "action",
+                    "target": "",
+                    "content": "I open the archive door.",
+                    "metadata": {},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "agent_id"):
+            self.agent_schemas.validate_actor_output(payload)
+
     def test_validate_actor_output_rejects_legacy_single_action_protocol(self):
         payload = {
             "agent": "player",

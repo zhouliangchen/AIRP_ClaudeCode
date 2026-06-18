@@ -157,10 +157,10 @@ def _prepare_actor_memory_delta(
     items: Any,
     path: str,
 ) -> tuple[Path, str, list[str], str, str] | None:
-    if not items:
-        return None
     if not isinstance(items, list):
         raise MemoryIngestionError(f"{path}: actor memory deltas must be a list")
+    if not items:
+        return None
 
     actor_id = str(agent_id or "").strip()
     if actor_id == "player":
