@@ -611,6 +611,36 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(character_packet["visible_events"], [])
         self.assertNotIn(private_role_text, json.dumps(character_packet, ensure_ascii=False))
 
+    def test_prepare_agent_run_uses_safe_character_actor_id_in_context_and_prompt(self):
+        display_name = "Ada/Zero?"
+        safe_name = self.agent_run.safe_name(display_name)
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I listen at the sealed door.",
+            chat_log=[],
+            card_data={"title": "Safe Actor Test"},
+            character_contexts={
+                "characters": [
+                    {
+                        "name": display_name,
+                        "profile_summary": "Ada/Zero? tracks subtle sounds.",
+                    }
+                ]
+            },
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+        char_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertNotEqual(display_name, safe_name)
+        self.assertEqual(character_packet["actor_id"], f"character:{safe_name}")
+        self.assertEqual(character_packet["self_knowledge"]["name"], display_name)
+        self.assertIn(f'"agent_id": "character:{safe_name}"', char_prompt)
+        self.assertIn(f'"character_name": "{display_name}"', char_prompt)
+        self.assertNotIn(f'"agent_id": "character:{display_name}"', char_prompt)
+
     def test_prepare_agent_run_builds_expected_context_files(self):
         user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
         chat_log = [{"index": 3, "summary": "\u5f00\u542f\u7b2c\u4e00\u8f6e"}]

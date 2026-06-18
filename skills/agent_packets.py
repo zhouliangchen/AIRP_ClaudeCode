@@ -229,7 +229,7 @@ def _player_actor_state() -> Dict[str, Any]:
 
 def _character_actor_id(character: Dict[str, Any]) -> str:
     name = _to_text(character.get("name") or character.get("character_name")).strip()
-    return f"character:{name}" if name else "character:unknown"
+    return f"character:{agent_run.safe_name(name)}" if name else "character:unknown"
 
 
 def _as_memory_items(value: Any) -> list[Any]:
