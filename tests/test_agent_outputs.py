@@ -127,6 +127,23 @@ class AgentOutputsTest(unittest.TestCase):
             participants=["gm", "player", "character:Ada"],
             chapter_target_words=1200,
         )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="action",
+            content="I step through the door.",
+            source_call_id="call-player-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Stay close.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
 
     def _write_story_and_critic(self, decision="pass", system_iteration_suggestion=""):
         _write_json(
@@ -238,6 +255,16 @@ class AgentOutputsTest(unittest.TestCase):
             event_type="dialogue",
             content="Do you know this?",
             target="character:SuLi",
+            source_call_id="call-player-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:SuLi",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Where did you get that?",
+            target="player",
+            source_call_id="call-character-SuLi-1",
         )
 
         story_input = self.agent_outputs.build_story_input(self.run_dir)
@@ -272,7 +299,20 @@ class AgentOutputsTest(unittest.TestCase):
             "participants": ["gm", "player", "character:Ada"],
             "chapter_target_words": 1200,
             "events": [
-                {"actor": "character:Ada", "visibility": "world_visible", "type": "dialogue", "content": "Stay close."},
+                {
+                    "actor": "character:Ada",
+                    "visibility": "world_visible",
+                    "type": "dialogue",
+                    "content": "Stay close.",
+                    "source_call_id": "call-character-Ada-1",
+                },
+                {
+                    "actor": "player",
+                    "visibility": "world_visible",
+                    "type": "action",
+                    "content": "I step through the door.",
+                    "source_call_id": "call-player-1",
+                },
                 {"actor": "character:Ada", "visibility": "private", "type": "thought", "content": "I fear this."},
             ],
             "decision_point": {"reason": "player must choose", "options": ["enter"]},
@@ -327,6 +367,49 @@ class AgentOutputsTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_raw_trace_missing_schema_version_without_writing_story_input(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        trace.pop("schema_version")
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "schema_version"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
+
+    def test_build_story_input_rejects_raw_trace_string_or_bool_schema_version(self):
+        for schema_version in ("2", True):
+            with self.subTest(schema_version=schema_version):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+                trace["schema_version"] = schema_version
+                _write_json(self.run_dir / "interaction.trace.json", trace)
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "schema_version"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+                trace["schema_version"] = 2
+                _write_json(self.run_dir / "interaction.trace.json", trace)
+
+    def test_build_story_input_rejects_raw_trace_events_that_are_not_a_list(self):
+        if (self.run_dir / "story.input.json").exists():
+            (self.run_dir / "story.input.json").unlink()
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        trace["events"] = {"actor": "player", "source_call_id": "call-player-1"}
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "events"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
@@ -493,6 +576,85 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_extra_actor_output_branch_without_trace_source_event(self):
+        if (self.run_dir / "story.input.json").exists():
+            (self.run_dir / "story.input.json").unlink()
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        actor_outputs["character:Eve"] = [
+            {
+                "agent": "character",
+                "agent_id": "character:Eve",
+                "character_name": "Eve",
+                "events": [
+                    {"type": "dialogue", "target": "player", "content": "I should not be here."}
+                ],
+                "stop_reason": "continue",
+            }
+        ]
+        _write_json(self.run_dir / "actor.outputs.json", actor_outputs)
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "character:Eve"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_accepts_trace_backed_actor_output_without_persisted_gm_call(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "SuLi hears the transferred question."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "character:SuLi": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:SuLi",
+                        "character_name": "SuLi",
+                        "events": [
+                            {"type": "dialogue", "target": "player", "content": "Where did you get that?"}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:SuLi"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:SuLi",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Where did you get that?",
+            target="player",
+            source_call_id="call-character-SuLi-1",
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            story_input["loop_outputs"]["actors"]["character:SuLi"][0]["events"][0]["content"],
+            "Where did you get that?",
+        )
 
     def test_build_story_input_requires_actor_output_count_for_each_gm_call(self):
         _write_json(

@@ -53,6 +53,49 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _read_raw_trace(root: Path) -> Dict[str, Any]:
+    path = root / "interaction.trace.json"
+    if not path.exists():
+        raise AgentOutputError(f"{path}: required trace v2 is missing")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise AgentOutputError(f"{path}: invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise AgentOutputError(f"{path}: could not read trace: {exc}") from exc
+    if not isinstance(data, dict):
+        raise AgentOutputError(f"{path}: trace must be a JSON object")
+    return data
+
+
+def _validate_raw_trace(root: Path) -> Dict[str, Any]:
+    path = root / "interaction.trace.json"
+    trace = _read_raw_trace(root)
+
+    if "schema_version" not in trace:
+        raise AgentOutputError(f"{path}.schema_version: required trace v2 schema_version is missing")
+    schema_version = trace.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise AgentOutputError(f"{path}.schema_version: must be integer 2")
+    if schema_version != 2:
+        raise AgentOutputError(f"{path}.schema_version: required trace v2, got {schema_version!r}")
+
+    if not isinstance(trace.get("events"), list):
+        raise AgentOutputError(f"{path}.events: must be a list")
+    if "parallel_groups" in trace and not isinstance(trace.get("parallel_groups"), list):
+        raise AgentOutputError(f"{path}.parallel_groups: must be a list")
+
+    status = trace.get("status")
+    if not isinstance(status, str):
+        raise AgentOutputError(f"{path}.status: must be a non-empty string")
+    normalized_status = status.strip().lower()
+    if not normalized_status or normalized_status in {"missing", "invalid"}:
+        raise AgentOutputError(f"{path}.status: required valid trace status, got {status!r}")
+
+    return trace
+
+
 def _load_required(path: Path, validator) -> Dict[str, Any]:
     if not path.exists():
         raise AgentOutputError(f"{path.as_posix()}: required artifact is missing")
@@ -123,6 +166,41 @@ def _require_called_actor_outputs(
             )
 
 
+def _trace_source_call_ids_by_actor(raw_trace: Dict[str, Any]) -> Dict[str, set[str]]:
+    source_call_ids: Dict[str, set[str]] = {}
+    for event in raw_trace["events"]:
+        if not isinstance(event, dict):
+            continue
+        actor = event.get("actor")
+        source_call_id = event.get("source_call_id")
+        if not isinstance(actor, str) or not isinstance(source_call_id, str):
+            continue
+        actor_key = actor.strip()
+        source_key = source_call_id.strip()
+        if actor_key and source_key:
+            source_call_ids.setdefault(actor_key, set()).add(source_key)
+    return source_call_ids
+
+
+def _validate_actor_output_provenance(
+    root: Path,
+    raw_trace: Dict[str, Any],
+    actor_outputs: Dict[str, list[Dict[str, Any]]],
+) -> None:
+    source_call_ids = _trace_source_call_ids_by_actor(raw_trace)
+    actor_path = root / "actor.outputs.json"
+    for actor_id, outputs in actor_outputs.items():
+        context = f"{actor_path}.{actor_id}"
+        if not outputs:
+            raise AgentOutputError(f"{context}: actor output branch is empty or unproven")
+        source_count = len(source_call_ids.get(actor_id, set()))
+        if len(outputs) > source_count:
+            raise AgentOutputError(
+                f"{context}: actor outputs are not backed by raw trace source_call_id events; "
+                f"outputs={len(outputs)}, source_call_ids={source_count}"
+            )
+
+
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
     gm_path = root / "gm.output.json"
     actor_path = root / "actor.outputs.json"
@@ -187,7 +265,8 @@ def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str,
     return {"actors": actor_memory, "world": world}
 
 
-def _validate_trace_summary(root: Path) -> Dict[str, Any]:
+def _validate_trace_artifacts(root: Path) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    raw_trace = _validate_raw_trace(root)
     summary = agent_interactions.summarize_for_story_input(root)
     status = str(summary.get("status") or "").strip().lower()
     schema_version = summary.get("schema_version")
@@ -196,7 +275,7 @@ def _validate_trace_summary(root: Path) -> Dict[str, Any]:
             f"{root / 'interaction.trace.json'}: required trace v2 is missing or invalid "
             f"(schema_version={schema_version!r}, status={status or '<missing>'})"
         )
-    return summary
+    return raw_trace, summary
 
 
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
@@ -208,8 +287,9 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
     _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
+    raw_trace, trace_summary = _validate_trace_artifacts(root)
     loop_outputs = _load_loop_outputs(root)
-    trace_summary = _validate_trace_summary(root)
+    _validate_actor_output_provenance(root, raw_trace, loop_outputs["actors"])
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
