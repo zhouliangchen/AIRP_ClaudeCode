@@ -5,23 +5,52 @@ description: Use when an RP turn contains player text, authorial settings, histo
 
 ## RP Input Router
 
-Every submission is authoritative, but not every sentence belongs to the same channel. Preserve raw text exactly, then split interpretation into independent channels.
+Every submission is authoritative, but not every sentence belongs to the same channel. Preserve the raw text exactly, then split interpretation into independent channels that 互不干扰.
 
 ## Channels
 
-- `role_channel`: first-person action, first-person dialogue intent, and first-person synopsis of what the player character attempts.
-- `user_instruction_channel`: third-person authorial settings, hidden facts, retcons, important-character declarations, direct Claude Code instructions, and system-level constraints.
+`role_channel`:
 
-The channels must not contaminate each other. Player and character agents may see only projected in-world effects, never raw hidden instructions, unless those effects have become perceptible in the story world.
+- First-person immediate action: "我推门进去", "I take her hand".
+- 第一人称剧情梗概 / first-person near-future synopsis: "我先稳住她, 之后带她离开".
+- First-person emotional or sensory intent that the player character can actually feel.
 
-## Routing Rules
+`user_instruction_channel`:
 
-- A first-person synopsis is still player-character intent. Expand it conservatively through the player agent.
-- A third-person omniscient setting is not player-character knowledge by default.
-- Retcons and history edits are authoritative user instructions. Route them to GM/story/critic repair context.
-- Preserve exact raw input in `.player_inputs.jsonl`; do not trim, summarize, or rewrite it.
-- Keep `role_channel` and `user_instruction_channel` in `input.json` for downstream artifacts.
+- 第三人称上帝视角设定, world truth, hidden premise, future rule.
+- Direct instruction to Claude Code, GM, pacing, style, rewrite, rollback, or repair.
+- Important/core character declarations.
+- Edits to prior AI-derived text, memory, variables, or setting.
 
-## Output
+## Mixed Input Policy
 
-The router supports the semantic `input_analysis.output.json` contract. It should classify intent and risk, not write fiction.
+When a message contains both channels, keep order but split responsibility:
+
+1. Preserve raw input unchanged in `input.json`.
+2. Send only `role_channel` to player and character first-person packets.
+3. Send `user_instruction_channel` to orchestrator, GM, story, and critic.
+4. If user instructions change world facts, use `rp-context-projector` to decide which facts become world-visible this turn.
+
+## Classification Notes
+
+- Explicit dual-channel UI fields are authoritative.
+- When text is mixed or ambiguous, use `rp-input-analyst`; do not rely on keyword lists.
+- Parentheses, genre labels, and casual phrases are not sufficient by themselves to classify a sentence.
+- For a first-person synopsis, story must expand the synopsis before advancing beyond it.
+- For an action, story briefly reflects the action's immediate consequence before moving forward.
+- For omniscient settings, update derived data and memory even if no in-world character currently knows the fact.
+
+## Output Contract
+
+Return or verify:
+
+```json
+{
+  "role_channel": "...",
+  "user_instruction_channel": "...",
+  "components": [
+    {"channel": "role", "text": "..."},
+    {"channel": "user_instruction", "text": "..."}
+  ]
+}
+```
