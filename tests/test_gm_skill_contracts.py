@@ -27,7 +27,7 @@ class GmSkillContractsTest(unittest.TestCase):
     def test_promotion_policy_allows_only_preprocess_and_gm_sources(self):
         text = self.read(".claude/skills/rp-gm-promotion-policy.md")
         self.assertIn("Allowed promotion sources: preprocess, gm", text)
-        self.assertIn("GM assistants must not create or promote important characters", text)
+        self.assertIn("subGM agents must not create or promote important characters", text)
 
     def test_actor_skills_forbid_profile_edits(self):
         combined = "\n".join([

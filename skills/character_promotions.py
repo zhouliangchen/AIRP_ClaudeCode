@@ -16,9 +16,9 @@ class CharacterPromotionError(RuntimeError):
 ALLOWED_SOURCE_AGENTS = {"preprocess", "gm"}
 ALLOWED_VISIBILITIES = {"character_private_and_gm"}
 ALLOWED_ACTIVATIONS = {"current_turn", "future_turn"}
-GM_ASSISTANT_PROMOTION_ERROR = (
-    "gm_assistant sources cannot be applied as character_promotions; "
-    "GM assistants may only emit promotion_suggestion records for the main GM to consider"
+SUBGM_PROMOTION_ERROR = (
+    "subGM sources cannot be applied as character_promotions; "
+    "subGM agents may only emit promotion_request records for the main GM to consider"
 )
 
 
@@ -41,9 +41,9 @@ def validate_promotion(record: Any, path: str) -> dict:
     source_agent = _text(record.get("source_agent")).strip()
     if not source_agent:
         raise CharacterPromotionError(f"{path}.source_agent is required")
-    if source_agent.startswith("gm_assistant"):
+    if source_agent.startswith("subGM") or source_agent.startswith("gm_assistant"):
         raise CharacterPromotionError(
-            f"{path}.source_agent {source_agent!r} is not allowed: {GM_ASSISTANT_PROMOTION_ERROR}"
+            f"{path}.source_agent {source_agent!r} is not allowed: {SUBGM_PROMOTION_ERROR}"
         )
     if source_agent not in ALLOWED_SOURCE_AGENTS:
         raise CharacterPromotionError(f"{path}.source_agent is not allowed: {source_agent}")
@@ -159,4 +159,4 @@ def apply_promotions(card_folder: str | Path, records: Any, *, round_id: str) ->
     }
 
 
-__all__ = ["CharacterPromotionError", "validate_promotion", "apply_promotions"]
+__all__ = ["CharacterPromotionError", "SUBGM_PROMOTION_ERROR", "validate_promotion", "apply_promotions"]

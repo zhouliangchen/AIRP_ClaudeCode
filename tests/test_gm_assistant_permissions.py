@@ -44,7 +44,7 @@ def gm_output(source_agent):
     }
 
 
-class GmAssistantPermissionsTest(unittest.TestCase):
+class LegacyGmAssistantPermissionsTest(unittest.TestCase):
     def setUp(self):
         self.agent_schemas = load_module("agent_schemas")
         self.character_promotions = load_module("character_promotions")
@@ -59,25 +59,25 @@ class GmAssistantPermissionsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_agent_schema_rejects_gm_assistant_character_promotion(self):
+    def test_agent_schema_rejects_legacy_gm_assistant_character_promotion(self):
         with self.assertRaisesRegex(
             self.agent_schemas.ValidationError,
-            "gm_assistant.*promotion_suggestion.*main GM",
+            "subGM.*promotion_request.*main GM",
         ):
             self.agent_schemas.validate_gm_output(gm_output("gm_assistant:thread-1"))
 
-    def test_character_promotions_reject_gm_assistant_source(self):
+    def test_character_promotions_reject_legacy_gm_assistant_source(self):
         record = promotion("gm_assistant:thread-1")
 
         with self.assertRaisesRegex(
             self.character_promotions.CharacterPromotionError,
-            "gm_assistant.*promotion_suggestion.*main GM",
+            "subGM.*promotion_request.*main GM",
         ):
             self.character_promotions.validate_promotion(record, "character_promotions[0]")
 
         with self.assertRaisesRegex(
             self.character_promotions.CharacterPromotionError,
-            "gm_assistant.*promotion_suggestion.*main GM",
+            "subGM.*promotion_request.*main GM",
         ):
             self.character_promotions.apply_promotions(
                 self.card,
@@ -110,14 +110,15 @@ class GmAssistantPermissionsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "source_agent.*gm"):
             self.agent_schemas.validate_gm_output(gm_output("preprocess"))
 
-    def test_policy_documents_gm_assistant_suggestion_only_record(self):
+    def test_policy_documents_subgm_request_only_record_and_legacy_rejection(self):
         policy = (ROOT / ".claude" / "skills" / "rp-gm-promotion-policy.md").read_text(encoding="utf-8")
 
-        self.assertIn('"type": "promotion_suggestion"', policy)
+        self.assertIn('"type": "promotion_request"', policy)
         self.assertIn('"candidate_name": "Side NPC"', policy)
-        self.assertIn('"source_agent": "gm_assistant:thread-1"', policy)
+        self.assertIn('"source_agent": "subGM:thread-1"', policy)
         self.assertIn("must not be applied directly", policy)
         self.assertIn("Only the main GM may turn it into a promotion record", policy)
+        self.assertIn("Legacy `gm_assistant:*` sources", policy)
 
 
 if __name__ == "__main__":

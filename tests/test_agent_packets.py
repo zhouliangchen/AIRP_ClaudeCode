@@ -978,7 +978,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn('"profile_seed"', gm_prompt)
         self.assertIn("GM may emit `source_agent: \"gm\"`", gm_prompt)
         self.assertIn("preprocess is handled by input analysis", gm_prompt)
-        self.assertIn("GM assistants must not emit promotion records", gm_prompt)
+        self.assertIn("subGM agents must not emit applied promotion records", gm_prompt)
         self.assertIn('"stop_reason": "continue"', player_prompt)
         self.assertIn('"stop_reason": "continue"', char_prompt)
         self.assertNotIn("continue|", gm_prompt)

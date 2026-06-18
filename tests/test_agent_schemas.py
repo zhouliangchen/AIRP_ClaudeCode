@@ -79,7 +79,7 @@ class AgentSchemaTest(unittest.TestCase):
 
         self.assertEqual(normalized["character_promotions"], [])
 
-    def test_validate_gm_output_rejects_gm_assistant_character_promotions(self):
+    def test_validate_gm_output_rejects_subgm_character_promotions(self):
         payload = {
             "agent": "gm",
             "scene_beats": [{"content": "The room goes quiet."}],
@@ -90,8 +90,8 @@ class AgentSchemaTest(unittest.TestCase):
             "character_promotions": [
                 {
                     "name": "Side NPC",
-                    "source_agent": "gm_assistant:thread-1",
-                    "reason": "Assistant wants promotion.",
+                    "source_agent": "subGM:thread-1",
+                    "reason": "subGM wants promotion.",
                     "profile_seed": "Not allowed.",
                     "visibility": "character_private_and_gm",
                     "activation": "future_turn",
@@ -101,7 +101,7 @@ class AgentSchemaTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "gm_assistant"):
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "subGM"):
             self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_rejects_preprocess_character_promotions(self):

@@ -189,7 +189,7 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "`word_target`, `complete`, `max_steps`.\n"
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
-        "GM assistants must not emit promotion records.\n"
+        "subGM agents must not emit applied promotion records.\n"
     )
 
 
