@@ -238,7 +238,15 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             normalized["world_state_delta"] = _normalize_world_state_delta(normalized.get("world_state_delta", []))
             return normalized
         if agent_key in {"player"} or agent_key.startswith("character:"):
-            return agent_schemas.validate_actor_output(payload)
+            normalized = agent_schemas.validate_actor_output(payload)
+            if agent_key == "player" and normalized.get("agent_id") != "player":
+                raise AgentExecutionError(f"{agent_key} returned wrong agent_id: {normalized.get('agent_id')!r}")
+            if agent_key.startswith("character:"):
+                if normalized.get("agent") != "character":
+                    raise AgentExecutionError(f"{agent_key} returned wrong agent: {normalized.get('agent')!r}")
+                if normalized.get("agent_id") != agent_key:
+                    raise AgentExecutionError(f"{agent_key} returned wrong agent_id: {normalized.get('agent_id')!r}")
+            return normalized
         if agent_key == "story":
             return agent_schemas.validate_story_output(payload)
         if agent_key == "critic":
@@ -419,7 +427,7 @@ def _delivery_retry_context(
     return {
         "reason": reason,
         "delivery_result": delivery_result,
-        "authoritative_sources": ["story_input", "gm_output", "player_output", "character_outputs", "raw_player_input"],
+        "authoritative_sources": ["story_input", "loop_outputs", "gm.output.json", "actor.outputs.json", "raw_player_input"],
         "previous_rejected_story_output": story,
         "previous_critic_report": critic,
         "do_not_preserve_rejected_content": True,
@@ -468,34 +476,47 @@ def _normalize_update_variable_analysis(content: str) -> str:
 def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict[str, str]]:
     if not isinstance(story_input, dict):
         return []
-    actor_outputs = story_input.get("actor_outputs")
-    if not isinstance(actor_outputs, dict):
+    loop_outputs = story_input.get("loop_outputs")
+    if not isinstance(loop_outputs, dict):
         return []
-    characters = actor_outputs.get("characters")
-    if not isinstance(characters, dict):
+    actors = loop_outputs.get("actors")
+    if not isinstance(actors, dict):
         return []
 
     dialogues: list[Dict[str, str]] = []
-    for name, output in characters.items():
-        if str(name) == "_self" or not isinstance(output, dict):
+    for actor_id, outputs in actors.items():
+        actor_key = str(actor_id)
+        if actor_key == "player" or not actor_key.startswith("character:") or not isinstance(outputs, list):
             continue
-        raw_dialogue = output.get("dialogue")
-        if not isinstance(raw_dialogue, list):
-            continue
+        name = actor_key.split(":", 1)[1]
         line = ""
-        for item in raw_dialogue:
-            if isinstance(item, dict):
-                line = str(item.get("text") or item.get("line") or "").strip()
-            else:
-                line = str(item or "").strip()
+        aside = ""
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            character_name = str(output.get("character_name") or "").strip()
+            if character_name:
+                name = character_name
+            events = output.get("events")
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("type") or "")
+                content = str(event.get("content") or "").strip()
+                if not content:
+                    continue
+                if event_type == "dialogue" and not line:
+                    line = content
+                elif event_type != "dialogue" and not aside:
+                    aside = content[:500]
+                if line and aside:
+                    break
             if line:
                 break
         if not line:
             continue
-        perception = output.get("perception")
-        aside = ""
-        if isinstance(perception, list) and perception:
-            aside = str(perception[0] or "").strip()[:500]
         entry = {"name": str(name), "source": "subagent", "line": line[:1000]}
         if aside:
             entry["aside"] = aside
@@ -606,7 +627,7 @@ def _story_preflight_repair_context(
         "reason": "story_preflight",
         "preflight_issues": issues,
         "delivery_requirements": requirements,
-        "authoritative_sources": ["story_input", "gm_output", "player_output", "character_outputs", "raw_player_input"],
+        "authoritative_sources": ["story_input", "loop_outputs", "gm.output.json", "actor.outputs.json", "raw_player_input"],
         "previous_rejected_story_output": story,
         "do_not_preserve_rejected_content": True,
         "repair_attempt": attempt,

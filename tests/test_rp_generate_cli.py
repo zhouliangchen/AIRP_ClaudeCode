@@ -90,6 +90,17 @@ def _player_output(content="I wait.", *, stop_reason="continue"):
     }
 
 
+def _character_output(agent_id="character:Ada", content="Stay close."):
+    character_name = agent_id.split(":", 1)[1] if ":" in agent_id else agent_id
+    return {
+        "agent": "character",
+        "agent_id": agent_id,
+        "character_name": character_name,
+        "events": [{"type": "dialogue", "target": "player", "content": content, "metadata": {}}],
+        "stop_reason": "continue",
+    }
+
+
 def _story_output(content="<content>ok</content>", *, metadata=None):
     return {"content": content, "character_dialogues": [], "metadata": metadata or {}}
 
@@ -734,6 +745,93 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(calls.count("gm"), 2)
 
+    def test_run_round_retries_actor_output_with_wrong_agent_id(self):
+        calls = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = _gm_output()
+            elif agent_key == "player" and calls.count("player") == 1:
+                payload = dict(_player_output("I wait."))
+                payload["agent_id"] = "character:Ada"
+            elif agent_key == "player":
+                payload = _player_output("I correct myself.")
+            elif agent_key == "story":
+                payload = _story_output()
+            else:
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("player"), 2)
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I correct myself.")
+
+    def test_run_round_retries_character_output_with_wrong_agent_id(self):
+        (self.run_dir / "prompts" / "characters").mkdir()
+        (self.run_dir / "prompts" / "characters" / "Ada.prompt.md").write_text("# Ada\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["characters"] = {"Ada": "prompts/characters/Ada.prompt.md"}
+        _write_json(self.run_dir / "manifest.json", manifest)
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["character_contexts"] = {"characters": [{"name": "Ada"}]}
+        _write_json(self.run_dir / "input.json", input_payload)
+
+        calls = []
+        gm_payload = _gm_output(
+            actor_calls=[
+                {
+                    "call_id": "call-character-Ada-1",
+                    "actor_id": "character:Ada",
+                    "prompt": "Ada sees the player enter.",
+                    "reason": "Ada is present.",
+                    "metadata": {},
+                }
+            ],
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = gm_payload
+            elif agent_key == "character:Ada" and calls.count("character:Ada") == 1:
+                payload = _character_output("character:Bob", "This should be retried.")
+            elif agent_key == "character:Ada":
+                payload = _character_output("character:Ada", "Stay close.")
+            elif agent_key == "player":
+                payload = _player_output("I stay close.")
+            elif agent_key == "story":
+                payload = _story_output()
+            else:
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("character:Ada"), 2)
+        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(actor_outputs["character:Ada"][0]["events"][0]["content"], "Stay close.")
+
     def test_run_round_rewrites_story_once_when_delivery_requests_retry(self):
         calls = []
         story_payloads = [
@@ -1023,13 +1121,31 @@ class RpGenerateCliTest(unittest.TestCase):
             "metadata": {},
         }
         story_input = {
-            "actor_outputs": {
-                "characters": {
-                    "_self": {"dialogue": ["ignore self"]},
-                    "\u82cf\u9ece": {
-                        "dialogue": ["\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002"],
-                        "perception": ["\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002"],
-                    },
+            "loop_outputs": {
+                "actors": {
+                    "player": [_player_output("ignore self")],
+                    "character:\u82cf\u9ece": [
+                        {
+                            "agent": "character",
+                            "agent_id": "character:\u82cf\u9ece",
+                            "character_name": "\u82cf\u9ece",
+                            "events": [
+                                {
+                                    "type": "dialogue",
+                                    "target": "player",
+                                    "content": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                                    "metadata": {},
+                                },
+                                {
+                                    "type": "perceive_request",
+                                    "target": "hallway",
+                                    "content": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
+                                    "metadata": {},
+                                },
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
                 }
             }
         }
@@ -1061,6 +1177,20 @@ class RpGenerateCliTest(unittest.TestCase):
         issues = self.module._story_preflight_issues(story, requirements)
 
         self.assertTrue(any("second_person" in issue for issue in issues), issues)
+
+    def test_story_preflight_repair_context_uses_current_loop_sources(self):
+        context = self.module._story_preflight_repair_context(
+            {"content": "<content>bad draft</content>"},
+            ["content_chinese_chars 3 is below required minimum 10"],
+            {"minimum_chinese_chars": 10},
+            1,
+            None,
+        )
+
+        self.assertIn("loop_outputs", context["authoritative_sources"])
+        self.assertIn("actor.outputs.json", context["authoritative_sources"])
+        self.assertNotIn("player_output", context["authoritative_sources"])
+        self.assertNotIn("character_outputs", context["authoritative_sources"])
 
     def test_critic_skill_does_not_require_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
@@ -1119,6 +1249,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("previous_rejected_story_output", context)
         self.assertTrue(context["do_not_preserve_rejected_content"])
         self.assertIn("story_input", context["authoritative_sources"])
+        self.assertIn("loop_outputs", context["authoritative_sources"])
+        self.assertIn("actor.outputs.json", context["authoritative_sources"])
+        self.assertNotIn("player_output", context["authoritative_sources"])
+        self.assertNotIn("character_outputs", context["authoritative_sources"])
 
 
 if __name__ == "__main__":
