@@ -44,14 +44,20 @@ CJK_INSTRUCTION_SUFFIXES = (
     "提前透露",
     "透露给玩家",
 )
-CJK_HIDDEN_PREFIXES = (
-    "隐藏事实是",
-    "隐藏设定是",
-    "秘密是",
-    "真相是",
-    "幕后事实是",
+CJK_HIDDEN_LABELS = (
+    "隐藏事实",
+    "隐藏设定",
+    "秘密",
+    "世界真相",
+    "真相",
+    "幕后事实",
     "GM知道",
     "GM已知",
+)
+CJK_HIDDEN_PREFIX_RE = re.compile(
+    r"^(?:"
+    + "|".join(re.escape(label) for label in sorted(CJK_HIDDEN_LABELS, key=len, reverse=True))
+    + r")(?:是|为|[:：]|\s+)"
 )
 
 
@@ -125,10 +131,7 @@ def _strip_cjk_instruction_suffix(value: str) -> str:
 
 def _strip_cjk_hidden_prefix(value: str) -> str:
     text = _clean_hidden_phrase(value)
-    for prefix in CJK_HIDDEN_PREFIXES:
-        if text.startswith(prefix):
-            return _clean_hidden_phrase(text[len(prefix):])
-    return text
+    return _clean_hidden_phrase(CJK_HIDDEN_PREFIX_RE.sub("", text, count=1))
 
 
 def _cjk_hidden_clause_candidates(value: str) -> set[str]:
