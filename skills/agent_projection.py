@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import math
+import re
 from typing import Any, Dict
 
 
 ADDRESS_MODE = "second_person_gm_narration"
+SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?")
 
 FORBIDDEN_WORLD_KEYS = {
     "user_instruction_channel",
@@ -61,6 +64,14 @@ PUBLIC_VISIBLE_MARKERS = {
 }
 
 
+def _canonical_marker(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+FORBIDDEN_WORLD_KEY_MARKERS = {_canonical_marker(key) for key in FORBIDDEN_WORLD_KEYS}
+FORBIDDEN_NESTED_KEY_MARKERS = {_canonical_marker(key) for key in FORBIDDEN_NESTED_KEYS}
+
+
 def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -69,19 +80,59 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _is_forbidden_key(key: Any) -> bool:
+    return _canonical_marker(key) in FORBIDDEN_NESTED_KEY_MARKERS
+
+
+def _is_forbidden_world_key(key: Any) -> bool:
+    return _canonical_marker(key) in FORBIDDEN_WORLD_KEY_MARKERS
+
+
+def _contains_forbidden_text(value: Any) -> bool:
+    canonical = _canonical_marker(value)
+    return any(marker and marker in canonical for marker in FORBIDDEN_NESTED_KEY_MARKERS)
+
+
+def _safe_text(value: Any) -> str:
+    text = _text(value)
+    return "" if _contains_forbidden_text(text) else text
+
+
+def _sanitize_prompt(value: Any) -> tuple[str, int]:
+    text = _text(value).strip()
+    if not text:
+        return "", 0
+
+    kept = []
+    dropped = 0
+    for match in SEGMENT_RE.finditer(text):
+        segment = match.group(0).strip()
+        if not segment:
+            continue
+        if _contains_forbidden_text(segment):
+            dropped += 1
+            continue
+        kept.append(segment)
+    return " ".join(kept), dropped
+
+
 def _json_safe(value: Any) -> Any:
     """Return a copied JSON-serializable value with forbidden keys removed."""
     if isinstance(value, dict):
         return {
             str(key): _json_safe(child)
             for key, child in value.items()
-            if str(key) not in FORBIDDEN_NESTED_KEYS
+            if not _is_forbidden_key(key)
         }
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if isinstance(value, set):
         return [_json_safe(item) for item in sorted(value, key=lambda item: str(item))]
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, (int, bool)):
         return copy.deepcopy(value)
     return str(value)
 
@@ -122,9 +173,12 @@ def _self_knowledge(actor: Dict[str, Any]) -> Dict[str, Any]:
     if role is None:
         role = actor.get("role")
     return {
-        "name": _text(_first_present(nested, "name", "character_name") or _first_present(actor, "name", "character_name")),
-        "identity": _text(identity),
-        "role": _text(role),
+        "name": _safe_text(
+            _first_present(nested, "name", "character_name")
+            or _first_present(actor, "name", "character_name")
+        ),
+        "identity": _safe_text(identity),
+        "role": _safe_text(role),
         "body_state": _json_safe(_first_present(nested, "body_state") or actor.get("body_state") or {}),
         "relationships": _json_safe(_first_present(nested, "relationships") or actor.get("relationships") or {}),
     }
@@ -166,12 +220,14 @@ def _sensory_context(world: Dict[str, Any], actor: Dict[str, Any], actor_id: str
 def _has_forbidden_marker(value: Any) -> bool:
     if isinstance(value, dict):
         for key, child in value.items():
-            if str(key) in FORBIDDEN_NESTED_KEYS:
+            if _is_forbidden_key(key):
                 return True
             if _has_forbidden_marker(child):
                 return True
     elif isinstance(value, (list, tuple, set)):
         return any(_has_forbidden_marker(item) for item in value)
+    elif isinstance(value, str):
+        return _contains_forbidden_text(value)
     return False
 
 
@@ -179,13 +235,13 @@ def _normalize_marker_list(value: Any) -> set[str]:
     if value is None:
         return set()
     if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value}
-    return {str(value)}
+        return {_canonical_marker(item) for item in value}
+    return {_canonical_marker(value)}
 
 
 def _event_visible_to_actor(event: Any, actor_id: str) -> bool:
     if not isinstance(event, dict):
-        return True
+        return False
     if _has_forbidden_marker(event):
         return False
 
@@ -196,45 +252,78 @@ def _event_visible_to_actor(event: Any, actor_id: str) -> bool:
 
     visible_to = _normalize_marker_list(event.get("visible_to") or event.get("recipients"))
     if visible_to and not (
-        actor_id in visible_to
-        or _agent_type(actor_id) in visible_to
+        _canonical_marker(actor_id) in visible_to
+        or _canonical_marker(_agent_type(actor_id)) in visible_to
         or visible_to.intersection(PUBLIC_VISIBLE_MARKERS)
     ):
         return False
     return True
 
 
-def _collect_events(value: Any, actor_id: str) -> list[Any]:
+def _iter_raw_items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return sorted(value, key=lambda item: str(item))
+    return [value]
+
+
+def _collect_events(value: Any, actor_id: str) -> tuple[list[Any], int]:
     events = []
-    for item in _as_list(value):
+    dropped = 0
+    for item in _iter_raw_items(value):
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
         if _event_visible_to_actor(item, actor_id):
             events.append(_json_safe(item))
-    return events
+        else:
+            dropped += 1
+    return events, dropped
 
 
-def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
+def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> tuple[list[Any], int]:
     actor_visible = _as_dict(world.get("actor_visible_events"))
     events = []
+    dropped = 0
+    checked_keys = []
     for key in (actor_id, _agent_type(actor_id), "all", "public"):
+        if key not in checked_keys:
+            checked_keys.append(key)
+    for key in checked_keys:
         if key in actor_visible:
-            events.extend(_collect_events(actor_visible.get(key), actor_id))
-    return events
+            collected, count = _collect_events(actor_visible.get(key), actor_id)
+            events.extend(collected)
+            dropped += count
+    return events, dropped
 
 
-def _visible_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
+def _visible_events(world: Dict[str, Any], actor_id: str) -> tuple[list[Any], int]:
     events = []
+    dropped = 0
     for key in ("visible_events", "world_visible_events", "public_events"):
         if key in world:
-            events.extend(_collect_events(world.get(key), actor_id))
+            collected, count = _collect_events(world.get(key), actor_id)
+            events.extend(collected)
+            dropped += count
     if "events" in world:
-        for item in _as_list(world.get("events")):
+        for item in _iter_raw_items(world.get("events")):
             if not isinstance(item, dict):
+                dropped += 1
                 continue
             visibility = str(item.get("visibility", "")).lower()
             if visibility in PUBLIC_VISIBLE_MARKERS and _event_visible_to_actor(item, actor_id):
                 events.append(_json_safe(item))
-    events.extend(_actor_specific_events(world, actor_id))
-    return events
+            else:
+                dropped += 1
+    collected, count = _actor_specific_events(world, actor_id)
+    events.extend(collected)
+    dropped += count
+    return events, dropped
 
 
 def project_actor_context(
@@ -247,21 +336,27 @@ def project_actor_context(
     actor_key = _text(actor_id)
     world = _as_dict(world_state)
     actor = _as_dict(actor_state)
-    forbidden_removed = sorted(key for key in FORBIDDEN_WORLD_KEYS if key in world)
+    forbidden_removed = sorted({_canonical_marker(key) for key in world if _is_forbidden_world_key(key)})
+    prompt, redacted_prompt_segments = _sanitize_prompt(gm_prompt)
+    visible_events, dropped_visible_events = _visible_events(world, actor_key)
 
     return {
         "actor_id": actor_key,
         "agent": _agent_type(actor_key),
         "visibility": _actor_visibility(actor_key),
-        "gm_prompt": _text(gm_prompt),
+        "gm_prompt": prompt,
         "address_mode": ADDRESS_MODE,
         "self_knowledge": _self_knowledge(actor),
         "memory": _memory(actor),
         "sensory_context": _sensory_context(world, actor, actor_key),
-        "visible_events": _visible_events(world, actor_key),
+        "visible_events": visible_events,
         "misconceptions": _as_list(actor.get("misconceptions")),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
-        "forbidden_removed": forbidden_removed,
+        "audit": {
+            "forbidden_removed": forbidden_removed,
+            "dropped_visible_events": dropped_visible_events,
+            "redacted_prompt_segments": redacted_prompt_segments,
+        },
     }
 
 

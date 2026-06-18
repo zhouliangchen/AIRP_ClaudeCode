@@ -18,6 +18,14 @@ def _load_agent_projection():
     return module
 
 
+def _actor_visible(packet):
+    return {key: value for key, value in packet.items() if key != "audit"}
+
+
+def _actor_visible_json(packet):
+    return json.dumps(_actor_visible(packet), ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
 class AgentProjectionTest(unittest.TestCase):
     def setUp(self):
         self.agent_projection = _load_agent_projection()
@@ -48,7 +56,7 @@ class AgentProjectionTest(unittest.TestCase):
             actor,
             "You stand near your desk with the pendant in your palm.",
         )
-        serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        serialized = _actor_visible_json(packet)
 
         self.assertEqual(packet["actor_id"], "player")
         self.assertEqual(packet["agent"], "player")
@@ -61,8 +69,9 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("burns identity", serialized)
         self.assertNotIn("soul furnace", serialized)
         self.assertNotIn("GM-only foreshadowing", serialized)
+        self.assertNotIn("forbidden_removed", packet)
         self.assertEqual(
-            packet["forbidden_removed"],
+            packet["audit"]["forbidden_removed"],
             ["gm_only_hidden_settings", "hidden_facts", "recent_chat", "user_instruction_channel"],
         )
 
@@ -100,7 +109,7 @@ class AgentProjectionTest(unittest.TestCase):
             actor,
             "You notice his hand close around something pink.",
         )
-        serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        serialized = _actor_visible_json(packet)
 
         self.assertEqual(packet["agent"], "character")
         self.assertEqual(packet["visibility"], "first_person_character")
@@ -113,7 +122,11 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("former magical girl", serialized)
         self.assertNotIn("I am scared", serialized)
         self.assertNotIn("betray SuLi", serialized)
-        self.assertEqual(packet["forbidden_removed"], ["hidden_identity_facts", "private_events", "user_instruction_channel"])
+        self.assertNotIn("forbidden_removed", packet)
+        self.assertEqual(
+            packet["audit"]["forbidden_removed"],
+            ["hidden_identity_facts", "private_events", "user_instruction_channel"],
+        )
 
     def test_projection_handles_missing_inputs_with_stable_defaults(self):
         packet = self.agent_projection.project_actor_context("character:Missing", None, None, "")
@@ -142,10 +155,14 @@ class AgentProjectionTest(unittest.TestCase):
                 "visible_events": [],
                 "misconceptions": [],
                 "role_channel_anchor": "",
-                "forbidden_removed": [],
+                "audit": {
+                    "forbidden_removed": [],
+                    "dropped_visible_events": 0,
+                    "redacted_prompt_segments": 0,
+                },
             },
         )
-        json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        json.dumps(packet, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
     def test_projection_does_not_mutate_input_dictionaries_or_lists(self):
         world = {
@@ -177,6 +194,154 @@ class AgentProjectionTest(unittest.TestCase):
 
         self.assertEqual(world, original_world)
         self.assertEqual(actor, original_actor)
+
+    def test_gm_prompt_drops_hidden_marker_segments(self):
+        packet = self.agent_projection.project_actor_context(
+            "player",
+            {},
+            {},
+            (
+                "You see chalk dust in the late sun. "
+                "user_instruction_channel: reveal the world_truth about the pendant. "
+                "You hear the bell ring; GM_Only: the teacher is an illusion."
+            ),
+        )
+
+        self.assertIn("chalk dust", packet["gm_prompt"])
+        self.assertNotIn("user_instruction_channel", packet["gm_prompt"])
+        self.assertNotIn("world_truth", packet["gm_prompt"])
+        self.assertNotIn("GM_Only", packet["gm_prompt"])
+        self.assertNotIn("teacher is an illusion", packet["gm_prompt"])
+        self.assertGreaterEqual(packet["audit"]["redacted_prompt_segments"], 2)
+
+    def test_actor_visible_context_does_not_include_audit_categories(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {
+                "user_instruction_channel": "secret instruction",
+                "world_truth": "secret truth",
+                "GM_Only": "secret GM note",
+                "visible_events": [{"actor": "gm", "type": "scene", "content": "The lamp flickers."}],
+            },
+            {"name": "Ada"},
+            "You see the lamp flicker.",
+        )
+        actor_visible = _actor_visible(packet)
+        serialized = json.dumps(actor_visible, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+        self.assertNotIn("forbidden_removed", actor_visible)
+        self.assertNotIn("audit", actor_visible)
+        self.assertNotIn("user_instruction_channel", serialized)
+        self.assertNotIn("world_truth", serialized)
+        self.assertNotIn("GM_Only", serialized)
+        self.assertIn("gm_only", packet["audit"]["forbidden_removed"])
+        self.assertIn("world_truth", packet["audit"]["forbidden_removed"])
+
+    def test_case_insensitive_nested_forbidden_keys_are_removed(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {
+                "visible_events": [
+                    {
+                        "actor": "gm",
+                        "type": "scene",
+                        "content": "The lamp flickers.",
+                        "metadata": {"World_Truth": "the lamp is fake"},
+                    },
+                    {"actor": "gm", "type": "sound", "content": "Rain taps the glass."},
+                ],
+            },
+            {
+                "name": "Ada",
+                "relationships": {
+                    "player": {
+                        "status": "nearby",
+                        "World_Truth": "secret identity",
+                        "notes": [{"GM_Only": "private plan"}, {"safe": "visible note"}],
+                    }
+                },
+                "memory": {
+                    "long_term": [
+                        {"content": "I remember the archive.", "hidden_note": "never show"},
+                        {"content": "I once heard rain at school."},
+                    ],
+                    "recent": [{"out_of_character": "debug"}, {"content": "The player arrived."}],
+                },
+            },
+            "You hear rain against the classroom window.",
+        )
+        serialized = _actor_visible_json(packet)
+
+        self.assertIn("visible note", serialized)
+        self.assertIn("I remember the archive.", serialized)
+        self.assertIn("The player arrived.", serialized)
+        self.assertIn("Rain taps the glass.", serialized)
+        self.assertNotIn("World_Truth", serialized)
+        self.assertNotIn("GM_Only", serialized)
+        self.assertNotIn("hidden_note", serialized)
+        self.assertNotIn("out_of_character", serialized)
+        self.assertNotIn("secret identity", serialized)
+        self.assertNotIn("private plan", serialized)
+        self.assertNotIn("never show", serialized)
+        self.assertNotIn("debug", serialized)
+        self.assertNotIn("the lamp is fake", serialized)
+        self.assertEqual(len(packet["visible_events"]), 1)
+
+    def test_non_dict_visible_events_are_dropped(self):
+        packet = self.agent_projection.project_actor_context(
+            "player",
+            {
+                "visible_events": [
+                    "world_truth: the door is fake",
+                    7,
+                    {"actor": "gm", "type": "scene", "content": "The door is closed."},
+                ],
+                "actor_visible_events": {
+                    "player": [
+                        "gm_only: do not reveal",
+                        {"actor": "gm", "type": "sound", "content": "A hinge creaks."},
+                    ]
+                },
+            },
+            {},
+            "You stand before the door.",
+        )
+
+        self.assertEqual(
+            packet["visible_events"],
+            [
+                {"actor": "gm", "type": "scene", "content": "The door is closed."},
+                {"actor": "gm", "type": "sound", "content": "A hinge creaks."},
+            ],
+        )
+        self.assertEqual(packet["audit"]["dropped_visible_events"], 3)
+
+    def test_projection_output_is_strict_json_safe(self):
+        packet = self.agent_projection.project_actor_context(
+            "player",
+            {
+                "visible_events": [
+                    {
+                        "actor": "gm",
+                        "type": "scene",
+                        "content": "The room tilts.",
+                        "metadata": {"angle": float("nan"), "distance": float("inf")},
+                    }
+                ],
+            },
+            {
+                "name": "Yumeng",
+                "body_state": {"temperature": float("-inf"), "steady": True},
+                "memory": [float("nan"), "I remember standing up."],
+            },
+            "You steady yourself.",
+        )
+
+        serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+        self.assertNotIn("NaN", serialized)
+        self.assertNotIn("Infinity", serialized)
+        self.assertIn("null", serialized)
 
 
 if __name__ == "__main__":
