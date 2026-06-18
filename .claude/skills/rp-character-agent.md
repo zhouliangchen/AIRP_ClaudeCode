@@ -47,6 +47,6 @@ Return one character actor output object for aggregation into `actor.outputs.jso
 }
 ```
 
-Use only these top-level keys. Represent private reaction, intent, sensory detail, spoken lines, relationship shifts, durable state changes, and remembered facts as `events`. Allowed `stop_reason` values are `continue` and `stop_for_player_decision`.
+Use only these top-level keys. Represent private reaction, intent, sensory detail, spoken lines, relationship shifts, durable state changes, and remembered facts as `events`. Use event types such as `perceive_request`, `dialogue`, `action`, `memory_delta`, `goal_update`, `wait_for_gm`, and `stop_for_player_decision`. Allowed `stop_reason` values are `continue` and `stop_for_player_decision`.
 
 Do not write final narration. Do not duplicate another character's voice.

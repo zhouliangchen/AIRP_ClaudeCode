@@ -22,7 +22,8 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertIs(payload["ok"], True)
         self.assertEqual(payload["delivery"]["mode"], "agent_run")
         self.assertEqual(payload["manifest_stage"], "delivered")
-        self.assertEqual(payload["trace"]["private_event_count"], 1)
+        self.assertEqual(payload["trace"]["private_event_count"], 3)
+        self.assertEqual(len(payload["trace"]["visible_events"]), 2)
         self.assertIn("player", payload["memory_summary"]["ingested"])
         self.assertEqual(payload["input_analysis"]["analysis_mode"], "fixture")
 
