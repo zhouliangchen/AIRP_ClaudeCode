@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
 CST = timezone(timedelta(hours=8))
+SAFE_ID_PATTERNS = (
+    re.compile(r"^player$"),
+    re.compile(r"^character:[A-Za-z][A-Za-z0-9_]*$"),
+    re.compile(r"^event-[0-9]+$"),
+    re.compile(r"^call-player-[0-9]+$"),
+    re.compile(r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$"),
+    re.compile(r"^group-[a-z0-9]+(?:-[a-z0-9]+)*$"),
+)
+HIDDEN_ID_TOKENS = (
+    "hiddentruth",
+    "gmonly",
+    "worldtruth",
+    "outofcharacter",
+)
 
 
 def _now() -> str:
@@ -52,7 +67,10 @@ def _safe_id(value: Any) -> str:
     text = value.strip()
     if not text:
         return ""
-    if all(ch.isalnum() or ch in "_:-" for ch in text):
+    compact = re.sub(r"[^a-z0-9]", "", text.lower())
+    if any(token in compact for token in HIDDEN_ID_TOKENS):
+        return ""
+    if any(pattern.fullmatch(text) for pattern in SAFE_ID_PATTERNS):
         return text
     return ""
 

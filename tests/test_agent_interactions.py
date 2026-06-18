@@ -102,6 +102,81 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "causal_links": ["event-0"],
         })
 
+    def test_public_api_drops_hidden_shaped_ids_from_story_summary(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player", "character:SuLi", "character:ClassRep"],
+            chapter_target_words=1800,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:SuLi",
+            visibility="world_visible",
+            event_type="dialogue_transfer",
+            content="I will take it from here.",
+            target="character:SuLi",
+            source_call_id="call-character-SuLi-2",
+            causal_links=[
+                "event-0",
+                "event-123",
+                "call-player-1",
+                "call-character-SuLi-2",
+                "HiddenTruthMoonBase",
+                "GM_ONLY_moon_base",
+                "world_truth_foo",
+                "out_of_character_note",
+            ],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:ClassRep",
+            visibility="world_visible",
+            event_type="reaction",
+            content="I keep watch.",
+            target="character:ClassRep",
+            source_call_id="HiddenTruthMoonBase",
+            causal_links=["HiddenTruthGroup"],
+        )
+        self.agent_interactions.record_parallel_group(
+            self.run_dir,
+            "group-side-2",
+            [
+                "player",
+                "character:SuLi",
+                "character:ClassRep",
+                "HiddenTruthGroup",
+                "GM_ONLY_moon_base",
+                "world_truth_foo",
+                "out_of_character_note",
+            ],
+        )
+        self.agent_interactions.record_parallel_group(
+            self.run_dir,
+            "HiddenTruthGroup",
+            ["player"],
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+        summary_text = json.dumps(summary, ensure_ascii=False)
+
+        self.assertEqual(summary["visible_events"][0]["source_call_id"], "call-character-SuLi-2")
+        self.assertEqual(summary["visible_events"][0]["causal_links"], [
+            "event-0",
+            "event-123",
+            "call-player-1",
+            "call-character-SuLi-2",
+        ])
+        self.assertEqual(summary["visible_events"][1]["source_call_id"], "")
+        self.assertEqual(summary["visible_events"][1]["causal_links"], [])
+        self.assertEqual(summary["parallel_groups"], [{
+            "group_id": "group-side-2",
+            "actors": ["player", "character:SuLi", "character:ClassRep"],
+        }])
+        self.assertNotIn("HiddenTruth", summary_text)
+        self.assertNotIn("GM_ONLY", summary_text)
+        self.assertNotIn("world_truth", summary_text)
+        self.assertNotIn("out_of_character", summary_text)
+
     def test_trace_summary_filters_private_events_for_story_input(self):
         self.agent_interactions.init_trace(
             self.run_dir,
