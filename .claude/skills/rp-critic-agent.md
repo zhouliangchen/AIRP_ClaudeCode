@@ -19,6 +19,8 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 - Perspective: when `delivery_requirements.required_person` is `第二人称`, protagonist-facing narration must use second person (`你`) rather than third-person protagonist naming or `他/她` as the narrative subject.
 - Immersion: visible response tags must not contain prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供`.
 - Contract: required response tags parse, `<character_dialogues>` JSON is valid, and delivery files are correct.
+- Important-character dialogue provenance: every independent important-character dialogue box is backed by a character subagent source in `actor.outputs.json` or validated `story.input.json`, not invented by story composition.
+- Hidden-fact leakage: visible prose, options, summaries, dialogue boxes, perception feedback, and repair edits must not expose GM-only facts, foreshadowing hints, user-instruction summaries, or disguised substitutes unless the fact was disclosed in-world.
 - Token contract: Do not hard-fail missing <tokens> in `story.output.json`; `round_deliver.py appends` the real token block. Do hard-fail fake or all-zero `<tokens>` only if the story agent supplied them as final data.
 - Speed and scope: image/UI jobs are deferred and do not block text delivery.
 

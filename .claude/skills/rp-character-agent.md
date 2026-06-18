@@ -25,6 +25,7 @@ Never use hidden GM truth, user_instruction_channel, or another character's priv
 - You may resist the intended plot if your memory and goals demand it.
 - If another subagent's visible action affects you, update your intent and response.
 - Stop when your next action would force the player into a key decision.
+- You may update memory and goals through approved event types, but you must not modify profile, background, personality, body facts, or authoritative settings.
 
 ## Output Schema
 

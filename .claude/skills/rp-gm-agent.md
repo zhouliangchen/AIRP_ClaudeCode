@@ -27,6 +27,12 @@ During the turn, respond to subagent outputs:
 3. After player/character outputs, update non-core NPC reactions and consequence notes if needed.
 4. Stop when the next unresolved issue is a real player decision or when the chapter word/scene target is met.
 
+## Optional GM Sub-Skills
+
+- Use `rp-gm-visibility-policy` when preparing `actor_calls`, generated perception feedback, dialogue transfers, or deciding whether hidden facts have become visible.
+- Use `rp-gm-actor-routing` when deciding actor participation points, serial versus parallel routing, dialogue transfer, perception continuation, and stop reasons.
+- Use `rp-gm-promotion-policy` when deciding whether a discovered entity should become an important character with independent actor routing.
+
 ## Output Schema
 
 Return one GM output object:
