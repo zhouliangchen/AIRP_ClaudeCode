@@ -44,6 +44,15 @@ CJK_INSTRUCTION_SUFFIXES = (
     "提前透露",
     "透露给玩家",
 )
+CJK_HIDDEN_PREFIXES = (
+    "隐藏事实是",
+    "隐藏设定是",
+    "秘密是",
+    "真相是",
+    "幕后事实是",
+    "GM知道",
+    "GM已知",
+)
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -114,6 +123,14 @@ def _strip_cjk_instruction_suffix(value: str) -> str:
     return _clean_hidden_phrase(text)
 
 
+def _strip_cjk_hidden_prefix(value: str) -> str:
+    text = _clean_hidden_phrase(value)
+    for prefix in CJK_HIDDEN_PREFIXES:
+        if text.startswith(prefix):
+            return _clean_hidden_phrase(text[len(prefix):])
+    return text
+
+
 def _cjk_hidden_clause_candidates(value: str) -> set[str]:
     candidates = set()
     if not _has_cjk_text(value):
@@ -127,7 +144,7 @@ def _cjk_hidden_clause_candidates(value: str) -> set[str]:
                 fragments.add(fragment.split(separator, 1)[1])
 
     for fragment in fragments:
-        clean = _strip_cjk_instruction_suffix(fragment)
+        clean = _strip_cjk_instruction_suffix(_strip_cjk_hidden_prefix(fragment))
         if clean and not any(clean.startswith(marker) for marker in CJK_INSTRUCTION_SUFFIXES):
             candidates.add(clean)
     return candidates

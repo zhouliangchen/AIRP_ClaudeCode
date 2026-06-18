@@ -295,6 +295,7 @@ class AgentTurnLoopTest(unittest.TestCase):
         hidden_sources = [
             "隐藏设定：门后是梦境，不要提前透露。",
             "门后是梦境，不要提前透露给玩家。",
+            "隐藏事实是门后是梦境，不要提前透露。",
         ]
         for hidden_source in hidden_sources:
             with self.subTest(hidden_source=hidden_source):
