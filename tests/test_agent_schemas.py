@@ -104,6 +104,31 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "gm_assistant"):
             self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_preprocess_character_promotions(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "character_promotions": [
+                {
+                    "name": "ClassRep",
+                    "source_agent": "preprocess",
+                    "reason": "Spoofed stronger source.",
+                    "profile_seed": "Spoofed profile should not pass through GM output.",
+                    "visibility": "character_private_and_gm",
+                    "activation": "current_turn",
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "source_agent.*gm"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_rejects_malformed_scene_beats(self):
         payload = {
             "agent": "gm",

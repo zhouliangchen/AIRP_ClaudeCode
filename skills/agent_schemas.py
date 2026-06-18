@@ -257,6 +257,13 @@ def _normalize_character_promotion(item: Any, path: str) -> Dict[str, Any]:
         raise ValidationError(message) from exc
 
 
+def _normalize_gm_character_promotion(item: Any, path: str) -> Dict[str, Any]:
+    normalized = _normalize_character_promotion(item, path)
+    if normalized.get("source_agent") != "gm":
+        raise ValidationError(f"{_path(path, 'source_agent')} must be 'gm' for gm_output.character_promotions")
+    return normalized
+
+
 def _normalize_list_items(
     items: list[Any],
     path: str,
@@ -290,7 +297,7 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         "character_promotions": _normalize_list_items(
             _optional_list(data, "character_promotions", "gm_output"),
             "gm_output.character_promotions",
-            _normalize_character_promotion,
+            _normalize_gm_character_promotion,
         ),
         "decision_point": data.get("decision_point"),
         "stop_reason": _optional_str(data, "stop_reason", "continue", "gm_output"),

@@ -85,7 +85,7 @@ class GmAssistantPermissionsTest(unittest.TestCase):
                 round_id="round-000001",
             )
 
-    def test_preprocess_and_gm_sources_remain_allowed(self):
+    def test_preprocess_and_gm_sources_remain_allowed_for_direct_promotions(self):
         records = [
             dict(promotion("preprocess"), name="PlayerDeclared"),
             dict(promotion("gm"), name="GmPromoted"),
@@ -107,8 +107,8 @@ class GmAssistantPermissionsTest(unittest.TestCase):
         gm_normalized = self.agent_schemas.validate_gm_output(gm_output("gm"))
         self.assertEqual(gm_normalized["character_promotions"][0]["source_agent"], "gm")
 
-        preprocess_normalized = self.agent_schemas.validate_gm_output(gm_output("preprocess"))
-        self.assertEqual(preprocess_normalized["character_promotions"][0]["source_agent"], "preprocess")
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "source_agent.*gm"):
+            self.agent_schemas.validate_gm_output(gm_output("preprocess"))
 
     def test_policy_documents_gm_assistant_suggestion_only_record(self):
         policy = (ROOT / ".claude" / "skills" / "rp-gm-promotion-policy.md").read_text(encoding="utf-8")

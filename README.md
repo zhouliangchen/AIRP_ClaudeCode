@@ -81,9 +81,9 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 Claude Code 工作流会在场景强相关时最多并行调用 2 个核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 
-GM 输出进入 actor/story-facing 字段前会先执行可见性清理。来自 `user_instruction_channel`、隐藏设定和 GM-only 历史的隐藏短语不得保留在 `scene_beats`、`events`、`actor_calls.prompt/reason/metadata` 中；确定性 control-plane smoke 会构造一次原始 GM actor call 泄漏，并验证落盘后的 loop output 与 actor packet 只保留清理后的内容。
+GM 输出进入 actor/story-facing 字段前会先执行可见性清理。来自 `user_instruction_channel`、隐藏设定和 GM-only 历史的隐藏短语不得保留在 `scene_beats`、`events`、`actor_calls.prompt/reason/metadata`、`character_promotions.reason/profile_seed` 中；确定性 control-plane smoke 会构造一次原始 GM actor call 泄漏，并验证落盘后的 loop output 与 actor packet 只保留清理后的内容。
 
-重要角色可由输入分析 preprocess 或主 GM 通过 `character_promotions` 提升为 major。preprocess 写入玩家权威档案；主 GM 只能写入非玩家权威的 promotion seed，且不会覆盖已有 preprocess/player profile。`gm_assistant:*` 不能直接应用 `character_promotions`，只能保留为主 GM 后续仲裁的 promotion suggestion 边界；当前仍未实现完整 GM 助手 side-thread runner。
+重要角色可由输入分析 preprocess 或主 GM 通过 `character_promotions` 提升为 major。preprocess 写入玩家权威档案；GM 输出中的 `character_promotions` 必须使用 `source_agent: "gm"`，主 GM 只能写入非玩家权威的 promotion seed，且不会覆盖已有 preprocess/player profile。`gm_assistant:*` 不能直接应用 `character_promotions`，只能保留为主 GM 后续仲裁的 promotion suggestion 边界；当前仍未实现完整 GM 助手 side-thread runner。
 
 subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM 交互循环产物写入 `gm.output.json`（`gm_loop` 包装，内部为一个或多个 GM 输出），player/character 产物聚合写入 `actor.outputs.json`。`agent_outputs.py` 会校验 `gm.output.json`、`actor.outputs.json` 和 trace v2 的 `source_call_id` 对应关系后生成 `story.input.json`，并把 `loop_outputs`、`memory_deltas`、可见交互轨迹、私有事件计数和关键决策点整理给 story/critic 使用；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若 critic 要求 `revise` 或 `block`，本轮会记录到 `repair_history.jsonl`；若该 revise/block 报告提供 `system_iteration_suggestion`，会追加到卡片文件夹的 `.agent_runs/improvement_queue.jsonl`。
 

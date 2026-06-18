@@ -6,6 +6,8 @@ import copy
 import re
 from typing import Any, Iterable
 
+import agent_schemas
+
 
 HIDDEN_TEXT_KEYS = {
     "ai",
@@ -18,6 +20,16 @@ HIDDEN_TEXT_KEYS = {
     "private_notes",
     "world_truth",
 }
+VISIBILITY_GUARD_EXTRA_MARKER_KEYS = {
+    "gm_only_text",
+    "hidden_text",
+    "hidden_truth",
+    "internal_state",
+    "internal_thoughts",
+    "private_memory",
+    "private_notes",
+}
+HIDDEN_MARKER_KEYS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | VISIBILITY_GUARD_EXTRA_MARKER_KEYS
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
 CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
@@ -74,8 +86,17 @@ def _string_leaves(value: Any) -> list[str]:
     return []
 
 
-def _text_words(value: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9]+", value.lower())
+def _canonical_tokens(text: str) -> list[str]:
+    raw = str(text or "")
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+HIDDEN_MARKER_TOKENS = {
+    marker: tuple(_canonical_tokens(marker))
+    for marker in HIDDEN_MARKER_KEYS
+}
 
 
 def _has_non_ascii_text(value: str) -> bool:
@@ -147,7 +168,7 @@ def _hidden_phrases_from_text(value: str) -> set[str]:
             phrases.add(text.split(separator, 1)[1].strip())
     phrases.update(_cjk_hidden_clause_candidates(text))
 
-    words = _text_words(text)
+    words = _canonical_tokens(text)
     for size in range(4, min(8, len(words)) + 1):
         for index in range(0, len(words) - size + 1):
             phrases.add(" ".join(words[index:index + size]))
@@ -227,22 +248,46 @@ def redact_text(text: str, phrases: Iterable[str]) -> str:
     return redacted
 
 
-def _redact_value(value: Any, phrases: Iterable[str]) -> Any:
+def _contains_hidden_marker(value: Any) -> bool:
+    tokens = _canonical_tokens(str(value or ""))
+    if not tokens:
+        return False
+    for marker_tokens in HIDDEN_MARKER_TOKENS.values():
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                return True
+    return False
+
+
+def _redact_value(value: Any, phrases: Iterable[str], *, redact_markers: bool = False) -> Any:
     if isinstance(value, str):
-        return redact_text(value, phrases)
+        redacted = redact_text(value, phrases)
+        if redact_markers and _contains_hidden_marker(redacted):
+            return "[redacted]"
+        return redacted
     if isinstance(value, dict):
-        return {
-            key: _redact_value(child, phrases)
-            for key, child in value.items()
-        }
+        redacted = {}
+        for key, child in value.items():
+            if redact_markers and _contains_hidden_marker(key):
+                continue
+            redacted[key] = _redact_value(child, phrases, redact_markers=redact_markers)
+        return redacted
     if isinstance(value, list):
-        return [_redact_value(child, phrases) for child in value]
+        return [_redact_value(child, phrases, redact_markers=redact_markers) for child in value]
     return value
 
 
-def _redact_optional_field(item: Any, field: str, phrases: Iterable[str]) -> None:
+def _redact_optional_field(
+    item: Any,
+    field: str,
+    phrases: Iterable[str],
+    *,
+    redact_markers: bool = False,
+) -> None:
     if isinstance(item, dict) and field in item:
-        item[field] = _redact_value(item[field], phrases)
+        item[field] = _redact_value(item[field], phrases, redact_markers=redact_markers)
 
 
 def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
@@ -251,15 +296,18 @@ def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
     phrases = hidden_phrases(input_payload if isinstance(input_payload, dict) else {})
 
     for beat in _list(sanitized.get("scene_beats")):
-        _redact_optional_field(beat, "content", phrases)
-        _redact_optional_field(beat, "metadata", phrases)
+        _redact_optional_field(beat, "content", phrases, redact_markers=True)
+        _redact_optional_field(beat, "metadata", phrases, redact_markers=True)
     for event in _list(sanitized.get("events")):
-        _redact_optional_field(event, "content", phrases)
-        _redact_optional_field(event, "metadata", phrases)
+        _redact_optional_field(event, "content", phrases, redact_markers=True)
+        _redact_optional_field(event, "metadata", phrases, redact_markers=True)
     for call in _list(sanitized.get("actor_calls")):
-        _redact_optional_field(call, "prompt", phrases)
-        _redact_optional_field(call, "reason", phrases)
-        _redact_optional_field(call, "metadata", phrases)
+        _redact_optional_field(call, "prompt", phrases, redact_markers=True)
+        _redact_optional_field(call, "reason", phrases, redact_markers=True)
+        _redact_optional_field(call, "metadata", phrases, redact_markers=True)
+    for promotion in _list(sanitized.get("character_promotions")):
+        _redact_optional_field(promotion, "reason", phrases, redact_markers=True)
+        _redact_optional_field(promotion, "profile_seed", phrases, redact_markers=True)
 
     return sanitized
 

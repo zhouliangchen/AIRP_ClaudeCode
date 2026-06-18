@@ -51,6 +51,75 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("burns identity", text)
         self.assertIn("[redacted]", text)
 
+    def test_redacts_hidden_phrase_and_marker_from_character_promotions(self):
+        input_payload = {
+            "routed_input": {
+                "user_instruction_channel": "Hidden truth: the class rep reports to the secret council.",
+            },
+        }
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "character_promotions": [{
+                "name": "ClassRep",
+                "source_agent": "gm",
+                "reason": "world_truth: ClassRep now needs independent agency.",
+                "profile_seed": "Rule-bound monitor; the class rep reports to the secret council.",
+                "visibility": "character_private_and_gm",
+                "activation": "current_turn",
+            }],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
+        text = repr(sanitized).lower()
+
+        self.assertNotIn("secret council", text)
+        self.assertNotIn("world_truth", text)
+        self.assertIn("[redacted]", text)
+        self.assertEqual(sanitized["character_promotions"][0]["source_agent"], "gm")
+
+    def test_redacts_camel_case_hidden_markers_from_character_promotions(self):
+        markers = [
+            "gmOnly",
+            "WorldTruth",
+            "hiddenNote",
+            "privateMemory",
+            "outOfCharacter",
+        ]
+        for marker in markers:
+            with self.subTest(marker=marker):
+                gm_output = {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "character_promotions": [{
+                        "name": "ClassRep",
+                        "source_agent": "gm",
+                        "reason": f"{marker}: ClassRep now needs independent agency.",
+                        "profile_seed": f"{marker}: hidden seed for the class rep.",
+                        "visibility": "character_private_and_gm",
+                        "activation": "current_turn",
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                sanitized = self.guard.sanitize_gm_output(gm_output, {})
+                promotion = sanitized["character_promotions"][0]
+
+                self.assertEqual(promotion["reason"], "[redacted]")
+                self.assertEqual(promotion["profile_seed"], "[redacted]")
+                self.assertNotIn(marker.lower(), repr(promotion).lower())
+
     def test_sanitize_gm_output_does_not_mutate_originals(self):
         input_payload = {
             "hidden_facts": ["The mirror names traitors."],
@@ -103,6 +172,77 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("clock remembers blood", text)
         self.assertNotIn("hallway eats names", text)
         self.assertEqual(text.count("[redacted]"), 4)
+
+    def test_drops_camel_case_hidden_marker_keys_from_gm_metadata(self):
+        input_payload = {
+            "hidden_facts": ["The mirror names traitors."],
+        }
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [{
+                "content": "The classroom quiets.",
+                "metadata": {
+                    "hiddenNote": "drop this scene key",
+                    "playerName": "drop this scene player-name key",
+                    "safeNote": "The mirror names traitors.",
+                    "nested": {
+                        "WorldTruth": "drop this nested key",
+                        "playerName": "drop this nested scene player-name key",
+                        "ordinary": "visible",
+                    },
+                    "items": [{
+                        "gmOnly": "drop this listed key",
+                        "ordinary": "kept",
+                    }],
+                },
+            }],
+            "events": [{
+                "type": "npc_action",
+                "content": "The class rep writes a note.",
+                "metadata": {
+                    "worldTruth": "drop this event key",
+                    "playerName": "drop this event player-name key",
+                    "public": {
+                        "privateMemory": "drop this nested event key",
+                        "playerName": "drop this nested event player-name key",
+                        "safe": "The mirror names traitors.",
+                    },
+                },
+            }],
+            "actor_calls": [{
+                "call_id": "call-player-1",
+                "actor_id": "player",
+                "prompt": "React to the class rep.",
+                "reason": "The player can respond.",
+                "metadata": {
+                    "gmOnly": "drop this actor-call key",
+                    "playerName": "drop this actor-call player-name key",
+                    "public": [{
+                        "outOfCharacter": "drop this nested actor-call key",
+                        "playerName": "drop this nested actor-call player-name key",
+                        "safe": "visible",
+                    }],
+                },
+            }],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
+        scene_metadata = sanitized["scene_beats"][0]["metadata"]
+        event_metadata = sanitized["events"][0]["metadata"]
+        call_metadata = sanitized["actor_calls"][0]["metadata"]
+        serialized = repr([scene_metadata, event_metadata, call_metadata]).lower()
+
+        for marker in ("hiddennote", "worldtruth", "gmonly", "privatememory", "outofcharacter", "playername"):
+            self.assertNotIn(marker, serialized)
+        self.assertIn("[redacted]", repr(scene_metadata["safeNote"]))
+        self.assertIn("[redacted]", repr(event_metadata["public"]["safe"]))
+        self.assertEqual(scene_metadata["nested"]["ordinary"], "visible")
+        self.assertEqual(scene_metadata["items"][0]["ordinary"], "kept")
+        self.assertEqual(call_metadata["public"][0]["safe"], "visible")
 
     def test_redacts_cjk_hidden_phrase_with_punctuation_and_spaces(self):
         phrases = self.guard.hidden_phrases({
