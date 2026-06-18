@@ -31,6 +31,8 @@ HIDDEN_TEXT_KEYS = {
     "world_truth",
 }
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
+CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
+CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -68,6 +70,20 @@ def _text_words(value: str) -> list[str]:
 
 def _has_non_ascii_text(value: str) -> bool:
     return any(ord(char) > 127 and not char.isspace() for char in value)
+
+
+def _is_cjk_char(char: str) -> bool:
+    return (
+        "\u3400" <= char <= "\u4dbf"
+        or "\u4e00" <= char <= "\u9fff"
+        or "\uf900" <= char <= "\ufaff"
+        or "\u3040" <= char <= "\u30ff"
+        or "\uac00" <= char <= "\ud7af"
+    )
+
+
+def _has_cjk_text(value: str) -> bool:
+    return any(_is_cjk_char(char) for char in value)
 
 
 def _clean_hidden_phrase(value: str) -> str:
@@ -134,9 +150,24 @@ def _hidden_prompt_phrases(input_payload: dict) -> list[str]:
 def _redact_hidden_prompt_text(prompt: str, hidden_phrases: Iterable[str]) -> str:
     redacted = str(prompt or "")
     for phrase in hidden_phrases:
-        pattern = re.compile(re.escape(str(phrase)), re.IGNORECASE)
+        pattern = _hidden_phrase_pattern(str(phrase))
         redacted = pattern.sub("[redacted]", redacted)
     return redacted
+
+
+def _hidden_phrase_pattern(phrase: str) -> re.Pattern:
+    if _has_cjk_text(phrase):
+        units = [
+            char
+            for char in phrase
+            if not char.isspace() and char not in CJK_FUZZY_SEPARATOR_CHARS
+        ]
+        if units:
+            return re.compile(
+                CJK_FUZZY_SEPARATOR_RE.join(re.escape(char) for char in units),
+                re.IGNORECASE,
+            )
+    return re.compile(re.escape(str(phrase)), re.IGNORECASE)
 
 
 def _read_input(run_dir: Path) -> dict:

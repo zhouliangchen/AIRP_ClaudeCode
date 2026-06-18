@@ -241,6 +241,56 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("门后是梦境", serialized)
         self.assertIn("门后有光", serialized)
 
+    def test_actor_call_prompt_redacts_spaced_and_punctuated_cjk_hidden_phrase(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "我看向门后。",
+                "user_instruction_channel": "门后是梦境",
+            },
+            "hidden_facts": ["门后是梦境"],
+            "character_contexts": {"characters": [{"name": "SuLi"}]},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": (
+                            "你知道门后 是 梦境。"
+                            "也知道门后，是梦境。"
+                            "最后确认门后 是 梦境。"
+                            "只告诉玩家门后有光。"
+                        ),
+                        "reason": "Prompt contains fuzzy CJK hidden material.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            self.assertEqual(agent_key, "player")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "action", "target": "", "content": "我停在门前。"}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        serialized = json.dumps(actor_packets, ensure_ascii=False)
+        self.assertNotIn("门后 是 梦境", serialized)
+        self.assertNotIn("门后，是梦境", serialized)
+        self.assertNotIn("门后是梦境", serialized)
+        self.assertIn("门后有光", serialized)
+
     def test_perception_requests_are_sent_to_next_gm_step_once(self):
         gm_packets = []
 
