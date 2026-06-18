@@ -328,6 +328,80 @@ class AgentTurnLoopTest(unittest.TestCase):
         for actor_id in actor_ids:
             self.assertEqual(len(actor_outputs[actor_id]), 1)
 
+    def test_word_target_stop_reason_stops_after_one_gm_step(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The chapter reaches its target length."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "word_target",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(result["stop_reason"], "word_target")
+        self.assertEqual(result["gm_steps"], 1)
+        self.assertEqual(result["called_actors"], [])
+        self.assertEqual(len(calls), 1)
+
+    def test_word_target_stop_reason_drains_direct_actor_calls_first(self):
+        calls = []
+        actor_ids = ["character:Ada", "character:Bea"]
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The chapter closes after two reactions."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You give one final visible reaction.",
+                            "reason": "Terminal word target fanout.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You answer with one final gesture.",
+                            "reason": "Terminal word target fanout.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            self.assertIn(agent_key, actor_ids)
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} reacts once."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "character:Ada", "character:Bea"])
+        self.assertEqual(result["called_actors"], actor_ids)
+        self.assertEqual(result["stop_reason"], "word_target")
+        self.assertEqual(result["gm_steps"], 1)
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(sorted(actor_outputs), actor_ids)
+        self.assertEqual(len(actor_outputs["character:Ada"]), 1)
+        self.assertEqual(len(actor_outputs["character:Bea"]), 1)
+
     def test_decision_point_is_marked_after_direct_gm_actor_calls(self):
         calls = []
 

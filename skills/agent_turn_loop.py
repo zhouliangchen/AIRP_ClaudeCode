@@ -14,7 +14,7 @@ import agent_schemas
 
 MAX_LOOP_STEPS = 8
 GENERATED_TRANSFERS_PER_STEP = 4
-STOP_REASONS = {"player_decision", "complete", "max_steps"}
+STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 
 DispatchFn = Callable[[str, dict], dict]
 
