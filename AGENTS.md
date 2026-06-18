@@ -47,4 +47,4 @@ When resolving recurring issues such as encoding problems, path naming mistakes,
 
 ## Commit & Pull Request Guidelines
 
-Recent history uses concise prefixes such as `fix:`, `docs:`, and `test:`. Keep commit subjects short and specific, for example `fix: block delivery when agent artifacts are missing`. PRs should describe runtime impact, list verification commands, and mention any frontend or LAN-access checks. Do not commit card folders, generated images, `.agent_runs/`, memory files, or local secrets.
+When creating git commits for this repository, write commit messages in a standard Simplified Chinese format. Recent history uses concise prefixes such as `fix:`, `docs:`, and `test:`; keep the prefix if it helps, but write the subject and body in clear Simplified Chinese, for example `fix: 阻止缺失 agent 产物时继续交付`. Keep subjects short and specific. PRs should describe runtime impact, list verification commands, and mention any frontend or LAN-access checks. Do not commit card folders, generated images, `.agent_runs/`, memory files, or local secrets.
