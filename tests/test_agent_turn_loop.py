@@ -19,6 +19,10 @@ def load_module(name):
     return module
 
 
+def json_copy(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 class AgentTurnLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -133,6 +137,245 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(len(gm_outputs["outputs"]), 2)
         self.assertIn("player", actor_outputs)
         self.assertIn("character:SuLi", actor_outputs)
+
+    def test_actor_call_prompt_redacts_hidden_phrase_without_marker_words(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I ask about the pendant.",
+                "user_instruction_channel": "Hidden truth: the pendant burns identity.",
+            },
+            "user_instruction_channel": "Never reveal that the moon is painted glass.",
+            "gm_only_hidden_settings": [{"fact": "The teacher is an illusion."}],
+            "hidden_facts": {"pendant": "The pendant burns identity."},
+            "world_truth": "The moon is painted glass.",
+            "gm_only_recent_chat": [{"content": "The clock remembers blood."}],
+            "recent_chat": [{"ai": "GM-only foreshadowing says the hallway eats names."}],
+            "character_contexts": {"characters": [{"name": "SuLi"}]},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": (
+                            "You sense the pendant burns identity. "
+                            "The hallway eats names. "
+                            "The clock remembers blood. "
+                            "Ask SuLi what she sees."
+                        ),
+                        "reason": "Prompt contains hidden material to redact.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            self.assertEqual(agent_key, "player")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "action", "target": "", "content": "I keep my voice low."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        serialized = json.dumps(actor_packets, ensure_ascii=False).lower()
+        self.assertNotIn("the pendant burns identity", serialized)
+        self.assertNotIn("hallway eats names", serialized)
+        self.assertNotIn("clock remembers blood", serialized)
+        self.assertIn("ask suli what she sees", serialized)
+
+    def test_perception_requests_are_sent_to_next_gm_step_once(self):
+        gm_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_packets.append(json_copy(packet))
+                step = len(gm_packets)
+                if step == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You inspect the pendant.",
+                            "reason": "Player asks to perceive.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue" if step == 2 else "complete",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{
+                    "type": "perceive_request",
+                    "target": "pendant",
+                    "content": "I check whether the pendant is warm.",
+                }],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(gm_packets[0]["pending_perception_requests"], [])
+        self.assertEqual(len(gm_packets[1]["pending_perception_requests"]), 1)
+        self.assertEqual(len(gm_packets[1]["world_state"]["pending_perception_requests"]), 1)
+        self.assertEqual(
+            gm_packets[1]["pending_perception_requests"][0]["content"],
+            "I check whether the pendant is warm.",
+        )
+        self.assertEqual(gm_packets[2]["pending_perception_requests"], [])
+        self.assertEqual(gm_packets[2]["world_state"]["pending_perception_requests"], [])
+
+    def test_world_state_delta_is_visible_to_later_gm_steps(self):
+        gm_packets = []
+        delta = {"scope": "classroom", "fact": "The back door is locked."}
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            gm_packets.append(json_copy(packet))
+            if len(gm_packets) == 1:
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The lock clicks."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [delta],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            return {
+                "agent": "gm",
+                "scene_beats": [],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(gm_packets[0]["world_state"].get("world_state_delta", []), [])
+        self.assertIn(delta, gm_packets[1]["world_state"]["world_state_delta"])
+
+    def test_dialogue_to_unregistered_character_is_not_routed_to_subagent(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "You call toward someone not in the registry.",
+                        "reason": "Player speaks to an unregistered target.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{
+                    "type": "dialogue",
+                    "target": "character:NotRegistered",
+                    "content": "Are you there?",
+                }],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player"])
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(sorted(actor_outputs), ["player"])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        event_types = [event["type"] for event in trace["events"]]
+        self.assertIn("dialogue", event_types)
+        self.assertNotIn("dialogue_transfer", event_types)
+
+    def test_generated_transfer_source_call_id_is_ascii_safe_for_non_ascii_actor(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {"role_channel": "I ask Su Li for help.", "user_instruction_channel": ""},
+            "character_contexts": {"characters": [{"name": "苏黎"}]},
+        })
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "You ask Su Li for help.",
+                        "reason": "Player asks a registered non-ASCII character.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            if agent_key == "player":
+                return {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "dialogue", "target": "character:苏黎", "content": "Can you help?"}],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:苏黎")
+            return {
+                "agent": "character",
+                "agent_id": "character:苏黎",
+                "character_name": "苏黎",
+                "events": [{"type": "action", "target": "", "content": "I step beside you."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        summary = load_module("agent_interactions").summarize_for_story_input(self.run_dir)
+        source_ids = [
+            event["source_call_id"]
+            for event in summary["visible_events"]
+            if event["content"] == "I step beside you."
+        ]
+        self.assertEqual(len(source_ids), 1)
+        self.assertRegex(source_ids[0], r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$")
 
     def test_same_actor_can_be_called_multiple_times_from_direct_and_perception_continuation(self):
         calls = []

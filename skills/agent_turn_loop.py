@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+import hashlib
+import re
 from pathlib import Path
 from typing import Any, Callable, Deque, Iterable
 
@@ -17,6 +19,17 @@ GENERATED_TRANSFERS_PER_STEP = 4
 STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 
 DispatchFn = Callable[[str, dict], dict]
+HIDDEN_TEXT_KEYS = {
+    "ai",
+    "gm",
+    "gm_only",
+    "gm_only_text",
+    "hidden",
+    "hidden_text",
+    "private",
+    "private_notes",
+    "world_truth",
+}
 
 
 class AgentTurnLoopError(RuntimeError):
@@ -29,6 +42,85 @@ def _dict(value: Any) -> dict:
 
 def _list(value: Any) -> list:
     return value if isinstance(value, list) else []
+
+
+def _string_leaves(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, dict):
+        texts = []
+        for child in value.values():
+            texts.extend(_string_leaves(child))
+        return texts
+    if isinstance(value, list):
+        texts = []
+        for child in value:
+            texts.extend(_string_leaves(child))
+        return texts
+    return []
+
+
+def _text_words(value: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9]+", value.lower())
+
+
+def _hidden_phrases_from_text(value: str) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    phrases = {text}
+    if ":" in text:
+        phrases.add(text.split(":", 1)[1].strip())
+
+    words = _text_words(text)
+    for size in range(4, min(8, len(words)) + 1):
+        for index in range(0, len(words) - size + 1):
+            phrases.add(" ".join(words[index:index + size]))
+    return {phrase.strip(" .,:;!?") for phrase in phrases if len(phrase.strip(" .,:;!?")) >= 12}
+
+
+def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
+    texts = []
+    for item in _list(input_payload.get("recent_chat")):
+        if isinstance(item, str):
+            if "gm" in item.lower() or "hidden" in item.lower() or "private" in item.lower():
+                texts.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        hidden_visibility = str(item.get("visibility", "")).lower() in {"gm_only", "hidden", "private"}
+        for key, value in item.items():
+            if hidden_visibility or str(key).lower() in HIDDEN_TEXT_KEYS:
+                texts.extend(_string_leaves(value))
+    return texts
+
+
+def _hidden_prompt_phrases(input_payload: dict) -> list[str]:
+    routed = _dict(input_payload.get("routed_input"))
+    hidden_sources = []
+    hidden_sources.extend(_string_leaves(routed.get("user_instruction_channel")))
+    hidden_sources.extend(_string_leaves(input_payload.get("user_instruction_channel")))
+    hidden_sources.extend(_string_leaves(input_payload.get("gm_only_hidden_settings")))
+    hidden_sources.extend(_string_leaves(input_payload.get("hidden_facts")))
+    hidden_sources.extend(_string_leaves(input_payload.get("world_truth")))
+    hidden_sources.extend(_string_leaves(input_payload.get("gm_only_recent_chat")))
+    hidden_sources.extend(_string_leaves(input_payload.get("hidden_recent_chat")))
+    hidden_sources.extend(_string_leaves(input_payload.get("private_recent_chat")))
+    hidden_sources.extend(_recent_chat_hidden_texts(input_payload))
+
+    phrases = set()
+    for text in hidden_sources:
+        phrases.update(_hidden_phrases_from_text(text))
+    return sorted(phrases, key=lambda phrase: (-len(phrase), phrase))
+
+
+def _redact_hidden_prompt_text(prompt: str, hidden_phrases: Iterable[str]) -> str:
+    redacted = str(prompt or "")
+    for phrase in hidden_phrases:
+        pattern = re.compile(re.escape(str(phrase)), re.IGNORECASE)
+        redacted = pattern.sub("[redacted]", redacted)
+    return redacted
 
 
 def _read_input(run_dir: Path) -> dict:
@@ -62,6 +154,10 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
     return result
 
 
+def _registered_transfer_targets(input_payload: dict) -> set[str]:
+    return {"player", * _characters_by_actor_id(input_payload).keys()}
+
+
 def _participants(input_payload: dict) -> list[str]:
     participants = ["gm", "player"]
     for actor_id in sorted(_characters_by_actor_id(input_payload)):
@@ -91,6 +187,8 @@ def _initial_world_state(input_payload: dict) -> dict:
     world_state.setdefault("gm_only_hidden_settings", input_payload.get("gm_only_hidden_settings", []))
     world_state.setdefault("visible_events", [])
     world_state.setdefault("pending_perception_requests", [])
+    if not isinstance(world_state.get("world_state_delta"), list):
+        world_state["world_state_delta"] = []
     return world_state
 
 
@@ -187,8 +285,17 @@ def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
     counts[actor_id] = counts.get(actor_id, 0) + 1
     if actor_id == "player":
         return f"call-player-{counts[actor_id]}"
-    safe = agent_run.safe_name(actor_id.split(":", 1)[-1])
+    safe = _ascii_actor_slug(actor_id)
     return f"call-character-{safe}-{counts[actor_id]}"
+
+
+def _ascii_actor_slug(actor_id: str) -> str:
+    raw = str(actor_id).split(":", 1)[-1]
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    if not slug or not slug[0].isalpha():
+        digest = hashlib.sha1(str(actor_id).encode("utf-8")).hexdigest()[:8]
+        slug = f"Actor_{digest}"
+    return slug
 
 
 def _dialogue_transfer_call(
@@ -256,20 +363,31 @@ def _update_visible_events(run_dir: Path, world_state: dict) -> None:
 
 
 def _gm_packet(run_dir: Path, world_state: dict, step_index: int) -> dict:
+    pending_perception_requests = list(world_state.get("pending_perception_requests") or [])
+    world_state["pending_perception_requests"] = []
+    packet_world_state = dict(world_state)
+    packet_world_state["pending_perception_requests"] = pending_perception_requests
     return {
         "step": step_index,
-        "world_state": world_state,
+        "world_state": packet_world_state,
         "trace_summary": agent_interactions.summarize_for_story_input(run_dir),
-        "pending_perception_requests": list(world_state.get("pending_perception_requests") or []),
+        "pending_perception_requests": pending_perception_requests,
     }
 
 
-def _actor_packet(input_payload: dict, world_state: dict, actor_id: str, prompt: str) -> dict:
+def _actor_packet(
+    input_payload: dict,
+    world_state: dict,
+    actor_id: str,
+    prompt: str,
+    hidden_phrases: Iterable[str],
+) -> dict:
+    safe_prompt = _redact_hidden_prompt_text(prompt, hidden_phrases)
     return agent_projection.project_actor_context(
         actor_id,
         world_state,
         _actor_state(actor_id, input_payload),
-        prompt,
+        safe_prompt,
     )
 
 
@@ -303,6 +421,17 @@ def _mark_decision(run_dir: Path, decision_point: Any, fallback_reason: str) -> 
     return {"reason": reason, "options": options}
 
 
+def _apply_world_state_delta(world_state: dict, gm_output: dict) -> None:
+    delta = gm_output.get("world_state_delta", [])
+    if not isinstance(delta, list) or not delta:
+        return
+    accumulated = world_state.setdefault("world_state_delta", [])
+    if not isinstance(accumulated, list):
+        accumulated = []
+        world_state["world_state_delta"] = accumulated
+    accumulated.extend(delta)
+
+
 def run_interactive_loop(
     run_dir: str | Path,
     dispatch: DispatchFn,
@@ -317,6 +446,8 @@ def run_interactive_loop(
     step_limit = max(1, int(max_steps or 0))
     generated_transfer_limit = step_limit * GENERATED_TRANSFERS_PER_STEP
     world_state = _initial_world_state(input_payload)
+    hidden_phrases = _hidden_prompt_phrases(input_payload)
+    registered_transfer_targets = _registered_transfer_targets(input_payload)
     gm_outputs: list[dict] = []
     actor_outputs: dict[str, list[dict]] = {}
     called_actors: list[str] = []
@@ -329,6 +460,7 @@ def run_interactive_loop(
     for step_index in range(step_limit):
         gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
         gm_outputs.append(gm_output)
+        _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
         _update_visible_events(root, world_state)
 
@@ -343,7 +475,13 @@ def run_interactive_loop(
             if not _important_actor(actor_id):
                 continue
             call_id = str(call.get("call_id") or "") or _safe_actor_call_id(actor_id, generated_call_counts)
-            packet = _actor_packet(input_payload, world_state, actor_id, str(call.get("prompt") or ""))
+            packet = _actor_packet(
+                input_payload,
+                world_state,
+                actor_id,
+                str(call.get("prompt") or ""),
+                hidden_phrases,
+            )
             actor_output = _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
             called_actors.append(actor_id)
             actor_outputs.setdefault(actor_id, []).append(actor_output)
@@ -356,7 +494,11 @@ def run_interactive_loop(
                 target = str(event.get("target") or "")
                 content = _event_content(event)
 
-                if event_type == "dialogue" and _important_actor(target) and target != actor_id:
+                if (
+                    event_type == "dialogue"
+                    and target in registered_transfer_targets
+                    and target != actor_id
+                ):
                     _record_dialogue_transfer(root, actor_id, target, content, call_id)
                     transfer_key = (actor_id, target, content)
                     if transfer_key not in seen_transfers:
