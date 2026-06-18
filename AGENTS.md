@@ -27,12 +27,24 @@ This repository runs a Claude Code-driven local RP engine. Core Python runtime l
 
 ## Coding Style & Naming Conventions
 
-Use Python standard-library code unless the project already depends on a package. Keep file protocols explicit JSON objects with stable keys and UTF-8 encoding. Prefer small helper modules over hidden behavior in `round_prepare.py` or `round_deliver.py`. Use snake_case for Python functions and files; preserve existing mixed Chinese/English user-facing text where it is already part of the UI or prompt contract.
+Use Python standard-library code unless the project already depends on a package. Keep file protocols explicit JSON objects with stable keys and UTF-8 encoding. Prefer small helper modules over hidden behavior in `round_prepare.py` or `round_deliver.py`. Use snake_case for Python functions and files; preserve existing mixed Chinese/English user-facing text only when it is part of the tested UI, runtime output, or prompt contract.
 
 ## Testing Guidelines
 
 Add focused `unittest` coverage for every behavior change. For multi-agent changes, test missing artifacts, schema rejection, semantic input routing, context isolation, interaction traces, `repair_history.jsonl`, scheduled `memory_summaries/`, and preservation of raw player input. Keep live model calls out of tests; use temporary directories and fixtures such as `tests/fixtures/multi_agent_round/`.
 
+## Project Agent Memory
+
+Maintain technical documentation under `docs/` and keep `README.md` as the top-level user guide. At the start of every non-trivial project task, read `README.md` and the relevant files under `docs/`, then review the user's request item by item before acting. User instructions may be unreasonable, inaccurate, or imprecise; reject unsafe or incoherent requests, correct inaccurate wording into a technically sound objective, and execute the corrected objective.
+
+After each task, update `README.md` and the relevant `docs/` files when the implementation, workflow, commands, or architecture changed. If no documentation needs to change, state that explicitly in the final response.
+
+This project is still in active development. Do not add compatibility layers for old generated game files, old runtime artifacts, or obsolete internal APIs unless the user explicitly requests it. Prefer simple current-format logic over backward-compatible branches.
+
+Use Simplified Chinese for `README.md` and technical documents under `docs/` by default; English technical terms are acceptable. Use idiomatic English for `docs/superpowers/**` because those files are Superpowers specs, plans, and workflow records. Use English for other repository instruction files, including `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/*.md`; do not mix Chinese and English in English-required files unless preserving an existing tested UI or prompt contract is unavoidable.
+
+When resolving recurring issues such as encoding problems, path naming mistakes, shell-specific behavior, or repeated toolchain failures, record the confirmed solution in project-level memory or the relevant technical document so future tasks do not repeat the same failure.
+
 ## Commit & Pull Request Guidelines
 
-Recent history uses concise prefixes such as `fix:`, `docs:`, and `test:` with Chinese summaries. Follow that style, for example `fix: 阻断缺失agent产物的交付`. PRs should describe runtime impact, list verification commands, and mention any frontend or LAN-access checks. Do not commit card folders, generated images, `.agent_runs/`, memory files, or local secrets.
+Recent history uses concise prefixes such as `fix:`, `docs:`, and `test:`. Keep commit subjects short and specific, for example `fix: block delivery when agent artifacts are missing`. PRs should describe runtime impact, list verification commands, and mention any frontend or LAN-access checks. Do not commit card folders, generated images, `.agent_runs/`, memory files, or local secrets.
