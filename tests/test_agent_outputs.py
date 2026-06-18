@@ -331,6 +331,7 @@ class AgentOutputsTest(unittest.TestCase):
                     "visibility": "world_visible",
                     "type": "dialogue",
                     "content": "Stay close.",
+                    "target": "player",
                     "source_call_id": "call-character-Ada-1",
                 },
                 {
@@ -382,6 +383,21 @@ class AgentOutputsTest(unittest.TestCase):
         _write_json(self.run_dir / "story.input.json", sentinel)
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         trace["status"] = "definitely_not_a_trace_status"
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "status"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
+
+    def test_build_story_input_rejects_non_exact_raw_trace_status_without_writing_story_input(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        trace["status"] = " INTERACTING "
         _write_json(self.run_dir / "interaction.trace.json", trace)
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "status"):
@@ -706,6 +722,65 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_trace_backed_event_with_changed_safe_target(self):
+        sentinel = {"existing": "do not replace"}
+        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada hears the greeting."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "actor.outputs.json",
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [
+                            {"type": "dialogue", "target": "character:Eve", "content": "Hello."}
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "player", "character:Ada", "character:Eve"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Hello.",
+            target="character:Ada",
+            source_call_id="call-player-1",
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "target"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            sentinel,
+        )
 
     def test_build_story_input_accepts_trace_backed_actor_output_without_persisted_gm_call(self):
         _write_json(

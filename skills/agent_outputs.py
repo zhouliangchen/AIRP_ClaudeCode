@@ -16,6 +16,7 @@ import agent_schemas
 
 MAX_CRITIC_RETRIES = 2
 ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
+TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
 
 
 class AgentOutputError(RuntimeError):
@@ -90,14 +91,20 @@ def _validate_raw_trace(root: Path) -> Dict[str, Any]:
 
     status = trace.get("status")
     if not isinstance(status, str):
-        raise AgentOutputError(f"{path}.status: must be a non-empty string")
-    normalized_status = status.strip().lower()
-    if not normalized_status or normalized_status in {"missing", "invalid"}:
-        raise AgentOutputError(f"{path}.status: required valid trace status, got {status!r}")
-    if normalized_status not in ALLOWED_RAW_TRACE_STATUSES:
+        raise AgentOutputError(f"{path}.status: must be exactly one of {sorted(ALLOWED_RAW_TRACE_STATUSES)!r}")
+    if status not in ALLOWED_RAW_TRACE_STATUSES:
         raise AgentOutputError(f"{path}.status: unsupported trace status {status!r}")
 
     return trace
+
+
+def _trace_preserved_target(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    target = value.strip()
+    if TRACE_PRESERVED_TARGET_RE.fullmatch(target):
+        return target
+    return ""
 
 
 def _load_required(path: Path, validator) -> Dict[str, Any]:
@@ -186,8 +193,8 @@ def _trace_source_call_ids_by_actor(raw_trace: Dict[str, Any]) -> Dict[str, set[
     return source_call_ids
 
 
-def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str]]:
-    event_sources: Counter[tuple[str, str, str]] = Counter()
+def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, str, str]]:
+    event_sources: Counter[tuple[str, str, str, str]] = Counter()
     for event in raw_trace["events"]:
         if not isinstance(event, dict):
             continue
@@ -195,6 +202,7 @@ def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, s
         event_type = event.get("type")
         content = event.get("content")
         source_call_id = event.get("source_call_id")
+        target = event.get("target")
         if (
             not isinstance(actor, str)
             or not isinstance(event_type, str)
@@ -205,7 +213,7 @@ def _trace_event_sources(raw_trace: Dict[str, Any]) -> Counter[tuple[str, str, s
         actor_key = actor.strip()
         type_key = event_type.strip()
         if actor_key and type_key and source_call_id.strip():
-            event_sources[(actor_key, type_key, content)] += 1
+            event_sources[(actor_key, type_key, content, _trace_preserved_target(target))] += 1
     return event_sources
 
 
@@ -229,12 +237,14 @@ def _validate_actor_output_provenance(
             )
         for output_index, output in enumerate(outputs):
             for event_index, event in enumerate(output["events"]):
-                key = (actor_id, event["type"], event["content"])
+                preserved_target = _trace_preserved_target(event.get("target"))
+                key = (actor_id, event["type"], event["content"], preserved_target)
                 if event_sources[key] <= 0:
                     raise AgentOutputError(
                         f"{context}[{output_index}].events[{event_index}]: actor event is not backed by "
                         f"raw trace source_call_id event "
-                        f"(actor={actor_id!r}, type={event['type']!r}, content={event['content']!r})"
+                        f"(actor={actor_id!r}, type={event['type']!r}, target={preserved_target!r}, "
+                        f"content={event['content']!r})"
                     )
                 event_sources[key] -= 1
 
