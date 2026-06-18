@@ -509,7 +509,7 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
                     continue
                 if event_type == "dialogue" and not line:
                     line = content
-                elif event_type != "dialogue" and not aside:
+                elif event_type == "perceive_request" and not aside:
                     aside = content[:500]
                 if line and aside:
                     break

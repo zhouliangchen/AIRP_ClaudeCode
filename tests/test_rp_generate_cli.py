@@ -1142,6 +1142,12 @@ class RpGenerateCliTest(unittest.TestCase):
                                     "content": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
                                     "metadata": {},
                                 },
+                                {
+                                    "type": "memory_delta",
+                                    "target": "self",
+                                    "content": "\u6211\u8bb0\u4f4f\u4e86\u8fd9\u4ef6\u4e8b\u4e0d\u80fd\u544a\u8bc9\u4ed6\u3002",
+                                    "metadata": {},
+                                },
                             ],
                             "stop_reason": "continue",
                         }
@@ -1164,6 +1170,53 @@ class RpGenerateCliTest(unittest.TestCase):
             '"source": "subagent"',
             normalized["content"],
         )
+        self.assertNotIn("\u4e0d\u80fd\u544a\u8bc9\u4ed6", normalized["content"])
+
+    def test_normalize_story_output_does_not_expose_private_actor_events_as_dialogue_aside(self):
+        story = {
+            "content": "<content>你靠近苏黎。</content><summary>接触</summary><options>继续</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "loop_outputs": {
+                "actors": {
+                    "character:SuLi": [
+                        {
+                            "agent": "character",
+                            "agent_id": "character:SuLi",
+                            "character_name": "SuLi",
+                            "events": [
+                                {
+                                    "type": "dialogue",
+                                    "target": "player",
+                                    "content": "Where did you get that?",
+                                    "metadata": {},
+                                },
+                                {
+                                    "type": "memory_delta",
+                                    "target": "self",
+                                    "content": "I must not tell him about the old ritual.",
+                                    "metadata": {},
+                                },
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
+                }
+            }
+        }
+
+        normalized = self.module._normalize_story_output(story, story_input)
+
+        self.assertEqual(normalized["character_dialogues"], [
+            {
+                "name": "SuLi",
+                "source": "subagent",
+                "line": "Where did you get that?",
+            }
+        ])
+        self.assertNotIn("old ritual", normalized["content"])
 
     def test_story_preflight_rejects_third_person_when_second_person_required(self):
         story = {
