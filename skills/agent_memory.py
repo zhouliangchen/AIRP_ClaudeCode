@@ -159,8 +159,6 @@ def _prepare_actor_memory_delta(
 ) -> tuple[Path, str, list[str], str, str] | None:
     if not isinstance(items, list):
         raise MemoryIngestionError(f"{path}: actor memory deltas must be a list")
-    if not items:
-        return None
 
     actor_id = str(agent_id or "").strip()
     if actor_id == "player":
@@ -175,11 +173,14 @@ def _prepare_actor_memory_delta(
     else:
         raise MemoryIngestionError(f"{path}: unsupported actor memory id {actor_id}")
 
+    if not items:
+        return None
+
+    texts = [_validate_actor_delta(item, f"{path}[{index}]") for index, item in enumerate(items)]
     key = f"{round_id}:{normalized_id}"
     if key in ledger:
         return None
 
-    texts = [_validate_actor_delta(item, f"{path}[{index}]") for index, item in enumerate(items)]
     return recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts), key, normalized_id
 
 
@@ -320,13 +321,15 @@ def _as_text_list(value: Any) -> list[str]:
 
 
 def _contains_forbidden_marker(text: str) -> str:
-    lowered = str(text or "").lower()
-    normalized = re.sub(r"[\s-]+", "_", lowered)
+    raw = str(text or "")
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw)
+    lowered = camel_separated.lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
     for marker in ACTOR_FORBIDDEN_MARKERS:
-        if marker in lowered or marker in normalized:
+        marker_compact = re.sub(r"[^a-z0-9]+", "", marker)
+        if marker in lowered or marker in normalized or marker_compact in compact:
             return marker
-    if "gm-only" in lowered:
-        return "gm_only"
     return ""
 
 
@@ -523,8 +526,8 @@ def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str:
         world_items = []
     if world_items:
         key = f"{round_id}:world"
+        texts = [_world_text(item, f"memory_deltas.world[{index}]") for index, item in enumerate(world_items)]
         if key not in next_ledger:
-            texts = [_world_text(item, f"memory_deltas.world[{index}]") for index, item in enumerate(world_items)]
             pending_writes.append((
                 card / "memory" / "world_delta.md",
                 "# World State Deltas\n",

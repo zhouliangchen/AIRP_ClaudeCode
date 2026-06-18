@@ -299,6 +299,53 @@ class AgentSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
                     self.agent_schemas.validate_actor_output(payload)
 
+    def test_actor_output_rejects_camel_hidden_markers_in_metadata_and_content(self):
+        base = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [
+                {
+                    "type": "memory_delta",
+                    "target": "self",
+                    "content": "I remember the archive door.",
+                    "metadata": {},
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        for marker, expected in (
+            ("gmOnly", "gm_only"),
+            ("worldTruth", "world_truth"),
+            ("hiddenNote", "hidden_note"),
+        ):
+            with self.subTest(marker=marker, location="metadata_value"):
+                payload = dict(base)
+                event = dict(base["events"][0])
+                event["metadata"] = {"source": marker}
+                payload["events"] = [event]
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                    self.agent_schemas.validate_actor_output(payload)
+
+            with self.subTest(marker=marker, location="metadata_key"):
+                payload = dict(base)
+                event = dict(base["events"][0])
+                event["metadata"] = {marker: "hidden fact"}
+                payload["events"] = [event]
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "forbidden"):
+                    self.agent_schemas.validate_actor_output(payload)
+
+            with self.subTest(marker=marker, location="content"):
+                payload = dict(base)
+                event = dict(base["events"][0])
+                event["content"] = f"I should not persist {marker} knowledge."
+                payload["events"] = [event]
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                    self.agent_schemas.validate_actor_output(payload)
+
     def test_valid_story_output_preserves_character_dialogue_metadata(self):
         payload = {
             "content": "Ada lifted the lamp. \"Stay close,\" she said.",

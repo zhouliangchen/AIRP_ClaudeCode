@@ -106,10 +106,14 @@ def _require_agent(payload: Dict[str, Any], expected: str, path: str = "") -> st
 
 
 def _forbidden_actor_marker(text: str) -> str:
-    lowered = str(text or "").lower()
-    normalized = re.sub(r"[\s-]+", "_", lowered)
+    raw = str(text or "")
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw)
+    lowered = camel_separated.lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
     for marker in FORBIDDEN_ACTOR_KEYS:
-        if marker in lowered or marker in normalized:
+        marker_compact = re.sub(r"[^a-z0-9]+", "", marker)
+        if marker in lowered or marker in normalized or marker_compact in compact:
             return marker
     return ""
 
@@ -120,7 +124,7 @@ def _reject_forbidden_keys(value: Any, path: str = "") -> None:
             child_path = _path(path, str(key))
             marker = _forbidden_actor_marker(str(key))
             if marker:
-                raise ValidationError(f"{child_path} is forbidden in actor output")
+                raise ValidationError(f"{child_path}: forbidden actor marker {marker}")
             _reject_forbidden_keys(child, child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -184,9 +188,12 @@ def _normalize_gm_event(item: Any, path: str) -> Dict[str, Any]:
 
 def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
+    actor_id = _require_str(data, "actor_id", path).strip()
+    if not actor_id:
+        raise ValidationError(f"{_path(path, 'actor_id')} must not be blank")
     normalized = {
         "call_id": _require_str(data, "call_id", path),
-        "actor_id": _require_str(data, "actor_id", path),
+        "actor_id": actor_id,
         "prompt": _require_str(data, "prompt", path),
         "reason": _require_str(data, "reason", path),
     }

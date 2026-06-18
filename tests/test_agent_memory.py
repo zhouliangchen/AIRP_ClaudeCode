@@ -165,6 +165,38 @@ class AgentMemoryTest(unittest.TestCase):
 
                 self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
 
+    def test_actor_memory_rejects_camel_hidden_markers_in_event_content(self):
+        for marker, expected in (
+            ("gmOnly", "gm_only"),
+            ("worldTruth", "world_truth"),
+            ("hiddenNote", "hidden_note"),
+        ):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                run_dir = card / ".agent_runs" / "round-000001"
+                _write_json(
+                    run_dir / "story.input.json",
+                    {
+                        "round_id": "round-000001",
+                        "memory_deltas": {
+                            "actors": {
+                                "player": [
+                                    {
+                                        "type": "memory_delta",
+                                        "content": f"I should not persist {marker} knowledge.",
+                                        "target": "self",
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, expected):
+                    self.agent_memory.ingest_memory_deltas(card, run_dir)
+
+                self.assertFalse((card / "memory" / "player" / "recent.md").exists())
+
     def test_ingest_memory_deltas_rejects_legacy_player_and_character_branches(self):
         _write_json(
             self.run_dir / "story.input.json",
@@ -232,6 +264,24 @@ class AgentMemoryTest(unittest.TestCase):
                 self.assertFalse((card / "memory" / "player" / "recent.md").exists())
                 self.assertFalse((card / "memory" / ".agent_memory_ingested.json").exists())
 
+    def test_ingest_memory_deltas_rejects_invalid_empty_actor_id(self):
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": "round-000001",
+                "memory_deltas": {
+                    "actors": {
+                        "gm_only": [],
+                    },
+                },
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "gm_only"):
+            self.agent_memory.ingest_memory_deltas(self.card, self.run_dir)
+
+        self.assertFalse((self.card / "memory" / ".agent_memory_ingested.json").exists())
+
     def test_actor_memory_rejects_old_item_shapes_under_actors(self):
         for item in ({"text": "old player memory"}, {"fact": "old player fact"}, "old player string"):
             with self.subTest(item=item), tempfile.TemporaryDirectory() as tmp:
@@ -289,6 +339,36 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
         self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
         self.assertFalse((self.card / "memory" / "world_delta.md").exists())
+
+    def test_ingested_ledger_does_not_skip_current_actor_or_world_validation(self):
+        self.agent_memory.ingest_memory_deltas(
+            self.card,
+            self.run_dir,
+            date_str="2026-06-16 12:00",
+        )
+        story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+
+        malformed_actor = json.loads(json.dumps(story_input))
+        malformed_actor["memory_deltas"]["actors"]["player"] = [{"text": "old player memory shape"}]
+        _write_json(self.run_dir / "story.input.json", malformed_actor)
+
+        with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "type"):
+            self.agent_memory.ingest_memory_deltas(
+                self.card,
+                self.run_dir,
+                date_str="2026-06-16 12:01",
+            )
+
+        malformed_world = json.loads(json.dumps(story_input))
+        malformed_world["memory_deltas"]["world"] = [{"scope": "room"}]
+        _write_json(self.run_dir / "story.input.json", malformed_world)
+
+        with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, "fact"):
+            self.agent_memory.ingest_memory_deltas(
+                self.card,
+                self.run_dir,
+                date_str="2026-06-16 12:02",
+            )
 
     def test_ingest_memory_deltas_rolls_back_first_write_when_later_write_fails(self):
         story_input = {

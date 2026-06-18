@@ -56,6 +56,28 @@ def _expected_outputs(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return expected
 
 
+def _validate_actor_key(actor_id: Any, context: str) -> str:
+    actor_key = str(actor_id or "").strip()
+    if actor_key == "player":
+        return actor_key
+    if actor_key.startswith("character:") and actor_key.split(":", 1)[1].strip():
+        return actor_key
+    raise AgentOutputError(f"{context}: unsupported actor id {actor_key or '<blank>'}")
+
+
+def _require_called_actor_outputs(
+    gm_path: Path,
+    gm_outputs: list[Dict[str, Any]],
+    actor_outputs: Dict[str, list[Dict[str, Any]]],
+) -> None:
+    for gm_index, gm_output in enumerate(gm_outputs):
+        for call_index, call in enumerate(gm_output.get("actor_calls", [])):
+            context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}].actor_id"
+            actor_id = _validate_actor_key(call.get("actor_id"), context)
+            if not actor_outputs.get(actor_id):
+                raise AgentOutputError(f"{context}: missing actor output for {actor_id}")
+
+
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
     gm_path = root / "gm.output.json"
     actor_path = root / "actor.outputs.json"
@@ -78,7 +100,7 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
 
     normalized_actor_outputs = {}
     for actor_id, outputs in actor_outputs.items():
-        actor_key = str(actor_id)
+        actor_key = _validate_actor_key(actor_id, f"{actor_path}.{actor_id}")
         actor_context = f"{actor_path}.{actor_key}"
         if not isinstance(outputs, list):
             raise AgentOutputError(f"{actor_context}: must be a list")
@@ -94,6 +116,8 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
                 )
             normalized_outputs.append(normalized)
         normalized_actor_outputs[actor_key] = normalized_outputs
+
+    _require_called_actor_outputs(gm_path, normalized_gm_outputs, normalized_actor_outputs)
 
     return {
         "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
