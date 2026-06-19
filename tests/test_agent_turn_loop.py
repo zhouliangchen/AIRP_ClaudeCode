@@ -185,6 +185,7 @@ class AgentTurnLoopTest(unittest.TestCase):
     def test_parallel_batch_outputs_merge_in_call_order_and_schedule_transfer_after_batch(self):
         self.register_characters("Ada", "Bea", "Cora")
         barrier = threading.Barrier(2)
+        ada_returned = threading.Event()
         bea_returned = threading.Event()
         actor_order = []
 
@@ -220,9 +221,19 @@ class AgentTurnLoopTest(unittest.TestCase):
             if agent_key in {"character:Ada", "character:Bea"}:
                 barrier.wait(timeout=2)
             if agent_key == "character:Ada":
-                events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
+                threading.Event().wait(0.1)
+                events = [{"type": "action", "target": "", "content": "character:Ada watches."}]
+                result = {
+                    "agent": "character",
+                    "agent_id": agent_key,
+                    "character_name": agent_key.split(":", 1)[1],
+                    "events": events,
+                    "stop_reason": "continue",
+                }
+                ada_returned.set()
+                return result
             elif agent_key == "character:Bea":
-                events = [{"type": "action", "target": "", "content": f"{agent_key} watches."}]
+                events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
                 result = {
                     "agent": "character",
                     "agent_id": agent_key,
@@ -235,6 +246,7 @@ class AgentTurnLoopTest(unittest.TestCase):
             else:
                 self.assertEqual(agent_key, "character:Cora")
                 self.assertTrue(bea_returned.is_set(), "Cora scheduled before Bea batch output completed")
+                self.assertTrue(ada_returned.is_set(), "Cora scheduled before Ada batch output completed")
                 events = [{"type": "action", "target": "", "content": "character:Cora checks the door."}]
             return {
                 "agent": "character",
