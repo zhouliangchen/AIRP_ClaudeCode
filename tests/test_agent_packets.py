@@ -1053,8 +1053,9 @@ class AgentPacketTest(unittest.TestCase):
                 with self.subTest(prompt=prompt_name, required_key=key):
                     self.assertIn(f'"{key}"', prompt_texts[prompt_name])
         self.assertIn('"stop_reason": "continue"', gm_prompt)
+        self.assertIn('"mode": "direct"', gm_prompt)
         self.assertIn('"summary": "why this actor can perceive or receive this prompt"', gm_prompt)
-        self.assertIn("Every `actor_calls[]` item must include `visibility_basis.summary`", gm_prompt)
+        self.assertIn("Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`", gm_prompt)
         self.assertIn('"source_agent": "gm"', gm_prompt)
         self.assertIn('"profile_seed"', gm_prompt)
         self.assertIn("GM may emit `source_agent: \"gm\"`", gm_prompt)

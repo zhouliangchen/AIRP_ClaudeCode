@@ -66,6 +66,18 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("visibility_basis", text)
         self.assertIn("per call", text)
 
+    def test_gm_and_subgm_schema_examples_require_actor_call_visibility_basis(self):
+        combined = "\n".join([
+            self.read(".claude/skills/rp-gm-agent.md"),
+            self.read(".claude/skills/rp-subgm-agent.md"),
+        ])
+
+        self.assertIn('"visibility_basis"', combined)
+        self.assertIn('"mode": "direct"', combined)
+        self.assertIn('"summary": "why this actor can perceive or receive this prompt"', combined)
+        self.assertIn('"summary": "why this actor can perceive or receive this side prompt"', combined)
+        self.assertIn('"target_actor": "character:Ada"', combined)
+
     def test_actor_routing_stop_reasons_match_schema(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
         for reason in (

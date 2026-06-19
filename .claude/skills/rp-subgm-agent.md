@@ -50,7 +50,13 @@ Return one subGM output object:
       "actor_id": "character:Ada",
       "prompt": "first-person projected prompt for Ada",
       "reason": "why this allowed character is needed",
-      "metadata": {}
+      "metadata": {},
+      "visibility_basis": {
+        "mode": "direct",
+        "summary": "why this actor can perceive or receive this side prompt",
+        "target_actor": "character:Ada",
+        "visible_to": ["character:Ada"]
+      }
     }
   ],
   "messages_to_gm": [
@@ -71,3 +77,5 @@ Return one subGM output object:
 ```
 
 Allowed `status` values are `running`, `paused`, `completed`, `blocked`, and `needs_gm`.
+
+Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`. The proof must target the same allowed character and stay within the assigned side-thread boundary.

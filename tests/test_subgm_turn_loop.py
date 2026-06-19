@@ -120,6 +120,8 @@ class SubgmTurnLoopTest(unittest.TestCase):
                             {
                                 "name": "SuLi",
                                 "role": "quiet classmate",
+                                "location": "school rooftop",
+                                "sensory_channels": ["visual", "auditory"],
                                 "memory": {
                                     "long_term": ["I know the rooftop stairs."],
                                     "key_memories": [],
@@ -272,6 +274,41 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("location"), "school rooftop")
         self.assertEqual(packet_basis.get("visible_to"), ["character:SuLi"])
         self.assertEqual(packet_basis.get("sensory_channels"), ["auditory"])
+
+    def test_subgm_actor_call_visibility_basis_must_prove_target_actor_before_dispatch(self):
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You hear a private instruction meant for Eve.",
+                            "reason": "This must not be routed to SuLi.",
+                            "visibility_basis": {
+                                "mode": "direct",
+                                "summary": "Eve is directly addressed by this side-thread prompt.",
+                                "target_actor": "character:Eve",
+                                "visible_to": ["character:Eve"],
+                            },
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                actor_packets.append(packet)
+                return character_output()
+            raise AssertionError(agent_key)
+
+        with self.assertRaisesRegex(self.subgm_turn_loop.SubgmTurnLoopError, r"visibility_basis.*character:SuLi"):
+            self.subgm_turn_loop.run_side_thread(
+                self.run_dir,
+                "side_suli_rooftop",
+                dispatch,
+            )
+
+        self.assertEqual(actor_packets, [])
 
     def test_subgm_scene_visibility_metadata_reaches_side_trace_summary(self):
         def dispatch(agent_key, packet):

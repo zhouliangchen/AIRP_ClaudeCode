@@ -88,8 +88,17 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload["character_contexts"] = {"characters": [{"name": name} for name in names]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
 
+    def register_character_states(self, *characters):
+        payload = self.agent_run.read_json(self.run_dir / "input.json")
+        payload["character_contexts"] = {"characters": [dict(character) for character in characters]}
+        self.agent_run.write_json(self.run_dir / "input.json", payload)
+
     def test_actor_packet_receives_gm_visibility_basis(self):
-        self.register_characters("Ada")
+        self.register_character_states({
+            "name": "Ada",
+            "location": "classroom",
+            "sensory_channels": ["visual"],
+        })
         packets = []
         gm_output = {
             "agent": "gm",
@@ -152,7 +161,11 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
 
     def test_actor_packet_visibility_basis_preserves_top_level_call_metadata(self):
-        self.register_characters("Ada")
+        self.register_character_states({
+            "name": "Ada",
+            "location": "classroom",
+            "sensory_channels": ["auditory"],
+        })
         packets = []
 
         def dispatch(agent_key, packet):
@@ -200,6 +213,47 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("location"), "classroom")
         self.assertEqual(packet_basis.get("visible_to"), ["character:Ada"])
         self.assertEqual(packet_basis.get("sensory_channels"), ["auditory"])
+
+    def test_actor_call_visibility_basis_must_prove_target_actor_before_dispatch(self):
+        self.register_characters("Ada", "Eve")
+        packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear a private instruction meant for Eve.",
+                        "reason": "This must not be routed to Ada.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Eve is directly addressed by this prompt.",
+                            "target_actor": "character:Eve",
+                            "visible_to": ["character:Eve"],
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I wait."}],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, r"visibility_basis.*character:Ada"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(packets, [])
 
     def test_gm_scene_visibility_metadata_reaches_trace_summary(self):
         self.register_characters("Ada")

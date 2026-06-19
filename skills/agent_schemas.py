@@ -364,6 +364,8 @@ def _normalize_visibility_fields(data: Dict[str, Any], path: str, *, require_bas
         )
         if require_basis and not basis:
             raise ValidationError(f"{_path(path, 'visibility_basis')} must be a visibility proof object")
+        if require_basis and not basis.get("mode"):
+            raise ValidationError(f"{_path(path, 'visibility_basis')}.mode must be a supported visibility proof mode")
         normalized["visibility_basis"] = basis
     elif require_basis:
         raise ValidationError(f"{_path(path, 'visibility_basis')} is required")

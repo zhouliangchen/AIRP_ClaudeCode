@@ -571,6 +571,11 @@ def _dispatch_actor_call(
     hidden_phrases: Iterable[str],
     dispatch: DispatchFn,
 ) -> dict:
+    actor_state = _actor_state(actor_id, input_payload)
+    if not agent_visibility.actor_call_visible_to_actor(call, actor_id, actor_state):
+        raise AgentTurnLoopError(
+            f"actor call visibility_basis does not prove visibility for {actor_id}"
+        )
     packet = _actor_packet(
         input_payload,
         world_state,

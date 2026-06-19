@@ -34,8 +34,17 @@ class AgentPromptsTest(unittest.TestCase):
         prompt = self.agent_prompts.subgm_prompt_text({"thread_id": "side_a"})
 
         self.assertIn('"visibility_basis"', prompt)
+        self.assertIn('"mode": "direct"', prompt)
         self.assertIn('"summary": "why this actor can perceive or receive this side prompt"', prompt)
-        self.assertIn("Every `actor_calls[]` item must include `visibility_basis.summary`", prompt)
+        self.assertIn("Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`", prompt)
+
+    def test_gm_prompt_contract_requires_actor_call_visibility_basis_mode(self):
+        prompt = self.agent_prompts._gm_prompt({})
+
+        self.assertIn('"visibility_basis"', prompt)
+        self.assertIn('"mode": "direct"', prompt)
+        self.assertIn('"summary": "why this actor can perceive or receive this prompt"', prompt)
+        self.assertIn("Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`", prompt)
 
 
 if __name__ == "__main__":

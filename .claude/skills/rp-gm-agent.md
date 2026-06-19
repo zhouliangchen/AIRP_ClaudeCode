@@ -58,7 +58,13 @@ Return one GM output object:
       "actor_id": "character:Ada",
       "prompt": "second-person visible prompt for this actor",
       "reason": "why this actor is needed now",
-      "metadata": {}
+      "metadata": {},
+      "visibility_basis": {
+        "mode": "direct",
+        "summary": "why this actor can perceive or receive this prompt",
+        "target_actor": "character:Ada",
+        "visible_to": ["character:Ada"]
+      }
     }
   ],
   "parallel_groups": [],
@@ -95,5 +101,7 @@ Return one GM output object:
 ```
 
 Use only these top-level keys. Put visible scene pressure in `scene_beats` or `events`, durable world facts in `world_state_delta`, required player/character work in `actor_calls`, important-character promotions in `character_promotions`, and side-thread control in `subgm_commands`. Allowed `subgm_commands.action` values are `start`, `message`, `accelerate`, `pause`, `resume`, `merge`, and `close`. Use `decision_point` and `stop_reason` to stop at real player choices.
+
+Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`. The proof must target the same actor and explain visible in-world access; do not route hidden facts or GM-only causes through actor prompts.
 
 Do not write `skills/styles/response.txt`. Do not impersonate player or core character inner voice.

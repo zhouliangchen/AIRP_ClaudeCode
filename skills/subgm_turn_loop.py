@@ -309,11 +309,16 @@ def _route_actor_calls(
         actor_id = str(call.get("actor_id") or "")
         _ensure_actor_allowed(actor_id, state, input_payload)
         call_id = _validate_actor_call_id(call)
+        actor_state = _actor_state(actor_id, input_payload)
+        if not agent_visibility.actor_call_visible_to_actor(call, actor_id, actor_state):
+            raise SubgmTurnLoopError(
+                f"actor call visibility_basis does not prove visibility for {actor_id}"
+            )
         prompt = agent_visibility_guard.redact_text(str(call.get("prompt") or ""), hidden_phrases)
         packet = agent_projection.project_actor_context(
             actor_id,
             _side_world_state(run_dir, side_dir, input_payload),
-            _actor_state(actor_id, input_payload),
+            actor_state,
             prompt,
             agent_visibility.actor_call_basis(call),
         )

@@ -237,8 +237,9 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
         "subGM agents must not emit applied promotion records.\n"
-        "\nEvery `actor_calls[]` item must include `visibility_basis.summary`; "
-        "keep the proof actor-visible and omit GM-only causes.\n"
+        "\nEvery `actor_calls[]` item must include valid per-call "
+        "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
+        "actor-visible, targeted to the same actor, and free of GM-only causes.\n"
         "\nsubGM side-thread authority: GM may emit `subgm_commands` with actions "
         "`start`, `message`, `accelerate`, `pause`, `resume`, `merge`, or `close`. "
         "GM remains the only root authority: subGM agents cannot create/promote "
@@ -356,8 +357,9 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
         "The runtime loop validates it and persists it under the side-thread directory.",
     ) + (
         "\n\nAllowed `status` values: `running`, `paused`, `completed`, `blocked`, `needs_gm`.\n"
-        "\nEvery `actor_calls[]` item must include `visibility_basis.summary`; "
-        "keep the proof actor-visible and within the assigned side-thread boundary.\n"
+        "\nEvery `actor_calls[]` item must include valid per-call "
+        "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
+        "actor-visible, targeted to the same allowed character, and within the assigned side-thread boundary.\n"
         "\nAuthority boundary: no player participation; no `character_promotions`; no `subgm_commands`; "
         "no direct boundary mutation; no important-character creation or promotion. "
         "Only advance the assigned side-thread boundary and request main GM decisions through "

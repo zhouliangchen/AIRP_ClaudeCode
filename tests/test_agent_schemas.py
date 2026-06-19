@@ -185,6 +185,33 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
             self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_actor_call_visibility_basis_without_mode(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "player",
+                    "prompt": "You look up.",
+                    "reason": "The player is present.",
+                    "visibility_basis": {
+                        "summary": "The player is directly addressed by this prompt.",
+                        "target_actor": "player",
+                        "visible_to": ["player"],
+                    },
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"visibility_basis\.mode"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_rejects_hidden_marker_visibility_basis(self):
         payload = {
             "agent": "gm",
@@ -627,6 +654,24 @@ class AgentSchemaTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_subgm_output(payload)
+
+    def test_validate_subgm_output_rejects_actor_call_visibility_basis_without_mode(self):
+        payload = minimal_subgm_output(
+            {
+                "call_id": "call-suli-1",
+                "actor_id": "character:SuLi",
+                "prompt": "React to the classroom clue.",
+                "reason": "SuLi is present in the side scene.",
+                "visibility_basis": {
+                    "summary": "SuLi is directly addressed by this side-thread prompt.",
+                    "target_actor": "character:SuLi",
+                    "visible_to": ["character:SuLi"],
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"visibility_basis\.mode"):
             self.agent_schemas.validate_subgm_output(payload)
 
     def test_validate_subgm_output_rejects_hidden_marker_visibility_basis(self):

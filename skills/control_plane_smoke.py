@@ -188,6 +188,8 @@ def _smoke_character_contexts() -> list[Dict[str, Any]]:
         {
             "name": "Ada",
             "role": "archive guide",
+            "location": "classroom",
+            "sensory_channels": ["visual"],
             "memory": {
                 "long_term": ["I guide the player near the archive."],
                 "key_memories": [],
