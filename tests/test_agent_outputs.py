@@ -1159,12 +1159,33 @@ class AgentOutputsTest(unittest.TestCase):
                 self.assertFalse((self.run_dir / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_hidden_markers_in_prompt_reason_and_metadata(self):
+        valid_visibility_basis = {
+            "mode": "direct",
+            "summary": "The player can perceive the prompt.",
+            "location": "classroom",
+            "visible_to": ["player"],
+            "sensory_channels": ["visual"],
+            "target_actor": "player",
+        }
         cases = (
-            ("prompt", "This prompt includes gm_only material.", "Visible reason.", {}),
-            ("reason", "Visible prompt.", "world_truth is not actor-facing.", {}),
-            ("metadata", "Visible prompt.", "Visible reason.", {"hidden_note": "private"}),
+            ("prompt", "This prompt includes gm_only material.", "Visible reason.", {}, valid_visibility_basis),
+            ("reason", "Visible prompt.", "world_truth is not actor-facing.", {}, valid_visibility_basis),
+            (
+                "metadata",
+                "Visible prompt.",
+                "Visible reason.",
+                {"hidden_note": "private"},
+                valid_visibility_basis,
+            ),
+            (
+                "visibility_basis",
+                "Visible prompt.",
+                "Visible reason.",
+                {},
+                {"mode": "direct", "summary": "gm_only signal", "target_actor": "player"},
+            ),
         )
-        for field, prompt, reason, metadata in cases:
+        for field, prompt, reason, metadata, visibility_basis in cases:
             with self.subTest(field=field):
                 if (self.run_dir / "story.input.json").exists():
                     (self.run_dir / "story.input.json").unlink()
@@ -1184,6 +1205,7 @@ class AgentOutputsTest(unittest.TestCase):
                                         "prompt": prompt,
                                         "reason": reason,
                                         "metadata": metadata,
+                                        "visibility_basis": visibility_basis,
                                     }
                                 ],
                                 "parallel_groups": [],
