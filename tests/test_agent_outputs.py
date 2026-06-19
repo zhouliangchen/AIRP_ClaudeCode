@@ -388,6 +388,94 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(story_input["interaction_trace"]["visible_events"][0]["content"], "Stay close.")
         self.assertEqual(story_input["interaction_trace"]["private_event_count"], 4)
 
+    def test_build_story_input_rejects_main_trace_visible_event_hidden_phrase_and_marker_leaks(self):
+        cases = (
+            ("content", "Ada says moon/base/archive is visible.", "content"),
+            ("content", "GMOnlyText should not be visible.", "content"),
+            ("visibility_basis", "The public basis mentions moon|base|archive.", "visibility_basis"),
+        )
+        for field, value, expected_path in cases:
+            with self.subTest(field=field, value=value):
+                self._write_base_round()
+                sentinel = {"existing": "do not replace"}
+                _write_json(self.run_dir / "story.input.json", sentinel)
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I inspect the signal.",
+                        "routed_input": {
+                            "role_channel": "I inspect the signal.",
+                            "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                        },
+                        "hidden_facts": [{"fact": "moon—base—archive"}],
+                    },
+                )
+                trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+                event = {
+                    "actor": "gm",
+                    "visibility": "world_visible",
+                    "type": "scene_beat",
+                    "content": "Ada checks the public signal.",
+                }
+                if field == "content":
+                    event["content"] = value
+                else:
+                    event["visibility_basis"] = {
+                        "mode": "public",
+                        "summary": value,
+                        "visible_to": ["player"],
+                    }
+                trace["events"].append(event)
+                _write_json(self.run_dir / "interaction.trace.json", trace)
+
+                with self.assertRaisesRegex(
+                    self.agent_outputs.AgentOutputError,
+                    rf"interaction\.trace\.json.*visible_events.*{expected_path}",
+                ):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertEqual(
+                    json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+                    sentinel,
+                )
+
+    def test_build_story_input_sanitizes_main_trace_decision_point_and_stop_reason_hidden_phrases(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I inspect the signal.",
+                "routed_input": {
+                    "role_channel": "I inspect the signal.",
+                    "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                },
+                "hidden_facts": [{"fact": "moon—base—archive"}],
+            },
+        )
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        trace["status"] = "decision_point"
+        trace["decision_point"] = {
+            "reason": "raw private reason should not be used",
+            "public_reason": "Choose whether to reveal moon/base/archive.",
+            "options": ["raw private option should not be used"],
+            "public_options": ["ask about moon|base|archive", "walk away"],
+        }
+        trace["stop_reason"] = "raw private stop reason should not be used"
+        trace["public_stop_reason"] = "moon base archive"
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+        serialized_trace = json.dumps(
+            story_input["interaction_trace"],
+            ensure_ascii=False,
+        ).lower()
+
+        self.assertIn("[redacted]", story_input["interaction_trace"]["decision_point"]["reason"])
+        self.assertIn("[redacted]", story_input["interaction_trace"]["decision_point"]["options"][0])
+        self.assertEqual(story_input["interaction_trace"]["stop_reason"], "[redacted]")
+        self.assertNotIn("moon/base/archive", serialized_trace)
+        self.assertNotIn("moon|base|archive", serialized_trace)
+        self.assertNotIn("moon base archive", serialized_trace)
+
     def test_build_story_input_rejects_unknown_raw_trace_status_without_writing_story_input(self):
         sentinel = {"existing": "do not replace"}
         _write_json(self.run_dir / "story.input.json", sentinel)
@@ -1574,6 +1662,56 @@ class AgentOutputsTest(unittest.TestCase):
                             "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
                         "hidden_facts": [{"fact": "moon base archive"}],
+                    },
+                )
+                event = {
+                    "type": "npc_action",
+                    "content": "Ada studies the public signal.",
+                }
+                event[field] = value
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [event],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_event_separator_hidden_phrases_from_unicode_source_phrase(self):
+        cases = (
+            ("source_call_id", "moon/base/archive"),
+            ("target", "moon base archive"),
+            ("source_call_id", "moon|base|archive"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I inspect the signal.",
+                        "routed_input": {
+                            "role_channel": "I inspect the signal.",
+                            "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                        },
+                        "hidden_facts": [{"fact": "moon—base—archive"}],
                     },
                 )
                 event = {

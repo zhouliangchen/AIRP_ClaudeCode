@@ -83,7 +83,7 @@ def _validate_gm_output_visibility(
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     scene_beat_fields = ("content", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     event_fields = ("content", "target", "source_call_id", "metadata", *agent_visibility.VISIBILITY_FIELDS)
-    actor_call_fields = ("prompt", "reason", "metadata", *agent_visibility.VISIBILITY_FIELDS)
+    actor_call_fields = ("source_call_id", "prompt", "reason", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     for gm_index, gm_output in enumerate(gm_outputs):
         output_context = f"{gm_path}.outputs[{gm_index}]"
         for beat_index, beat in enumerate(gm_output.get("scene_beats", [])):
@@ -144,7 +144,11 @@ def _compact_side_state_summary(state: Dict[str, Any], hidden_phrases: list[str]
     return sanitized if isinstance(sanitized, dict) else {}
 
 
-def _sanitize_side_trace_summary(summary: Dict[str, Any], hidden_phrases: list[str], context: str) -> Dict[str, Any]:
+def _sanitize_trace_summary_for_story_input(
+    summary: Dict[str, Any],
+    hidden_phrases: list[str],
+    context: str,
+) -> Dict[str, Any]:
     visible_events = summary.get("visible_events", [])
     if isinstance(visible_events, list):
         _reject_actor_facing_gm_value(visible_events, f"{context}.visible_events", hidden_phrases)
@@ -599,7 +603,7 @@ def _load_side_thread_outputs(root: Path, input_payload: dict) -> dict:
         _validate_actor_output_visibility(side_dir / "actor.outputs.json", actor_outputs, hidden_phrases)
 
         raw_trace, trace_summary = _validate_trace_artifacts(side_dir)
-        trace_summary = _sanitize_side_trace_summary(
+        trace_summary = _sanitize_trace_summary_for_story_input(
             trace_summary,
             hidden_phrases,
             f"{side_dir / 'interaction.trace.json'}",
@@ -704,7 +708,13 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
     _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
+    hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     raw_trace, trace_summary = _validate_trace_artifacts(root)
+    trace_summary = _sanitize_trace_summary_for_story_input(
+        trace_summary,
+        hidden_phrases,
+        f"{root / 'interaction.trace.json'}",
+    )
     loop_outputs = _load_loop_outputs(root)
     _validate_gm_output_visibility(root / "gm.output.json", loop_outputs["gm"]["outputs"], input_payload)
     output_source_call_ids_by_actor = _validate_actor_output_provenance(

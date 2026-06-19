@@ -918,6 +918,7 @@ class AgentTurnLoopTest(unittest.TestCase):
                     "actor_calls": [{
                         "call_id": "call-player-1",
                         "actor_id": "player",
+                        "source_call_id": "the/pendant/burns/identity",
                         "prompt": (
                             "You sense the pendant burns identity. "
                             "The hallway eats names. "
@@ -956,6 +957,8 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("clock remembers blood", persisted)
         self.assertNotIn("moon is painted glass", persisted)
         self.assertNotIn("teacher is an illusion", persisted)
+        self.assertNotIn("the/pendant/burns/identity", persisted)
+        self.assertEqual(gm_outputs["outputs"][0]["actor_calls"][0].get("source_call_id"), "[redacted]")
         self.assertIn("[redacted]", persisted)
 
     def test_actor_packet_redacts_compact_hidden_marker_prompt(self):

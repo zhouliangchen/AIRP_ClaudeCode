@@ -247,7 +247,7 @@ def _hidden_phrase_pattern(phrase: str) -> re.Pattern:
                 re.IGNORECASE,
             )
     tokens = _canonical_tokens(phrase)
-    if len(tokens) >= 2 and not _has_non_ascii_text(str(phrase or "")):
+    if len(tokens) >= 2 and not _has_cjk_text(str(phrase or "")):
         return re.compile(
             r"(?<![a-z0-9])"
             + ENGLISH_FUZZY_SEPARATOR_RE.join(re.escape(token) for token in tokens)
@@ -327,6 +327,7 @@ def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
         for field in agent_visibility.VISIBILITY_FIELDS:
             _redact_optional_field(event, field, phrases, redact_markers=True)
     for call in _list(sanitized.get("actor_calls")):
+        _redact_optional_field(call, "source_call_id", phrases, redact_markers=True)
         _redact_optional_field(call, "prompt", phrases, redact_markers=True)
         _redact_optional_field(call, "reason", phrases, redact_markers=True)
         _redact_optional_field(call, "metadata", phrases, redact_markers=True)
