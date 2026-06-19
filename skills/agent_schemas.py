@@ -348,9 +348,10 @@ def _normalize_visibility_fields(data: Dict[str, Any], path: str, *, require_bas
                 _normalize_nonempty_str_item,
             )
     if "visibility_basis" in data:
-        _reject_forbidden_keys(data["visibility_basis"], _path(path, "visibility_basis"))
+        raw_basis = _require_dict(data["visibility_basis"], _path(path, "visibility_basis"))
+        _reject_forbidden_keys(raw_basis, _path(path, "visibility_basis"))
         basis = agent_visibility.normalize_visibility_basis(
-            data["visibility_basis"],
+            raw_basis,
             require_summary=require_basis,
         )
         if require_basis and not basis:

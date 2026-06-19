@@ -22,7 +22,7 @@ SKILL_PATHS = {
     "critic": ".claude/skills/rp-critic-agent.md",
 }
 
-AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character"}
+AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character", "subgm"}
 
 WORLD_UPDATE_RECORD_CONTRACT = """World update record contract:
 
@@ -187,6 +187,11 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
                 "prompt": "second-person visible prompt for this actor only",
                 "reason": "why this actor is needed now",
                 "metadata": {},
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "why this actor can perceive or receive this prompt",
+                    "target_actor": "character:Example",
+                },
             }
         ],
         "parallel_groups": [],
@@ -232,6 +237,8 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
         "subGM agents must not emit applied promotion records.\n"
+        "\nEvery `actor_calls[]` item must include `visibility_basis.summary`; "
+        "keep the proof actor-visible and omit GM-only causes.\n"
         "\nsubGM side-thread authority: GM may emit `subgm_commands` with actions "
         "`start`, `message`, `accelerate`, `pause`, `resume`, `merge`, or `close`. "
         "GM remains the only root authority: subGM agents cannot create/promote "
@@ -324,6 +331,11 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
                 "prompt": "first-person projected prompt for an allowed important character",
                 "reason": "why this allowed actor is needed inside the side thread",
                 "metadata": {},
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "why this actor can perceive or receive this side prompt",
+                    "target_actor": "character:Name",
+                },
             }
         ],
         "messages_to_gm": [{"content": "what the main GM needs to know", "metadata": {}}],
@@ -344,6 +356,8 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
         "The runtime loop validates it and persists it under the side-thread directory.",
     ) + (
         "\n\nAllowed `status` values: `running`, `paused`, `completed`, `blocked`, `needs_gm`.\n"
+        "\nEvery `actor_calls[]` item must include `visibility_basis.summary`; "
+        "keep the proof actor-visible and within the assigned side-thread boundary.\n"
         "\nAuthority boundary: no player participation; no `character_promotions`; no `subgm_commands`; "
         "no direct boundary mutation; no important-character creation or promotion. "
         "Only advance the assigned side-thread boundary and request main GM decisions through "

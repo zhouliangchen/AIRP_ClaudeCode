@@ -268,6 +268,28 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"scene_beats\[0\].visibility_basis"):
             self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_non_object_optional_scene_visibility_basis(self):
+        for visibility_basis in ("not an object", ["not", "an", "object"]):
+            with self.subTest(visibility_basis=visibility_basis):
+                payload = {
+                    "agent": "gm",
+                    "scene_beats": [
+                        {
+                            "content": "The clock ticks.",
+                            "visibility_basis": visibility_basis,
+                        }
+                    ],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"scene_beats\[0\].visibility_basis"):
+                    self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_rejects_hidden_fact_optional_event_visibility_basis(self):
         payload = {
             "agent": "gm",
@@ -292,6 +314,29 @@ class AgentSchemaTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"events\[0\].visibility_basis"):
             self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_non_object_optional_event_visibility_basis(self):
+        for visibility_basis in ("not an object", ["not", "an", "object"]):
+            with self.subTest(visibility_basis=visibility_basis):
+                payload = {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [
+                        {
+                            "type": "npc_action",
+                            "content": "Ada shuts the door.",
+                            "visibility_basis": visibility_basis,
+                        }
+                    ],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"events\[0\].visibility_basis"):
+                    self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_defaults_character_promotions_to_empty_list(self):
         payload = {
