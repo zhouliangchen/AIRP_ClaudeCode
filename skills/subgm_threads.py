@@ -266,6 +266,116 @@ def _assert_no_reservation_conflict(
             )
 
 
+def _load_projected_states(run_dir: str | Path) -> Dict[str, Dict[str, Any]]:
+    states: Dict[str, Dict[str, Any]] = {}
+    for current_id in _thread_ids(run_dir):
+        state = _load_state(run_dir, current_id)
+        states[current_id] = {
+            "status": str(state.get("status") or ""),
+            "allowed_characters": _validate_allowed_characters(
+                state.get("allowed_characters", []),
+                f"side thread {current_id} allowed_characters",
+            ),
+        }
+    return states
+
+
+def _project_reservations(states: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    reservations: Dict[str, str] = {}
+    for thread_id in sorted(states):
+        state = states[thread_id]
+        if not _is_active_status(state.get("status")):
+            continue
+        for actor_id in state.get("allowed_characters", []):
+            owner = reservations.get(actor_id)
+            if owner and owner != thread_id:
+                raise SubgmThreadError(
+                    f"{actor_id} is already reserved by active side thread {owner}"
+                )
+            reservations[actor_id] = thread_id
+    return reservations
+
+
+def _assert_projected_reservation_available(
+    reservations: Dict[str, str],
+    thread_id: str,
+    allowed_characters: Iterable[str],
+) -> None:
+    for actor_id in allowed_characters:
+        owner = reservations.get(actor_id)
+        if owner and owner != thread_id:
+            raise SubgmThreadError(
+                f"{actor_id} is already reserved by active side thread {owner}"
+            )
+
+
+def _prevalidate_command_batch(
+    run_dir: str | Path,
+    commands: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    normalized_commands = [_validate_command(command) for command in commands]
+    states = _load_projected_states(run_dir)
+
+    for command in normalized_commands:
+        action = command["action"]
+        thread_id = command["thread_id"]
+
+        if action == "start":
+            if thread_id in states:
+                raise SubgmThreadError(f"side thread {thread_id} already exists")
+            reservations = _project_reservations(states)
+            _assert_projected_reservation_available(
+                reservations,
+                thread_id,
+                command["allowed_characters"],
+            )
+            states[thread_id] = {
+                "status": "running",
+                "allowed_characters": list(command["allowed_characters"]),
+            }
+            continue
+
+        state = states.get(thread_id)
+        if state is None:
+            raise SubgmThreadError(f"side thread {thread_id} does not exist")
+
+        if action == "pause":
+            state["status"] = "paused"
+        elif action == "close":
+            state["status"] = "completed"
+        elif action == "resume":
+            reservations = _project_reservations(states)
+            _assert_projected_reservation_available(
+                reservations,
+                thread_id,
+                state.get("allowed_characters", []),
+            )
+            state["status"] = "running"
+        elif action == "merge":
+            reservations = _project_reservations(states)
+            _assert_projected_reservation_available(
+                reservations,
+                thread_id,
+                state.get("allowed_characters", []),
+            )
+            state["status"] = "merging"
+        elif action in {"message", "accelerate"}:
+            continue
+        else:
+            raise SubgmThreadError(f"unsupported subGM command action: {action!r}")
+
+    return normalized_commands
+
+
+def prevalidate_gm_commands(run_dir: str | Path, commands: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Validate a GM subGM command batch without writing side-thread state."""
+    if commands is None:
+        commands = []
+    if not isinstance(commands, list):
+        raise SubgmThreadError("commands must be a list")
+    return _prevalidate_command_batch(run_dir, commands)
+
+
 def _state_history_entry(action: str, message: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "action": action,
@@ -422,8 +532,7 @@ def apply_gm_commands(run_dir: str | Path, commands: list[Dict[str, Any]]) -> Di
         "close": "closed",
     }
 
-    for raw_command in commands:
-        command = _validate_command(raw_command)
+    for command in prevalidate_gm_commands(run_dir, commands):
         action = command["action"]
         if action == "start":
             thread_id = _create_thread(run_dir, command)

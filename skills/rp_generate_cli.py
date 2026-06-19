@@ -203,6 +203,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "gm_output"
     elif agent_key in {"player"} or agent_key.startswith("character:"):
         wrapper = "actor_output"
+    elif agent_key.startswith("subGM:"):
+        wrapper = "subgm_output"
     elif agent_key == "story":
         wrapper = "story_output"
     elif agent_key == "critic":
@@ -247,6 +249,14 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
                     raise AgentExecutionError(f"{agent_key} returned wrong agent: {normalized.get('agent')!r}")
                 if normalized.get("agent_id") != agent_key:
                     raise AgentExecutionError(f"{agent_key} returned wrong agent_id: {normalized.get('agent_id')!r}")
+            return normalized
+        if agent_key.startswith("subGM:"):
+            normalized = agent_schemas.validate_subgm_output(payload)
+            expected_thread_id = agent_key.split(":", 1)[1]
+            if normalized.get("thread_id") != expected_thread_id:
+                raise AgentExecutionError(
+                    f"{agent_key} returned wrong thread_id: {normalized.get('thread_id')!r}"
+                )
             return normalized
         if agent_key == "story":
             return agent_schemas.validate_story_output(payload)
@@ -311,6 +321,8 @@ def _read_loop_prompt(
 ) -> str:
     if agent_key in {"gm", "player"}:
         return _read_prompt(run_dir, manifest, agent_key)
+    if agent_key.startswith("subGM:"):
+        return agent_prompts.subgm_prompt_text(packet or {})
     if not agent_key.startswith("character:"):
         raise AgentExecutionError(f"Unknown loop agent key: {agent_key}")
 

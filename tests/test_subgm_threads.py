@@ -68,6 +68,43 @@ class SubgmThreadsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "already reserved"):
             self.subgm_threads.apply_gm_commands(self.run_dir, [start_command(thread_id="side_b")])
 
+    def test_apply_gm_commands_prevalidates_later_unsafe_thread_id_before_writes(self):
+        commands = [
+            start_command(thread_id="side_a", character="character:Ada"),
+            start_command(thread_id="BadThread", character="character:Bert"),
+        ]
+
+        with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "thread_id"):
+            self.subgm_threads.apply_gm_commands(self.run_dir, commands)
+
+        self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+
+    def test_apply_gm_commands_prevalidates_duplicate_start_thread_id_before_writes(self):
+        commands = [
+            start_command(thread_id="dup_thread", character="character:Ada"),
+            start_command(thread_id="dup_thread", character="character:Bert"),
+        ]
+
+        with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "already exists"):
+            self.subgm_threads.apply_gm_commands(self.run_dir, commands)
+
+        self.assertFalse((self.run_dir / "side_threads" / "dup_thread").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+
+    def test_apply_gm_commands_prevalidates_intrabatch_reservation_conflict_before_writes(self):
+        commands = [
+            start_command(thread_id="side_a", character="character:SuLi"),
+            start_command(thread_id="side_b", character="character:SuLi"),
+        ]
+
+        with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "already reserved"):
+            self.subgm_threads.apply_gm_commands(self.run_dir, commands)
+
+        self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
+        self.assertFalse((self.run_dir / "side_threads" / "side_b").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+
     def test_paused_thread_releases_character_for_new_thread(self):
         self.subgm_threads.apply_gm_commands(self.run_dir, [start_command(thread_id="side_a")])
         self.subgm_threads.apply_gm_commands(self.run_dir, [{"action": "pause", "thread_id": "side_a", "message": "Pause.", "metadata": {}}])

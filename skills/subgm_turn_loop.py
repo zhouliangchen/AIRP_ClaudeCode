@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,6 +24,7 @@ WORLD_VISIBLE_ACTOR_EVENTS = {"dialogue", "action"}
 NON_WORLD_VISIBLE_ACTOR_EVENTS = {"perception", "perceive_request", "memory_delta", "goal_update"}
 TRACE_SAFE_CHARACTER_CALL_ID_RE = re.compile(r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$")
 MAX_STEPS_NOTICE = "subGM side thread reached max_steps without terminal status"
+SIDE_THREAD_IO_LOCK = threading.RLock()
 
 DispatchFn = Callable[[str, dict], dict]
 
@@ -206,19 +209,23 @@ def _record_actor_event(side_dir: Path, actor_id: str, event: dict, source_call_
 
 
 def _subgm_packet(run_dir: Path, side_dir: Path, thread_id: str, state: dict, input_payload: dict) -> dict:
+    with SIDE_THREAD_IO_LOCK:
+        messages = _read_jsonl(side_dir / "messages.jsonl")
+        side_thread_summaries = subgm_threads.load_thread_summaries(run_dir)
+        subgm_messages = subgm_threads.load_messages_for_gm(run_dir)
     return {
         "thread_id": thread_id,
         "input": input_payload,
         "state": state,
-        "messages": _read_jsonl(side_dir / "messages.jsonl"),
+        "messages": messages,
         "boundary": _dict(state.get("boundary")),
         "objective": str(state.get("objective") or ""),
         "allowed_characters": _list(state.get("allowed_characters")),
         "forbidden_characters": _list(state.get("forbidden_characters")),
         "side_trace_summary": agent_interactions.summarize_for_story_input(side_dir),
         "main_trace_summary": agent_interactions.summarize_for_story_input(run_dir),
-        "side_thread_summaries": subgm_threads.load_thread_summaries(run_dir),
-        "subgm_messages": subgm_threads.load_messages_for_gm(run_dir),
+        "side_thread_summaries": side_thread_summaries,
+        "subgm_messages": subgm_messages,
     }
 
 
@@ -268,10 +275,11 @@ def _append_subgm_messages(run_dir: Path, thread_id: str, state_before: dict, ou
     }
     messages = output.get("messages_to_gm") or []
     if messages:
-        for message in messages:
-            payload = dict(message)
-            payload.update(base)
-            subgm_threads.append_subgm_message(run_dir, thread_id, payload)
+        with SIDE_THREAD_IO_LOCK:
+            for message in messages:
+                payload = dict(message)
+                payload.update(base)
+                subgm_threads.append_subgm_message(run_dir, thread_id, payload)
         return
 
     changed = (
@@ -280,7 +288,8 @@ def _append_subgm_messages(run_dir: Path, thread_id: str, state_before: dict, ou
         or state_before.get("next_resume_point", "") != output.get("next_resume_point", "")
     )
     if changed:
-        subgm_threads.append_subgm_message(run_dir, thread_id, base)
+        with SIDE_THREAD_IO_LOCK:
+            subgm_threads.append_subgm_message(run_dir, thread_id, base)
 
 
 def _route_actor_calls(
@@ -330,7 +339,8 @@ def _persist_max_steps_notice(run_dir: Path, thread_id: str, last_output: dict |
         "last_scene_beats": _list(_dict(last_output).get("scene_beats")),
         "next_resume_point": str(_dict(last_output).get("next_resume_point") or ""),
     }
-    subgm_threads.append_subgm_message(run_dir, thread_id, payload)
+    with SIDE_THREAD_IO_LOCK:
+        subgm_threads.append_subgm_message(run_dir, thread_id, payload)
 
 
 def run_side_thread(
@@ -344,7 +354,8 @@ def run_side_thread(
     root = Path(run_dir)
     safe_id = subgm_threads.safe_thread_id(thread_id)
     side_dir = subgm_threads.thread_dir(root, safe_id)
-    state = _load_state(side_dir)
+    with SIDE_THREAD_IO_LOCK:
+        state = _load_state(side_dir)
     status = str(state.get("status") or "")
     if status not in RUNNABLE_STATUSES:
         return {
@@ -383,7 +394,8 @@ def run_side_thread(
     last_output: dict | None = None
 
     for step_index in range(step_limit):
-        state_before = _load_state(side_dir)
+        with SIDE_THREAD_IO_LOCK:
+            state_before = _load_state(side_dir)
         raw_output = dispatch(
             f"subGM:{safe_id}",
             _subgm_packet(root, side_dir, safe_id, state_before, input_payload) | {"step": step_index},
@@ -393,7 +405,8 @@ def run_side_thread(
         steps += 1
         final_status = str(output.get("status") or "")
         last_output = output
-        _write_json(side_dir / "subgm.output.json", output)
+        with SIDE_THREAD_IO_LOCK:
+            _write_json(side_dir / "subgm.output.json", output)
         _record_subgm_output(side_dir, f"subGM:{safe_id}", actor_visible_output, hidden_phrases)
         _route_actor_calls(
             root,
@@ -423,4 +436,54 @@ def run_side_thread(
     }
 
 
-__all__ = ["MAX_SUBGM_STEPS", "SubgmTurnLoopError", "run_side_thread"]
+def _runnable_thread_ids(run_dir: Path) -> list[str]:
+    selected: list[str] = []
+    reserved: set[str] = set()
+    with SIDE_THREAD_IO_LOCK:
+        summaries = subgm_threads.load_thread_summaries(run_dir)
+    for summary in summaries:
+        thread_id = str(summary.get("thread_id") or "")
+        status = str(summary.get("status") or "")
+        if not thread_id or status not in RUNNABLE_STATUSES:
+            continue
+        allowed = {str(item) for item in _list(summary.get("allowed_characters")) if str(item)}
+        if reserved.intersection(allowed):
+            continue
+        selected.append(thread_id)
+        reserved.update(allowed)
+    return sorted(selected)
+
+
+def run_ready_side_threads(
+    run_dir: str | Path,
+    dispatch: DispatchFn,
+    *,
+    max_workers: int = 2,
+) -> list[dict]:
+    """Run currently runnable side threads in deterministic non-overlapping batches."""
+    root = Path(run_dir)
+    thread_ids = _runnable_thread_ids(root)
+    if not thread_ids:
+        return []
+
+    try:
+        worker_count = int(max_workers)
+    except (TypeError, ValueError):
+        worker_count = 1
+    if worker_count <= 1:
+        return [run_side_thread(root, thread_id, dispatch) for thread_id in thread_ids]
+
+    worker_count = min(worker_count, len(thread_ids))
+    results: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(run_side_thread, root, thread_id, dispatch): thread_id
+            for thread_id in thread_ids
+        }
+        for future in concurrent.futures.as_completed(futures):
+            thread_id = futures[future]
+            results[thread_id] = future.result()
+    return [results[thread_id] for thread_id in sorted(results)]
+
+
+__all__ = ["MAX_SUBGM_STEPS", "SubgmTurnLoopError", "run_side_thread", "run_ready_side_threads"]

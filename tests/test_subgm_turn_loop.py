@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -169,6 +170,70 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertNotIn("user_instruction_channel", actor_packet_text)
         self.assertNotIn("Secret hidden phrase", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text)
+
+    def test_run_ready_side_threads_runs_sorted_runnable_threads_sequentially(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_ada_library", allowed=["character:Ada"])],
+        )
+        payload = read_json(self.run_dir / "input.json")
+        payload["character_contexts"]["characters"].append({"name": "Ada", "memory": [], "goals": []})
+        (self.run_dir / "input.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            thread_id = agent_key.split(":", 1)[1]
+            return subgm_output(thread_id=thread_id, messages_to_gm=[{"content": f"{thread_id} done."}])
+
+        results = self.subgm_turn_loop.run_ready_side_threads(self.run_dir, dispatch, max_workers=1)
+
+        self.assertEqual([item["thread_id"] for item in results], ["side_ada_library", "side_suli_rooftop"])
+        self.assertEqual(calls, ["subGM:side_ada_library", "subGM:side_suli_rooftop"])
+
+    def test_run_ready_side_threads_parallel_workers_return_sorted_results(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_ada_library", allowed=["character:Ada"])],
+        )
+        payload = read_json(self.run_dir / "input.json")
+        payload["character_contexts"]["characters"].append({"name": "Ada", "memory": [], "goals": []})
+        (self.run_dir / "input.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        calls = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def dispatch(agent_key, packet):
+            with lock:
+                calls.append(agent_key)
+            barrier.wait(timeout=5)
+            thread_id = agent_key.split(":", 1)[1]
+            return subgm_output(thread_id=thread_id, messages_to_gm=[{"content": f"{thread_id} done."}])
+
+        results = self.subgm_turn_loop.run_ready_side_threads(self.run_dir, dispatch, max_workers=2)
+
+        self.assertEqual(sorted(calls), ["subGM:side_ada_library", "subGM:side_suli_rooftop"])
+        self.assertEqual([item["thread_id"] for item in results], ["side_ada_library", "side_suli_rooftop"])
+        messages = self.subgm_threads.load_messages_for_gm(self.run_dir)
+        contents = [item.get("content") for item in messages]
+        self.assertIn("side_ada_library done.", contents)
+        self.assertIn("side_suli_rooftop done.", contents)
+
+    def test_run_ready_side_threads_skips_paused_and_completed_threads(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [{"action": "pause", "thread_id": "side_suli_rooftop", "message": "Pause.", "metadata": {}}],
+        )
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            return subgm_output()
+
+        results = self.subgm_turn_loop.run_ready_side_threads(self.run_dir, dispatch, max_workers=1)
+
+        self.assertEqual(results, [])
+        self.assertEqual(calls, [])
 
     def test_subgm_hidden_scene_beats_and_events_do_not_reach_actor_packet(self):
         actor_packets = []

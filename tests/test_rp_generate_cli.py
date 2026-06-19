@@ -101,6 +101,24 @@ def _character_output(agent_id="character:Ada", content="Stay close."):
     }
 
 
+def _subgm_output(thread_id="side_a", *, status="completed"):
+    return {
+        "agent": "subGM",
+        "thread_id": thread_id,
+        "status": status,
+        "scene_beats": [{"content": "Ada checks the archive seal."}],
+        "events": [],
+        "actor_calls": [],
+        "messages_to_gm": [{"content": "Archive seal checked."}],
+        "world_state_delta": [],
+        "character_usage": ["character:Ada"],
+        "promotion_requests": [],
+        "boundary_requests": [],
+        "notes_for_story": ["Keep off-screen until GM merges it."],
+        "next_resume_point": "",
+    }
+
+
 def _story_output(content="<content>ok</content>", *, metadata=None):
     return {"content": content, "character_dialogues": [], "metadata": metadata or {}}
 
@@ -215,6 +233,32 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertEqual(self.module._validate("gm", gm_payload)["agent"], "gm")
         self.assertEqual(self.module._validate("story", story_payload)["content"], "<content>ok</content>")
+
+    def test_validate_accepts_subgm_wrapper_and_checks_thread_id(self):
+        payload = {"subgm_output": _subgm_output("side_a")}
+
+        normalized = self.module._validate("subGM:side_a", payload)
+
+        self.assertEqual(normalized["agent"], "subGM")
+        self.assertEqual(normalized["thread_id"], "side_a")
+
+    def test_validate_rejects_subgm_thread_id_mismatch(self):
+        payload = {"subgm_output": _subgm_output("side_b")}
+
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "thread_id"):
+            self.module._validate("subGM:side_a", payload)
+
+    def test_read_loop_prompt_generates_subgm_prompt(self):
+        prompt = self.module._read_loop_prompt(
+            self.run_dir,
+            json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8")),
+            "subGM:side_a",
+            {"thread_id": "side_a", "objective": "Check the archive seal."},
+        )
+
+        self.assertIn("side_a", prompt)
+        self.assertIn(".claude/skills/rp-subgm-agent.md", prompt)
+        self.assertIn("no player participation", prompt)
 
     def test_validate_normalizes_gm_world_state_delta_for_memory(self):
         payload = _gm_output(

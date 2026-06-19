@@ -14,11 +14,16 @@ import agent_run
 import agent_schemas
 import agent_visibility_guard
 import character_promotions
+import subgm_threads
+import subgm_turn_loop
 
 
 MAX_LOOP_STEPS = 8
 GENERATED_TRANSFERS_PER_STEP = 4
 STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
+ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked"}
+RESERVATION_ACTIVATING_SUBGM_ACTIONS = {"start", "resume", "merge"}
+RESERVATION_RELEASING_SUBGM_ACTIONS = {"pause", "close"}
 
 DispatchFn = Callable[[str, dict], dict]
 
@@ -401,6 +406,109 @@ def _apply_world_state_delta(world_state: dict, gm_output: dict) -> None:
     accumulated.extend(delta)
 
 
+def _refresh_side_thread_state(root: Path, world_state: dict) -> None:
+    try:
+        world_state["side_thread_summaries"] = subgm_threads.load_thread_summaries(root)
+        world_state["subgm_messages"] = subgm_threads.load_messages_for_gm(root)
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM side-thread state: {exc}") from exc
+
+
+def _apply_subgm_commands(root: Path, gm_output: dict) -> dict:
+    try:
+        return subgm_threads.apply_gm_commands(root, gm_output.get("subgm_commands", []))
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM command: {exc}") from exc
+
+
+def _prevalidate_subgm_commands(root: Path, gm_output: dict) -> None:
+    try:
+        subgm_threads.prevalidate_gm_commands(root, gm_output.get("subgm_commands", []))
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM command: {exc}") from exc
+
+
+def _preflight_subgm_actor_conflicts(root: Path, gm_output: dict) -> None:
+    try:
+        summaries = subgm_threads.load_thread_summaries(root)
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM side-thread state: {exc}") from exc
+
+    allowed_by_thread: dict[str, set[str]] = {}
+    reservations: dict[str, str] = {}
+
+    def reserve(actor_id: str, thread_id: str) -> None:
+        owner = reservations.get(actor_id)
+        if owner and owner != thread_id:
+            raise AgentTurnLoopError(
+                "subGM command reservation conflict: "
+                f"{actor_id} is already reserved by side thread {owner}; cannot reserve for {thread_id}"
+            )
+        reservations[actor_id] = thread_id
+
+    for summary in summaries:
+        thread_id = str(summary.get("thread_id") or "")
+        if not thread_id:
+            continue
+        allowed = {str(item) for item in _list(summary.get("allowed_characters")) if str(item)}
+        allowed_by_thread[thread_id] = allowed
+        if str(summary.get("status") or "") in ACTIVE_SIDE_THREAD_STATUSES:
+            for actor_id in allowed:
+                reserve(actor_id, thread_id)
+
+    for command in gm_output.get("subgm_commands", []):
+        if not isinstance(command, dict):
+            continue
+        action = str(command.get("action") or "")
+        thread_id = str(command.get("thread_id") or "")
+        if not thread_id:
+            continue
+        if action == "start":
+            if thread_id in allowed_by_thread:
+                raise AgentTurnLoopError(
+                    f"invalid subGM command preflight: side thread {thread_id} already exists"
+                )
+            allowed_by_thread[thread_id] = {
+                str(item) for item in _list(command.get("allowed_characters")) if str(item)
+            }
+        elif thread_id not in allowed_by_thread:
+            raise AgentTurnLoopError(
+                f"invalid subGM command preflight: side thread {thread_id} is missing"
+            )
+        allowed = allowed_by_thread[thread_id]
+        if action in RESERVATION_RELEASING_SUBGM_ACTIONS:
+            for actor_id, owner in list(reservations.items()):
+                if owner == thread_id:
+                    reservations.pop(actor_id, None)
+        elif action in RESERVATION_ACTIVATING_SUBGM_ACTIONS:
+            for actor_id in allowed:
+                reserve(actor_id, thread_id)
+
+    for call in gm_output.get("actor_calls", []):
+        if not isinstance(call, dict):
+            continue
+        actor_id = str(call.get("actor_id") or "")
+        owner = reservations.get(actor_id)
+        if owner:
+            raise AgentTurnLoopError(
+                f"main actor call conflicts with subGM side thread: {actor_id} is reserved by active side thread {owner}"
+            )
+
+
+def _run_ready_side_threads(root: Path, dispatch: DispatchFn) -> list[dict]:
+    try:
+        return subgm_turn_loop.run_ready_side_threads(root, dispatch, max_workers=2)
+    except (subgm_threads.SubgmThreadError, subgm_turn_loop.SubgmTurnLoopError) as exc:
+        raise AgentTurnLoopError(f"subGM side-thread failed: {exc}") from exc
+
+
+def _assert_main_actor_calls_do_not_conflict(root: Path, actor_calls: list[dict]) -> None:
+    try:
+        subgm_threads.assert_main_actor_calls_do_not_conflict(root, actor_calls)
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"main actor call conflicts with subGM side thread: {exc}") from exc
+
+
 def run_interactive_loop(
     run_dir: str | Path,
     dispatch: DispatchFn,
@@ -425,13 +533,22 @@ def run_interactive_loop(
     stop_reason = "continue"
     decision_point: Any = None
     generated_transfers_used = 0
+    side_thread_results: list[dict] = []
 
     for step_index in range(step_limit):
+        _refresh_side_thread_state(root, world_state)
         raw_gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
         gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
+        _prevalidate_subgm_commands(root, gm_output)
+        _preflight_subgm_actor_conflicts(root, gm_output)
         _apply_character_promotions(root, input_payload, gm_output)
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
+        _preflight_subgm_actor_conflicts(root, gm_output)
+        _apply_subgm_commands(root, gm_output)
+        _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
+        side_thread_results.extend(_run_ready_side_threads(root, dispatch))
+        _refresh_side_thread_state(root, world_state)
         gm_outputs.append(gm_output)
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
@@ -528,6 +645,7 @@ def run_interactive_loop(
         "called_actors": called_actors,
         "stop_reason": stop_reason,
         "decision_point": decision_point,
+        "side_thread_results": side_thread_results,
     }
 
 

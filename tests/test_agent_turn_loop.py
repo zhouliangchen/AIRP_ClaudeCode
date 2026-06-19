@@ -1074,6 +1074,518 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertIn("ClassRep", card_data["character_orchestration"]["major"])
         self.assertTrue((self.run_dir.parent / "memory" / "characters" / "ClassRep" / "profile.json").exists())
 
+    def test_gm_loop_rejects_invalid_subgm_command_before_persisting_promotion(self):
+        initial_card_data = {"character_orchestration": {"major": []}}
+        self.agent_run.write_json(self.run_dir.parent / ".card_data.json", initial_card_data)
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {"role_channel": "I notice the class rep watching.", "user_instruction_channel": ""},
+            "character_contexts": {"characters": []},
+        })
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The class rep steps into the aisle."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "character_promotions": [{
+                    "name": "ClassRep",
+                    "source_agent": "gm",
+                    "reason": "ClassRep now drives the classroom consequence.",
+                    "profile_seed": "Rule-bound class monitor with a sharp eye.",
+                    "visibility": "character_private_and_gm",
+                    "activation": "current_turn",
+                }],
+                "subgm_commands": [
+                    {
+                        "action": "start",
+                        "thread_id": "side_a",
+                        "title": "Ada checks the ward",
+                        "outline": "Ada inspects a ward off screen.",
+                        "time_window": "same minute",
+                        "location": "hallway",
+                        "objective": "Find whether the ward is active.",
+                        "allowed_characters": ["character:Ada"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start Ada side thread.",
+                        "metadata": {},
+                    },
+                    {
+                        "action": "start",
+                        "thread_id": "BadThread",
+                        "title": "Malformed side thread",
+                        "outline": "This command should fail prevalidation.",
+                        "time_window": "same minute",
+                        "location": "archive",
+                        "objective": "Prove promotion did not persist.",
+                        "allowed_characters": ["character:Bert"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start malformed side thread.",
+                        "metadata": {},
+                    },
+                ],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "thread_id"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(calls, ["gm"])
+        self.assertEqual(self.agent_run.read_json(self.run_dir.parent / ".card_data.json"), initial_card_data)
+        self.assertFalse((self.run_dir.parent / "memory" / "characters" / "ClassRep").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_starts_two_subgm_threads_and_surfaces_messages_next_step(self):
+        self.register_characters("Ada", "Bert")
+        calls = []
+
+        def subgm_output(thread_id, content):
+            return {
+                "agent": "subGM",
+                "thread_id": thread_id,
+                "status": "completed",
+                "scene_beats": [{"content": f"{thread_id} advances off screen."}],
+                "events": [],
+                "actor_calls": [],
+                "messages_to_gm": [{"content": content}],
+                "world_state_delta": [],
+                "character_usage": [],
+                "promotion_requests": [],
+                "boundary_requests": [],
+                "notes_for_story": ["Keep this off-screen until GM merges it."],
+                "next_resume_point": "",
+            }
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, json_copy(packet)))
+            if agent_key == "gm":
+                gm_count = len([key for key, _packet in calls if key == "gm"])
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The main room stays quiet."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "subgm_commands": [
+                            {
+                                "action": "start",
+                                "thread_id": "side_a",
+                                "title": "Ada checks the archive",
+                                "outline": "Ada follows the paper trail.",
+                                "time_window": "same hour",
+                                "location": "archive",
+                                "objective": "Find whether the seal is broken.",
+                                "allowed_characters": ["character:Ada"],
+                                "forbidden_characters": ["player"],
+                                "message": "Start Ada side thread.",
+                                "metadata": {},
+                            },
+                            {
+                                "action": "start",
+                                "thread_id": "side_b",
+                                "title": "Bert watches the gate",
+                                "outline": "Bert checks the gatehouse.",
+                                "time_window": "same hour",
+                                "location": "gatehouse",
+                                "objective": "Find whether anyone arrived.",
+                                "allowed_characters": ["character:Bert"],
+                                "forbidden_characters": ["player"],
+                                "message": "Start Bert side thread.",
+                                "metadata": {},
+                            },
+                        ],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                world_state = packet["world_state"]
+                self.assertEqual(
+                    [item["thread_id"] for item in world_state["side_thread_summaries"]],
+                    ["side_a", "side_b"],
+                )
+                message_text = [item.get("content") for item in world_state["subgm_messages"]]
+                self.assertIn("Ada found the broken seal.", message_text)
+                self.assertIn("Bert saw a late rider.", message_text)
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {"reason": "Choose which report to pursue.", "options": ["archive", "gate"]},
+                    "stop_reason": "player_decision",
+                }
+            if agent_key == "subGM:side_a":
+                return subgm_output("side_a", "Ada found the broken seal.")
+            if agent_key == "subGM:side_b":
+                return subgm_output("side_b", "Bert saw a late rider.")
+            self.fail(f"unexpected dispatch {agent_key}")
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stop_reason"], "player_decision")
+        call_keys = [key for key, _packet in calls]
+        self.assertEqual(call_keys[0], "gm")
+        self.assertEqual(call_keys.count("gm"), 2)
+        self.assertEqual(call_keys.count("subGM:side_a"), 1)
+        self.assertEqual(call_keys.count("subGM:side_b"), 1)
+        second_gm_index = call_keys.index("gm", 1)
+        self.assertGreater(second_gm_index, call_keys.index("subGM:side_a"))
+        self.assertGreater(second_gm_index, call_keys.index("subGM:side_b"))
+        self.assertEqual(
+            [item["thread_id"] for item in result["side_thread_results"]],
+            ["side_a", "side_b"],
+        )
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(len(gm_outputs["outputs"][0]["subgm_commands"]), 2)
+
+    def test_gm_loop_rejects_main_actor_call_conflicting_with_active_side_thread(self):
+        self.register_characters("SuLi")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "SuLi leaves the room."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-SuLi-1",
+                        "actor_id": "character:SuLi",
+                        "prompt": "React in the main room.",
+                        "reason": "This conflicts with the side thread.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "subgm_commands": [{
+                        "action": "start",
+                        "thread_id": "side_suli",
+                        "title": "SuLi checks the ward",
+                        "outline": "SuLi inspects a ward off screen.",
+                        "time_window": "same minute",
+                        "location": "hallway",
+                        "objective": "Find whether the ward is active.",
+                        "allowed_characters": ["character:SuLi"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start SuLi side thread.",
+                        "metadata": {},
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            if agent_key == "subGM:side_suli":
+                return {
+                    "agent": "subGM",
+                    "thread_id": "side_suli",
+                    "status": "needs_gm",
+                    "scene_beats": [{"content": "SuLi reaches the ward."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "messages_to_gm": [{"content": "SuLi needs GM direction.", "status": "needs_gm"}],
+                    "world_state_delta": [],
+                    "character_usage": ["character:SuLi"],
+                    "promotion_requests": [],
+                    "boundary_requests": [],
+                    "notes_for_story": ["Do not merge yet."],
+                    "next_resume_point": "at the ward",
+                }
+            self.fail(f"unexpected dispatch {agent_key}")
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "side_suli"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+        self.assertEqual(calls, ["gm"])
+        self.assertFalse((self.run_dir / "side_threads" / "side_suli" / "state.json").exists())
+        self.assertFalse((self.run_dir / "side_threads" / "side_suli" / "subgm.output.json").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_rejects_same_output_start_reservation_collision_before_writes(self):
+        self.register_characters("SuLi")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "Two side paths compete for SuLi."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "subgm_commands": [
+                    {
+                        "action": "start",
+                        "thread_id": "side_a",
+                        "title": "SuLi checks the ward",
+                        "outline": "SuLi inspects a ward off screen.",
+                        "time_window": "same minute",
+                        "location": "hallway",
+                        "objective": "Find whether the ward is active.",
+                        "allowed_characters": ["character:SuLi"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start first SuLi side thread.",
+                        "metadata": {},
+                    },
+                    {
+                        "action": "start",
+                        "thread_id": "side_b",
+                        "title": "SuLi checks the archive",
+                        "outline": "SuLi inspects the archive off screen.",
+                        "time_window": "same minute",
+                        "location": "archive",
+                        "objective": "Find whether the archive is sealed.",
+                        "allowed_characters": ["character:SuLi"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start second SuLi side thread.",
+                        "metadata": {},
+                    },
+                ],
+                "decision_point": None,
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "side_a|side_b|character:SuLi"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(calls, ["gm"])
+        self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
+        self.assertFalse((self.run_dir / "side_threads" / "side_b").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_rejects_same_output_duplicate_start_thread_id_before_writes(self):
+        self.register_characters("Ada", "Bert")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "Two side paths reuse the same thread id."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "subgm_commands": [
+                    {
+                        "action": "start",
+                        "thread_id": "dup_thread",
+                        "title": "Ada checks the ward",
+                        "outline": "Ada inspects a ward off screen.",
+                        "time_window": "same minute",
+                        "location": "hallway",
+                        "objective": "Find whether the ward is active.",
+                        "allowed_characters": ["character:Ada"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start first duplicate-id side thread.",
+                        "metadata": {},
+                    },
+                    {
+                        "action": "start",
+                        "thread_id": "dup_thread",
+                        "title": "Bert checks the archive",
+                        "outline": "Bert inspects the archive off screen.",
+                        "time_window": "same minute",
+                        "location": "archive",
+                        "objective": "Find whether the archive is sealed.",
+                        "allowed_characters": ["character:Bert"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start second duplicate-id side thread.",
+                        "metadata": {},
+                    },
+                ],
+                "decision_point": None,
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "dup_thread"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(calls, ["gm"])
+        self.assertFalse((self.run_dir / "side_threads" / "dup_thread").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_rejects_later_invalid_subgm_command_before_side_thread_writes(self):
+        self.register_characters("Ada", "Bert")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "A malformed side path is requested."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "subgm_commands": [
+                    {
+                        "action": "start",
+                        "thread_id": "side_a",
+                        "title": "Ada checks the ward",
+                        "outline": "Ada inspects a ward off screen.",
+                        "time_window": "same minute",
+                        "location": "hallway",
+                        "objective": "Find whether the ward is active.",
+                        "allowed_characters": ["character:Ada"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start Ada side thread.",
+                        "metadata": {},
+                    },
+                    {
+                        "action": "start",
+                        "thread_id": "BadThread",
+                        "title": "Bert checks the archive",
+                        "outline": "Bert inspects the archive off screen.",
+                        "time_window": "same minute",
+                        "location": "archive",
+                        "objective": "Find whether the archive is sealed.",
+                        "allowed_characters": ["character:Bert"],
+                        "forbidden_characters": ["player"],
+                        "message": "Start malformed side thread.",
+                        "metadata": {},
+                    },
+                ],
+                "decision_point": None,
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "thread_id"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(calls, ["gm"])
+        self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_preflight_resume_uses_persisted_allowed_characters(self):
+        self.register_characters("SuLi", "Ada")
+        self.agent_turn_loop.subgm_threads.apply_gm_commands(self.run_dir, [{
+            "action": "start",
+            "thread_id": "side_suli",
+            "title": "SuLi checks the ward",
+            "outline": "SuLi inspects a ward off screen.",
+            "time_window": "same minute",
+            "location": "hallway",
+            "objective": "Find whether the ward is active.",
+            "allowed_characters": ["character:SuLi"],
+            "forbidden_characters": ["player"],
+            "message": "Start SuLi side thread.",
+            "metadata": {},
+        }])
+        self.agent_turn_loop.subgm_threads.apply_gm_commands(self.run_dir, [{
+            "action": "pause",
+            "thread_id": "side_suli",
+            "message": "Pause.",
+            "metadata": {},
+        }])
+        state_path = self.run_dir / "side_threads" / "side_suli" / "state.json"
+        before_state = self.agent_run.read_json(state_path)
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "SuLi is needed in the main room."}],
+                "events": [],
+                "actor_calls": [{
+                    "call_id": "call-character-SuLi-1",
+                    "actor_id": "character:SuLi",
+                    "prompt": "React in the main room.",
+                    "reason": "Conflicts with persisted side-thread boundary.",
+                }],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "subgm_commands": [{
+                    "action": "resume",
+                    "thread_id": "side_suli",
+                    "allowed_characters": ["character:Ada"],
+                    "message": "Resume with misleading allowed characters.",
+                    "metadata": {},
+                }],
+                "decision_point": None,
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "side_suli"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        after_state = self.agent_run.read_json(state_path)
+        self.assertEqual(after_state["status"], "paused")
+        self.assertEqual(after_state["history"], before_state["history"])
+        self.assertFalse((self.run_dir / "side_threads" / "side_suli" / "subgm.output.json").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
+    def test_gm_loop_preflight_merge_uses_persisted_allowed_characters(self):
+        self.register_characters("SuLi", "Ada")
+        self.agent_turn_loop.subgm_threads.apply_gm_commands(self.run_dir, [{
+            "action": "start",
+            "thread_id": "side_suli",
+            "title": "SuLi checks the ward",
+            "outline": "SuLi inspects a ward off screen.",
+            "time_window": "same minute",
+            "location": "hallway",
+            "objective": "Find whether the ward is active.",
+            "allowed_characters": ["character:SuLi"],
+            "forbidden_characters": ["player"],
+            "message": "Start SuLi side thread.",
+            "metadata": {},
+        }])
+        self.agent_turn_loop.subgm_threads.apply_gm_commands(self.run_dir, [{
+            "action": "pause",
+            "thread_id": "side_suli",
+            "message": "Pause.",
+            "metadata": {},
+        }])
+        state_path = self.run_dir / "side_threads" / "side_suli" / "state.json"
+        before_state = self.agent_run.read_json(state_path)
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "SuLi is needed before merging."}],
+                "events": [],
+                "actor_calls": [{
+                    "call_id": "call-character-SuLi-1",
+                    "actor_id": "character:SuLi",
+                    "prompt": "React in the main room.",
+                    "reason": "Conflicts with persisted side-thread boundary.",
+                }],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "subgm_commands": [{
+                    "action": "merge",
+                    "thread_id": "side_suli",
+                    "allowed_characters": ["character:Ada"],
+                    "message": "Merge with misleading allowed characters.",
+                    "metadata": {},
+                }],
+                "decision_point": None,
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "side_suli"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        after_state = self.agent_run.read_json(state_path)
+        self.assertEqual(after_state["status"], "paused")
+        self.assertEqual(after_state["history"], before_state["history"])
+        self.assertFalse((self.run_dir / "side_threads" / "side_suli" / "subgm.output.json").exists())
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
     def test_gm_same_turn_promotion_redacts_hidden_profile_seed_before_actor_context_and_persistence(self):
         hidden_fact = "the class rep reports to the secret council"
         hidden_marker = "worldTruth"
