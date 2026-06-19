@@ -146,6 +146,13 @@ def main():
         write_progress(progress_status, progress_message, percent=65, detail=detail)
         print(json.dumps(delivery_gate, ensure_ascii=False))
         sys.exit(0)
+    if delivery_gate.get("mode") == "already_delivered":
+        write_progress("done", "已交付，无需重复处理", percent=100)
+        print(json.dumps({
+            "action": "already_done",
+            "agent_delivery": delivery_gate,
+        }, ensure_ascii=False))
+        sys.exit(0)
 
     if not response_path.exists():
         write_progress("error", "未找到 response.txt", percent=0)

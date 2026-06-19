@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -328,6 +329,44 @@ class RpGenerateCliTest(unittest.TestCase):
                 self.module.run_claude_agent("critic", "# critic\n", self.root)
         finally:
             self.module.subprocess.run = original_run
+
+    def test_run_claude_agent_uses_claude_settings_env_over_process_env(self):
+        settings_path = self.root / ".claude" / "settings.json"
+        _write_json(
+            settings_path,
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6[1M]",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "gpt-5-5",
+                    "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+                }
+            },
+        )
+        captured = {}
+        original_run = self.module.subprocess.run
+        original_settings_path = self.module._claude_settings_path
+        original_process_value = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL")
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        try:
+            os.environ["CLAUDE_CODE_SUBAGENT_MODEL"] = "deepseek-v4-flash"
+            self.module._claude_settings_path = lambda: settings_path
+            self.module.subprocess.run = fake_run
+
+            self.module.run_claude_agent("critic", "# critic\n", self.root)
+        finally:
+            self.module.subprocess.run = original_run
+            self.module._claude_settings_path = original_settings_path
+            if original_process_value is None:
+                os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+            else:
+                os.environ["CLAUDE_CODE_SUBAGENT_MODEL"] = original_process_value
+
+        self.assertEqual(captured["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "inherit")
+        self.assertEqual(captured["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "gpt-5-5")
 
     def test_run_round_writes_subagent_artifacts_and_invokes_delivery(self):
         responses = _basic_responses(
@@ -1137,6 +1176,51 @@ class RpGenerateCliTest(unittest.TestCase):
         final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
 
+    def test_run_round_resumes_from_existing_story_input_without_rerunning_loop(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "story_ready"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        _write_json(self.run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": [_gm_output()]})
+        _write_json(self.run_dir / "actor.outputs.json", {"player": [_player_output("I keep listening.")]})
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": "round-000002",
+                "player_inputs": {
+                    "raw_text": "I follow the noise.",
+                    "routed_input": {"role_channel": "I follow the noise.", "user_instruction_channel": ""},
+                },
+                "loop_outputs": {
+                    "gm": [_gm_output()],
+                    "actors": {"player": [_player_output("I keep listening.")]},
+                },
+            },
+        )
+        calls = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key in {"gm", "player"} or agent_key.startswith("character:"):
+                raise AssertionError(f"{agent_key} should not be rerun after story.input.json exists")
+            payload = _story_output("<content>I kept listening near the flickering alley light.</content>")
+            if agent_key == "critic":
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, ["story", "critic"])
+        self.assertEqual(result["artifacts"]["called_actors"], ["player"])
+
     def test_normalize_story_output_orders_dialogues_and_removes_tokens(self):
         story = {
             "content": (
@@ -1324,6 +1408,31 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(normalized["decision"], "pass")
         self.assertEqual(normalized["hard_failures"], [])
 
+    def test_normalize_critic_report_removes_unsupported_placeholder_corruption_when_story_readable(self):
+        critic = {
+            "decision": "block",
+            "hard_failures": [
+                "story_output content is fully non-semantic and consists of placeholder/question-mark glyphs",
+                "player_inputs, GM outputs, and interaction_trace are entirely obfuscated",
+                "UpdateVariable JSONPatch uses invalid and non-resolvable paths (\"/??/??\")",
+                "cannot verify player authority preservation due to loss of intelligible input mapping",
+            ],
+            "soft_issues": ["possible upstream encoding issue"],
+            "repair_instruction": "Regenerate readable prose.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>" + ("你站在校门前，粉色花朵吊坠贴着掌心。" * 20) + "</content><summary>可读。</summary><options>等待</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "pass")
+        self.assertEqual(normalized["hard_failures"], [])
+        self.assertEqual(normalized["soft_issues"], ["possible upstream encoding issue"])
+
     def test_normalize_story_output_removes_visible_polished_input_notes(self):
         story = {
             "content": (
@@ -1491,6 +1600,25 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("player_output", context["authoritative_sources"])
         self.assertNotIn("character_outputs", context["authoritative_sources"])
 
+    def test_story_preflight_repair_context_explains_delivery_word_count(self):
+        context = self.module._story_preflight_repair_context(
+            {"content": "<content>短稿。</content>"},
+            ["content_chinese_chars 1858 is below required minimum 3200"],
+            {"word_count_target": 4000, "minimum_chinese_chars": 3200},
+            2,
+            None,
+        )
+
+        self.assertIn("round_deliver.py count_chinese", context["word_count_contract"]["method"])
+        self.assertEqual(context["word_count_contract"]["minimum_chinese_chars"], 3200)
+        self.assertEqual(context["word_count_contract"]["recommended_chinese_chars"], 3600)
+        self.assertEqual(context["word_count_contract"]["current_chinese_chars"], 2)
+        self.assertEqual(context["word_count_contract"]["missing_chinese_chars"], 3198)
+        self.assertIn("excluding tags", context["instruction"])
+        self.assertIn("3600", context["instruction"])
+        self.assertIn("Do not summarize or shorten", context["instruction"])
+        self.assertIn("sensory detail", context["instruction"])
+
     def test_critic_skill_does_not_require_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
 
@@ -1498,6 +1626,13 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("missing `<tokens>`", skill)
         self.assertIn("current `story_output.content` literally contains", skill)
         self.assertIn("Do not report token failures from historical rejected drafts", skill)
+
+    def test_critic_skill_does_not_treat_redacted_markers_as_mojibake(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+
+        self.assertIn("`[redacted]`", skill)
+        self.assertIn("not mojibake", skill)
+        self.assertIn("story_output.content", skill)
 
     def test_story_skill_forbids_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")

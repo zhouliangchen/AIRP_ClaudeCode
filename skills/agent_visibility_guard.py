@@ -34,6 +34,8 @@ HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
 CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
 CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
+HIDDEN_PHRASE_MAX_CHARS = 160
+CJK_HIDDEN_PHRASE_MIN_CHARS = 4
 CJK_INSTRUCTION_SUFFIXES = (
     "不要",
     "不得",
@@ -183,13 +185,16 @@ def _hidden_phrases_from_text(value: str) -> set[str]:
     kept = set()
     for phrase in phrases:
         clean = _clean_hidden_phrase(phrase)
-        if len(clean) >= 12 or (_has_non_ascii_text(clean) and len(clean) >= 2):
+        if len(clean) > HIDDEN_PHRASE_MAX_CHARS:
+            continue
+        if len(clean) >= 12 or (_has_non_ascii_text(clean) and len(clean) >= CJK_HIDDEN_PHRASE_MIN_CHARS):
             kept.add(clean)
     return kept
 
 
 def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
     texts = []
+    hidden_recent_chat_keys = HIDDEN_TEXT_KEYS - {"ai", "gm"}
     for item in _list(input_payload.get("recent_chat")):
         if isinstance(item, str):
             if "gm" in item.lower() or "hidden" in item.lower() or "private" in item.lower():
@@ -199,7 +204,7 @@ def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
             continue
         hidden_visibility = str(item.get("visibility", "")).lower() in {"gm_only", "hidden", "private"}
         for key, value in item.items():
-            if hidden_visibility or str(key).lower() in HIDDEN_TEXT_KEYS:
+            if hidden_visibility or str(key).lower() in hidden_recent_chat_keys:
                 texts.extend(_string_leaves(value))
     return texts
 

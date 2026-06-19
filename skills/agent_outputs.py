@@ -864,6 +864,13 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     manifest = _load_manifest(run_dir)
     if manifest is None:
         return {"ok": True, "mode": "legacy"}
+    if manifest.get("stage") == "delivered":
+        return {
+            "ok": True,
+            "mode": "already_delivered",
+            "run_dir": str(run_dir),
+            "stage": "delivered",
+        }
 
     try:
         build_story_input(run_dir)

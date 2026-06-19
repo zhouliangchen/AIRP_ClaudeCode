@@ -399,6 +399,40 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertTrue(any(args and args[0] == "blocked" for args, _ in progress_calls))
         self.assertFalse(any(args and args[0] == "retry" for args, _ in progress_calls))
 
+    def test_round_deliver_noops_when_agent_run_already_delivered(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        original_subprocess_run = self.round_deliver.subprocess.run
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run for already delivered run")
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+
+        def gate(card_folder, styles_dir):
+            return {
+                "ok": True,
+                "mode": "already_delivered",
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "stage": "delivered",
+            }
+
+        self.round_deliver.agent_outputs.prepare_delivery = gate
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+        finally:
+            sys.argv = old_argv
+            self.round_deliver.subprocess.run = original_subprocess_run
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(payload["action"], "already_done")
+        self.assertEqual(payload["agent_delivery"]["mode"], "already_delivered")
+
 
 class AgentRunTest(unittest.TestCase):
     def setUp(self):
@@ -930,6 +964,8 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertIn("story.input.json.interaction_trace", story_prompt)
+        self.assertIn("delivery_requirements.word_count_target", story_prompt)
+        self.assertIn("less than delivery_requirements.minimum_chinese_chars is invalid", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
