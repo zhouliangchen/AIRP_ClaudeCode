@@ -147,6 +147,18 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "input_analysis.output.json",
         contract,
         context,
+    ) + (
+        "\n\nSemantic unit enum contract: every `semantic_units[]` item must use "
+        "exactly one of the allowed `type` values and exactly one of the allowed "
+        "`visibility` values below.\n"
+        "\nAllowed `semantic_units[].type` values: `action`, `synopsis`, "
+        "`omniscient_setting`, `hidden_setting`, `character_declaration`, "
+        "`edit_request`, `system_command`, `style_guidance`, `unclear`.\n"
+        "\nAllowed `semantic_units[].visibility` values: `gm_only`, "
+        "`public_world`, `player_pov`, `character_pov`, `specific_characters`.\n"
+        "\nInvalid semantic unit visibility aliases: public, private, player, "
+        "character, world_visible, actor_visible. Do not write these aliases in "
+        "`input_analysis.output.json`.\n"
     )
 
 

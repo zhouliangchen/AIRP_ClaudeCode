@@ -1106,6 +1106,30 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(input_payload["user_instruction_text"], prompt)
         self.assertTrue("source_integrity" in prompt or "raw_text_sha256" in prompt)
         self.assertIn("semantic_units", prompt)
+        for visibility in (
+            "gm_only",
+            "public_world",
+            "player_pov",
+            "character_pov",
+            "specific_characters",
+        ):
+            self.assertIn(visibility, prompt)
+        for unit_type in (
+            "action",
+            "synopsis",
+            "omniscient_setting",
+            "hidden_setting",
+            "character_declaration",
+            "edit_request",
+            "system_command",
+            "style_guidance",
+            "unclear",
+        ):
+            self.assertIn(unit_type, prompt)
+        self.assertIn(
+            "Invalid semantic unit visibility aliases: public, private, player, character, world_visible, actor_visible",
+            prompt,
+        )
 
         gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
         gm_input_request = gm_packet["input_analysis_request"]

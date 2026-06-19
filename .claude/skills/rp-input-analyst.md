@@ -28,6 +28,30 @@ Use semantic judgment instead of keyword matching. A sentence can contain more t
 - `style_guidance`: tone, genre, pacing, or prose preference.
 - `unclear`: content that cannot be safely classified.
 
+## Semantic Unit Enum Contract
+
+Every `semantic_units` item must use exactly one of these `type` values:
+
+- `action`
+- `synopsis`
+- `omniscient_setting`
+- `hidden_setting`
+- `character_declaration`
+- `edit_request`
+- `system_command`
+- `style_guidance`
+- `unclear`
+
+Every `semantic_units` item must use exactly one of these `visibility` values:
+
+- `gm_only`
+- `public_world`
+- `player_pov`
+- `character_pov`
+- `specific_characters`
+
+Invalid semantic unit visibility aliases: public, private, player, character, world_visible, actor_visible. Do not write these aliases in `input_analysis.output.json`.
+
 ## Output
 
 Write exactly one JSON object to `input_analysis.output.json`. No prose, Markdown, or code fences.
