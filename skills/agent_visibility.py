@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 
 PUBLIC_MARKERS = {"all", "everyone", "public", "world", "world_visible"}
+SOURCE_BUCKET_PUBLIC_MARKERS = {"all", "everyone", "public"}
 ALLOWED_BASIS_MODES = {
     "direct",
     "public",
@@ -66,8 +67,15 @@ def _location_identity_key(value: Any) -> str:
     return _actor_identity_key(value)
 
 
+def _sensory_identity_key(value: Any) -> str:
+    return _actor_identity_key(value)
+
+
 HIDDEN_MARKER_CANONICALS = {_canonical_marker(marker) for marker in HIDDEN_MARKERS}
 PUBLIC_MARKER_CANONICALS = {_canonical_marker(marker) for marker in PUBLIC_MARKERS}
+SOURCE_BUCKET_PUBLIC_MARKER_CANONICALS = {
+    _canonical_marker(marker) for marker in SOURCE_BUCKET_PUBLIC_MARKERS
+}
 
 
 def _contains_hidden_marker_text(value: Any) -> bool:
@@ -118,6 +126,10 @@ def _location_identity_set(values: Iterable[Any]) -> set[str]:
     return {_location_identity_key(value) for value in values if _location_identity_key(value)}
 
 
+def _sensory_identity_set(values: Iterable[Any]) -> set[str]:
+    return {_sensory_identity_key(value) for value in values if _sensory_identity_key(value)}
+
+
 def _actor_matches(value: Any, actor_id: str) -> bool:
     value_key = _actor_identity_key(value)
     return bool(value_key) and value_key == _actor_identity_key(actor_id)
@@ -139,7 +151,7 @@ def _source_bucket_grants_visibility(source_bucket_actor_id: Any, actor_id: str)
     identity_key = _actor_identity_key(source_bucket_actor_id)
     if not marker and not identity_key:
         return False
-    return marker in PUBLIC_MARKER_CANONICALS or identity_key == _actor_identity_key(actor_id)
+    return marker in SOURCE_BUCKET_PUBLIC_MARKER_CANONICALS or identity_key == _actor_identity_key(actor_id)
 
 
 def normalize_visibility_basis(value: Any, *, require_summary: bool = False) -> dict[str, Any]:
@@ -258,7 +270,7 @@ def _actor_sensory_channels(actor_state: Any) -> set[str]:
 
     if not found_explicit:
         values.extend(DEFAULT_ACTOR_SENSORY_CHANNELS)
-    return _canonical_set(values)
+    return _sensory_identity_set(values)
 
 
 def _visibility_basis_for_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -294,8 +306,12 @@ def _event_location(event: dict[str, Any], basis: dict[str, Any]) -> str:
 
 def _event_sensory_channels(event: dict[str, Any], basis: dict[str, Any]) -> set[str]:
     if "sensory_channels" in basis:
-        return _canonical_set(_string_list(basis.get("sensory_channels")))
-    return _canonical_set(_string_list(event.get("sensory_channels")))
+        return _sensory_identity_set(_string_list(basis.get("sensory_channels")))
+    return _sensory_identity_set(_string_list(event.get("sensory_channels")))
+
+
+def _event_has_explicit_sensory_channels(event: dict[str, Any], basis: dict[str, Any]) -> bool:
+    return "sensory_channels" in basis or "sensory_channels" in event
 
 
 def _public_visible(event: dict[str, Any], actor_id: str, basis: dict[str, Any]) -> bool:
@@ -313,7 +329,7 @@ def _location_visible(event: dict[str, Any], actor_id: str, actor_state: Any, ba
 
     event_channels = _event_sensory_channels(event, basis)
     if not event_channels:
-        return True
+        return not _event_has_explicit_sensory_channels(event, basis)
     return bool(event_channels.intersection(_actor_sensory_channels(actor_state)))
 
 

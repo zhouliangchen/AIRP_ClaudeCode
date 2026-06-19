@@ -153,6 +153,50 @@ class AgentVisibilityTest(unittest.TestCase):
             )
         )
 
+    def test_location_sensory_channels_distinguish_cjk_channels(self):
+        event = {
+            "type": "scene",
+            "content": "A red light flashes in the classroom.",
+            "visibility_basis": basis(
+                "location",
+                location="\u6559\u5ba4",
+                sensory_channels=["\u89c6\u89c9"],
+            ),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {
+                    "location": "\u6559\u5ba4",
+                    "sensory_channels": ["\u542c\u89c9"],
+                },
+            )
+        )
+
+    def test_location_sensory_channels_match_same_cjk_channel(self):
+        event = {
+            "type": "scene",
+            "content": "A red light flashes in the classroom.",
+            "visibility_basis": basis(
+                "location",
+                location="\u6559\u5ba4",
+                sensory_channels=["\u89c6\u89c9"],
+            ),
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {
+                    "location": "\u6559\u5ba4",
+                    "sensory_channels": ["\u89c6\u89c9"],
+                },
+            )
+        )
+
     def test_public_broadcast_reaches_configured_recipient(self):
         event = {
             "type": "announcement",
@@ -326,6 +370,22 @@ class AgentVisibilityTest(unittest.TestCase):
         }
 
         self.assertFalse(self.visibility.event_visible_to_actor(event, "character:Ada", {}))
+
+    def test_world_visible_source_bucket_does_not_prove_actor_visibility(self):
+        event = {
+            "actor": "gm",
+            "type": "scene",
+            "content": "The archive door opens.",
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {},
+                source_bucket_actor_id="world_visible",
+            )
+        )
 
     def test_nested_visibility_metadata_basis_proves_event_visibility(self):
         event = {
