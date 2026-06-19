@@ -192,20 +192,35 @@ def _hidden_phrases_from_text(value: str) -> set[str]:
     return kept
 
 
+def _looks_like_hidden_recent_chat_text(value: Any) -> bool:
+    text = str(value or "")
+    lower = text.lower()
+    return (
+        _contains_hidden_marker(text)
+        or "gm-only" in lower
+        or "gm only" in lower
+        or "hidden" in lower
+        or "private" in lower
+    )
+
+
 def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
     texts = []
     hidden_recent_chat_keys = HIDDEN_TEXT_KEYS - {"ai", "gm"}
     for item in _list(input_payload.get("recent_chat")):
         if isinstance(item, str):
-            if "gm" in item.lower() or "hidden" in item.lower() or "private" in item.lower():
+            if _looks_like_hidden_recent_chat_text(item):
                 texts.append(item)
             continue
         if not isinstance(item, dict):
             continue
         hidden_visibility = str(item.get("visibility", "")).lower() in {"gm_only", "hidden", "private"}
         for key, value in item.items():
-            if hidden_visibility or str(key).lower() in hidden_recent_chat_keys:
+            key_lower = str(key).lower()
+            if hidden_visibility or key_lower in hidden_recent_chat_keys:
                 texts.extend(_string_leaves(value))
+            elif key_lower in {"ai", "gm"}:
+                texts.extend(text for text in _string_leaves(value) if _looks_like_hidden_recent_chat_text(text))
     return texts
 
 
