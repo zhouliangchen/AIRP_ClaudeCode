@@ -1487,6 +1487,71 @@ class AgentOutputsTest(unittest.TestCase):
 
                 self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_build_story_input_rejects_gm_event_source_call_id_and_target_hidden_values(self):
+        cases = (
+            (
+                "source_call_id",
+                "hiddenfactevent",
+                "Hidden truth: the pendant burns identity.",
+                [{"fact": "The pendant burns identity."}],
+            ),
+            (
+                "source_call_id",
+                "moon base archive",
+                "Hidden truth: moon base archive.",
+                [{"fact": "moon base archive"}],
+            ),
+            (
+                "target",
+                "worldtruthsource",
+                "Hidden truth: the pendant burns identity.",
+                [{"fact": "The pendant burns identity."}],
+            ),
+        )
+        for field, value, hidden_text, hidden_facts in cases:
+            with self.subTest(field=field, value=value):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I inspect the signal.",
+                        "routed_input": {
+                            "role_channel": "I inspect the signal.",
+                            "user_instruction_channel": hidden_text,
+                        },
+                        "hidden_facts": hidden_facts,
+                    },
+                )
+                event = {
+                    "type": "npc_action",
+                    "content": "Ada studies the public signal.",
+                }
+                event[field] = value
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [event],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}
         _write_json(self.run_dir / "story.input.json", sentinel)

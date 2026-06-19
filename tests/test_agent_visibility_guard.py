@@ -257,6 +257,48 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("hallway eats names", text)
         self.assertEqual(text.count("[redacted]"), 4)
 
+    def test_sanitize_gm_output_redacts_event_source_call_id_and_target(self):
+        input_payload = {
+            "routed_input": {
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+        }
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [
+                {
+                    "type": "npc_action",
+                    "target": "player",
+                    "source_call_id": "hiddenfactevent",
+                    "content": "Ada raises a hand.",
+                },
+                {
+                    "type": "npc_action",
+                    "target": "worldtruthsource",
+                    "source_call_id": "moon base archive",
+                    "content": "Ada reads the public signal.",
+                },
+            ],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
+        serialized = repr(sanitized).lower()
+
+        self.assertEqual(sanitized["events"][0]["target"], "player")
+        self.assertEqual(sanitized["events"][0]["source_call_id"], "[redacted]")
+        self.assertEqual(sanitized["events"][1]["target"], "[redacted]")
+        self.assertEqual(sanitized["events"][1]["source_call_id"], "[redacted]")
+        self.assertNotIn("hiddenfactevent", serialized)
+        self.assertNotIn("moon base archive", serialized)
+        self.assertNotIn("worldtruthsource", serialized)
+
     def test_drops_camel_case_hidden_marker_keys_from_gm_metadata(self):
         input_payload = {
             "hidden_facts": ["The mirror names traitors."],

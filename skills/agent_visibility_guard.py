@@ -304,6 +304,8 @@ def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
             _redact_optional_field(beat, field, phrases, redact_markers=True)
     for event in _list(sanitized.get("events")):
         _redact_optional_field(event, "content", phrases, redact_markers=True)
+        _redact_optional_field(event, "target", phrases, redact_markers=True)
+        _redact_optional_field(event, "source_call_id", phrases, redact_markers=True)
         _redact_optional_field(event, "metadata", phrases, redact_markers=True)
         for field in agent_visibility.VISIBILITY_FIELDS:
             _redact_optional_field(event, field, phrases, redact_markers=True)
