@@ -154,6 +154,27 @@ class AgentVisibilityTest(unittest.TestCase):
             )
         )
 
+    def test_actor_call_nested_visibility_metadata_basis_proves_visibility(self):
+        actor_call = {
+            "actor_id": "character:Ada",
+            "prompt": "A bell rings across the school.",
+            "visibility_metadata": {
+                "visibility_basis": basis("public", visible_to=["all"]),
+            },
+        }
+
+        self.assertEqual(
+            self.visibility.actor_call_basis(actor_call)["mode"],
+            "public",
+        )
+        self.assertTrue(
+            self.visibility.actor_call_visible_to_actor(
+                actor_call,
+                "character:Eve",
+                {"location": "courtyard"},
+            )
+        )
+
     def test_private_dialogue_reaches_speaker_target_and_explicit_witness_only(self):
         event = {
             "type": "dialogue",

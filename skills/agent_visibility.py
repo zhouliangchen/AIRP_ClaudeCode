@@ -424,7 +424,10 @@ def actor_call_basis(actor_call: Any) -> dict[str, Any]:
         return {}
 
     fields = visibility_fields_from_event(call)
-    basis = normalize_visibility_basis(call.get("visibility_basis"), require_summary=True)
+    raw_basis = call.get("visibility_basis")
+    if raw_basis is None:
+        raw_basis = fields.get("visibility_basis")
+    basis = normalize_visibility_basis(raw_basis, require_summary=True)
     if not basis:
         return {}
 
