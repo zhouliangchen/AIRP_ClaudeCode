@@ -654,6 +654,60 @@ class AgentTurnLoopTest(unittest.TestCase):
             ["player", "character:SuLi"],
         )
 
+    def test_gm_can_call_third_actor_from_round_prepare_registered_contexts(self):
+        round_prepare = load_module("round_prepare")
+        card_data = {
+            "character_orchestration": {
+                "major": ["Ada", "Bert", "Cora"],
+                "max_parallel_subagents": 2,
+            }
+        }
+        contexts = round_prepare.build_character_contexts(
+            self.run_dir.parent,
+            card_data,
+            {},
+            [],
+            "Cora hears the archive bell.",
+        )
+        payload = self.agent_run.read_json(self.run_dir / "input.json")
+        payload["character_contexts"] = contexts
+        self.agent_run.write_json(self.run_dir / "input.json", payload)
+
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The archive bell rings once."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Cora-1",
+                        "actor_id": "character:Cora",
+                        "prompt": "You hear the archive bell and notice the player at the door.",
+                        "reason": "Cora is the important character who can perceive this moment.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Cora")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:Cora",
+                "character_name": "Cora",
+                "events": [{"type": "action", "target": "", "content": "I step closer to the archive door."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Cora"])
+        self.assertEqual(len(actor_packets), 1)
+        self.assertEqual(actor_packets[0]["actor_id"], "character:Cora")
+
     def test_generated_transfer_source_call_id_is_ascii_safe_for_non_ascii_actor(self):
         self.agent_run.write_json(self.run_dir / "input.json", {
             "routed_input": {"role_channel": "I ask Su Li for help.", "user_instruction_channel": ""},
