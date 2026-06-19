@@ -13,6 +13,7 @@ import agent_interactions
 import agent_projection
 import agent_run
 import agent_schemas
+import agent_visibility
 import agent_visibility_guard
 import subgm_threads
 
@@ -312,6 +313,7 @@ def _route_actor_calls(
             _side_world_state(run_dir, side_dir, input_payload),
             _actor_state(actor_id, input_payload),
             prompt,
+            agent_visibility.actor_call_basis({"visibility_basis": call.get("visibility_basis") or {}}),
         )
         actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
         called_actors.append(actor_id)

@@ -14,6 +14,7 @@ import agent_interactions
 import agent_projection
 import agent_run
 import agent_schemas
+import agent_visibility
 import agent_visibility_guard
 import character_promotions
 import subgm_threads
@@ -198,7 +199,14 @@ def _record_gm_output(run_dir: Path, gm_output: dict, step_index: int) -> None:
     for beat in gm_output.get("scene_beats", []):
         content = _event_content(beat)
         if content:
-            agent_interactions.append_event(run_dir, "gm", "world_visible", "scene_beat", content)
+            agent_interactions.append_event(
+                run_dir,
+                "gm",
+                "world_visible",
+                "scene_beat",
+                content,
+                visibility_metadata=agent_visibility.visibility_fields_from_event(beat),
+            )
 
     for event in gm_output.get("events", []):
         content = _event_content(event)
@@ -212,6 +220,7 @@ def _record_gm_output(run_dir: Path, gm_output: dict, step_index: int) -> None:
             content=content,
             target=str(event.get("target") or ""),
             source_call_id=str(event.get("source_call_id") or ""),
+            visibility_metadata=agent_visibility.visibility_fields_from_event(event),
         )
 
     for group_index, group in enumerate(gm_output.get("parallel_groups", []), start=1):
@@ -306,12 +315,25 @@ def _dialogue_transfer_call(
     used_call_ids: set[str],
 ) -> dict:
     content = _event_content(event)
+    visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
     return {
         "call_id": _next_unique_actor_call_id(target, generated_call_counts, used_call_ids),
         "actor_id": target,
         "prompt": f"{actor_id} says to you: {content}",
         "reason": "Visible dialogue transfer.",
         "source_call_id": call_id,
+        "visibility_basis": visibility_basis,
+    }
+
+
+def _dialogue_transfer_visibility_basis(actor_id: str, target: str) -> dict:
+    return {
+        "mode": "private_dialogue",
+        "summary": f"{target} receives direct dialogue from {actor_id}.",
+        "source_actor": actor_id,
+        "target_actor": target,
+        "visible_to": [actor_id, target],
+        "sensory_channels": ["auditory"],
     }
 
 
@@ -322,6 +344,7 @@ def _record_dialogue_transfer(
     content: str,
     source_call_id: str,
 ) -> None:
+    visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
     agent_interactions.append_event(
         run_dir,
         actor="gm",
@@ -330,6 +353,13 @@ def _record_dialogue_transfer(
         content=content,
         target=target,
         source_call_id=source_call_id,
+        visibility_metadata={
+            "source_actor": actor_id,
+            "target_actor": target,
+            "visible_to": [actor_id, target],
+            "sensory_channels": ["auditory"],
+            "visibility_basis": visibility_basis,
+        },
     )
 
 
@@ -381,6 +411,7 @@ def _actor_packet(
     actor_id: str,
     prompt: str,
     hidden_phrases: Iterable[str],
+    visibility_basis: dict | None = None,
 ) -> dict:
     safe_prompt = agent_visibility_guard.redact_text(prompt, hidden_phrases)
     return agent_projection.project_actor_context(
@@ -388,6 +419,7 @@ def _actor_packet(
         world_state,
         _actor_state(actor_id, input_payload),
         safe_prompt,
+        agent_visibility.actor_call_basis({"visibility_basis": visibility_basis or {}}),
     )
 
 
@@ -545,6 +577,7 @@ def _dispatch_actor_call(
         actor_id,
         str(call.get("prompt") or ""),
         hidden_phrases,
+        call.get("visibility_basis"),
     )
     return _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
 

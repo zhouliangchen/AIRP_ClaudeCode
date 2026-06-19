@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+import agent_visibility
+
 CST = timezone(timedelta(hours=8))
 SAFE_ID_PATTERNS = (
     re.compile(r"^player$"),
@@ -200,6 +202,7 @@ def append_event(
     target: str = "",
     source_call_id: str = "",
     causal_links: Iterable[str] | None = None,
+    visibility_metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     trace = _read(run_dir) or init_trace(run_dir)
     trace["schema_version"] = 2
@@ -224,6 +227,8 @@ def append_event(
         "source_call_id": _safe_id(source_call_id),
         "causal_links": _safe_id_list(causal_links),
     }
+    metadata = agent_visibility.visibility_fields_from_event(visibility_metadata or {})
+    event.update(metadata)
     events.append(event)
     trace["updated_at"] = _now()
     return _write(run_dir, trace)
@@ -372,14 +377,18 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
     for item in events:
         if not isinstance(item, dict) or item.get("visibility") != "world_visible":
             continue
-        visible.append({
+        visible_item = {
             "actor": str(item.get("actor", "")),
             "type": str(item.get("type", "")),
             "content": str(item.get("content", "")),
             "target": _safe_id(item.get("target", "")),
             "source_call_id": _safe_id(item.get("source_call_id", "")),
             "causal_links": _safe_id_list(item.get("causal_links", [])),
-        })
+        }
+        for field in agent_visibility.VISIBILITY_FIELDS:
+            if field in item:
+                visible_item[field] = item[field]
+        visible.append(visible_item)
     private_count = len([
         item for item in events
         if isinstance(item, dict) and item.get("visibility") != "world_visible"
