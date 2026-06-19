@@ -188,6 +188,14 @@ def _unsafe_group_warning(
             call_ids,
             "parallel group needs at least two safe calls to execute concurrently",
         )
+    if indices != list(range(min(indices), max(indices) + 1)):
+        return _warning(
+            "non_contiguous_parallel_group",
+            group_id,
+            actors,
+            call_ids,
+            "parallel group members must be contiguous in actor_calls to preserve GM order",
+        )
     return None
 
 

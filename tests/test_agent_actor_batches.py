@@ -60,6 +60,30 @@ class ActorBatchPlannerTest(unittest.TestCase):
             ],
         )
 
+    def test_non_contiguous_group_downgrades_to_serial_with_warning(self):
+        calls = [
+            call("call-character-Ada-1", "character:Ada"),
+            call("call-character-Bea-1", "character:Bea"),
+            call("call-character-Cora-1", "character:Cora"),
+        ]
+
+        plan = self.batches.build_actor_batches(
+            calls,
+            [{"group_id": "group-gap", "actors": ["character:Ada", "character:Cora"]}],
+            max_parallel=2,
+        )
+
+        self.assertEqual(
+            [(batch["kind"], [item["actor_id"] for item in batch["calls"]]) for batch in plan["batches"]],
+            [
+                ("serial", ["character:Ada"]),
+                ("serial", ["character:Bea"]),
+                ("serial", ["character:Cora"]),
+            ],
+        )
+        self.assertEqual(plan["warnings"][0]["code"], "non_contiguous_parallel_group")
+        self.assertEqual(plan["warnings"][0]["group_id"], "group-gap")
+
     def test_duplicate_actor_group_downgrades_to_serial_with_warning(self):
         calls = [
             call("call-character-SuLi-1", "character:SuLi"),
