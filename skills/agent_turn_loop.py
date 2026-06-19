@@ -756,8 +756,9 @@ def run_interactive_loop(
             )
             pending_parallel_groups = []
             _record_routing_warnings(root, batch_plan.get("warnings", []))
+            batches = [batch for batch in batch_plan.get("batches", []) if isinstance(batch, dict)]
 
-            for batch in batch_plan.get("batches", []):
+            for batch_index, batch in enumerate(batches):
                 calls = [call for call in batch.get("calls", []) if isinstance(call, dict)]
                 if not calls:
                     continue
@@ -822,8 +823,6 @@ def run_interactive_loop(
                     if processed["stop_reason"] in STOP_REASONS:
                         stop_reason = str(processed["stop_reason"])
                     actor_stop_reason = str(actor_output.get("stop_reason") or "")
-                    if actor_stop_reason in STOP_REASONS:
-                        stop_reason = actor_stop_reason
                     if actor_stop_reason == "stop_for_player_decision" or processed["actor_requested_decision"]:
                         actor_requested_decision = True
 
@@ -834,7 +833,16 @@ def run_interactive_loop(
                 if stop_reason in STOP_REASONS:
                     actor_queue.clear()
                     break
-                actor_queue.extend(transfer_calls)
+                if transfer_calls:
+                    remaining_calls = [
+                        later_call
+                        for later_batch in batches[batch_index + 1:]
+                        for later_call in later_batch.get("calls", [])
+                        if isinstance(later_call, dict)
+                    ]
+                    actor_queue.extend(transfer_calls)
+                    actor_queue.extend(remaining_calls)
+                    break
 
         if stop_reason in STOP_REASONS:
             break

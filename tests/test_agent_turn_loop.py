@@ -263,6 +263,92 @@ class AgentTurnLoopTest(unittest.TestCase):
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
         self.assertEqual(list(actor_outputs), ["character:Ada", "character:Bea", "character:Cora"])
 
+    def test_actor_complete_stop_reason_does_not_skip_remaining_actor_calls(self):
+        self.register_characters("Ada", "Bea")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada and Bea answer in sequence."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You give your final response.",
+                            "reason": "Ada has a complete local response.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You respond after Ada.",
+                            "reason": "Bea should still be dispatched.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertIn(agent_key, {"character:Ada", "character:Bea"})
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} responds."}],
+                "stop_reason": "complete" if agent_key == "character:Ada" else "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
+
+    def test_serial_batch_transfer_runs_before_later_planned_actor_call(self):
+        self.register_characters("Ada", "Bea", "Cora")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks to Cora before Bea acts."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Cora to check the door.",
+                            "reason": "Ada routes visible dialogue to Cora.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You respond after any immediate transfer.",
+                            "reason": "Bea is later in the original GM queue.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
+            else:
+                self.assertIn(agent_key, {"character:Bea", "character:Cora"})
+                events = [{"type": "action", "target": "", "content": f"{agent_key} responds."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Cora", "character:Bea"])
+
     def test_loop_routes_dialogue_to_target_character_and_stops_at_decision(self):
         calls = []
 
