@@ -148,6 +148,21 @@ def _string_list(value: Any) -> list[str]:
     return [_string(item) for item in raw_items if item is not None]
 
 
+def _safe_visibility_scalar(value: Any) -> str | None:
+    text = _string(value)
+    if _contains_hidden_marker_text(text):
+        return None
+    return text
+
+
+def _safe_visibility_list(value: Any) -> list[str]:
+    return [
+        text
+        for text in _string_list(value)
+        if not _contains_hidden_marker_text(text)
+    ]
+
+
 def _canonical_set(values: Iterable[Any]) -> set[str]:
     return {_canonical_marker(value) for value in values if _canonical_marker(value)}
 
@@ -227,10 +242,14 @@ def visibility_fields_from_event(event: Any) -> dict[str, Any]:
         nested = _as_dict(payload.get(nested_key))
         for field in SCALAR_VISIBILITY_FIELDS:
             if field not in fields and field in nested and nested.get(field) is not None:
-                fields[field] = _string(nested.get(field))
+                value = _safe_visibility_scalar(nested.get(field))
+                if value is not None:
+                    fields[field] = value
         for field in LIST_VISIBILITY_FIELDS:
             if field not in fields and field in nested:
-                fields[field] = _string_list(nested.get(field))
+                value = _safe_visibility_list(nested.get(field))
+                if value:
+                    fields[field] = value
         if "visibility_basis" not in fields and "visibility_basis" in nested:
             basis = normalize_visibility_basis(nested.get("visibility_basis"))
             if basis:
@@ -238,22 +257,32 @@ def visibility_fields_from_event(event: Any) -> dict[str, Any]:
 
     for field in SCALAR_VISIBILITY_FIELDS:
         if field in payload and payload.get(field) is not None:
-            fields[field] = _string(payload.get(field))
+            value = _safe_visibility_scalar(payload.get(field))
+            if value is not None:
+                fields[field] = value
 
     for field in LIST_VISIBILITY_FIELDS:
         if field in payload:
-            fields[field] = _string_list(payload.get(field))
+            value = _safe_visibility_list(payload.get(field))
+            if value:
+                fields[field] = value
 
     if "source_actor" not in fields and "actor" in payload and payload.get("actor") is not None:
-        fields["source_actor"] = _string(payload.get("actor"))
+        value = _safe_visibility_scalar(payload.get("actor"))
+        if value is not None:
+            fields["source_actor"] = value
     if "target_actor" not in fields:
         target = _first_present(payload, "target", "actor_id")
         if target is not None:
-            fields["target_actor"] = _string(target)
+            value = _safe_visibility_scalar(target)
+            if value is not None:
+                fields["target_actor"] = value
     if "visible_to" not in fields:
         visible_to = _first_present(payload, "recipients", "witnesses")
         if visible_to is not None:
-            fields["visible_to"] = _string_list(visible_to)
+            value = _safe_visibility_list(visible_to)
+            if value:
+                fields["visible_to"] = value
 
     if "visibility_basis" in payload:
         basis = normalize_visibility_basis(payload.get("visibility_basis"))

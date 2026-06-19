@@ -144,6 +144,52 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "Ada can hear the bell.",
         )
 
+    def test_summary_drops_hidden_marker_visibility_metadata_fields(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="scene",
+            content="Ada hears a bell.",
+            visibility_metadata={
+                "location": "gm_only_room",
+                "visible_to": ["world_truth_actor"],
+                "sensory_channels": ["auditory"],
+                "source_actor": "hidden_fact",
+                "target_actor": "character:Ada",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "Ada can hear the bell.",
+                    "target_actor": "character:Ada",
+                },
+            },
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        visible_event = summary["visible_events"][0]
+        self.assertNotIn("location", visible_event)
+        self.assertNotIn("visible_to", visible_event)
+        self.assertNotIn("source_actor", visible_event)
+        self.assertEqual(visible_event["sensory_channels"], ["auditory"])
+        self.assertEqual(visible_event["target_actor"], "character:Ada")
+        self.assertNotIn(
+            "gm_only_room",
+            json.dumps(summary, ensure_ascii=False),
+        )
+        self.assertNotIn(
+            "world_truth_actor",
+            json.dumps(summary, ensure_ascii=False),
+        )
+        self.assertNotIn(
+            "hidden_fact",
+            json.dumps(summary, ensure_ascii=False),
+        )
+
     def test_trace_records_actor_batches_and_routing_warnings(self):
         self.agent_interactions.init_trace(
             self.run_dir,

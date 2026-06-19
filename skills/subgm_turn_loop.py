@@ -169,6 +169,7 @@ def _record_subgm_output(
                 visibility="world_visible",
                 event_type="scene_beat",
                 content=content,
+                visibility_metadata=agent_visibility.visibility_fields_from_event(beat),
             )
 
     for event in output.get("events", []):
@@ -187,6 +188,7 @@ def _record_subgm_output(
             content=content,
             target=str(event.get("target") or ""),
             source_call_id=str(event.get("source_call_id") or ""),
+            visibility_metadata=agent_visibility.visibility_fields_from_event(event),
         )
 
 

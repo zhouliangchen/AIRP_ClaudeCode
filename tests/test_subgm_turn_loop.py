@@ -229,6 +229,74 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
 
+    def test_subgm_scene_visibility_metadata_reaches_side_trace_summary(self):
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    scene_beats=[{
+                        "content": "SuLi sees chalk dust beside the rooftop vent.",
+                        "scene_id": "rooftop-1",
+                        "location": "school rooftop",
+                        "time_window": "same morning",
+                        "visible_to": ["character:SuLi"],
+                        "sensory_channels": ["visual"],
+                        "source_actor": "subGM:side_suli_rooftop",
+                        "target_actor": "character:SuLi",
+                        "visibility_basis": {
+                            "mode": "location",
+                            "summary": "SuLi is on the rooftop and can see the chalk dust.",
+                            "location": "school rooftop",
+                            "visible_to": ["character:SuLi"],
+                            "sensory_channels": ["visual"],
+                            "target_actor": "character:SuLi",
+                        },
+                    }],
+                    events=[{
+                        "type": "scene",
+                        "content": "A chalk line glows on the vent.",
+                        "location": "school rooftop",
+                        "visible_to": ["character:SuLi"],
+                        "sensory_channels": ["visual"],
+                        "target_actor": "character:SuLi",
+                        "visibility_basis": {
+                            "mode": "location",
+                            "summary": "SuLi can see the chalk line from the vent.",
+                            "location": "school rooftop",
+                            "visible_to": ["character:SuLi"],
+                            "sensory_channels": ["visual"],
+                            "target_actor": "character:SuLi",
+                        },
+                    }],
+                    actor_calls=[],
+                )
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
+
+        self.assertTrue(result["ok"])
+        side_dir = self.run_dir / "side_threads" / "side_suli_rooftop"
+        summary = load_module("agent_interactions").summarize_for_story_input(side_dir)
+        self.assertEqual(len(summary["visible_events"]), 2)
+        scene_beat = summary["visible_events"][0]
+        self.assertEqual(scene_beat["type"], "scene_beat")
+        self.assertEqual(scene_beat.get("location"), "school rooftop")
+        self.assertEqual(scene_beat.get("visible_to"), ["character:SuLi"])
+        self.assertEqual(scene_beat.get("sensory_channels"), ["visual"])
+        self.assertEqual(scene_beat.get("target_actor"), "character:SuLi")
+        self.assertEqual(
+            scene_beat.get("visibility_basis", {}).get("summary"),
+            "SuLi is on the rooftop and can see the chalk dust.",
+        )
+        event = summary["visible_events"][1]
+        self.assertEqual(event["type"], "scene")
+        self.assertEqual(event.get("location"), "school rooftop")
+        self.assertEqual(event.get("visible_to"), ["character:SuLi"])
+        self.assertEqual(event.get("sensory_channels"), ["visual"])
+        self.assertEqual(
+            event.get("visibility_basis", {}).get("summary"),
+            "SuLi can see the chalk line from the vent.",
+        )
+
     def test_run_ready_side_threads_runs_sorted_runnable_threads_sequentially(self):
         self.subgm_threads.apply_gm_commands(
             self.run_dir,
