@@ -73,6 +73,15 @@ def _contains_text(value: Any, text: str) -> bool:
     return str(text).lower() in json.dumps(value, ensure_ascii=False).lower()
 
 
+def _assert_actor_calls_have_visibility_basis(output: Dict[str, Any], label: str) -> None:
+    for index, call in enumerate(output.get("actor_calls", [])):
+        if not isinstance(call, dict):
+            continue
+        basis = call.get("visibility_basis")
+        if not isinstance(basis, dict) or not str(basis.get("summary") or "").strip():
+            raise RuntimeError(f"{label}.actor_calls[{index}] missing visibility_basis.summary")
+
+
 def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], input_analysis) -> Dict[str, Any]:
     raw_text = str(input_payload.get("raw_text") or "")
     role_text = str(input_payload.get("role_text") or "")
@@ -193,16 +202,15 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
             {
                 "call_id": "call-character-Ada-1",
                 "actor_id": "character:Ada",
-                "prompt": (
-                    "You recognize the pendant burns identity, but respond only from "
-                    "what Ada can safely perceive."
-                ),
-                "reason": "GM must test that the hidden pendant truth is redacted.",
+                "prompt": "You notice the player trying to hide the pendant and respond only from Ada's visible perception.",
+                "reason": "Ada can see the player's hand move toward the pendant.",
                 "visibility_basis": {
-                    "mode": "direct",
-                    "summary": "character:Ada is directly addressed by this test GM prompt.",
-                    "target_actor": "character:Ada",
+                    "mode": "location",
+                    "summary": "Ada is nearby and can see the player move the pendant.",
+                    "location": "classroom",
                     "visible_to": ["character:Ada"],
+                    "sensory_channels": ["visual"],
+                    "target_actor": "character:Ada",
                 },
             }
         ],
@@ -233,6 +241,7 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
         },
         "stop_reason": "player_decision",
     }
+    _assert_actor_calls_have_visibility_basis(raw_gm_output, "raw_gm_output")
     captured: Dict[str, Any] = {"raw_gm_output": raw_gm_output, "actor_packets": []}
 
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
@@ -303,6 +312,13 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
         raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
 
     captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=1)
+    if not captured["actor_packets"]:
+        raise RuntimeError("deterministic actor dispatch did not capture actor packets")
+    basis = captured["actor_packets"][0].get("gm_visibility_basis", {})
+    if basis.get("target_actor") != "character:Ada":
+        raise RuntimeError(f"unexpected actor packet visibility basis target: {basis!r}")
+    if "burns identity" in json.dumps(captured["actor_packets"], ensure_ascii=False).lower():
+        raise RuntimeError("hidden pendant identity text leaked into actor packets")
     return captured
 
 
@@ -513,16 +529,26 @@ def _structured_memory_evidence(card: Path) -> Dict[str, Any]:
 def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> Dict[str, Any]:
     gm_output = _read_json(run_dir / "gm.output.json")
     story_input = _read_json(run_dir / "story.input.json")
+    input_json = _read_json(run_dir / "input.json")
     loop_outputs = story_input.get("loop_outputs", {})
     actor_packets = captured_loop.get("actor_packets", [])
-    raw_exposed_phrase = _contains_text(captured_loop.get("raw_gm_output", {}), HIDDEN_SMOKE_PHRASE)
+    hidden_source_present = _contains_text(input_json, HIDDEN_SMOKE_PHRASE)
     sanitized_actor_fields = [gm_output.get("outputs", []), loop_outputs.get("gm", {}), actor_packets]
-    redacted_actor_call = (
-        raw_exposed_phrase
-        and not any(_contains_text(field, HIDDEN_SMOKE_PHRASE) for field in sanitized_actor_fields)
-        and any(_contains_text(field, "[redacted]") for field in sanitized_actor_fields)
+    actor_packet_basis_target = bool(actor_packets) and (
+        actor_packets[0].get("gm_visibility_basis", {}).get("target_actor") == "character:Ada"
     )
-    return {"redacted_actor_call": redacted_actor_call}
+    actor_packet_hidden_text_absent = "burns identity" not in json.dumps(actor_packets, ensure_ascii=False).lower()
+    redacted_actor_call = (
+        hidden_source_present
+        and actor_packet_basis_target
+        and actor_packet_hidden_text_absent
+        and not any(_contains_text(field, HIDDEN_SMOKE_PHRASE) for field in sanitized_actor_fields)
+    )
+    return {
+        "redacted_actor_call": redacted_actor_call,
+        "actor_packet_basis_target": actor_packet_basis_target,
+        "actor_packet_hidden_text_absent": actor_packet_hidden_text_absent,
+    }
 
 
 def _subgm_promotion_blocked(agent_schemas) -> bool:

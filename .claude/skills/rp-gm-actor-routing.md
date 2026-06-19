@@ -13,6 +13,8 @@ Call an actor only when the current scene gives that actor a meaningful particip
 
 Do not call an important character merely because they exist in the cast. Do not ask an actor to confirm GM exposition or carry hidden setup.
 
+Every `actor_calls[]` entry must include `visibility_basis` for that specific actor call. Visibility proof is per call: a call must explain why its target actor can perceive, receive, or reasonably infer that prompt, and parallel groups do not inherit proof for their member calls.
+
 ## Serial Routing
 
 Route actor calls serially when one actor's visible action, dialogue, or perception can change another actor's response. The later actor should receive only the updated visible situation and dialogue transfer, not the previous actor's private reasoning.

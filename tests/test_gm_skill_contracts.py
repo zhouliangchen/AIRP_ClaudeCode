@@ -24,6 +24,22 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("must not contain hidden facts, foreshadowing hints, or euphemistic substitutes", text)
         self.assertIn("second-person visible situation only", text)
 
+    def test_visibility_policy_requires_structured_visibility_proof(self):
+        text = self.read(".claude/skills/rp-gm-visibility-policy.md")
+        self.assertIn("actor_calls[].visibility_basis", text)
+        for field in (
+            "scene_id",
+            "location",
+            "time_window",
+            "visible_to",
+            "sensory_channels",
+            "source_actor",
+            "target_actor",
+            "visibility_basis",
+        ):
+            self.assertIn(field, text)
+        self.assertIn("If visibility cannot be proven", text)
+
     def test_promotion_policy_allows_only_preprocess_and_gm_sources(self):
         text = self.read(".claude/skills/rp-gm-promotion-policy.md")
         self.assertIn("Allowed promotion sources: preprocess, gm", text)
@@ -44,3 +60,8 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("downgrade unsafe groups to serial routing", text)
         self.assertIn("rejected before batching", text)
         self.assertNotIn("`parallel_groups` is metadata only", text.lower())
+
+    def test_actor_routing_requires_per_call_visibility_basis(self):
+        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        self.assertIn("visibility_basis", text)
+        self.assertIn("per call", text)

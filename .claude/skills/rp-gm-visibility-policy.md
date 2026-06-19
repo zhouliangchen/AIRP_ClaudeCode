@@ -13,6 +13,16 @@ Use this policy whenever GM-facing knowledge must be projected into actor-facing
 
 These fields must not contain hidden facts, foreshadowing hints, or euphemistic substitutes. Do not leak secrets through suggestive wording, suspicious emphasis, meta labels, genre hints, or "you feel this matters" phrasing unless the character has a concrete visible reason to know it.
 
+## Structured Visibility Proof
+
+Actor-facing GM output must carry compact proof for why the actor can receive the information.
+
+For `scene_beats[]`, `events[]`, and `actor_calls[]`, use these fields when applicable: `scene_id`, `location`, `time_window`, `visible_to`, `sensory_channels`, `source_actor`, `target_actor`, and `visibility_basis`.
+
+`actor_calls[].visibility_basis` is required. It must explain why the target actor can perceive, receive, or reasonably infer the second-person prompt. Keep the summary concrete and visible: "Ada is in the classroom and can see the player's hand close" is valid; "Ada is near the hidden truth" is not.
+
+If visibility cannot be proven, keep the information GM-only. Do not route it to an actor call, visible event, perception answer, or dialogue transfer.
+
 ## Disclosure
 
 Hidden facts become actor-visible only after an in-world event exposes them. When disclosure happens, state the visible evidence or spoken line, not the GM's hidden reasoning. If the GM is unsure whether a fact is visible, keep it in GM-only notes and ask for perception or dialogue that can reveal it later.
