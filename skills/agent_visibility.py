@@ -249,7 +249,10 @@ def _actor_sensory_channels(actor_state: Any) -> set[str]:
 
 def _visibility_basis_for_event(event: dict[str, Any]) -> dict[str, Any]:
     fields = visibility_fields_from_event(event)
-    basis = normalize_visibility_basis(event.get("visibility_basis"), require_summary=True)
+    raw_basis = event.get("visibility_basis")
+    if raw_basis is None:
+        raw_basis = fields.get("visibility_basis")
+    basis = normalize_visibility_basis(raw_basis, require_summary=True)
     if not basis:
         return {}
 
@@ -269,11 +272,10 @@ def _visible_to_values(event: dict[str, Any], basis: dict[str, Any]) -> list[str
 
 
 def _event_location(event: dict[str, Any], basis: dict[str, Any]) -> str:
-    return _string(
-        basis.get("location")
-        if "location" in basis
-        else _first_present(event, "location", "scene_id")
-    )
+    location = basis.get("location") if "location" in basis else event.get("location")
+    if location is None:
+        location = basis.get("scene_id") if "scene_id" in basis else event.get("scene_id")
+    return _string(location)
 
 
 def _event_sensory_channels(event: dict[str, Any], basis: dict[str, Any]) -> set[str]:
@@ -441,6 +443,8 @@ def actor_call_visible_to_actor(actor_call: Any, actor_id: str, actor_state: Any
     """Return whether an actor call's basis proves visibility to this actor."""
     call = _as_dict(actor_call)
     if not call:
+        return False
+    if _has_hidden_marker(call):
         return False
 
     basis = actor_call_basis(call)

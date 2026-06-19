@@ -64,6 +64,23 @@ class AgentVisibilityTest(unittest.TestCase):
             self.visibility.event_visible_to_actor(event, "character:Ada", actor)
         )
 
+    def test_location_basis_can_match_actor_scene_id_without_location(self):
+        event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "sensory_channels": ["auditory"],
+            "visibility_basis": basis(
+                "location",
+                scene_id="classroom-1",
+                sensory_channels=["auditory"],
+            ),
+        }
+        actor = {"name": "Ada", "scene_id": "classroom-1"}
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(event, "character:Ada", actor)
+        )
+
     def test_public_broadcast_reaches_configured_recipient(self):
         event = {
             "type": "announcement",
@@ -122,6 +139,21 @@ class AgentVisibilityTest(unittest.TestCase):
             )
         )
 
+    def test_actor_call_hidden_marker_in_prompt_blocks_visibility(self):
+        actor_call = {
+            "actor_id": "character:Ada",
+            "prompt": "world_truth says the bell is fake.",
+            "visibility_basis": basis("public", visible_to=["all"]),
+        }
+
+        self.assertFalse(
+            self.visibility.actor_call_visible_to_actor(
+                actor_call,
+                "character:Eve",
+                {"location": "courtyard"},
+            )
+        )
+
     def test_private_dialogue_reaches_speaker_target_and_explicit_witness_only(self):
         event = {
             "type": "dialogue",
@@ -150,6 +182,24 @@ class AgentVisibilityTest(unittest.TestCase):
         }
 
         self.assertFalse(self.visibility.event_visible_to_actor(event, "character:Ada", {}))
+
+    def test_nested_visibility_metadata_basis_proves_event_visibility(self):
+        event = {
+            "type": "trace_event",
+            "content": "The archive lamp flickers.",
+            "visibility_metadata": {
+                "visibility_basis": basis(
+                    "location",
+                    location="archive",
+                    sensory_channels=["visual"],
+                ),
+            },
+        }
+        actor = {"name": "Ada", "location": "archive"}
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(event, "character:Ada", actor)
+        )
 
     def test_actor_specific_bucket_is_visible_only_to_that_actor(self):
         event = {
