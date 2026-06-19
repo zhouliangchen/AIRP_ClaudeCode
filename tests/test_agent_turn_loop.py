@@ -102,13 +102,29 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
         self.assertCountEqual(actor_entries, ["character:Ada", "character:Bea"])
         trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
-        self.assertEqual(trace["actor_batches"][0]["kind"], "parallel")
-        self.assertEqual(trace["actor_batches"][0]["actors"], ["character:Ada", "character:Bea"])
+        actor_batches = trace["actor_batches"]
+        self.assertEqual(len(actor_batches), 1)
+        self.assertEqual(
+            {
+                "kind": actor_batches[0]["kind"],
+                "group_id": actor_batches[0]["group_id"],
+                "actors": actor_batches[0]["actors"],
+                "call_ids": actor_batches[0]["call_ids"],
+            },
+            {
+                "kind": "parallel",
+                "group_id": "group-main",
+                "actors": ["character:Ada", "character:Bea"],
+                "call_ids": ["call-character-Ada-1", "call-character-Bea-1"],
+            },
+        )
         self.assertEqual(trace.get("routing_warnings", []), [])
 
     def test_dependent_parallel_group_is_downgraded_to_serial_and_warned(self):
         self.register_characters("Ada", "Bea")
         actor_order = []
+        ada_started = threading.Event()
+        ada_completed = threading.Event()
 
         def dispatch(agent_key, packet):
             if agent_key == "gm":
@@ -139,7 +155,17 @@ class AgentTurnLoopTest(unittest.TestCase):
                     "decision_point": None,
                     "stop_reason": "complete",
                 }
-            actor_order.append(agent_key)
+            if agent_key == "character:Ada":
+                actor_order.append(agent_key)
+                ada_started.set()
+                threading.Event().wait(0.05)
+                ada_completed.set()
+            elif agent_key == "character:Bea":
+                if ada_started.is_set() and not ada_completed.is_set():
+                    self.fail("dependent group dispatched concurrently")
+                actor_order.append(agent_key)
+            else:
+                self.fail(f"unexpected actor dispatch: {agent_key}")
             return {
                 "agent": "character",
                 "agent_id": agent_key,
@@ -159,6 +185,7 @@ class AgentTurnLoopTest(unittest.TestCase):
     def test_parallel_batch_outputs_merge_in_call_order_and_schedule_transfer_after_batch(self):
         self.register_characters("Ada", "Bea", "Cora")
         barrier = threading.Barrier(2)
+        bea_returned = threading.Event()
         actor_order = []
 
         def dispatch(agent_key, packet):
@@ -194,8 +221,21 @@ class AgentTurnLoopTest(unittest.TestCase):
                 barrier.wait(timeout=2)
             if agent_key == "character:Ada":
                 events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
-            else:
+            elif agent_key == "character:Bea":
                 events = [{"type": "action", "target": "", "content": f"{agent_key} watches."}]
+                result = {
+                    "agent": "character",
+                    "agent_id": agent_key,
+                    "character_name": agent_key.split(":", 1)[1],
+                    "events": events,
+                    "stop_reason": "continue",
+                }
+                bea_returned.set()
+                return result
+            else:
+                self.assertEqual(agent_key, "character:Cora")
+                self.assertTrue(bea_returned.is_set(), "Cora scheduled before Bea batch output completed")
+                events = [{"type": "action", "target": "", "content": "character:Cora checks the door."}]
             return {
                 "agent": "character",
                 "agent_id": agent_key,
