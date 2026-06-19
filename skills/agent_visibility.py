@@ -62,6 +62,10 @@ def _actor_identity_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
+def _location_identity_key(value: Any) -> str:
+    return _actor_identity_key(value)
+
+
 HIDDEN_MARKER_CANONICALS = {_canonical_marker(marker) for marker in HIDDEN_MARKERS}
 PUBLIC_MARKER_CANONICALS = {_canonical_marker(marker) for marker in PUBLIC_MARKERS}
 
@@ -108,6 +112,10 @@ def _string_list(value: Any) -> list[str]:
 
 def _canonical_set(values: Iterable[Any]) -> set[str]:
     return {_canonical_marker(value) for value in values if _canonical_marker(value)}
+
+
+def _location_identity_set(values: Iterable[Any]) -> set[str]:
+    return {_location_identity_key(value) for value in values if _location_identity_key(value)}
 
 
 def _actor_matches(value: Any, actor_id: str) -> bool:
@@ -230,7 +238,7 @@ def _actor_locations(actor_state: Any) -> set[str]:
         nested = _as_dict(actor.get(nested_key))
         if "location" in nested:
             values.extend(_string_list(nested.get("location")))
-    return _canonical_set(values)
+    return _location_identity_set(values)
 
 
 def _actor_sensory_channels(actor_state: Any) -> set[str]:
@@ -297,7 +305,7 @@ def _public_visible(event: dict[str, Any], actor_id: str, basis: dict[str, Any])
 
 def _location_visible(event: dict[str, Any], actor_id: str, actor_state: Any, basis: dict[str, Any]) -> bool:
     del actor_id
-    location = _canonical_marker(_event_location(event, basis))
+    location = _location_identity_key(_event_location(event, basis))
     if not location:
         return False
     if location not in _actor_locations(actor_state):

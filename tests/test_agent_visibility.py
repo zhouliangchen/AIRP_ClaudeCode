@@ -81,6 +81,78 @@ class AgentVisibilityTest(unittest.TestCase):
             self.visibility.event_visible_to_actor(event, "character:Ada", actor)
         )
 
+    def test_location_basis_matches_same_cjk_location(self):
+        event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "visibility_basis": basis("location", location="\u6559\u5ba4"),
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {"location": "\u6559\u5ba4"},
+            )
+        )
+
+    def test_location_basis_rejects_different_cjk_location(self):
+        event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "visibility_basis": basis("location", location="\u6559\u5ba4"),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {"location": "\u8d70\u5eca"},
+            )
+        )
+
+    def test_location_basis_rejects_different_mixed_cjk_location(self):
+        event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "visibility_basis": basis("location", location="room:\u6559\u5ba4"),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {"location": "room:\u8d70\u5eca"},
+            )
+        )
+
+    def test_location_basis_matches_and_rejects_cjk_scene_id(self):
+        event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "visibility_basis": basis("location", scene_id="\u6559\u5ba4"),
+        }
+        mixed_event = {
+            "type": "scene",
+            "content": "The classroom projector hums.",
+            "visibility_basis": basis("location", scene_id="room:\u6559\u5ba4"),
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Ada",
+                {"scene_id": "\u6559\u5ba4"},
+            )
+        )
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                mixed_event,
+                "character:Ada",
+                {"scene_id": "room:\u8d70\u5eca"},
+            )
+        )
+
     def test_public_broadcast_reaches_configured_recipient(self):
         event = {
             "type": "announcement",
