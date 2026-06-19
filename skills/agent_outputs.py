@@ -101,6 +101,12 @@ def _validate_gm_output_visibility(
             for field in actor_call_fields:
                 if field in call:
                     _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
+        if gm_output.get("decision_point") is not None:
+            _reject_actor_facing_gm_value(
+                gm_output["decision_point"],
+                f"{output_context}.decision_point",
+                hidden_phrases,
+            )
 
 
 def _sanitize_side_summary_value(value: Any, hidden_phrases: list[str]) -> Any:

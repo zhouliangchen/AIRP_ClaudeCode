@@ -28,6 +28,7 @@ HIDDEN_MARKER_KEYS = (
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
 CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"
+ENGLISH_FUZZY_SEPARATOR_RE = r"[\s._-]+"
 CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
 HIDDEN_PHRASE_MAX_CHARS = 160
 CJK_HIDDEN_PHRASE_MIN_CHARS = 4
@@ -245,6 +246,14 @@ def _hidden_phrase_pattern(phrase: str) -> re.Pattern:
                 CJK_FUZZY_SEPARATOR_RE.join(re.escape(char) for char in units),
                 re.IGNORECASE,
             )
+    tokens = _canonical_tokens(phrase)
+    if len(tokens) >= 2 and not _has_non_ascii_text(str(phrase or "")):
+        return re.compile(
+            r"(?<![a-z0-9])"
+            + ENGLISH_FUZZY_SEPARATOR_RE.join(re.escape(token) for token in tokens)
+            + r"(?![a-z0-9])",
+            re.IGNORECASE,
+        )
     return re.compile(re.escape(str(phrase)), re.IGNORECASE)
 
 
@@ -292,6 +301,14 @@ def _redact_optional_field(
         item[field] = _redact_value(item[field], phrases, redact_markers=redact_markers)
 
 
+def _redact_optional_stop_reason(item: Any, phrases: Iterable[str]) -> None:
+    if not isinstance(item, dict) or "stop_reason" not in item:
+        return
+    stop_reason = str(item.get("stop_reason") or "").strip()
+    if stop_reason not in agent_schemas.GM_STOP_REASONS:
+        _redact_optional_field(item, "stop_reason", phrases, redact_markers=True)
+
+
 def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
     """Return a sanitized copy of actor/story-facing GM output fields."""
     sanitized = copy.deepcopy(gm_output)
@@ -315,6 +332,8 @@ def sanitize_gm_output(gm_output: dict, input_payload: dict) -> dict:
         _redact_optional_field(call, "metadata", phrases, redact_markers=True)
         for field in agent_visibility.VISIBILITY_FIELDS:
             _redact_optional_field(call, field, phrases, redact_markers=True)
+    _redact_optional_field(sanitized, "decision_point", phrases, redact_markers=True)
+    _redact_optional_stop_reason(sanitized, phrases)
     for promotion in _list(sanitized.get("character_promotions")):
         _redact_optional_field(promotion, "reason", phrases, redact_markers=True)
         _redact_optional_field(promotion, "profile_seed", phrases, redact_markers=True)

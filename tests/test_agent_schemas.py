@@ -148,6 +148,21 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")
 
+    def test_validate_gm_output_rejects_invalid_stop_reason(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "moon-base-archive",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "stop_reason"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_requires_actor_call_visibility_basis(self):
         payload = {
             "agent": "gm",

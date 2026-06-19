@@ -1552,6 +1552,173 @@ class AgentOutputsTest(unittest.TestCase):
 
                 self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_build_story_input_rejects_gm_event_source_call_id_and_target_separator_hidden_phrases(self):
+        cases = (
+            ("source_call_id", "moon-base-archive"),
+            ("target", "moon_base_archive"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I inspect the signal.",
+                        "routed_input": {
+                            "role_channel": "I inspect the signal.",
+                            "user_instruction_channel": "Hidden truth: moon base archive.",
+                        },
+                        "hidden_facts": [{"fact": "moon base archive"}],
+                    },
+                )
+                event = {
+                    "type": "npc_action",
+                    "content": "Ada studies the public signal.",
+                }
+                event[field] = value
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [event],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_decision_point_hidden_phrase_fields(self):
+        cases = (
+            ("reason", {"reason": "Choose whether to reveal the moon-base-archive.", "options": ["ask Ada"]}),
+            ("options", {"reason": "Choose a visible next move.", "options": ["ask about moon_base_archive"]}),
+        )
+        for field, decision_point in cases:
+            with self.subTest(field=field):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I inspect the signal.",
+                        "routed_input": {
+                            "role_channel": "I inspect the signal.",
+                            "user_instruction_channel": "Hidden truth: moon base archive.",
+                        },
+                        "hidden_facts": [{"fact": "moon base archive"}],
+                    },
+                )
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": decision_point,
+                                "stop_reason": "player_decision",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"decision_point.*{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_invalid_gm_stop_reason_without_writing_story_input(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I inspect the signal.",
+                "routed_input": {
+                    "role_channel": "I inspect the signal.",
+                    "user_instruction_channel": "Hidden truth: moon base archive.",
+                },
+                "hidden_facts": [{"fact": "moon base archive"}],
+            },
+        )
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "moon-base-archive",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "stop_reason"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_allows_enum_stop_reason_matching_hidden_phrase_tokens(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I inspect the signal.",
+                "routed_input": {
+                    "role_channel": "I inspect the signal.",
+                    "user_instruction_channel": "Hidden truth: player decision.",
+                },
+                "hidden_facts": [{"fact": "player decision"}],
+            },
+        )
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            story_input["loop_outputs"]["gm"]["outputs"][0]["stop_reason"],
+            "player_decision",
+        )
+
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}
         _write_json(self.run_dir / "story.input.json", sentinel)

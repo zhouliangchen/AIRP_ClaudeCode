@@ -45,6 +45,7 @@ ACTOR_EVENT_TYPES = {
 
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 
+GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 
 SUBGM_COMMAND_ACTIONS = {"start", "message", "accelerate", "pause", "resume", "merge", "close"}
@@ -298,6 +299,14 @@ def _normalize_subgm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_gm_stop_reason(data: dict, path: str) -> str:
+    stop_reason = _optional_str(data, "stop_reason", "continue", path).strip()
+    if stop_reason not in GM_STOP_REASONS:
+        allowed = ", ".join(sorted(GM_STOP_REASONS))
+        raise ValidationError(f"{_path(path, 'stop_reason')} must be one of: {allowed}")
+    return stop_reason
+
+
 def _normalize_character_ref(item: Any, path: str) -> str:
     if not isinstance(item, str):
         raise ValidationError(f"{path} must be a string")
@@ -470,7 +479,7 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
             _normalize_gm_character_promotion,
         ),
         "decision_point": data.get("decision_point"),
-        "stop_reason": _optional_str(data, "stop_reason", "continue", "gm_output"),
+        "stop_reason": _normalize_gm_stop_reason(data, "gm_output"),
         "subgm_commands": _normalize_list_items(
             _optional_list(data, "subgm_commands", "gm_output"),
             "gm_output.subgm_commands",

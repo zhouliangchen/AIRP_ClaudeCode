@@ -2135,6 +2135,46 @@ class AgentTurnLoopTest(unittest.TestCase):
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
         self.assertEqual(len(actor_outputs["character:SuLi"]), 1)
 
+    def test_sanitized_gm_decision_point_reaches_trace_without_hidden_phrase(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I inspect the signal.",
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+            "character_contexts": {"characters": []},
+        })
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The public signal keeps blinking."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": {
+                    "reason": "Choose whether to reveal moon-base-archive.",
+                    "options": ["ask about moon_base_archive", "walk away"],
+                },
+                "stop_reason": "player_decision",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        gm_loop = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        serialized = repr({
+            "result_decision": result["decision_point"],
+            "trace_decision": trace["decision_point"],
+            "gm_decision": gm_loop["outputs"][0]["decision_point"],
+        }).lower()
+
+        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertIn("[redacted]", serialized)
+        self.assertNotIn("moon-base-archive", serialized)
+        self.assertNotIn("moon_base_archive", serialized)
+
     def test_gm_can_promote_and_call_new_character_in_same_turn(self):
         self.agent_run.write_json(self.run_dir.parent / ".card_data.json", {
             "character_orchestration": {"major": []},
