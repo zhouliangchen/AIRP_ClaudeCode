@@ -175,6 +175,40 @@ class AgentVisibilityTest(unittest.TestCase):
             )
         )
 
+    def test_direct_target_proof_distinguishes_cjk_actor_ids(self):
+        event = {
+            "type": "direct_prompt",
+            "content": "苏黎 receives a direct cue.",
+            "visibility_basis": basis(
+                "direct",
+                target_actor="character:苏黎",
+            ),
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(event, "character:苏黎", {})
+        )
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(event, "character:艾达", {})
+        )
+
+    def test_visible_to_distinguishes_cjk_actor_ids(self):
+        event = {
+            "type": "announcement",
+            "content": "Only 苏黎 receives the note.",
+            "visibility_basis": basis(
+                "public",
+                visible_to=["character:苏黎"],
+            ),
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(event, "character:苏黎", {})
+        )
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(event, "character:艾达", {})
+        )
+
     def test_private_dialogue_reaches_speaker_target_and_explicit_witness_only(self):
         event = {
             "type": "dialogue",
@@ -194,6 +228,23 @@ class AgentVisibilityTest(unittest.TestCase):
         self.assertTrue(self.visibility.event_visible_to_actor(event, "player", {}))
         self.assertTrue(self.visibility.event_visible_to_actor(event, "character:SuLi", {}))
         self.assertFalse(self.visibility.event_visible_to_actor(event, "character:Eve", {}))
+
+    def test_private_dialogue_distinguishes_cjk_source_target_and_witness(self):
+        event = {
+            "type": "dialogue",
+            "content": "跟紧我。",
+            "visibility_basis": basis(
+                "private_dialogue",
+                source_actor="character:苏黎",
+                target_actor="character:艾达",
+                visible_to=["character:旁观者"],
+            ),
+        }
+
+        self.assertTrue(self.visibility.event_visible_to_actor(event, "character:苏黎", {}))
+        self.assertTrue(self.visibility.event_visible_to_actor(event, "character:艾达", {}))
+        self.assertTrue(self.visibility.event_visible_to_actor(event, "character:旁观者", {}))
+        self.assertFalse(self.visibility.event_visible_to_actor(event, "character:路人", {}))
 
     def test_unproven_world_visible_event_fails_closed(self):
         event = {
@@ -243,6 +294,30 @@ class AgentVisibilityTest(unittest.TestCase):
                 "character:SuLi",
                 {},
                 source_bucket_actor_id="character:Ada",
+            )
+        )
+
+    def test_actor_specific_bucket_distinguishes_cjk_actor_ids(self):
+        event = {
+            "actor": "gm",
+            "type": "sound",
+            "content": "你听见身边的门轴轻响。",
+        }
+
+        self.assertTrue(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:苏黎",
+                {},
+                source_bucket_actor_id="character:苏黎",
+            )
+        )
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:艾达",
+                {},
+                source_bucket_actor_id="character:苏黎",
             )
         )
 

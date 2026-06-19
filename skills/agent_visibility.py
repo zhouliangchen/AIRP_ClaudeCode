@@ -58,6 +58,10 @@ def _canonical_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
 
 
+def _actor_identity_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
 HIDDEN_MARKER_CANONICALS = {_canonical_marker(marker) for marker in HIDDEN_MARKERS}
 PUBLIC_MARKER_CANONICALS = {_canonical_marker(marker) for marker in PUBLIC_MARKERS}
 
@@ -107,12 +111,13 @@ def _canonical_set(values: Iterable[Any]) -> set[str]:
 
 
 def _actor_matches(value: Any, actor_id: str) -> bool:
-    return _canonical_marker(value) == _canonical_marker(actor_id)
+    value_key = _actor_identity_key(value)
+    return bool(value_key) and value_key == _actor_identity_key(actor_id)
 
 
 def _contains_actor(values: Iterable[Any], actor_id: str) -> bool:
-    actor_marker = _canonical_marker(actor_id)
-    return any(_canonical_marker(value) == actor_marker for value in values)
+    actor_key = _actor_identity_key(actor_id)
+    return bool(actor_key) and any(_actor_identity_key(value) == actor_key for value in values)
 
 
 def _contains_public_marker(values: Iterable[Any]) -> bool:
@@ -123,9 +128,10 @@ def _source_bucket_grants_visibility(source_bucket_actor_id: Any, actor_id: str)
     if source_bucket_actor_id is None:
         return False
     marker = _canonical_marker(source_bucket_actor_id)
-    if not marker:
+    identity_key = _actor_identity_key(source_bucket_actor_id)
+    if not marker and not identity_key:
         return False
-    return marker == _canonical_marker(actor_id) or marker in PUBLIC_MARKER_CANONICALS
+    return marker in PUBLIC_MARKER_CANONICALS or identity_key == _actor_identity_key(actor_id)
 
 
 def normalize_visibility_basis(value: Any, *, require_summary: bool = False) -> dict[str, Any]:
