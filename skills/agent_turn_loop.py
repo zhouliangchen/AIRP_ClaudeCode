@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from collections import deque
 import hashlib
 import re
 from pathlib import Path
 from typing import Any, Callable, Deque, Iterable
 
+import agent_actor_batches
 import agent_interactions
 import agent_projection
 import agent_run
@@ -393,6 +395,219 @@ def _dispatch_actor_key(actor_id: str) -> str:
     return "player" if actor_id == "player" else actor_id
 
 
+def _restore_actor_call_source_call_ids(gm_output: dict, raw_payload: Any) -> None:
+    if not isinstance(raw_payload, dict):
+        return
+    raw_calls = raw_payload.get("actor_calls")
+    calls = gm_output.get("actor_calls")
+    if not isinstance(raw_calls, list) or not isinstance(calls, list):
+        return
+
+    raw_by_call_id = {
+        str(raw_call.get("call_id") or ""): raw_call
+        for raw_call in raw_calls
+        if isinstance(raw_call, dict)
+    }
+    for index, call in enumerate(calls):
+        if not isinstance(call, dict):
+            continue
+        raw_call = raw_by_call_id.get(str(call.get("call_id") or ""))
+        if raw_call is None and index < len(raw_calls) and isinstance(raw_calls[index], dict):
+            raw_call = raw_calls[index]
+        if not isinstance(raw_call, dict):
+            continue
+        source_call_id = str(raw_call.get("source_call_id") or "").strip()
+        if source_call_id:
+            call["source_call_id"] = source_call_id
+
+
+def _batch_actors(batch: dict) -> list[str]:
+    return [str(call.get("actor_id") or "") for call in batch.get("calls", []) if isinstance(call, dict)]
+
+
+def _batch_call_ids(batch: dict) -> list[str]:
+    return [str(call.get("call_id") or "") for call in batch.get("calls", []) if isinstance(call, dict)]
+
+
+def _record_actor_batch_plan(run_dir: Path, step_index: int, batch_index: int, batch: dict) -> None:
+    agent_interactions.record_actor_batch(
+        run_dir,
+        batch_id=f"batch-{step_index + 1}-{batch_index + 1}",
+        kind=str(batch.get("kind") or "serial"),
+        actors=_batch_actors(batch),
+        call_ids=_batch_call_ids(batch),
+        group_id=str(batch.get("group_id") or ""),
+    )
+
+
+def _record_routing_warnings(run_dir: Path, warnings: list[dict]) -> None:
+    for warning in warnings:
+        if not isinstance(warning, dict):
+            continue
+        agent_interactions.record_routing_warning(
+            run_dir,
+            code=str(warning.get("code") or ""),
+            message=str(warning.get("message") or ""),
+            group_id=str(warning.get("group_id") or ""),
+            actors=[str(item) for item in warning.get("actors") or []],
+            call_ids=[str(item) for item in warning.get("call_ids") or []],
+        )
+
+
+def _text_items(value: Any) -> list[str]:
+    if isinstance(value, (str, bytes, dict)):
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        try:
+            raw_items = list(value)
+        except TypeError:
+            return []
+    return [text for text in (str(item or "").strip() for item in raw_items) if text]
+
+
+def _pending_group_id(group: Any, fallback: str) -> str:
+    if isinstance(group, dict):
+        return str(group.get("group_id") or "").strip() or fallback
+    return fallback
+
+
+def _pending_group_actor_ids(group: Any) -> list[str]:
+    if isinstance(group, dict):
+        return _text_items(group.get("actors") or group.get("actor_ids") or [])
+    return _text_items(group)
+
+
+def _pending_group_call_ids(group: Any) -> list[str]:
+    if not isinstance(group, dict):
+        return []
+    return _text_items(group.get("call_ids") or [])
+
+
+def _preserve_remaining_parallel_groups(
+    groups: list[Any],
+    remaining_calls: list[dict],
+    warnings: list[dict],
+) -> list[Any]:
+    warned_group_ids = {
+        str(warning.get("group_id") or "").strip()
+        for warning in warnings
+        if isinstance(warning, dict)
+    }
+    remaining_call_ids = {str(call.get("call_id") or "") for call in remaining_calls}
+    preserved: list[Any] = []
+
+    for index, group in enumerate(_list(groups), start=1):
+        group_id = _pending_group_id(group, f"group-1-{index}")
+        if group_id in warned_group_ids:
+            continue
+        call_ids = [
+            call_id
+            for call_id in _pending_group_call_ids(group)
+            if call_id in remaining_call_ids
+        ]
+        if len(set(call_ids)) >= 2:
+            preserved.append({"group_id": group_id, "call_ids": call_ids})
+            continue
+        actors = _pending_group_actor_ids(group)
+        if len(set(actors)) != len(actors):
+            continue
+        actor_call_ids = []
+        for actor_id in actors:
+            matches = [
+                str(call.get("call_id") or "")
+                for call in remaining_calls
+                if str(call.get("actor_id") or "") == actor_id
+            ]
+            matches = [call_id for call_id in matches if call_id]
+            if len(matches) != 1:
+                actor_call_ids = []
+                break
+            actor_call_ids.append(matches[0])
+        if len(set(actor_call_ids)) >= 2:
+            preserved.append({"group_id": group_id, "call_ids": actor_call_ids})
+    return preserved
+
+
+def _dispatch_actor_call(
+    *,
+    input_payload: dict,
+    world_state: dict,
+    actor_id: str,
+    call: dict,
+    hidden_phrases: Iterable[str],
+    dispatch: DispatchFn,
+) -> dict:
+    packet = _actor_packet(
+        input_payload,
+        world_state,
+        actor_id,
+        str(call.get("prompt") or ""),
+        hidden_phrases,
+    )
+    return _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
+
+
+def _process_actor_output(
+    *,
+    run_dir: Path,
+    actor_id: str,
+    actor_output: dict,
+    call_id: str,
+    registered_actor_targets: set[str],
+    seen_transfers: set[tuple[str, str, str]],
+    generated_transfer_limit: int,
+    generated_transfers_used: int,
+    generated_call_counts: dict[str, int],
+    used_actor_call_ids: set[str],
+    world_state: dict,
+) -> dict:
+    transfer_calls = []
+    actor_requested_decision = False
+    stop_reason = ""
+    for event in actor_output.get("events", []):
+        _record_actor_event(run_dir, actor_id, event, call_id)
+        event_type = str(event.get("type") or "")
+        target = str(event.get("target") or "")
+        content = _event_content(event)
+
+        if (
+            event_type == "dialogue"
+            and target in registered_actor_targets
+            and target != actor_id
+        ):
+            _record_dialogue_transfer(run_dir, actor_id, target, content, call_id)
+            transfer_key = (actor_id, target, content)
+            if transfer_key not in seen_transfers:
+                seen_transfers.add(transfer_key)
+                if generated_transfers_used < generated_transfer_limit:
+                    generated_transfers_used += 1
+                    transfer_calls.append(
+                        _dialogue_transfer_call(
+                            actor_id,
+                            target,
+                            event,
+                            call_id,
+                            generated_call_counts,
+                            used_actor_call_ids,
+                        )
+                    )
+                else:
+                    stop_reason = "max_steps"
+        elif event_type == "perceive_request":
+            _record_perception_continuation(run_dir, actor_id, event, call_id, world_state)
+        elif event_type == "stop_for_player_decision":
+            actor_requested_decision = True
+
+    return {
+        "transfer_calls": transfer_calls,
+        "actor_requested_decision": actor_requested_decision,
+        "generated_transfers_used": generated_transfers_used,
+        "stop_reason": stop_reason,
+    }
+
+
 def _write_outputs(run_dir: Path, gm_outputs: list[dict], actor_outputs: dict[str, list[dict]]) -> None:
     agent_run.write_json(run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": gm_outputs})
     agent_run.write_json(run_dir / "actor.outputs.json", actor_outputs)
@@ -572,7 +787,9 @@ def run_interactive_loop(
 
     for step_index in range(step_limit):
         _refresh_side_thread_state(root, world_state)
-        raw_gm_output = _validate_gm(dispatch("gm", _gm_packet(root, world_state, step_index)))
+        raw_gm_payload = dispatch("gm", _gm_packet(root, world_state, step_index))
+        raw_gm_output = _validate_gm(raw_gm_payload)
+        _restore_actor_call_source_call_ids(raw_gm_output, raw_gm_payload)
         gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
         _prevalidate_subgm_commands(root, gm_output)
         _preflight_subgm_actor_conflicts(root, gm_output)
@@ -594,69 +811,121 @@ def run_interactive_loop(
         gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
         gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS else ""
 
+        max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
+        pending_parallel_groups = gm_output.get("parallel_groups") or []
+        batch_trace_index = 0
         actor_queue: Deque[dict] = deque(gm_output.get("actor_calls") or [])
         while actor_queue:
-            call = actor_queue.popleft()
-            actor_id = str(call.get("actor_id") or "")
-            if actor_id not in registered_actor_targets:
-                continue
-            call_id = str(call.get("call_id") or "") or _safe_actor_call_id(actor_id, generated_call_counts)
-            packet = _actor_packet(
-                input_payload,
-                world_state,
-                actor_id,
-                str(call.get("prompt") or ""),
-                hidden_phrases,
-            )
-            actor_output = _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
-            called_actors.append(actor_id)
-            actor_outputs.setdefault(actor_id, []).append(actor_output)
-
-            transfer_calls = []
-            actor_requested_decision = False
-            for event in actor_output.get("events", []):
-                _record_actor_event(root, actor_id, event, call_id)
-                event_type = str(event.get("type") or "")
-                target = str(event.get("target") or "")
-                content = _event_content(event)
-
-                if (
-                    event_type == "dialogue"
-                    and target in registered_actor_targets
-                    and target != actor_id
-                ):
-                    _record_dialogue_transfer(root, actor_id, target, content, call_id)
-                    transfer_key = (actor_id, target, content)
-                    if transfer_key not in seen_transfers:
-                        seen_transfers.add(transfer_key)
-                        if generated_transfers_used < generated_transfer_limit:
-                            generated_transfers_used += 1
-                            transfer_calls.append(
-                                _dialogue_transfer_call(
-                                    actor_id,
-                                    target,
-                                    event,
-                                    call_id,
-                                    generated_call_counts,
-                                    used_actor_call_ids,
-                                )
-                            )
-                        else:
-                            stop_reason = "max_steps"
-                elif event_type == "perceive_request":
-                    _record_perception_continuation(root, actor_id, event, call_id, world_state)
-                elif event_type == "stop_for_player_decision":
-                    actor_requested_decision = True
-
-            _update_visible_events(root, world_state)
-            for transfer_call in reversed(transfer_calls):
-                actor_queue.appendleft(transfer_call)
-
-            if actor_output.get("stop_reason") == "stop_for_player_decision" or actor_requested_decision:
-                decision_point = _mark_decision(root, None, "Actor requested a real player decision.")
-                stop_reason = "player_decision"
-                actor_queue.clear()
+            queued_calls: list[dict] = []
+            while actor_queue:
+                call = actor_queue.popleft()
+                actor_id = str(call.get("actor_id") or "")
+                if actor_id in registered_actor_targets:
+                    queued_calls.append(call)
+            if not queued_calls:
                 break
+
+            active_parallel_groups = _list(pending_parallel_groups)
+            batch_plan = agent_actor_batches.build_actor_batches(
+                queued_calls,
+                active_parallel_groups,
+                max_parallel=max_parallel,
+            )
+            routing_warnings = batch_plan.get("warnings", [])
+            pending_parallel_groups = []
+            _record_routing_warnings(root, routing_warnings)
+            batches = [batch for batch in batch_plan.get("batches", []) if isinstance(batch, dict)]
+
+            for batch_index, batch in enumerate(batches):
+                calls = [call for call in batch.get("calls", []) if isinstance(call, dict)]
+                if not calls:
+                    continue
+                _record_actor_batch_plan(root, step_index, batch_trace_index, batch)
+                batch_trace_index += 1
+
+                results: list[tuple[dict, str, dict]] = []
+                if str(batch.get("kind") or "") == "parallel" and len(calls) > 1:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls)) as executor:
+                        future_results = [
+                            executor.submit(
+                                _dispatch_actor_call,
+                                input_payload=input_payload,
+                                world_state=world_state,
+                                actor_id=str(call.get("actor_id") or ""),
+                                call=call,
+                                hidden_phrases=hidden_phrases,
+                                dispatch=dispatch,
+                            )
+                            for call in calls
+                        ]
+                        for call, future in zip(calls, future_results):
+                            actor_id = str(call.get("actor_id") or "")
+                            results.append((call, actor_id, future.result()))
+                else:
+                    for call in calls:
+                        actor_id = str(call.get("actor_id") or "")
+                        results.append((
+                            call,
+                            actor_id,
+                            _dispatch_actor_call(
+                                input_payload=input_payload,
+                                world_state=world_state,
+                                actor_id=actor_id,
+                                call=call,
+                                hidden_phrases=hidden_phrases,
+                                dispatch=dispatch,
+                            ),
+                        ))
+
+                transfer_calls = []
+                actor_requested_decision = False
+                for call, actor_id, actor_output in results:
+                    call_id = str(call.get("call_id") or "")
+                    called_actors.append(actor_id)
+                    actor_outputs.setdefault(actor_id, []).append(actor_output)
+                    processed = _process_actor_output(
+                        run_dir=root,
+                        actor_id=actor_id,
+                        actor_output=actor_output,
+                        call_id=call_id,
+                        registered_actor_targets=registered_actor_targets,
+                        seen_transfers=seen_transfers,
+                        generated_transfer_limit=generated_transfer_limit,
+                        generated_transfers_used=generated_transfers_used,
+                        generated_call_counts=generated_call_counts,
+                        used_actor_call_ids=used_actor_call_ids,
+                        world_state=world_state,
+                    )
+                    generated_transfers_used = int(processed["generated_transfers_used"])
+                    transfer_calls.extend(processed["transfer_calls"])
+                    if processed["stop_reason"] in STOP_REASONS:
+                        stop_reason = str(processed["stop_reason"])
+                    actor_stop_reason = str(actor_output.get("stop_reason") or "")
+                    if actor_stop_reason == "stop_for_player_decision" or processed["actor_requested_decision"]:
+                        actor_requested_decision = True
+
+                _update_visible_events(root, world_state)
+                if actor_requested_decision:
+                    decision_point = _mark_decision(root, None, "Actor requested a real player decision.")
+                    stop_reason = "player_decision"
+                if stop_reason in STOP_REASONS:
+                    actor_queue.clear()
+                    break
+                if transfer_calls:
+                    remaining_calls = [
+                        later_call
+                        for later_batch in batches[batch_index + 1:]
+                        for later_call in later_batch.get("calls", [])
+                        if isinstance(later_call, dict)
+                    ]
+                    actor_queue.extend(transfer_calls)
+                    actor_queue.extend(remaining_calls)
+                    pending_parallel_groups = _preserve_remaining_parallel_groups(
+                        active_parallel_groups,
+                        remaining_calls,
+                        routing_warnings,
+                    )
+                    break
 
         if stop_reason in STOP_REASONS:
             break

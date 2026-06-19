@@ -102,6 +102,81 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "causal_links": ["event-0"],
         })
 
+    def test_trace_records_actor_batches_and_routing_warnings(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada", "character:Bea"],
+            chapter_target_words=1800,
+        )
+
+        self.agent_interactions.record_actor_batch(
+            self.run_dir,
+            batch_id="batch-1-1",
+            kind="parallel",
+            actors=["character:Ada", "character:Bea"],
+            call_ids=["call-character-Ada-1", "call-character-Bea-1"],
+            group_id="group-main",
+        )
+        self.agent_interactions.record_routing_warning(
+            self.run_dir,
+            code="dependent_call_in_parallel_group",
+            message="dependent calls run serially",
+            group_id="group-main",
+            actors=["character:Ada"],
+            call_ids=["call-character-Ada-2"],
+        )
+
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(trace["actor_batches"], [{
+            "batch_id": "batch-1-1",
+            "kind": "parallel",
+            "group_id": "group-main",
+            "actors": ["character:Ada", "character:Bea"],
+            "call_ids": ["call-character-Ada-1", "call-character-Bea-1"],
+        }])
+        self.assertEqual(summary["actor_batches"], trace["actor_batches"])
+        expected_warnings = [{
+            "code": "dependent_call_in_parallel_group",
+            "message": "dependent calls run serially",
+            "group_id": "group-main",
+            "actors": ["character:Ada"],
+            "call_ids": ["call-character-Ada-2"],
+        }]
+        self.assertEqual(trace["routing_warnings"], expected_warnings)
+        self.assertEqual(summary["routing_warnings"], expected_warnings)
+
+    def test_trace_summary_sanitizes_hidden_shaped_batch_and_warning_ids(self):
+        self.agent_interactions.init_trace(self.run_dir, participants=["gm"])
+        self.agent_interactions.record_actor_batch(
+            self.run_dir,
+            batch_id="HiddenTruthBatch",
+            kind="parallel",
+            actors=["character:Ada", "HiddenTruthActor"],
+            call_ids=["call-character-Ada-1", "worldTruthCall"],
+            group_id="HiddenTruthGroup",
+        )
+        self.agent_interactions.record_routing_warning(
+            self.run_dir,
+            code="dependent_call_in_parallel_group",
+            message="GM-only moon base",
+            group_id="HiddenTruthGroup",
+            actors=["character:Ada", "HiddenTruthActor"],
+            call_ids=["call-character-Ada-1", "worldTruthCall"],
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(summary["actor_batches"], [])
+        self.assertEqual(summary["routing_warnings"], [{
+            "code": "dependent_call_in_parallel_group",
+            "message": "[redacted]",
+            "group_id": "",
+            "actors": ["character:Ada"],
+            "call_ids": ["call-character-Ada-1"],
+        }])
+
     def test_public_api_drops_hidden_shaped_ids_from_story_summary(self):
         self.agent_interactions.init_trace(
             self.run_dir,

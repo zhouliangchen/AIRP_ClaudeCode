@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -51,6 +52,478 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload = self.agent_run.read_json(self.run_dir / "input.json")
         payload["character_contexts"] = {"characters": [{"name": name} for name in names]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
+
+    def test_parallel_group_dispatches_safe_actor_calls_concurrently(self):
+        self.register_characters("Ada", "Bea")
+        barrier = threading.Barrier(2)
+        actor_entries = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada and Bea react independently."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You see the north door.",
+                            "reason": "Independent visible stimulus.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You see the south door.",
+                            "reason": "Independent visible stimulus.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-main",
+                        "actors": ["character:Ada", "character:Bea"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertIn(agent_key, {"character:Ada", "character:Bea"})
+            actor_entries.append(agent_key)
+            barrier.wait(timeout=2)
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} reacts independently."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
+        self.assertCountEqual(actor_entries, ["character:Ada", "character:Bea"])
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        actor_batches = trace["actor_batches"]
+        self.assertEqual(len(actor_batches), 1)
+        self.assertEqual(
+            {
+                "kind": actor_batches[0]["kind"],
+                "group_id": actor_batches[0]["group_id"],
+                "actors": actor_batches[0]["actors"],
+                "call_ids": actor_batches[0]["call_ids"],
+            },
+            {
+                "kind": "parallel",
+                "group_id": "group-main",
+                "actors": ["character:Ada", "character:Bea"],
+                "call_ids": ["call-character-Ada-1", "call-character-Bea-1"],
+            },
+        )
+        self.assertEqual(trace.get("routing_warnings", []), [])
+
+    def test_dependent_parallel_group_is_downgraded_to_serial_and_warned(self):
+        self.register_characters("Ada", "Bea")
+        actor_order = []
+        ada_started = threading.Event()
+        ada_completed = threading.Event()
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "A dependent transfer is pending."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You answer the prior line.",
+                            "reason": "Dependent response.",
+                            "source_call_id": "call-player-1",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You wait nearby.",
+                            "reason": "Independent witness.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-dependent",
+                        "actors": ["character:Ada", "character:Bea"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                actor_order.append(agent_key)
+                ada_started.set()
+                threading.Event().wait(0.05)
+                ada_completed.set()
+            elif agent_key == "character:Bea":
+                if ada_started.is_set() and not ada_completed.is_set():
+                    self.fail("dependent group dispatched concurrently")
+                actor_order.append(agent_key)
+            else:
+                self.fail(f"unexpected actor dispatch: {agent_key}")
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} responds."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(actor_order, ["character:Ada", "character:Bea"])
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        self.assertEqual([batch["kind"] for batch in trace["actor_batches"]], ["serial", "serial"])
+        self.assertEqual(trace["routing_warnings"][0]["code"], "dependent_call_in_parallel_group")
+
+    def test_parallel_batch_outputs_merge_in_call_order_and_schedule_transfer_after_batch(self):
+        self.register_characters("Ada", "Bea", "Cora")
+        barrier = threading.Barrier(2)
+        ada_returned = threading.Event()
+        bea_returned = threading.Event()
+        actor_order = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada and Bea speak before Cora answers."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You speak first.",
+                            "reason": "Independent opening line.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You speak second.",
+                            "reason": "Independent opening line.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-openers",
+                        "actors": ["character:Ada", "character:Bea"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            actor_order.append(agent_key)
+            if agent_key in {"character:Ada", "character:Bea"}:
+                barrier.wait(timeout=2)
+            if agent_key == "character:Ada":
+                threading.Event().wait(0.1)
+                events = [{"type": "action", "target": "", "content": "character:Ada watches."}]
+                result = {
+                    "agent": "character",
+                    "agent_id": agent_key,
+                    "character_name": agent_key.split(":", 1)[1],
+                    "events": events,
+                    "stop_reason": "continue",
+                }
+                ada_returned.set()
+                return result
+            elif agent_key == "character:Bea":
+                events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
+                result = {
+                    "agent": "character",
+                    "agent_id": agent_key,
+                    "character_name": agent_key.split(":", 1)[1],
+                    "events": events,
+                    "stop_reason": "continue",
+                }
+                bea_returned.set()
+                return result
+            else:
+                self.assertEqual(agent_key, "character:Cora")
+                self.assertTrue(bea_returned.is_set(), "Cora scheduled before Bea batch output completed")
+                self.assertTrue(ada_returned.is_set(), "Cora scheduled before Ada batch output completed")
+                events = [{"type": "action", "target": "", "content": "character:Cora checks the door."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea", "character:Cora"])
+        self.assertEqual(actor_order[-1], "character:Cora")
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(list(actor_outputs), ["character:Ada", "character:Bea", "character:Cora"])
+
+    def test_actor_complete_stop_reason_does_not_skip_remaining_actor_calls(self):
+        self.register_characters("Ada", "Bea")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada and Bea answer in sequence."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You give your final response.",
+                            "reason": "Ada has a complete local response.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You respond after Ada.",
+                            "reason": "Bea should still be dispatched.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertIn(agent_key, {"character:Ada", "character:Bea"})
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "action", "target": "", "content": f"{agent_key} responds."}],
+                "stop_reason": "complete" if agent_key == "character:Ada" else "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
+
+    def test_serial_batch_transfer_runs_before_later_planned_actor_call(self):
+        self.register_characters("Ada", "Bea", "Cora")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks to Cora before Bea acts."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Cora to check the door.",
+                            "reason": "Ada routes visible dialogue to Cora.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You respond after any immediate transfer.",
+                            "reason": "Bea is later in the original GM queue.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Cora", "content": "Cora, check the door."}]
+            else:
+                self.assertIn(agent_key, {"character:Bea", "character:Cora"})
+                events = [{"type": "action", "target": "", "content": f"{agent_key} responds."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Cora", "character:Bea"])
+
+    def test_transfer_requeue_preserves_later_safe_parallel_group(self):
+        self.register_characters("Ada", "Bea", "Cora", "Dan")
+        bea_cora_barrier = threading.Barrier(2)
+        parallel_entries = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks first; Bea and Cora react together after Dan."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Dan to check the signal.",
+                            "reason": "Ada can create an immediate transfer.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You and Cora react to the room together.",
+                            "reason": "Bea is independent after the transfer.",
+                        },
+                        {
+                            "call_id": "call-character-Cora-1",
+                            "actor_id": "character:Cora",
+                            "prompt": "You and Bea react to the room together.",
+                            "reason": "Cora is independent after the transfer.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-late",
+                        "actors": ["character:Bea", "character:Cora"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Dan", "content": "Dan, check the signal."}]
+            elif agent_key in {"character:Bea", "character:Cora"}:
+                parallel_entries.append(agent_key)
+                bea_cora_barrier.wait(timeout=2)
+                events = [{"type": "action", "target": "", "content": f"{agent_key} reacts with the group."}]
+            else:
+                self.assertEqual(agent_key, "character:Dan")
+                events = [{"type": "action", "target": "", "content": "character:Dan checks the signal."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(
+            result["called_actors"],
+            ["character:Ada", "character:Dan", "character:Bea", "character:Cora"],
+        )
+        self.assertCountEqual(parallel_entries, ["character:Bea", "character:Cora"])
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        self.assertEqual(
+            [
+                {
+                    "kind": batch["kind"],
+                    "actors": batch["actors"],
+                    "call_ids": batch["call_ids"],
+                    "group_id": batch["group_id"],
+                }
+                for batch in trace["actor_batches"]
+            ],
+            [
+                {
+                    "kind": "serial",
+                    "actors": ["character:Ada"],
+                    "call_ids": ["call-character-Ada-1"],
+                    "group_id": "",
+                },
+                {
+                    "kind": "serial",
+                    "actors": ["character:Dan"],
+                    "call_ids": ["call-character-Dan-1"],
+                    "group_id": "",
+                },
+                {
+                    "kind": "parallel",
+                    "actors": ["character:Bea", "character:Cora"],
+                    "call_ids": ["call-character-Bea-1", "call-character-Cora-1"],
+                    "group_id": "group-late",
+                },
+            ],
+        )
+
+    def test_transfer_to_later_group_member_preserves_original_parallel_call_ids(self):
+        self.register_characters("Ada", "Bea", "Cora")
+        bea_cora_barrier = threading.Barrier(2)
+        bea_dispatch_count = 0
+
+        def dispatch(agent_key, packet):
+            nonlocal bea_dispatch_count
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks to Bea before Bea and Cora react together."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Bea to check the signal.",
+                            "reason": "Ada creates an immediate transfer to a later group member.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You and Cora react to the room together.",
+                            "reason": "Original Bea call remains safe with Cora.",
+                        },
+                        {
+                            "call_id": "call-character-Cora-1",
+                            "actor_id": "character:Cora",
+                            "prompt": "You and Bea react to the room together.",
+                            "reason": "Original Cora call remains safe with Bea.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-later",
+                        "actors": ["character:Bea", "character:Cora"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Bea", "content": "Bea, check the signal."}]
+            elif agent_key == "character:Bea":
+                bea_dispatch_count += 1
+                if bea_dispatch_count == 1:
+                    events = [{"type": "action", "target": "", "content": "character:Bea checks the signal."}]
+                else:
+                    bea_cora_barrier.wait(timeout=2)
+                    events = [{"type": "action", "target": "", "content": "character:Bea reacts with Cora."}]
+            else:
+                self.assertEqual(agent_key, "character:Cora")
+                bea_cora_barrier.wait(timeout=2)
+                events = [{"type": "action", "target": "", "content": "character:Cora reacts with Bea."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(
+            result["called_actors"],
+            ["character:Ada", "character:Bea", "character:Bea", "character:Cora"],
+        )
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        later_parallel_batches = [
+            batch
+            for batch in trace["actor_batches"]
+            if batch["kind"] == "parallel" and batch["group_id"] == "group-later"
+        ]
+        self.assertEqual(len(later_parallel_batches), 1)
+        self.assertEqual(later_parallel_batches[0]["actors"], ["character:Bea", "character:Cora"])
+        self.assertEqual(
+            later_parallel_batches[0]["call_ids"],
+            ["call-character-Bea-1", "call-character-Cora-1"],
+        )
 
     def test_loop_routes_dialogue_to_target_character_and_stops_at_decision(self):
         calls = []
