@@ -132,10 +132,15 @@ class AgentInteractionTraceTest(unittest.TestCase):
 
         summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
 
-        self.assertEqual(summary["visible_events"][0]["location"], "classroom")
-        self.assertEqual(summary["visible_events"][0]["sensory_channels"], ["auditory"])
+        self.assertEqual(len(summary["visible_events"]), 1)
+        visible_event = summary["visible_events"][0]
+        self.assertEqual(visible_event["location"], "classroom")
+        self.assertEqual(visible_event["visible_to"], ["character:Ada"])
+        self.assertEqual(visible_event["sensory_channels"], ["auditory"])
+        self.assertEqual(visible_event["source_actor"], "gm")
+        self.assertEqual(visible_event["target_actor"], "character:Ada")
         self.assertEqual(
-            summary["visible_events"][0]["visibility_basis"]["summary"],
+            visible_event["visibility_basis"]["summary"],
             "Ada can hear the bell.",
         )
 

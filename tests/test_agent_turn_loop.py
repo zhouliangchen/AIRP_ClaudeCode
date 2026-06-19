@@ -777,7 +777,12 @@ class AgentTurnLoopTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["called_actors"], ["character:Ada", "character:SuLi"])
             self.assertEqual(len(packets_by_actor["character:SuLi"]), 1)
-            packet_basis = packets_by_actor["character:SuLi"][0]["gm_visibility_basis"]
+            suli_packet = packets_by_actor["character:SuLi"][0]
+            self.assertEqual(
+                suli_packet["gm_prompt"],
+                "character:Ada says to you: SuLi, check the window.",
+            )
+            packet_basis = suli_packet["gm_visibility_basis"]
             self.assertEqual(packet_basis.get("mode"), "private_dialogue")
             self.assertEqual(packet_basis.get("source_actor"), "character:Ada")
             self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")

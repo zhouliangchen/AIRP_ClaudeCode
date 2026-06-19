@@ -220,7 +220,14 @@ class SubgmTurnLoopTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["called_actors"], ["character:SuLi"])
-        self.assertEqual(actor_packets[0]["gm_visibility_basis"].get("target_actor"), "character:SuLi")
+        self.assertEqual(len(actor_packets), 1)
+        packet_basis = actor_packets[0]["gm_visibility_basis"]
+        self.assertEqual(packet_basis.get("mode"), "location")
+        self.assertEqual(packet_basis.get("summary"), "SuLi is on the rooftop and can see the chalk dust.")
+        self.assertEqual(packet_basis.get("location"), "school rooftop")
+        self.assertEqual(packet_basis.get("visible_to"), ["character:SuLi"])
+        self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
+        self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
 
     def test_run_ready_side_threads_runs_sorted_runnable_threads_sequentially(self):
         self.subgm_threads.apply_gm_commands(
