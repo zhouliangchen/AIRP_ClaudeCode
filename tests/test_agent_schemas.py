@@ -193,6 +193,106 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
             self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_hidden_fact_actor_call_visibility_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "player",
+                    "prompt": "You look up.",
+                    "reason": "The player is present.",
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "The player can perceive the cue.",
+                        "hidden_fact": "GM-only cause.",
+                    },
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_hidden_fact_actor_call_visibility_field(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "player",
+                    "prompt": "You look up.",
+                    "reason": "The player is present.",
+                    "visible_to": ["player", "hidden_fact"],
+                    "visibility_basis": visibility_basis("player"),
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_to"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_hidden_fact_optional_scene_visibility_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [
+                {
+                    "content": "The clock ticks.",
+                    "visibility_basis": {
+                        "mode": "public",
+                        "summary": "Everyone can hear the clock.",
+                        "hidden_fact": "GM-only cause.",
+                    },
+                }
+            ],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"scene_beats\[0\].visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_hidden_fact_optional_event_visibility_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [
+                {
+                    "type": "npc_action",
+                    "content": "Ada shuts the door.",
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "The player can see Ada move.",
+                        "visible_to": ["player", "hidden_fact"],
+                    },
+                }
+            ],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, r"events\[0\].visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_defaults_character_promotions_to_empty_list(self):
         payload = {
             "agent": "gm",
@@ -465,7 +565,7 @@ class AgentSchemaTest(unittest.TestCase):
         payload = {
             "agent": "player",
             "agent_id": "player",
-            "events": [{"type": "thought", "target": "", "content": "I know the hidden truth."}],
+            "events": [{"type": "thought", "target": "", "content": "I keep thinking about the answer."}],
             "stop_reason": "continue",
         }
 

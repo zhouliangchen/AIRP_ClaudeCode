@@ -24,6 +24,7 @@ FORBIDDEN_ACTOR_KEYS = {
     "player_name",
     "world_truth",
 }
+FORBIDDEN_ACTOR_MARKERS = set(FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
 
 LEGACY_ACTOR_KEYS = {
     "action",
@@ -144,7 +145,7 @@ def _canonical_tokens(text: str) -> list[str]:
 
 FORBIDDEN_ACTOR_KEY_TOKENS = {
     marker: tuple(_canonical_tokens(marker))
-    for marker in FORBIDDEN_ACTOR_KEYS
+    for marker in sorted(FORBIDDEN_ACTOR_MARKERS)
 }
 
 
@@ -347,6 +348,7 @@ def _normalize_visibility_fields(data: Dict[str, Any], path: str, *, require_bas
                 _normalize_nonempty_str_item,
             )
     if "visibility_basis" in data:
+        _reject_forbidden_keys(data["visibility_basis"], _path(path, "visibility_basis"))
         basis = agent_visibility.normalize_visibility_basis(
             data["visibility_basis"],
             require_summary=require_basis,

@@ -30,7 +30,11 @@ VISIBILITY_GUARD_EXTRA_MARKER_KEYS = {
     "private_memory",
     "private_notes",
 }
-HIDDEN_MARKER_KEYS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | VISIBILITY_GUARD_EXTRA_MARKER_KEYS
+HIDDEN_MARKER_KEYS = (
+    set(agent_schemas.FORBIDDEN_ACTOR_KEYS)
+    | set(agent_visibility.HIDDEN_MARKERS)
+    | VISIBILITY_GUARD_EXTRA_MARKER_KEYS
+)
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"
 CJK_FUZZY_SEPARATOR_RE = r"[\s" + re.escape(CJK_FUZZY_SEPARATOR_CHARS) + r"]*"

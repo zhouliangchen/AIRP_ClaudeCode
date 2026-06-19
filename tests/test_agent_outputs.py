@@ -1135,6 +1135,7 @@ class AgentOutputsTest(unittest.TestCase):
         cases = (
             {"mode": "direct", "summary": "gm_only: reveal the truth.", "target_actor": "player"},
             {"mode": "direct", "summary": "Visible cue.", "hidden_note": "private"},
+            {"mode": "direct", "summary": "Visible cue.", "hidden_fact": "private"},
         )
         for visibility_basis in cases:
             with self.subTest(visibility_basis=visibility_basis):
@@ -1171,6 +1172,40 @@ class AgentOutputsTest(unittest.TestCase):
                     self.agent_outputs.build_story_input(self.run_dir)
 
                 self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_actor_call_hidden_fact_visibility_field(self):
+        _write_json(
+            self.run_dir / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "You feel heat from the pendant.",
+                                "reason": "The player can feel the pendant.",
+                                "visible_to": ["player", "hidden_fact"],
+                                "visibility_basis": _visibility_basis("player"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "visible_to"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertFalse((self.run_dir / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_hidden_markers_in_prompt_reason_and_metadata(self):
         valid_visibility_basis = {
@@ -1238,10 +1273,23 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_gm_scene_beat_hidden_phrase_and_marker_fields(self):
         cases = (
-            ("content", "The pendant burns identity.", {}),
-            ("metadata", "Visible scene beat.", {"hidden_note": "The bell remembers blood."}),
+            ("content", "The pendant burns identity.", {}, {}),
+            ("metadata", "Visible scene beat.", {"hidden_note": "The bell remembers blood."}, {}),
+            ("visible_to", "Visible scene beat.", {}, {"visible_to": ["all", "hidden_fact"]}),
+            (
+                "visibility_basis",
+                "Visible scene beat.",
+                {},
+                {
+                    "visibility_basis": {
+                        "mode": "public",
+                        "summary": "Everyone can see the clock.",
+                        "hidden_fact": "GM-only cause.",
+                    }
+                },
+            ),
         )
-        for field, content, metadata in cases:
+        for field, content, metadata, visibility_fields in cases:
             with self.subTest(field=field):
                 if (self.run_dir / "story.input.json").exists():
                     (self.run_dir / "story.input.json").unlink()
@@ -1263,7 +1311,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "outputs": [
                             {
                                 "agent": "gm",
-                                "scene_beats": [{"content": content, "metadata": metadata}],
+                                "scene_beats": [{"content": content, "metadata": metadata, **visibility_fields}],
                                 "events": [],
                                 "actor_calls": [],
                                 "parallel_groups": [],
@@ -1282,10 +1330,23 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_gm_event_hidden_phrase_and_marker_fields(self):
         cases = (
-            ("content", "The pendant burns identity.", {}),
-            ("metadata", "Visible event.", {"world_truth": "The bell remembers blood."}),
+            ("content", "The pendant burns identity.", {}, {}),
+            ("metadata", "Visible event.", {"world_truth": "The bell remembers blood."}, {}),
+            ("visible_to", "Visible event.", {}, {"visible_to": ["player", "hidden_fact"]}),
+            (
+                "visibility_basis",
+                "Visible event.",
+                {},
+                {
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "The player can see Ada move.",
+                        "visible_to": ["player", "hidden_fact"],
+                    }
+                },
+            ),
         )
-        for field, content, metadata in cases:
+        for field, content, metadata, visibility_fields in cases:
             with self.subTest(field=field):
                 if (self.run_dir / "story.input.json").exists():
                     (self.run_dir / "story.input.json").unlink()
@@ -1312,6 +1373,7 @@ class AgentOutputsTest(unittest.TestCase):
                                     "type": "npc_action",
                                     "content": content,
                                     "metadata": metadata,
+                                    **visibility_fields,
                                 }],
                                 "actor_calls": [],
                                 "parallel_groups": [],

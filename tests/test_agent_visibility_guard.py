@@ -63,10 +63,13 @@ class AgentVisibilityGuardTest(unittest.TestCase):
                         "actor_id": "player",
                         "prompt": "You feel heat.",
                         "reason": "Visible touch.",
+                        "visible_to": ["player", "hidden_fact"],
                         "visibility_basis": {
                             "mode": "direct",
                             "summary": "The pendant burns identity.",
                             "target_actor": "player",
+                            "visible_to": ["player", "hidden_fact"],
+                            "hidden_fact": "GM-only cause.",
                         },
                     }
                 ],
@@ -82,6 +85,9 @@ class AgentVisibilityGuardTest(unittest.TestCase):
             sanitized["actor_calls"][0]["visibility_basis"]["summary"],
             "[redacted]",
         )
+        self.assertNotIn("hidden_fact", repr(sanitized).lower())
+        self.assertIn("[redacted]", sanitized["actor_calls"][0]["visible_to"])
+        self.assertIn("[redacted]", sanitized["actor_calls"][0]["visibility_basis"]["visible_to"])
 
     def test_redacts_hidden_phrase_and_marker_from_character_promotions(self):
         input_payload = {

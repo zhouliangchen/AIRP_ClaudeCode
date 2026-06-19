@@ -35,7 +35,7 @@ def _canonical_tokens(text: str) -> list[str]:
 
 FORBIDDEN_ACTOR_KEY_TOKENS = {
     marker: tuple(_canonical_tokens(marker))
-    for marker in agent_schemas.FORBIDDEN_ACTOR_KEYS
+    for marker in sorted(set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS))
 }
 
 
