@@ -143,8 +143,64 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(len(packets), 1)
-        self.assertEqual(packets[0]["gm_visibility_basis"].get("mode"), "location")
-        self.assertEqual(packets[0]["gm_visibility_basis"].get("target_actor"), "character:Ada")
+        packet_basis = packets[0]["gm_visibility_basis"]
+        self.assertEqual(packet_basis.get("mode"), "location")
+        self.assertEqual(packet_basis.get("summary"), "Ada is in the classroom and can see the player's hand.")
+        self.assertEqual(packet_basis.get("location"), "classroom")
+        self.assertEqual(packet_basis.get("visible_to"), ["character:Ada"])
+        self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
+        self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
+
+    def test_gm_scene_visibility_metadata_reaches_trace_summary(self):
+        self.register_characters("Ada")
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{
+                    "content": "The bell rings over Ada's desk.",
+                    "scene_id": "classroom-1",
+                    "location": "classroom",
+                    "time_window": "current",
+                    "visible_to": ["character:Ada"],
+                    "sensory_channels": ["auditory"],
+                    "source_actor": "gm",
+                    "target_actor": "character:Ada",
+                    "visibility_basis": {
+                        "mode": "location",
+                        "summary": "Ada is in the classroom and can hear the bell.",
+                        "location": "classroom",
+                        "visible_to": ["character:Ada"],
+                        "sensory_channels": ["auditory"],
+                        "target_actor": "character:Ada",
+                    },
+                }],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+        summary = load_module("agent_interactions").summarize_for_story_input(self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(summary["visible_events"]), 1)
+        visible_event = summary["visible_events"][0]
+        self.assertEqual(visible_event["type"], "scene_beat")
+        self.assertEqual(visible_event["content"], "The bell rings over Ada's desk.")
+        self.assertEqual(visible_event.get("location"), "classroom")
+        self.assertEqual(visible_event.get("visible_to"), ["character:Ada"])
+        self.assertEqual(visible_event.get("sensory_channels"), ["auditory"])
+        self.assertEqual(
+            visible_event.get("visibility_basis", {}).get("summary"),
+            "Ada is in the classroom and can hear the bell.",
+        )
+        self.assertEqual(visible_event.get("source_actor"), "gm")
+        self.assertEqual(visible_event.get("target_actor"), "character:Ada")
 
     def test_parallel_group_dispatches_safe_actor_calls_concurrently(self):
         self.register_characters("Ada", "Bea")
