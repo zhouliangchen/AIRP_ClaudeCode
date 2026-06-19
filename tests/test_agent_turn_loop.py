@@ -88,6 +88,64 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload["character_contexts"] = {"characters": [{"name": name} for name in names]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
 
+    def test_actor_packet_receives_gm_visibility_basis(self):
+        self.register_characters("Ada")
+        packets = []
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [{
+                "content": "Ada sees the player close his hand.",
+                "location": "classroom",
+                "visible_to": ["character:Ada"],
+                "sensory_channels": ["visual"],
+                "visibility_basis": {
+                    "mode": "location",
+                    "summary": "Ada is in the classroom and can see the player's hand.",
+                    "location": "classroom",
+                    "visible_to": ["character:Ada"],
+                    "sensory_channels": ["visual"],
+                },
+            }],
+            "events": [],
+            "actor_calls": [{
+                "call_id": "call-character-Ada-1",
+                "actor_id": "character:Ada",
+                "prompt": "You see the player close his hand around something pink.",
+                "reason": "Ada is in the classroom and can see the movement.",
+                "visibility_basis": {
+                    "mode": "location",
+                    "summary": "Ada is in the classroom and can see the player's hand.",
+                    "location": "classroom",
+                    "visible_to": ["character:Ada"],
+                    "sensory_channels": ["visual"],
+                    "target_actor": "character:Ada",
+                },
+            }],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "complete",
+        }
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return gm_output
+            packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I stay alert."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(packets[0]["gm_visibility_basis"].get("mode"), "location")
+        self.assertEqual(packets[0]["gm_visibility_basis"].get("target_actor"), "character:Ada")
+
     def test_parallel_group_dispatches_safe_actor_calls_concurrently(self):
         self.register_characters("Ada", "Bea")
         barrier = threading.Barrier(2)
@@ -650,6 +708,79 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(len(gm_outputs["outputs"]), 2)
         self.assertIn("player", actor_outputs)
         self.assertIn("character:SuLi", actor_outputs)
+
+    def test_generated_dialogue_transfer_carries_private_dialogue_visibility_basis(self):
+        self.register_characters("Ada", "SuLi")
+        generated_call = self.agent_turn_loop._dialogue_transfer_call(
+            "character:Ada",
+            "character:SuLi",
+            {"type": "dialogue", "target": "character:SuLi", "content": "SuLi, check the window."},
+            "call-character-Ada-1",
+            {},
+            set(),
+        )
+        packets_by_actor = {}
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks quietly to SuLi."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You can quietly ask SuLi to check the window.",
+                        "reason": "Ada is beside SuLi and can speak to her.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Ada can speak to SuLi from beside her desk.",
+                            "target_actor": "character:Ada",
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            packets_by_actor.setdefault(agent_key, []).append(json_copy(packet))
+            if agent_key == "character:Ada":
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{
+                        "type": "dialogue",
+                        "target": "character:SuLi",
+                        "content": "SuLi, check the window.",
+                    }],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I check the window."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        with self.subTest("generated transfer call basis"):
+            generated_basis = generated_call.get("visibility_basis", {})
+            self.assertEqual(generated_basis.get("mode"), "private_dialogue")
+            self.assertEqual(generated_basis.get("source_actor"), "character:Ada")
+            self.assertEqual(generated_basis.get("target_actor"), "character:SuLi")
+
+        with self.subTest("target actor packet basis"):
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["called_actors"], ["character:Ada", "character:SuLi"])
+            self.assertEqual(len(packets_by_actor["character:SuLi"]), 1)
+            packet_basis = packets_by_actor["character:SuLi"][0]["gm_visibility_basis"]
+            self.assertEqual(packet_basis.get("mode"), "private_dialogue")
+            self.assertEqual(packet_basis.get("source_actor"), "character:Ada")
+            self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
 
     def test_actor_call_prompt_redacts_hidden_phrase_without_marker_words(self):
         self.agent_run.write_json(self.run_dir / "input.json", {

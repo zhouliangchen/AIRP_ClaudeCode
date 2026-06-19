@@ -102,6 +102,43 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "causal_links": ["event-0"],
         })
 
+    def test_summary_preserves_visibility_metadata_for_world_visible_events(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="scene",
+            content="The bell rings.",
+            target="character:Ada",
+            visibility_metadata={
+                "scene_id": "classroom-1",
+                "location": "classroom",
+                "time_window": "current",
+                "visible_to": ["character:Ada"],
+                "sensory_channels": ["auditory"],
+                "source_actor": "gm",
+                "target_actor": "character:Ada",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "Ada can hear the bell.",
+                    "target_actor": "character:Ada",
+                },
+            },
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(summary["visible_events"][0]["location"], "classroom")
+        self.assertEqual(summary["visible_events"][0]["sensory_channels"], ["auditory"])
+        self.assertEqual(
+            summary["visible_events"][0]["visibility_basis"]["summary"],
+            "Ada can hear the bell.",
+        )
+
     def test_trace_records_actor_batches_and_routing_warnings(self):
         self.agent_interactions.init_trace(
             self.run_dir,

@@ -184,6 +184,44 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertNotIn("Secret hidden phrase", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text)
 
+    def test_actor_packet_receives_subgm_visibility_basis(self):
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You notice chalk dust near the vent.",
+                            "reason": "SuLi is physically present in the side thread.",
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "SuLi is on the rooftop and can see the chalk dust.",
+                                "location": "school rooftop",
+                                "visible_to": ["character:SuLi"],
+                                "sensory_channels": ["visual"],
+                                "target_actor": "character:SuLi",
+                            },
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                actor_packets.append(packet)
+                return character_output()
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["called_actors"], ["character:SuLi"])
+        self.assertEqual(actor_packets[0]["gm_visibility_basis"].get("target_actor"), "character:SuLi")
+
     def test_run_ready_side_threads_runs_sorted_runnable_threads_sequentially(self):
         self.subgm_threads.apply_gm_commands(
             self.run_dir,
