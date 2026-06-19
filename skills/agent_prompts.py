@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATHS = {
     "input_analyst": ".claude/skills/rp-input-analyst.md",
     "gm": ".claude/skills/rp-gm-agent.md",
+    "subgm": ".claude/skills/rp-subgm-agent.md",
     "player": ".claude/skills/rp-player-agent.md",
     "character": ".claude/skills/rp-character-agent.md",
     "story": ".claude/skills/rp-story-agent.md",
@@ -22,6 +23,15 @@ SKILL_PATHS = {
 }
 
 AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character"}
+
+WORLD_UPDATE_RECORD_CONTRACT = """World update record contract:
+
+- world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
+- world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`
+- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`
+- world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`
+
+If a world update cannot satisfy the record schema, omit it and keep the semantic unit only."""
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -69,10 +79,12 @@ def _base_prompt(
     contract: str,
     context: Dict[str, Any],
     output_instruction: str | None = None,
+    contract_notes: str | None = None,
 ) -> str:
     skill_path = SKILL_PATHS[skill_key]
     if output_instruction is None:
         output_instruction = f"Use only the allowed context below and write the required JSON artifact to `{output_path}`."
+    notes = f"\n\n{contract_notes.strip()}" if contract_notes else ""
     return f"""
 # {title}
 
@@ -89,6 +101,7 @@ Do not write final prose unless this is the story agent.
 ```json
 {contract}
 ```
+{notes}
 
 ## Context Packet
 
@@ -146,6 +159,19 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "input_analysis.output.json",
         contract,
         context,
+        contract_notes=WORLD_UPDATE_RECORD_CONTRACT,
+    ) + (
+        "\n\nSemantic unit enum contract: every `semantic_units[]` item must use "
+        "exactly one of the allowed `type` values and exactly one of the allowed "
+        "`visibility` values below.\n"
+        "\nAllowed `semantic_units[].type` values: `action`, `synopsis`, "
+        "`omniscient_setting`, `hidden_setting`, `character_declaration`, "
+        "`edit_request`, `system_command`, `style_guidance`, `unclear`.\n"
+        "\nAllowed `semantic_units[].visibility` values: `gm_only`, "
+        "`public_world`, `player_pov`, `character_pov`, `specific_characters`.\n"
+        "\nInvalid semantic unit visibility aliases: public, private, player, "
+        "character, world_visible, actor_visible. Do not write these aliases in "
+        "`input_analysis.output.json`.\n"
     )
 
 
@@ -175,6 +201,22 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
                 "activation": "current_turn",
             }
         ],
+        "subgm_commands": [
+            {
+                "action": "start",
+                "thread_id": "side_example",
+                "title": "Off-screen pressure",
+                "outline": "What the side thread covers",
+                "time_window": "same scene",
+                "location": "nearby room",
+                "objective": "Advance a bounded off-screen development",
+                "allowed_characters": ["character:Example"],
+                "forbidden_characters": ["player"],
+                "priority": "normal",
+                "message": "Initial GM instruction for the side thread",
+                "metadata": {},
+            }
+        ],
         "decision_point": None,
         "stop_reason": "continue",
     })
@@ -189,7 +231,12 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "`word_target`, `complete`, `max_steps`.\n"
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
-        "GM assistants must not emit promotion records.\n"
+        "subGM agents must not emit applied promotion records.\n"
+        "\nsubGM side-thread authority: GM may emit `subgm_commands` with actions "
+        "`start`, `message`, `accelerate`, `pause`, `resume`, `merge`, or `close`. "
+        "GM remains the only root authority: subGM agents cannot create/promote "
+        "important characters or spawn other subGMs; treat subGM requests as proposals "
+        "to accept, reject, or revise.\n"
     )
 
 
@@ -260,6 +307,53 @@ def _character_prompt(context: Dict[str, Any]) -> str:
 def character_prompt_text(context: Dict[str, Any]) -> str:
     """Return the generated character prompt text for a projected loop packet."""
     return _character_prompt(context if isinstance(context, dict) else {})
+
+
+def _subgm_prompt(context: Dict[str, Any]) -> str:
+    context = context if isinstance(context, dict) else {}
+    contract = _json_block({
+        "agent": "subGM",
+        "thread_id": context.get("thread_id", ""),
+        "status": "running",
+        "scene_beats": [{"content": "side-thread-only visible beat", "metadata": {}}],
+        "events": [{"type": "side_event", "target": "", "content": "side-thread event", "metadata": {}}],
+        "actor_calls": [
+            {
+                "call_id": "call-character-Name-1",
+                "actor_id": "character:Name",
+                "prompt": "first-person projected prompt for an allowed important character",
+                "reason": "why this allowed actor is needed inside the side thread",
+                "metadata": {},
+            }
+        ],
+        "messages_to_gm": [{"content": "what the main GM needs to know", "metadata": {}}],
+        "world_state_delta": [],
+        "character_usage": [],
+        "promotion_requests": [],
+        "boundary_requests": [],
+        "notes_for_story": ["GM/story-facing note after main GM merge"],
+        "next_resume_point": "",
+    })
+    return _base_prompt(
+        "subGM Side-Thread Prompt",
+        "subgm",
+        "side_threads/<thread_id>/subgm.output.json",
+        contract,
+        context,
+        "Use only the assigned side-thread context below and return exactly one JSON subGM output object. "
+        "The runtime loop validates it and persists it under the side-thread directory.",
+    ) + (
+        "\n\nAllowed `status` values: `running`, `paused`, `completed`, `blocked`, `needs_gm`.\n"
+        "\nAuthority boundary: no player participation; no `character_promotions`; no `subgm_commands`; "
+        "no direct boundary mutation; no important-character creation or promotion. "
+        "Only advance the assigned side-thread boundary and request main GM decisions through "
+        "`messages_to_gm`, `promotion_requests`, or `boundary_requests`.\n"
+    )
+
+
+def subgm_prompt_text(context: Dict[str, Any]) -> str:
+    """Return the generated subGM prompt text for a side-thread loop packet."""
+    return _subgm_prompt(context if isinstance(context, dict) else {})
 
 
 def _story_prompt(run_summary: Dict[str, Any]) -> str:

@@ -1025,6 +1025,14 @@ def _escape_attr(s):
     return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def rebuild_content(card_folder):
+    """Activate a card folder and rebuild current frontend display only."""
+    card_path = str(Path(card_folder).resolve())
+    (STYLES / ".card_path").write_text(card_path, encoding="utf-8")
+    write_content_js(card_path)
+    return {"ok": True, "card": card_path, "content_js": str(STYLES / "content.js")}
+
+
 def update_state(**kwargs):
     """Update fields in state.js. Keys: stage, time, location, env, quest, generatedCount, npcs, etc."""
     raw = read_state()
@@ -1863,6 +1871,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
     card_folder = sys.argv[1]
+
+    if "--rebuild" in sys.argv:
+        result = rebuild_content(card_folder)
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0)
 
     if "--injections" in sys.argv:
         result = apply_injections(card_folder)

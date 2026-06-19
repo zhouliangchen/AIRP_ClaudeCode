@@ -255,6 +255,33 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertIn("[redacted]", redacted)
         self.assertIn("门后有光", redacted)
 
+    def test_hidden_phrases_ignore_visible_recent_chat_ai_text(self):
+        visible_story = "清晨的教室里，预备铃响起时，你还坐在自己的座位上。"
+        phrases = self.guard.hidden_phrases({
+            "recent_chat": [{"ai": visible_story, "summary": "你记录了粉色云。"}],
+            "routed_input": {
+                "user_instruction_channel": "隐藏事实：吊坠会燃烧身份。",
+            },
+        })
+
+        self.assertNotIn(visible_story, phrases)
+        self.assertIn("吊坠会燃烧身份", phrases)
+
+    def test_hidden_phrases_drop_short_and_oversized_cjk_fragments(self):
+        long_visible_like_text = "清晨的教室里" * 80
+        phrases = self.guard.hidden_phrases({
+            "hidden_facts": [
+                "当然，记忆、身份都会燃烧。门后是梦境。",
+                long_visible_like_text,
+            ],
+        })
+
+        self.assertNotIn("当然", phrases)
+        self.assertNotIn("记忆", phrases)
+        self.assertNotIn(long_visible_like_text, phrases)
+        self.assertIn("门后是梦境", phrases)
+        self.assertTrue(all(len(phrase) <= 160 for phrase in phrases))
+
 
 if __name__ == "__main__":
     unittest.main()

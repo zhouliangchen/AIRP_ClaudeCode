@@ -1637,6 +1637,18 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "delivered")
         self.assertIn("delivered", [item["stage"] for item in manifest["status"]])
 
+    def test_prepare_delivery_is_noop_after_manifest_delivered(self):
+        self._write_story_and_critic(decision="pass")
+        self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        self.agent_outputs.mark_delivered(self.card)
+        (self.styles_dir / "response.txt").write_text("already delivered", encoding="utf-8")
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "already_delivered")
+        self.assertEqual((self.styles_dir / "response.txt").read_text(encoding="utf-8"), "already delivered")
+
 
 if __name__ == "__main__":
     unittest.main()

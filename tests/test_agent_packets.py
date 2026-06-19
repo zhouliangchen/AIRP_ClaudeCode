@@ -399,6 +399,40 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertTrue(any(args and args[0] == "blocked" for args, _ in progress_calls))
         self.assertFalse(any(args and args[0] == "retry" for args, _ in progress_calls))
 
+    def test_round_deliver_noops_when_agent_run_already_delivered(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        original_subprocess_run = self.round_deliver.subprocess.run
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail("handler should not run for already delivered run")
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+
+        def gate(card_folder, styles_dir):
+            return {
+                "ok": True,
+                "mode": "already_delivered",
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "stage": "delivered",
+            }
+
+        self.round_deliver.agent_outputs.prepare_delivery = gate
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+            with self.assertRaises(SystemExit) as ctx:
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+        finally:
+            sys.argv = old_argv
+            self.round_deliver.subprocess.run = original_subprocess_run
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(payload["action"], "already_done")
+        self.assertEqual(payload["agent_delivery"]["mode"], "already_delivered")
+
 
 class AgentRunTest(unittest.TestCase):
     def setUp(self):
@@ -930,6 +964,8 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertIn("story.input.json.interaction_trace", story_prompt)
+        self.assertIn("delivery_requirements.word_count_target", story_prompt)
+        self.assertIn("less than delivery_requirements.minimum_chinese_chars is invalid", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
@@ -978,7 +1014,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn('"profile_seed"', gm_prompt)
         self.assertIn("GM may emit `source_agent: \"gm\"`", gm_prompt)
         self.assertIn("preprocess is handled by input analysis", gm_prompt)
-        self.assertIn("GM assistants must not emit promotion records", gm_prompt)
+        self.assertIn("subGM agents must not emit applied promotion records", gm_prompt)
         self.assertIn('"stop_reason": "continue"', player_prompt)
         self.assertIn('"stop_reason": "continue"', char_prompt)
         self.assertNotIn("continue|", gm_prompt)
@@ -1106,6 +1142,30 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(input_payload["user_instruction_text"], prompt)
         self.assertTrue("source_integrity" in prompt or "raw_text_sha256" in prompt)
         self.assertIn("semantic_units", prompt)
+        for visibility in (
+            "gm_only",
+            "public_world",
+            "player_pov",
+            "character_pov",
+            "specific_characters",
+        ):
+            self.assertIn(visibility, prompt)
+        for unit_type in (
+            "action",
+            "synopsis",
+            "omniscient_setting",
+            "hidden_setting",
+            "character_declaration",
+            "edit_request",
+            "system_command",
+            "style_guidance",
+            "unclear",
+        ):
+            self.assertIn(unit_type, prompt)
+        self.assertIn(
+            "Invalid semantic unit visibility aliases: public, private, player, character, world_visible, actor_visible",
+            prompt,
+        )
 
         gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
         gm_input_request = gm_packet["input_analysis_request"]
@@ -1124,6 +1184,32 @@ class AgentPacketTest(unittest.TestCase):
 
         player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
         self.assertNotIn(input_payload["user_instruction_text"], json.dumps(player_packet, ensure_ascii=False))
+
+    def test_input_analyst_prompt_and_skill_define_world_update_record_contract(self):
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="Omniscient: the old seal is a hidden covenant.",
+            chat_log=[],
+            card_data={"title": "World Update Contract Test"},
+            character_contexts={"characters": []},
+            turn_index=0,
+        )
+        run_dir = Path(result["run_dir"])
+        prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
+        generated_prompt_contract = prompt.split("## Skill Body", 1)[0]
+        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+
+        required_fragments = (
+            'world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`',
+            'world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`',
+            'world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`',
+            'world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`',
+            "If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.",
+        )
+        for text in (generated_prompt_contract, skill):
+            for fragment in required_fragments:
+                with self.subTest(fragment=fragment):
+                    self.assertIn(fragment, text)
 
     def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(

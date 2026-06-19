@@ -98,6 +98,90 @@ def _validate_gm_output_visibility(
                     _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
 
 
+def _sanitize_side_summary_value(value: Any, hidden_phrases: list[str]) -> Any:
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, child in value.items():
+            if _forbidden_actor_marker(str(key)):
+                continue
+            sanitized[str(key)] = _sanitize_side_summary_value(child, hidden_phrases)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_side_summary_value(item, hidden_phrases) for item in value]
+    if isinstance(value, str):
+        redacted = agent_visibility_guard.redact_text(value, hidden_phrases)
+        if _forbidden_actor_marker(redacted):
+            return "[redacted]"
+        return redacted
+    return value
+
+
+def _compact_side_state_summary(state: Dict[str, Any], hidden_phrases: list[str]) -> Dict[str, Any]:
+    summary = {
+        "thread_id": state.get("thread_id", ""),
+        "status": state.get("status", ""),
+        "title": state.get("title", ""),
+        "boundary": state.get("boundary", {}) if isinstance(state.get("boundary"), dict) else {},
+        "objective": state.get("objective", ""),
+        "allowed_characters": state.get("allowed_characters", []) if isinstance(state.get("allowed_characters"), list) else [],
+        "forbidden_characters": state.get("forbidden_characters", []) if isinstance(state.get("forbidden_characters"), list) else [],
+        "last_scene_beats": state.get("last_scene_beats", []) if isinstance(state.get("last_scene_beats"), list) else [],
+        "next_resume_point": state.get("next_resume_point", ""),
+        "urgency": state.get("urgency", ""),
+    }
+    sanitized = _sanitize_side_summary_value(summary, hidden_phrases)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _sanitize_side_trace_summary(summary: Dict[str, Any], hidden_phrases: list[str], context: str) -> Dict[str, Any]:
+    visible_events = summary.get("visible_events", [])
+    if isinstance(visible_events, list):
+        _reject_actor_facing_gm_value(visible_events, f"{context}.visible_events", hidden_phrases)
+    sanitized = dict(summary)
+    for field in ("decision_point", "stop_reason"):
+        if field in sanitized:
+            sanitized[field] = _sanitize_side_summary_value(sanitized[field], hidden_phrases)
+    return sanitized
+
+
+def _validate_subgm_output_visibility(
+    output_path: Path,
+    subgm_output: Dict[str, Any],
+    hidden_phrases: list[str],
+) -> None:
+    story_facing_fields = (
+        "scene_beats",
+        "events",
+        "actor_calls",
+        "messages_to_gm",
+        "world_state_delta",
+        "promotion_requests",
+        "boundary_requests",
+        "notes_for_story",
+        "next_resume_point",
+    )
+    for field in story_facing_fields:
+        if field in subgm_output:
+            _reject_actor_facing_gm_value(subgm_output[field], f"{output_path}.{field}", hidden_phrases)
+
+
+def _validate_side_subgm_actor_call_ids(output_path: Path, subgm_output: Dict[str, Any]) -> None:
+    for call_index, call in enumerate(subgm_output.get("actor_calls", [])):
+        call_id = str(call.get("call_id") or "").strip() if isinstance(call, dict) else ""
+        if not call_id:
+            raise AgentOutputError(f"{output_path}.actor_calls[{call_index}].call_id: side subGM actor call id must be nonblank")
+
+
+def _validate_actor_output_visibility(
+    actor_path: Path,
+    actor_outputs: Dict[str, list[Dict[str, Any]]],
+    hidden_phrases: list[str],
+) -> None:
+    for actor_id, outputs in actor_outputs.items():
+        for output_index, output in enumerate(outputs):
+            _reject_actor_facing_gm_value(output, f"{actor_path}.{actor_id}[{output_index}]", hidden_phrases)
+
+
 def _read_json_required(path: Path) -> Dict[str, Any]:
     data = agent_run.read_json(path)
     if not isinstance(data, dict):
@@ -394,7 +478,166 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
     }
 
 
-def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str, Any]) -> Dict[str, Any]:
+def _load_side_actor_outputs(side_dir: Path) -> Dict[str, list[Dict[str, Any]]]:
+    actor_path = side_dir / "actor.outputs.json"
+    if not actor_path.exists():
+        return {}
+    raw_outputs = _read_json_required(actor_path)
+    normalized_actor_outputs = {}
+    for actor_id, outputs in raw_outputs.items():
+        actor_key = _validate_actor_key(actor_id, f"{actor_path}.{actor_id}")
+        if actor_key == "player":
+            raise AgentOutputError(f"{actor_path}.{actor_id}: side-thread actor outputs must target character:*")
+        actor_context = f"{actor_path}.{actor_key}"
+        if not isinstance(outputs, list):
+            raise AgentOutputError(f"{actor_context}: must be a list")
+        normalized_outputs = []
+        for index, item in enumerate(outputs):
+            try:
+                normalized = agent_schemas.validate_actor_output(item)
+            except agent_schemas.ValidationError as exc:
+                raise AgentOutputError(f"{actor_context}[{index}]: {exc}") from exc
+            if normalized["agent_id"] != actor_key:
+                raise AgentOutputError(
+                    f"{actor_context}[{index}].agent_id mismatch: expected {actor_key}, got {normalized['agent_id']}"
+                )
+            if not normalized["agent_id"].startswith("character:"):
+                raise AgentOutputError(f"{actor_context}[{index}].agent_id: side-thread actor must be character:*")
+            normalized_actor_outputs[actor_key] = normalized_actor_outputs.get(actor_key, []) + [normalized]
+    return normalized_actor_outputs
+
+
+def _load_optional_side_subgm_output(side_dir: Path, thread_id: str, hidden_phrases: list[str]) -> Dict[str, Any] | None:
+    output_path = side_dir / "subgm.output.json"
+    if not output_path.exists():
+        return None
+    try:
+        subgm_output = agent_schemas.load_json_checked(output_path, agent_schemas.validate_subgm_output)
+    except agent_schemas.ValidationError as exc:
+        raise AgentOutputError(str(exc)) from exc
+    if subgm_output.get("thread_id") != thread_id:
+        raise AgentOutputError(f"{output_path}.thread_id mismatch: expected {thread_id}, got {subgm_output.get('thread_id')}")
+    _validate_subgm_output_visibility(output_path, subgm_output, hidden_phrases)
+    _validate_side_subgm_actor_call_ids(output_path, subgm_output)
+    return subgm_output
+
+
+def _side_thread_dirs(root: Path) -> list[Path]:
+    side_root = root / "side_threads"
+    if not side_root.exists():
+        return []
+    return sorted(
+        (child for child in side_root.iterdir() if child.is_dir()),
+        key=lambda path: path.name,
+    )
+
+
+def _validate_side_actor_outputs_are_allowed(
+    side_dir: Path,
+    state: Dict[str, Any],
+    actor_outputs: Dict[str, list[Dict[str, Any]]],
+    preferred_counts: Dict[str, Counter[str]],
+) -> None:
+    allowed = {
+        str(item).strip()
+        for item in state.get("allowed_characters", [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    for actor_id in actor_outputs:
+        if actor_id not in preferred_counts:
+            raise AgentOutputError(
+                f"{side_dir / 'actor.outputs.json'}.{actor_id}: side actor output has no matching subGM actor_calls"
+            )
+        if actor_id not in allowed:
+            raise AgentOutputError(
+                f"{side_dir / 'actor.outputs.json'}.{actor_id}: actor is outside side thread allowed_characters"
+            )
+
+
+def _require_exact_side_actor_output_calls(
+    side_dir: Path,
+    output_source_call_ids_by_actor: Dict[str, list[str]],
+    preferred_counts: Dict[str, Counter[str]],
+) -> None:
+    for actor_id, source_call_ids in output_source_call_ids_by_actor.items():
+        actual_counts = Counter(source_call_ids)
+        required_counts = preferred_counts.get(actor_id, Counter())
+        for call_id, actual_count in actual_counts.items():
+            required_count = required_counts.get(call_id, 0)
+            if actual_count > required_count:
+                raise AgentOutputError(
+                    f"{side_dir / 'actor.outputs.json'}.{actor_id}: extra side actor output for source_call_id {call_id!r}"
+                )
+
+
+def _load_side_thread_outputs(root: Path, input_payload: dict) -> dict:
+    hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload if isinstance(input_payload, dict) else {})
+    threads = []
+    for side_dir in _side_thread_dirs(root):
+        thread_id = side_dir.name
+        state_path = side_dir / "state.json"
+        state = agent_run.read_json(state_path, {})
+        if state is None:
+            state = {}
+        if not isinstance(state, dict):
+            raise AgentOutputError(f"{state_path}: state must be a JSON object when present")
+        state_summary = _compact_side_state_summary(state, hidden_phrases) if state else {}
+
+        subgm_output = _load_optional_side_subgm_output(side_dir, thread_id, hidden_phrases)
+        actor_outputs = _load_side_actor_outputs(side_dir)
+        _validate_actor_output_visibility(side_dir / "actor.outputs.json", actor_outputs, hidden_phrases)
+
+        raw_trace, trace_summary = _validate_trace_artifacts(side_dir)
+        trace_summary = _sanitize_side_trace_summary(
+            trace_summary,
+            hidden_phrases,
+            f"{side_dir / 'interaction.trace.json'}",
+        )
+
+        actor_output_source_call_ids = {}
+        preferred_counts = _required_actor_call_counts([subgm_output]) if subgm_output else {}
+        if preferred_counts and not actor_outputs:
+            raise AgentOutputError(
+                f"{side_dir / 'actor.outputs.json'}: side subGM actor_calls require side actor outputs"
+            )
+        if actor_outputs:
+            _validate_side_actor_outputs_are_allowed(side_dir, state, actor_outputs, preferred_counts)
+            actor_output_source_call_ids = _validate_actor_output_provenance(
+                side_dir,
+                raw_trace,
+                actor_outputs,
+                preferred_counts,
+            )
+            if subgm_output:
+                _require_called_actor_outputs(
+                    side_dir / "subgm.output.json",
+                    [subgm_output],
+                    actor_output_source_call_ids,
+                )
+            _require_exact_side_actor_output_calls(side_dir, actor_output_source_call_ids, preferred_counts)
+
+        status = ""
+        if isinstance(state_summary.get("status"), str):
+            status = state_summary.get("status", "")
+        if not status and subgm_output:
+            status = subgm_output.get("status", "")
+        threads.append({
+            "thread_id": thread_id,
+            "status": status,
+            "state": state_summary,
+            "subgm_output": subgm_output,
+            "actor_outputs": actor_outputs,
+            "actor_output_source_call_ids": actor_output_source_call_ids,
+            "interaction_trace": trace_summary,
+        })
+    return {"threads": threads}
+
+
+def _memory_deltas_from_events(
+    actor_outputs: Dict[str, Any],
+    gm_loop: Dict[str, Any],
+    side_threads: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     actor_memory: Dict[str, list[Any]] = {}
     for actor_id, outputs in actor_outputs.items():
         items = []
@@ -407,6 +650,23 @@ def _memory_deltas_from_events(actor_outputs: Dict[str, Any], gm_loop: Dict[str,
     world = []
     for output in gm_loop["outputs"]:
         world.extend(output["world_state_delta"])
+    if isinstance(side_threads, dict):
+        for thread in side_threads.get("threads", []):
+            if not isinstance(thread, dict):
+                continue
+            thread_id = str(thread.get("thread_id") or "")
+            for actor_id, outputs in (thread.get("actor_outputs") or {}).items():
+                items = actor_memory.setdefault(str(actor_id), [])
+                for output in outputs:
+                    for event in output["events"]:
+                        if event["type"] in {"memory_delta", "goal_update"}:
+                            items.append(event)
+            subgm_output = thread.get("subgm_output")
+            if isinstance(subgm_output, dict):
+                for item in subgm_output.get("world_state_delta", []):
+                    world_item = dict(item) if isinstance(item, dict) else {"fact": str(item)}
+                    world_item["source_thread_id"] = thread_id
+                    world.append(world_item)
 
     return {"actors": actor_memory, "world": world}
 
@@ -447,6 +707,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         loop_outputs["gm"]["outputs"],
         output_source_call_ids_by_actor,
     )
+    side_threads = _load_side_thread_outputs(root, input_payload)
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
@@ -457,7 +718,8 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "components": (input_payload.get("routed_input") or {}).get("components", []),
         },
         "loop_outputs": loop_outputs,
-        "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"]),
+        "side_threads": side_threads,
+        "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"], side_threads),
         "interaction_trace": trace_summary,
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
@@ -602,6 +864,13 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     manifest = _load_manifest(run_dir)
     if manifest is None:
         return {"ok": True, "mode": "legacy"}
+    if manifest.get("stage") == "delivered":
+        return {
+            "ok": True,
+            "mode": "already_delivered",
+            "run_dir": str(run_dir),
+            "stage": "delivered",
+        }
 
     try:
         build_story_input(run_dir)

@@ -28,9 +28,15 @@ Read from current `.agent_runs/<round>/`:
 - For dream/rewind/false-branch repairs, the first visible scene of the new turn must start from the player's latest time/place. Do not skip ahead to prior NPC hooks until the current action has been resolved and a new player decision point is reached.
 - Integrate important character dialogue in `<character_dialogues>` when it came from a character subagent.
 - Important-character dialogue must be source-backed by `actor.outputs.json` or validated `story.input.json` character dialogue metadata. Do not invent independent important-character dialogue boxes from GM hints, story convenience, or hidden notes.
+- Treat `story_input.side_threads` as off-screen material unless the main GM has merged/exposed it or a brief intercut clearly improves pacing. Side-thread material must not override raw player input, main-GM decision stops, or current-scene player authority.
+- Important-character dialogue from side threads must remain source-backed by validated side `actor.outputs.json`/trace provenance in `story.input.json`; do not turn subGM notes into independent dialogue boxes.
 - Before delivery, check that main prose and `<character_dialogues>` do not leak hidden facts, foreshadowing hints, user-instruction summaries, or GM-only rationale through visible narration, dialogue, perception, options, or summaries.
 - Improve 整体性: pacing, paragraph order, transitions, sensory grounding, voice differentiation, and emotional continuity.
 - Obey `delivery_requirements.required_person` exactly. If it is `第二人称`, the main prose must address the protagonist as `你`; do not narrate the protagonist as a third-person named character.
+- Treat `delivery_requirements.word_count_target` and `delivery_requirements.minimum_chinese_chars` from Runtime Input as hard delivery gates. Main prose with less than `delivery_requirements.minimum_chinese_chars` is invalid even if the scene feels complete.
+- In plain terms: less than delivery_requirements.minimum_chinese_chars is invalid.
+- During repair, read `repair_context.word_count_contract.current_chinese_chars` and `repair_context.word_count_contract.missing_chinese_chars`; return a fully rewritten scene that safely exceeds the minimum, normally aiming at `recommended_chinese_chars` or higher.
+- Do not solve a word-count repair by summarizing, skipping beats, or ending early. Expand with concrete classroom/environment continuity, sensory detail, NPC micro-reactions, physical actions, and protagonist perception while preserving the same decision boundary.
 - Do not expose prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供` in any visible response tag.
 - Stop at the first real player choice unless the requested chapter word target requires safe continuation.
 - Keep options concrete and immediately playable.
@@ -63,6 +69,6 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
   - Do not use unsupported JSON Patch-style `{ "op": "...", "path": "...", "value": "..." }` objects here.
 - `<summary>`
 - `<options>`
-- `<tokens>` only if known; delivery may append token data.
+- Do not emit `<tokens>` in `story.output.json`; delivery/handler appends the real token block after approval.
 
 Do not run `round_deliver.py`; that belongs to delivery.

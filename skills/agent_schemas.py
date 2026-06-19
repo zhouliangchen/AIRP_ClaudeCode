@@ -45,6 +45,25 @@ ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 
+SUBGM_COMMAND_ACTIONS = {"start", "message", "accelerate", "pause", "resume", "merge", "close"}
+SUBGM_OUTPUT_STATUSES = {"running", "paused", "completed", "blocked", "needs_gm"}
+SUBGM_FORBIDDEN_OUTPUT_KEYS = {"character_promotions", "subgm_commands"}
+SUBGM_OUTPUT_KEYS = [
+    "agent",
+    "thread_id",
+    "status",
+    "scene_beats",
+    "events",
+    "actor_calls",
+    "messages_to_gm",
+    "world_state_delta",
+    "character_usage",
+    "promotion_requests",
+    "boundary_requests",
+    "notes_for_story",
+    "next_resume_point",
+]
+
 
 def _path(parent: str, key: str) -> str:
     return f"{parent}.{key}" if parent else key
@@ -63,6 +82,14 @@ def _require_str(payload: Dict[str, Any], key: str, path: str = "") -> str:
     value = payload[key]
     if not isinstance(value, str):
         raise ValidationError(f"{full_path} must be a string")
+    return value
+
+
+def _require_nonempty_str(payload: Dict[str, Any], key: str, path: str = "") -> str:
+    full_path = _path(path, key)
+    value = _require_str(payload, key, path).strip()
+    if not value:
+        raise ValidationError(f"{full_path} must not be blank")
     return value
 
 
@@ -247,12 +274,64 @@ def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_subgm_actor_call(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    raw_actor_id = _require_str(data, "actor_id", path).strip()
+    if raw_actor_id == "player":
+        raise ValidationError(f"{_path(path, 'actor_id')} must not target player")
+    if not raw_actor_id.startswith("character:"):
+        raise ValidationError(f"{_path(path, 'actor_id')} must start with 'character:'")
+    actor_id = _validate_actor_id_marker(raw_actor_id, _path(path, "actor_id"))
+    normalized = {
+        "call_id": _require_nonempty_str(data, "call_id", path),
+        "actor_id": actor_id,
+        "prompt": _require_str(data, "prompt", path),
+        "reason": _require_str(data, "reason", path),
+    }
+    if "metadata" in data:
+        normalized["metadata"] = _optional_dict(data, "metadata", path)
+    return normalized
+
+
+def _normalize_character_ref(item: Any, path: str) -> str:
+    if not isinstance(item, str):
+        raise ValidationError(f"{path} must be a string")
+    actor_id = item.strip()
+    if not actor_id.startswith("character:"):
+        raise ValidationError(f"{path} must start with 'character:'")
+    return _validate_actor_id_marker(actor_id, path)
+
+
+def _normalize_forbidden_ref(item: Any, path: str) -> str:
+    if not isinstance(item, str):
+        raise ValidationError(f"{path} must be a string")
+    actor_id = item.strip()
+    if actor_id == "player":
+        return actor_id
+    if not actor_id.startswith("character:"):
+        raise ValidationError(f"{path} must be 'player' or start with 'character:'")
+    return _validate_actor_id_marker(actor_id, path)
+
+
+def _normalize_dict_item(item: Any, path: str) -> Dict[str, Any]:
+    return _require_dict(item, path)
+
+
+def _normalize_nonempty_str_item(item: Any, path: str) -> str:
+    if not isinstance(item, str):
+        raise ValidationError(f"{path} must be a string")
+    value = item.strip()
+    if not value:
+        raise ValidationError(f"{path} must not be blank")
+    return value
+
+
 def _normalize_character_promotion(item: Any, path: str) -> Dict[str, Any]:
     try:
         return character_promotions.validate_promotion(item, path)
     except character_promotions.CharacterPromotionError as exc:
         message = str(exc)
-        if "gm_assistant" in message:
+        if "subGM sources" in message:
             message = f"{message}; gm_output.character_promotions accepts applied promotion records only"
         raise ValidationError(message) from exc
 
@@ -267,9 +346,64 @@ def _normalize_gm_character_promotion(item: Any, path: str) -> Dict[str, Any]:
 def _normalize_list_items(
     items: list[Any],
     path: str,
-    normalizer: Callable[[Any, str], Dict[str, Any]],
-) -> list[Dict[str, Any]]:
+    normalizer: Callable[[Any, str], Any],
+) -> list[Any]:
     return [normalizer(item, f"{path}[{index}]") for index, item in enumerate(items)]
+
+
+def _normalize_subgm_command(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    action = _require_str(data, "action", path)
+    if action not in SUBGM_COMMAND_ACTIONS:
+        raise ValidationError(f"{_path(path, 'action')} is not an allowed subGM command action")
+    thread_id = _require_nonempty_str(data, "thread_id", path)
+
+    if action == "start":
+        return {
+            "action": action,
+            "thread_id": thread_id,
+            "title": _require_nonempty_str(data, "title", path),
+            "outline": _require_nonempty_str(data, "outline", path),
+            "time_window": _require_nonempty_str(data, "time_window", path),
+            "location": _require_nonempty_str(data, "location", path),
+            "objective": _require_nonempty_str(data, "objective", path),
+            "allowed_characters": _normalize_list_items(
+                _optional_list(data, "allowed_characters", path),
+                _path(path, "allowed_characters"),
+                _normalize_character_ref,
+            ),
+            "forbidden_characters": _normalize_list_items(
+                _optional_list(data, "forbidden_characters", path),
+                _path(path, "forbidden_characters"),
+                _normalize_forbidden_ref,
+            ),
+            "priority": _optional_str(data, "priority", "", path),
+            "message": _optional_str(data, "message", "", path),
+            "metadata": _optional_dict(data, "metadata", path),
+        }
+
+    return {
+        "action": action,
+        "thread_id": thread_id,
+        "title": _optional_str(data, "title", "", path),
+        "outline": _optional_str(data, "outline", "", path),
+        "time_window": _optional_str(data, "time_window", "", path),
+        "location": _optional_str(data, "location", "", path),
+        "objective": _optional_str(data, "objective", "", path),
+        "allowed_characters": _normalize_list_items(
+            _optional_list(data, "allowed_characters", path),
+            _path(path, "allowed_characters"),
+            _normalize_character_ref,
+        ),
+        "forbidden_characters": _normalize_list_items(
+            _optional_list(data, "forbidden_characters", path),
+            _path(path, "forbidden_characters"),
+            _normalize_forbidden_ref,
+        ),
+        "priority": _optional_str(data, "priority", "", path),
+        "message": _require_nonempty_str(data, "message", path),
+        "metadata": _optional_dict(data, "metadata", path),
+    }
 
 
 def validate_gm_output(payload: Any) -> Dict[str, Any]:
@@ -301,7 +435,79 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         ),
         "decision_point": data.get("decision_point"),
         "stop_reason": _optional_str(data, "stop_reason", "continue", "gm_output"),
+        "subgm_commands": _normalize_list_items(
+            _optional_list(data, "subgm_commands", "gm_output"),
+            "gm_output.subgm_commands",
+            _normalize_subgm_command,
+        ),
     }
+
+
+def validate_subgm_output(payload: Any) -> Dict[str, Any]:
+    """Validate and normalize a subGM side-thread output artifact."""
+    data = _require_dict(payload, "subgm_output")
+    for key in sorted(SUBGM_FORBIDDEN_OUTPUT_KEYS):
+        if key in data:
+            raise ValidationError(f"subgm_output must not contain {key}")
+
+    agent = _require_agent(data, "subGM", "subgm_output")
+    thread_id = _require_nonempty_str(data, "thread_id", "subgm_output")
+    status = _require_str(data, "status", "subgm_output")
+    if status not in SUBGM_OUTPUT_STATUSES:
+        raise ValidationError(f"subgm_output.status is not an allowed subGM status")
+
+    normalized = {
+        "agent": agent,
+        "thread_id": thread_id,
+        "status": status,
+        "scene_beats": _normalize_list_items(
+            _require_list(data, "scene_beats", "subgm_output"),
+            "subgm_output.scene_beats",
+            _normalize_gm_scene_beat,
+        ),
+        "events": _normalize_list_items(
+            _require_list(data, "events", "subgm_output"),
+            "subgm_output.events",
+            _normalize_gm_event,
+        ),
+        "actor_calls": _normalize_list_items(
+            _require_list(data, "actor_calls", "subgm_output"),
+            "subgm_output.actor_calls",
+            _normalize_subgm_actor_call,
+        ),
+        "messages_to_gm": _normalize_list_items(
+            _require_list(data, "messages_to_gm", "subgm_output"),
+            "subgm_output.messages_to_gm",
+            _normalize_dict_item,
+        ),
+        "world_state_delta": _normalize_list_items(
+            _require_list(data, "world_state_delta", "subgm_output"),
+            "subgm_output.world_state_delta",
+            _normalize_dict_item,
+        ),
+        "character_usage": _normalize_list_items(
+            _require_list(data, "character_usage", "subgm_output"),
+            "subgm_output.character_usage",
+            _normalize_character_ref,
+        ),
+        "promotion_requests": _normalize_list_items(
+            _require_list(data, "promotion_requests", "subgm_output"),
+            "subgm_output.promotion_requests",
+            _normalize_dict_item,
+        ),
+        "boundary_requests": _normalize_list_items(
+            _require_list(data, "boundary_requests", "subgm_output"),
+            "subgm_output.boundary_requests",
+            _normalize_dict_item,
+        ),
+        "notes_for_story": _normalize_list_items(
+            _require_list(data, "notes_for_story", "subgm_output"),
+            "subgm_output.notes_for_story",
+            _normalize_nonempty_str_item,
+        ),
+        "next_resume_point": _optional_str(data, "next_resume_point", "", "subgm_output"),
+    }
+    return {key: normalized[key] for key in SUBGM_OUTPUT_KEYS}
 
 
 def validate_actor_output(payload: Any) -> Dict[str, Any]:

@@ -50,12 +50,12 @@ class CharacterPromotionsTest(unittest.TestCase):
         self.assertIn("- player_authoritative: false", profile_md)
         self.assertNotIn("## Authoritative Player Setting", profile_md)
 
-    def test_gm_assistant_promotion_is_rejected(self):
-        with self.assertRaisesRegex(self.promotions.CharacterPromotionError, "gm_assistant"):
+    def test_subgm_promotion_is_rejected(self):
+        with self.assertRaisesRegex(self.promotions.CharacterPromotionError, "subGM"):
             self.promotions.apply_promotions(self.card, [{
                 "name": "Side NPC",
-                "source_agent": "gm_assistant:thread-1",
-                "reason": "assistant wants promotion",
+                "source_agent": "subGM:thread-1",
+                "reason": "subGM wants promotion",
                 "profile_seed": "not allowed",
                 "visibility": "character_private_and_gm",
             }], round_id="round-000003")

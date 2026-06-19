@@ -11,20 +11,22 @@ Use this policy when converting a person, creature, organization representative,
 
 Allowed promotion sources: preprocess, gm
 
-GM assistants must not create or promote important characters. Actor, story, critic, and other assistant discoveries are only suggestions to the main GM. The main GM must decide whether the entity is important enough, currently scene-relevant, and safe to route as an independent actor.
+subGM agents must not create or promote important characters. Actor, story, critic, subGM, and other side-thread discoveries are only requests to the main GM. The main GM must decide whether the entity is important enough, currently scene-relevant, and safe to route as an independent actor.
 
-Future GM assistants may emit only suggestion records for main GM review:
+Future subGM side threads may emit only request records for main GM review:
 
 ```json
 {
-  "type": "promotion_suggestion",
+  "type": "promotion_request",
   "candidate_name": "Side NPC",
   "reason": "why main GM should consider promotion",
-  "source_agent": "gm_assistant:thread-1"
+  "source_agent": "subGM:thread-1"
 }
 ```
 
 This record must not be applied directly. Only the main GM may turn it into a promotion record with `source_agent: "gm"`.
+
+Legacy `gm_assistant:*` sources are an old alias/backdoor and must be rejected with the current subGM promotion boundary.
 
 ## Criteria
 
