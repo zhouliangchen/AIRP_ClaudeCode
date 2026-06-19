@@ -24,6 +24,8 @@ STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 RESERVATION_ACTIVATING_SUBGM_ACTIONS = {"start", "resume", "merge"}
 RESERVATION_RELEASING_SUBGM_ACTIONS = {"pause", "close"}
+TRACE_SAFE_PLAYER_CALL_ID_RE = re.compile(r"^call-player-([0-9]+)$")
+TRACE_SAFE_CHARACTER_CALL_ID_RE = re.compile(r"^call-character-([A-Za-z][A-Za-z0-9_]*)-([0-9]+)$")
 
 DispatchFn = Callable[[str, dict], dict]
 
@@ -253,6 +255,37 @@ def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
     return f"call-character-{safe}-{counts[actor_id]}"
 
 
+def _actor_call_id_index(actor_id: str, call_id: str) -> int | None:
+    if actor_id == "player":
+        match = TRACE_SAFE_PLAYER_CALL_ID_RE.fullmatch(call_id)
+        return int(match.group(1)) if match else None
+    match = TRACE_SAFE_CHARACTER_CALL_ID_RE.fullmatch(call_id)
+    if not match or match.group(1) != _ascii_actor_slug(actor_id):
+        return None
+    return int(match.group(2))
+
+
+def _next_unique_actor_call_id(actor_id: str, counts: dict[str, int], used: set[str]) -> str:
+    while True:
+        call_id = _safe_actor_call_id(actor_id, counts)
+        if call_id not in used:
+            used.add(call_id)
+            return call_id
+
+
+def _normalize_main_actor_call_ids(gm_output: dict, counts: dict[str, int], used: set[str]) -> None:
+    for call in gm_output.get("actor_calls", []) or []:
+        actor_id = str(call.get("actor_id") or "")
+        call_id = str(call.get("call_id") or "").strip()
+        call_index = _actor_call_id_index(actor_id, call_id) if call_id else None
+        if call_index is not None and call_id not in used:
+            used.add(call_id)
+            counts[actor_id] = max(counts.get(actor_id, 0), call_index)
+            call["call_id"] = call_id
+            continue
+        call["call_id"] = _next_unique_actor_call_id(actor_id, counts, used)
+
+
 def _ascii_actor_slug(actor_id: str) -> str:
     raw = str(actor_id).split(":", 1)[-1]
     slug = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
@@ -268,10 +301,11 @@ def _dialogue_transfer_call(
     event: dict,
     call_id: str,
     generated_call_counts: dict[str, int],
+    used_call_ids: set[str],
 ) -> dict:
     content = _event_content(event)
     return {
-        "call_id": _safe_actor_call_id(target, generated_call_counts),
+        "call_id": _next_unique_actor_call_id(target, generated_call_counts, used_call_ids),
         "actor_id": target,
         "prompt": f"{actor_id} says to you: {content}",
         "reason": "Visible dialogue transfer.",
@@ -529,6 +563,7 @@ def run_interactive_loop(
     actor_outputs: dict[str, list[dict]] = {}
     called_actors: list[str] = []
     generated_call_counts: dict[str, int] = {}
+    used_actor_call_ids: set[str] = set()
     seen_transfers: set[tuple[str, str, str]] = set()
     stop_reason = "continue"
     decision_point: Any = None
@@ -544,6 +579,7 @@ def run_interactive_loop(
         _apply_character_promotions(root, input_payload, gm_output)
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
+        _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
         _preflight_subgm_actor_conflicts(root, gm_output)
         _apply_subgm_commands(root, gm_output)
         _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
@@ -602,6 +638,7 @@ def run_interactive_loop(
                                     event,
                                     call_id,
                                     generated_call_counts,
+                                    used_actor_call_ids,
                                 )
                             )
                         else:

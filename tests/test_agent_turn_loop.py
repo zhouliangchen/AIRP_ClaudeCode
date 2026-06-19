@@ -704,6 +704,270 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(len(source_ids), 1)
         self.assertRegex(source_ids[0], r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$")
 
+    def test_main_gm_generic_actor_call_id_is_normalized_for_trace_provenance(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The classroom quiets."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-1",
+                        "actor_id": "character:SuLi",
+                        "prompt": "You notice the pendant glinting under the desk.",
+                        "reason": "SuLi can perceive the visible pendant.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I watch the pendant without moving."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        persisted_call_id = gm_outputs["outputs"][0]["actor_calls"][0]["call_id"]
+        self.assertEqual(persisted_call_id, "call-character-SuLi-1")
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        actor_events = [event for event in trace["events"] if event["actor"] == "character:SuLi"]
+        self.assertEqual({event["source_call_id"] for event in actor_events}, {persisted_call_id})
+        self.agent_run.write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "awaiting_agent_outputs",
+                "expected_outputs": {
+                    "gm": "gm.output.json",
+                    "actors": "actor.outputs.json",
+                    "story": "story.output.json",
+                    "critic": "critic.report.json",
+                },
+            },
+        )
+
+        story_input = load_module("agent_outputs").build_story_input(self.run_dir)
+
+        self.assertEqual(
+            story_input["loop_outputs"]["gm"]["outputs"][0]["actor_calls"][0]["call_id"],
+            persisted_call_id,
+        )
+
+    def test_main_gm_generated_call_id_does_not_collide_with_prior_safe_call_id(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                gm_count = len([key for key, _packet in calls if key == "gm"])
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "SuLi notices the desk."}],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You notice the pendant first.",
+                            "reason": "First visible reaction.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The pendant glints again."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-1",
+                        "actor_id": "character:SuLi",
+                        "prompt": "You notice the pendant again.",
+                        "reason": "Second visible reaction.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            actor_count = len([key for key, _packet in calls if key == "character:SuLi"])
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{
+                    "type": "action",
+                    "target": "",
+                    "content": f"I track the pendant for beat {actor_count}.",
+                }],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        persisted_call_ids = [
+            output["actor_calls"][0]["call_id"]
+            for output in gm_outputs["outputs"]
+            if output["actor_calls"]
+        ]
+        self.assertEqual(persisted_call_ids, ["call-character-SuLi-1", "call-character-SuLi-2"])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        actor_source_ids = [
+            event["source_call_id"]
+            for event in trace["events"]
+            if event["actor"] == "character:SuLi"
+        ]
+        self.assertEqual(actor_source_ids, persisted_call_ids)
+
+    def test_main_gm_cross_actor_safe_call_id_is_normalized_to_target_actor(self):
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "SuLi notices a mismatch."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:SuLi",
+                        "prompt": "You notice the pendant glinting under the desk.",
+                        "reason": "SuLi can perceive the visible pendant.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I keep the pendant in sight."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        persisted_call_id = gm_outputs["outputs"][0]["actor_calls"][0]["call_id"]
+        self.assertEqual(persisted_call_id, "call-character-SuLi-1")
+
+    def test_main_gm_safe_call_id_is_stripped_before_persistence(self):
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "SuLi notices a trimmed call."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": " call-character-SuLi-1 ",
+                        "actor_id": "character:SuLi",
+                        "prompt": "You notice the pendant glinting under the desk.",
+                        "reason": "SuLi can perceive the visible pendant.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I look once at the pendant."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(gm_outputs["outputs"][0]["actor_calls"][0]["call_id"], "call-character-SuLi-1")
+
+    def test_main_gm_safe_call_id_does_not_collide_with_generated_transfer_call_id(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                gm_count = len([key for key, _packet in calls if key == "gm"])
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The player speaks across the classroom."}],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You ask SuLi to look at the pendant.",
+                            "reason": "Player addresses SuLi.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "SuLi gets a better look."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-SuLi-1",
+                        "actor_id": "character:SuLi",
+                        "prompt": "You now see the pendant more clearly.",
+                        "reason": "Direct follow-up after the dialogue transfer.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "player":
+                return {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "dialogue", "target": "character:SuLi", "content": "Please look at this."}],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            suli_count = len([key for key, _packet in calls if key == "character:SuLi"])
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{
+                    "type": "action",
+                    "target": "",
+                    "content": f"I respond to call {suli_count}.",
+                }],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(gm_outputs["outputs"][1]["actor_calls"][0]["call_id"], "call-character-SuLi-2")
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        suli_source_ids = [
+            event["source_call_id"]
+            for event in trace["events"]
+            if event["actor"] == "character:SuLi"
+        ]
+        self.assertEqual(suli_source_ids, ["call-character-SuLi-1", "call-character-SuLi-2"])
+
     def test_same_actor_can_be_called_multiple_times_from_direct_and_perception_continuation(self):
         calls = []
 
