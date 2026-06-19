@@ -16,6 +16,7 @@ SAFE_ID_PATTERNS = (
     re.compile(r"^call-player-[0-9]+$"),
     re.compile(r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$"),
     re.compile(r"^group-[a-z0-9]+(?:-[a-z0-9]+)*$"),
+    re.compile(r"^batch-[a-z0-9]+(?:-[a-z0-9]+)*$"),
 )
 HIDDEN_ID_TOKENS = (
     "hiddentruth",
@@ -106,6 +107,66 @@ def _parallel_groups(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
     return normalized
 
 
+def _safe_warning_code(value: Any) -> str:
+    text = str(value or "").strip()
+    if re.fullmatch(r"[a-z][a-z0-9_]*", text):
+        return text
+    return ""
+
+
+def _safe_warning_message(value: Any) -> str:
+    text = str(value or "")
+    compact = re.sub(r"[^a-z0-9]", "", text.lower())
+    if any(token in compact for token in HIDDEN_ID_TOKENS):
+        return "[redacted]"
+    return text[:500]
+
+
+def _actor_batches(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
+    batches = trace.get("actor_batches", [])
+    if not isinstance(batches, list):
+        return []
+    normalized = []
+    for item in batches:
+        if not isinstance(item, dict):
+            continue
+        batch_id = _safe_id(item.get("batch_id", ""))
+        if not batch_id:
+            continue
+        kind = str(item.get("kind") or "")
+        if kind not in {"serial", "parallel"}:
+            kind = "serial"
+        normalized.append({
+            "batch_id": batch_id,
+            "kind": kind,
+            "group_id": _safe_id(item.get("group_id", "")),
+            "actors": _safe_id_list(item.get("actors", [])),
+            "call_ids": _safe_id_list(item.get("call_ids", [])),
+        })
+    return normalized
+
+
+def _routing_warnings(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
+    warnings = trace.get("routing_warnings", [])
+    if not isinstance(warnings, list):
+        return []
+    normalized = []
+    for item in warnings:
+        if not isinstance(item, dict):
+            continue
+        code = _safe_warning_code(item.get("code", ""))
+        if not code:
+            continue
+        normalized.append({
+            "code": code,
+            "message": _safe_warning_message(item.get("message", "")),
+            "group_id": _safe_id(item.get("group_id", "")),
+            "actors": _safe_id_list(item.get("actors", [])),
+            "call_ids": _safe_id_list(item.get("call_ids", [])),
+        })
+    return normalized
+
+
 def init_trace(
     run_dir: str | Path,
     participants: Iterable[str] | None = None,
@@ -122,6 +183,8 @@ def init_trace(
         "chapter_target_words": int(chapter_target_words or 0),
         "events": [],
         "parallel_groups": [],
+        "actor_batches": [],
+        "routing_warnings": [],
         "decision_point": None,
         "stop_reason": "",
     }
@@ -142,6 +205,10 @@ def append_event(
     trace["schema_version"] = 2
     if not isinstance(trace.get("parallel_groups"), list):
         trace["parallel_groups"] = []
+    if not isinstance(trace.get("actor_batches"), list):
+        trace["actor_batches"] = []
+    if not isinstance(trace.get("routing_warnings"), list):
+        trace["routing_warnings"] = []
     events = trace.get("events")
     if not isinstance(events, list):
         events = []
@@ -183,6 +250,63 @@ def record_parallel_group(
     return _write(run_dir, trace)
 
 
+def record_actor_batch(
+    run_dir: str | Path,
+    batch_id: str,
+    kind: str,
+    actors: Iterable[str],
+    call_ids: Iterable[str],
+    group_id: str = "",
+) -> Dict[str, Any]:
+    trace = _read(run_dir) or init_trace(run_dir)
+    trace["schema_version"] = 2
+    batches = trace.get("actor_batches")
+    if not isinstance(batches, list):
+        batches = []
+        trace["actor_batches"] = batches
+    safe_batch_id = _safe_id(batch_id)
+    if safe_batch_id:
+        batch_kind = str(kind or "")
+        if batch_kind not in {"serial", "parallel"}:
+            batch_kind = "serial"
+        batches.append({
+            "batch_id": safe_batch_id,
+            "kind": batch_kind,
+            "group_id": _safe_id(group_id),
+            "actors": _safe_id_list(actors),
+            "call_ids": _safe_id_list(call_ids),
+        })
+    trace["updated_at"] = _now()
+    return _write(run_dir, trace)
+
+
+def record_routing_warning(
+    run_dir: str | Path,
+    code: str,
+    message: str,
+    group_id: str = "",
+    actors: Iterable[str] | None = None,
+    call_ids: Iterable[str] | None = None,
+) -> Dict[str, Any]:
+    trace = _read(run_dir) or init_trace(run_dir)
+    trace["schema_version"] = 2
+    warnings = trace.get("routing_warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+        trace["routing_warnings"] = warnings
+    safe_code = _safe_warning_code(code)
+    if safe_code:
+        warnings.append({
+            "code": safe_code,
+            "message": _safe_warning_message(message),
+            "group_id": _safe_id(group_id),
+            "actors": _safe_id_list(actors or []),
+            "call_ids": _safe_id_list(call_ids or []),
+        })
+    trace["updated_at"] = _now()
+    return _write(run_dir, trace)
+
+
 def mark_decision_point(
     run_dir: str | Path,
     reason: str,
@@ -192,6 +316,10 @@ def mark_decision_point(
     trace["schema_version"] = 2
     if not isinstance(trace.get("parallel_groups"), list):
         trace["parallel_groups"] = []
+    if not isinstance(trace.get("actor_batches"), list):
+        trace["actor_batches"] = []
+    if not isinstance(trace.get("routing_warnings"), list):
+        trace["routing_warnings"] = []
     trace["status"] = "decision_point"
     trace["decision_point"] = {
         "reason": str(reason),
@@ -216,6 +344,8 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "visible_events": [],
             "private_event_count": 0,
             "parallel_groups": [],
+            "actor_batches": [],
+            "routing_warnings": [],
             "decision_point": None,
             "stop_reason": "",
             "chapter_target_words": 0,
@@ -228,6 +358,8 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "visible_events": [],
             "private_event_count": 0,
             "parallel_groups": [],
+            "actor_batches": [],
+            "routing_warnings": [],
             "decision_point": None,
             "stop_reason": "",
             "chapter_target_words": 0,
@@ -272,6 +404,8 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
         "visible_events": visible,
         "private_event_count": private_count,
         "parallel_groups": _parallel_groups(trace),
+        "actor_batches": _actor_batches(trace),
+        "routing_warnings": _routing_warnings(trace),
         "decision_point": decision_point,
         "stop_reason": trace.get("public_stop_reason", ""),
         "chapter_target_words": trace.get("chapter_target_words", 0),
