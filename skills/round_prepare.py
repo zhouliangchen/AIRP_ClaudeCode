@@ -377,7 +377,10 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
             break
 
     packets = []
-    for name in major[: max(1, int(orchestration.get("max_parallel_subagents", 2) or 2))]:
+    # `max_parallel_subagents` is a runtime dispatch limit, not a registration cap.
+    # Every explicitly registered important character needs an isolated context so
+    # the GM can call that character when the scene creates a participation point.
+    for name in major:
         safe = _safe_name(name)
         profile_md = _read_character_file(card_folder, safe, "profile.md")
         recent_md = _read_character_file(card_folder, safe, "recent.md")
