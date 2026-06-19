@@ -283,7 +283,7 @@ def _normalize_subgm_actor_call(item: Any, path: str) -> Dict[str, Any]:
         raise ValidationError(f"{_path(path, 'actor_id')} must start with 'character:'")
     actor_id = _validate_actor_id_marker(raw_actor_id, _path(path, "actor_id"))
     normalized = {
-        "call_id": _require_str(data, "call_id", path),
+        "call_id": _require_nonempty_str(data, "call_id", path),
         "actor_id": actor_id,
         "prompt": _require_str(data, "prompt", path),
         "reason": _require_str(data, "reason", path),

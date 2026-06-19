@@ -299,6 +299,31 @@ class SubgmSchemasTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.schemas.ValidationError, expected):
                     self.schemas.validate_subgm_output(payload)
 
+    def test_subgm_output_rejects_blank_actor_call_id(self):
+        for call_id in ("", "   "):
+            with self.subTest(call_id=repr(call_id)):
+                payload = self.subgm_base(actor_calls=[{
+                    "call_id": call_id,
+                    "actor_id": "character:SuLi",
+                    "prompt": "Report your rooftop observation.",
+                    "reason": "SubGM can only call independent character actors.",
+                }])
+
+                with self.assertRaisesRegex(self.schemas.ValidationError, "call_id"):
+                    self.schemas.validate_subgm_output(payload)
+
+    def test_subgm_output_accepts_nonblank_actor_call_id(self):
+        payload = self.subgm_base(actor_calls=[{
+            "call_id": "call-character-SuLi-1",
+            "actor_id": "character:SuLi",
+            "prompt": "Report your rooftop observation.",
+            "reason": "SubGM can only call independent character actors.",
+        }])
+
+        normalized = self.schemas.validate_subgm_output(payload)
+
+        self.assertEqual(normalized["actor_calls"][0]["call_id"], "call-character-SuLi-1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,8 @@ Read from current `.agent_runs/<round>/`:
 - For dream/rewind/false-branch repairs, the first visible scene of the new turn must start from the player's latest time/place. Do not skip ahead to prior NPC hooks until the current action has been resolved and a new player decision point is reached.
 - Integrate important character dialogue in `<character_dialogues>` when it came from a character subagent.
 - Important-character dialogue must be source-backed by `actor.outputs.json` or validated `story.input.json` character dialogue metadata. Do not invent independent important-character dialogue boxes from GM hints, story convenience, or hidden notes.
+- Treat `story_input.side_threads` as off-screen material unless the main GM has merged/exposed it or a brief intercut clearly improves pacing. Side-thread material must not override raw player input, main-GM decision stops, or current-scene player authority.
+- Important-character dialogue from side threads must remain source-backed by validated side `actor.outputs.json`/trace provenance in `story.input.json`; do not turn subGM notes into independent dialogue boxes.
 - Before delivery, check that main prose and `<character_dialogues>` do not leak hidden facts, foreshadowing hints, user-instruction summaries, or GM-only rationale through visible narration, dialogue, perception, options, or summaries.
 - Improve 整体性: pacing, paragraph order, transitions, sensory grounding, voice differentiation, and emotional continuity.
 - Obey `delivery_requirements.required_person` exactly. If it is `第二人称`, the main prose must address the protagonist as `你`; do not narrate the protagonist as a third-person named character.
