@@ -65,6 +65,6 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
   - Do not use unsupported JSON Patch-style `{ "op": "...", "path": "...", "value": "..." }` objects here.
 - `<summary>`
 - `<options>`
-- `<tokens>` only if known; delivery may append token data.
+- Do not emit `<tokens>` in `story.output.json`; delivery/handler appends the real token block after approval.
 
 Do not run `round_deliver.py`; that belongs to delivery.

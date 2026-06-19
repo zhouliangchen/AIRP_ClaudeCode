@@ -1122,6 +1122,171 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("<character_dialogues>[]</character_dialogues>", content)
         self.assertLess(content.index("<character_dialogues>"), content.index("<summary>"))
 
+    def test_run_round_ignores_stale_critic_token_placeholder_failure_when_story_is_clean(self):
+        calls = []
+        story = {
+            "content": "<content>The repaired scene continues without placeholder tokens.</content><summary>Clean.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {"attempt": 1},
+            "tokens": {"in": "NNNN"},
+        }
+        stale_critic = {
+            "decision": "revise",
+            "hard_failures": ["story.output.json contains placeholder <tokens> values ('NNNN')"],
+            "soft_issues": ["Prose could use sharper sensory detail."],
+            "repair_instruction": "Remove fake token placeholders.",
+            "system_iteration_suggestion": "",
+        }
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = _gm_output()
+            elif agent_key == "player":
+                payload = _player_output()
+            elif agent_key == "story":
+                payload = dict(story)
+            else:
+                payload = dict(stale_critic)
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        delivery_attempts = []
+
+        def fake_delivery(command, **kwargs):
+            delivery_attempts.append(command)
+            critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+            if critic.get("decision") == "pass" and critic.get("hard_failures") == []:
+                return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"action": "retry", "reason": "critic_revise", "detail": critic}) + "\n",
+                stderr="",
+            )
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
+        self.assertEqual(len(delivery_attempts), 1)
+        normalized_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
+        normalized_critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertNotIn("<tokens>", normalized_story["content"].lower())
+        self.assertNotIn("NNNN", normalized_story["content"])
+        self.assertNotIn("tokens", normalized_story)
+        self.assertEqual(normalized_critic["decision"], "pass")
+        self.assertEqual(normalized_critic["hard_failures"], [])
+        self.assertEqual(normalized_critic["soft_issues"], ["Prose could use sharper sensory detail."])
+
+    def test_normalize_critic_report_keeps_token_failure_when_current_story_has_placeholder(self):
+        hard_failures = ["story.output.json contains placeholder <tokens> values ('NNNN')"]
+        critic = {
+            "decision": "revise",
+            "hard_failures": list(hard_failures),
+            "soft_issues": ["Style can improve."],
+            "repair_instruction": "Remove fake token placeholders.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Draft.</content><tokens>in: NNNN</tokens><summary>Draft.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertEqual(normalized["hard_failures"], hard_failures)
+        self.assertEqual(normalized["soft_issues"], ["Style can improve."])
+
+    def test_normalize_critic_report_keeps_non_token_failure_when_story_is_clean(self):
+        token_failure = "story.output.json contains placeholder <tokens> values ('NNNN')"
+        continuity_failure = "story skips the current player decision point"
+        critic = {
+            "decision": "revise",
+            "hard_failures": [token_failure, continuity_failure],
+            "soft_issues": [],
+            "repair_instruction": "Fix the hard failures.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertEqual(normalized["hard_failures"], [continuity_failure])
+
+    def test_normalize_critic_report_keeps_compound_token_and_non_token_failure_when_story_is_clean(self):
+        compound_failure = (
+            "story.output.json contains placeholder <tokens> values ('NNNN') "
+            "and skips the current player decision point"
+        )
+        critic = {
+            "decision": "revise",
+            "hard_failures": [compound_failure],
+            "soft_issues": [],
+            "repair_instruction": "Fix the hard failure.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertEqual(normalized["hard_failures"], [compound_failure])
+
+    def test_normalize_critic_report_keeps_token_failure_when_current_story_has_all_zero_tokens(self):
+        hard_failures = ["story.output.json contains all-zero <tokens> values"]
+        critic = {
+            "decision": "revise",
+            "hard_failures": list(hard_failures),
+            "soft_issues": [],
+            "repair_instruction": "Replace all-zero token values.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Draft.</content><tokens>in: 0\nout: 0\ntotal: 0</tokens><summary>Draft.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertEqual(normalized["hard_failures"], hard_failures)
+
+    def test_normalize_critic_report_removes_stale_token_failure_when_current_story_has_partial_zero_real_tokens(self):
+        critic = {
+            "decision": "revise",
+            "hard_failures": ["story.output.json contains placeholder <tokens> values ('NNNN')"],
+            "soft_issues": [],
+            "repair_instruction": "Remove fake token placeholders.",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Draft.</content><tokens>in: 0\nout: 900\ntotal: 900</tokens><summary>Draft.</summary><options>Wait</options>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story)
+
+        self.assertEqual(normalized["decision"], "pass")
+        self.assertEqual(normalized["hard_failures"], [])
+
     def test_normalize_story_output_removes_visible_polished_input_notes(self):
         story = {
             "content": (
@@ -1293,8 +1458,15 @@ class RpGenerateCliTest(unittest.TestCase):
         skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
 
         self.assertIn("Do not hard-fail", skill)
-        self.assertIn("missing <tokens>", skill)
-        self.assertIn("round_deliver.py appends", skill)
+        self.assertIn("missing `<tokens>`", skill)
+        self.assertIn("current `story_output.content` literally contains", skill)
+        self.assertIn("Do not report token failures from historical rejected drafts", skill)
+
+    def test_story_skill_forbids_story_agent_tokens(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+
+        self.assertIn("Do not emit `<tokens>`", skill)
+        self.assertIn("delivery/handler appends the real token block", skill)
 
     def test_run_delivery_forces_utf8_python_stdio(self):
         captured = {}

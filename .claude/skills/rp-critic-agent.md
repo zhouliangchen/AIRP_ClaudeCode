@@ -22,7 +22,7 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 - Important-character dialogue provenance: every independent important-character dialogue box is backed by a character subagent source in `actor.outputs.json` or validated `story.input.json`, not invented by story composition.
 - Hidden-fact leakage: visible prose, options, summaries, dialogue boxes, perception feedback, and repair edits must not expose GM-only facts, foreshadowing hints, user-instruction summaries, or disguised substitutes unless the fact was disclosed in-world.
 - Side-thread boundaries: hard-fail if the player character appears in a side thread, if a subGM-applied important-character promotion is treated as applied rather than a GM-reviewed request, if side-thread hidden facts leak into visible prose before in-world disclosure, or if the same character is used in two active parallel scenes without a main-GM pause/merge.
-- Token contract: Do not hard-fail missing <tokens> in `story.output.json`; `round_deliver.py appends` the real token block. Do hard-fail fake or all-zero `<tokens>` only if the story agent supplied them as final data.
+- Token contract: Do not hard-fail missing `<tokens>` in `story.output.json`; delivery/handler appends the real token block after approval. Hard-fail token placeholders only when the current `story_output.content` literally contains a `<tokens>` block and that same current block contains `NNNN`, all-zero, or fake token values. Do not report token failures from historical rejected drafts, repair context, prior critic notes, or speculation.
 - Speed and scope: image/UI jobs are deferred and do not block text delivery.
 
 ## Failure Handling

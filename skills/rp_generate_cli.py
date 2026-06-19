@@ -578,6 +578,115 @@ def _normalize_story_output(story: Dict[str, Any], story_input: Dict[str, Any] |
     return normalized
 
 
+_TOKEN_COUNT_KEYS = {
+    "in",
+    "input",
+    "input_tokens",
+    "prompt",
+    "prompt_tokens",
+    "out",
+    "output",
+    "output_tokens",
+    "completion",
+    "completion_tokens",
+    "total",
+    "total_tokens",
+}
+
+
+def _whole_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip()
+    if re.fullmatch(r"\d+", text):
+        return int(text)
+    return None
+
+
+def _token_count_numbers(value: Any) -> list[int]:
+    numbers: list[int] = []
+    if isinstance(value, dict):
+        for raw_key, raw_value in value.items():
+            key = str(raw_key).strip().lower().replace("-", "_")
+            if isinstance(raw_value, (dict, list)):
+                numbers.extend(_token_count_numbers(raw_value))
+                continue
+            if key in _TOKEN_COUNT_KEYS:
+                number = _whole_number(raw_value)
+                if number is not None:
+                    numbers.append(number)
+        return numbers
+    if isinstance(value, list):
+        for item in value:
+            numbers.extend(_token_count_numbers(item))
+        return numbers
+
+    text = str(value)
+    for match in re.finditer(
+        r"\b(?:in|input|input_tokens|prompt|prompt_tokens|out|output|output_tokens|completion|completion_tokens|total|total_tokens)\b\s*[:=]\s*(\d+)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        numbers.append(int(match.group(1)))
+    return numbers
+
+
+def _token_value_has_placeholder(value: Any) -> bool:
+    text = json.dumps(value, ensure_ascii=False).lower() if isinstance(value, (dict, list)) else str(value).lower()
+    if "nnnn" in text or "fake" in text or "placeholder" in text or re.search(r"\ball[-_ ]?zero\b", text):
+        return True
+    numbers = _token_count_numbers(value)
+    return bool(numbers) and all(number == 0 for number in numbers)
+
+
+def _story_has_token_placeholder(story: Dict[str, Any]) -> bool:
+    content = str(story.get("content") or "")
+    token_block = _extract_tag(content, "tokens")
+    if token_block is not None and _token_value_has_placeholder(token_block):
+        return True
+    for key in ("tokens", "token_usage", "metadata_tokens"):
+        if key in story and _token_value_has_placeholder(story.get(key)):
+            return True
+    return False
+
+
+def _is_token_only_placeholder_failure(item: Any) -> bool:
+    if not isinstance(item, str):
+        return False
+    text = item.strip().lower()
+    if re.search(r"\b(?:and|also)\b", text) or any(marker in text for marker in ("并", "且", ",", "，", ";", "；")):
+        return False
+    token_target = r"(?:<tokens>|tokens?|token(?:\s+(?:block|data|values))?)"
+    return bool(
+        re.fullmatch(
+            rf"(?:story\.output\.json\s+)?(?:contains|has|includes)\s+(?:a\s+)?"
+            rf"(?:placeholder|fake|all[-_ ]?zero)\s+{token_target}(?:\s+values)?"
+            rf"(?:\s*\('nnnn'\))?\.?",
+            text,
+        )
+    )
+
+
+def _normalize_critic_report_for_story(critic: Dict[str, Any], story: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(critic)
+    hard_failures = normalized.get("hard_failures")
+    if not isinstance(hard_failures, list) or _story_has_token_placeholder(story):
+        return normalized
+
+    cleaned = [item for item in hard_failures if not _is_token_only_placeholder_failure(item)]
+    if len(cleaned) == len(hard_failures):
+        return normalized
+
+    normalized["hard_failures"] = cleaned
+    if not cleaned:
+        normalized["decision"] = "pass"
+    return normalized
+
+
 def _story_main_text(story: Dict[str, Any]) -> str:
     raw = str(story.get("content") or "")
     main = _extract_tag(raw, "content") or raw
@@ -835,6 +944,8 @@ def run_round(
             run_claude,
             {"story_input": story_input, "story_output": next_story, "delivery_requirements": requirements},
         )
+        next_critic = _normalize_critic_report_for_story(next_critic, next_story)
+        agent_run.write_json(critic_path, next_critic)
         return next_story, next_critic
 
     story, critic = dispatch_story_and_critic()
