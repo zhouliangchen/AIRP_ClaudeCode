@@ -44,6 +44,15 @@ def start_command(
     }
 
 
+def visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test subGM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 def subgm_output(thread_id="side_suli_rooftop", **overrides):
     payload = {
         "agent": "subGM",
@@ -61,6 +70,10 @@ def subgm_output(thread_id="side_suli_rooftop", **overrides):
         "next_resume_point": "resume at the rooftop vent",
     }
     payload.update(overrides)
+    for call in payload.get("actor_calls", []):
+        if isinstance(call, dict) and "visibility_basis" not in call:
+            actor_id = str(call.get("actor_id") or "").strip()
+            call["visibility_basis"] = visibility_basis(actor_id or "character:SuLi")
     return payload
 
 
@@ -242,12 +255,16 @@ class SubgmTurnLoopTest(unittest.TestCase):
             if agent_key == "subGM:side_suli_rooftop":
                 return subgm_output(
                     scene_beats=[
-                        {"content": "SuLi sees chalk dust. The rooftop sigil is a trap."}
+                        {
+                            "content": "SuLi sees chalk dust. The rooftop sigil is a trap.",
+                            "visibility_basis": visibility_basis("character:SuLi"),
+                        }
                     ],
                     events=[
                         {
                             "type": "scene",
                             "content": "The rooftop sigil is a trap, but the vent rattles.",
+                            "visibility_basis": visibility_basis("character:SuLi"),
                         }
                     ],
                     actor_calls=[
@@ -266,9 +283,13 @@ class SubgmTurnLoopTest(unittest.TestCase):
 
         self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
 
+        trace = read_json(self.run_dir / "side_threads" / "side_suli_rooftop" / "interaction.trace.json")
+        visible_trace_text = json.dumps(trace["events"], ensure_ascii=False)
+        self.assertIn("chalk dust", visible_trace_text)
+        self.assertIn("vent rattles", visible_trace_text)
+        self.assertNotIn("rooftop sigil is a trap", visible_trace_text.lower())
+
         actor_packet_text = json.dumps(actor_packets[0], ensure_ascii=False)
-        self.assertIn("chalk dust", actor_packet_text)
-        self.assertIn("vent rattles", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text.lower())
 
     def test_subgm_marker_text_does_not_become_world_visible_trace(self):

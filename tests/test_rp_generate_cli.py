@@ -26,6 +26,15 @@ def _write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test GM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 def _agent_stream(text):
     return "\n".join(
         [
@@ -68,6 +77,7 @@ def _gm_output(
                 "prompt": "Respond to the current player action.",
                 "reason": "The player is the only required actor for this turn.",
                 "metadata": {},
+                "visibility_basis": _visibility_basis("player"),
             }
         ]
     return {
@@ -1067,6 +1077,7 @@ class RpGenerateCliTest(unittest.TestCase):
                     "prompt": "Ada sees the player enter.",
                     "reason": "Ada is present.",
                     "metadata": {},
+                    "visibility_basis": _visibility_basis("character:Ada"),
                 }
             ],
         )

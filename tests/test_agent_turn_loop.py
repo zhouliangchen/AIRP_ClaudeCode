@@ -24,6 +24,35 @@ def json_copy(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+def visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test GM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
+def add_visibility_basis(output):
+    if not isinstance(output, dict):
+        return output
+    for call in output.get("actor_calls", []):
+        if isinstance(call, dict) and "visibility_basis" not in call:
+            actor_id = str(call.get("actor_id") or "").strip()
+            call["visibility_basis"] = visibility_basis(actor_id or "player")
+    return output
+
+
+def wrap_dispatch_with_visibility(dispatch):
+    def wrapped(agent_key, packet):
+        output = dispatch(agent_key, packet)
+        if agent_key == "gm" or str(agent_key).startswith("subGM:"):
+            add_visibility_basis(output)
+        return output
+
+    return wrapped
+
+
 class AgentTurnLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -31,6 +60,12 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.run_dir.mkdir()
         self.agent_run = load_module("agent_run")
         self.agent_turn_loop = load_module("agent_turn_loop")
+        run_interactive_loop = self.agent_turn_loop.run_interactive_loop
+
+        def run_with_visibility(run_dir, dispatch, *args, **kwargs):
+            return run_interactive_loop(run_dir, wrap_dispatch_with_visibility(dispatch), *args, **kwargs)
+
+        self.agent_turn_loop.run_interactive_loop = run_with_visibility
         self.agent_run.write_json(self.run_dir / "input.json", {
             "routed_input": {
                 "role_channel": "I ask SuLi about the pendant.",

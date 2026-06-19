@@ -12,6 +12,7 @@ from typing import Any, Dict
 import agent_run
 import agent_interactions
 import agent_schemas
+import agent_visibility
 import agent_visibility_guard
 import self_repair
 
@@ -80,21 +81,23 @@ def _validate_gm_output_visibility(
     input_payload: Dict[str, Any],
 ) -> None:
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
+    scene_event_fields = ("content", "metadata", *agent_visibility.VISIBILITY_FIELDS)
+    actor_call_fields = ("prompt", "reason", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     for gm_index, gm_output in enumerate(gm_outputs):
         output_context = f"{gm_path}.outputs[{gm_index}]"
         for beat_index, beat in enumerate(gm_output.get("scene_beats", [])):
             context = f"{output_context}.scene_beats[{beat_index}]"
-            for field in ("content", "metadata"):
+            for field in scene_event_fields:
                 if field in beat:
                     _reject_actor_facing_gm_value(beat[field], f"{context}.{field}", hidden_phrases)
         for event_index, event in enumerate(gm_output.get("events", [])):
             context = f"{output_context}.events[{event_index}]"
-            for field in ("content", "metadata"):
+            for field in scene_event_fields:
                 if field in event:
                     _reject_actor_facing_gm_value(event[field], f"{context}.{field}", hidden_phrases)
         for call_index, call in enumerate(gm_output.get("actor_calls", [])):
             context = f"{output_context}.actor_calls[{call_index}]"
-            for field in ("prompt", "reason", "metadata"):
+            for field in actor_call_fields:
                 if field in call:
                     _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
 

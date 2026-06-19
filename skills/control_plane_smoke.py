@@ -198,6 +198,12 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
                     "what Ada can safely perceive."
                 ),
                 "reason": "GM must test that the hidden pendant truth is redacted.",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "character:Ada is directly addressed by this test GM prompt.",
+                    "target_actor": "character:Ada",
+                    "visible_to": ["character:Ada"],
+                },
             }
         ],
         "parallel_groups": [],

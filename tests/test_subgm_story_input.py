@@ -23,6 +23,15 @@ def _write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test subGM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 class SubgmStoryInputTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -115,6 +124,7 @@ class SubgmStoryInputTest(unittest.TestCase):
                         "actor_id": "character:Ada",
                         "prompt": "React to the rooftop signal.",
                         "reason": "Ada is alone on the roof.",
+                        "visibility_basis": _visibility_basis("character:Ada"),
                     }
                 ],
                 "messages_to_gm": [{"content": "Ada can report the signal."}],
@@ -273,6 +283,7 @@ class SubgmStoryInputTest(unittest.TestCase):
                         "actor_id": "character:Bob",
                         "prompt": "React despite not being allowed.",
                         "reason": "Regression fixture.",
+                        "visibility_basis": _visibility_basis("character:Bob"),
                     }
                 ],
                 "messages_to_gm": [],

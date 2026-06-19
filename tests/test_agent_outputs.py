@@ -31,6 +31,15 @@ def _read_jsonl(path):
     ]
 
 
+def _visibility_basis(actor_id="player"):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test GM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 class AgentOutputsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -629,6 +638,7 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the player opening the archive door.",
                                 "reason": "Ada is present in the scene.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             }
                         ],
                         "parallel_groups": [],
@@ -928,12 +938,14 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the door opening.",
                                 "reason": "Ada is present.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             },
                             {
                                 "call_id": "call-ada-2",
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the second question.",
                                 "reason": "The player keeps speaking to Ada.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             },
                         ],
                         "parallel_groups": [],
@@ -968,6 +980,7 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "Answer the player.",
                                 "reason": "Ada is present.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             }
                         ],
                         "parallel_groups": [],
@@ -1053,6 +1066,7 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "player",
                                 "prompt": "You notice that the pendant burns identity.",
                                 "reason": "The player can feel the pendant.",
+                                "visibility_basis": _visibility_basis("player"),
                             }
                         ],
                         "parallel_groups": [],
@@ -1332,6 +1346,7 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "Answer the player once.",
                                 "reason": "Ada is present.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             }
                         ],
                         "parallel_groups": [],
@@ -1415,6 +1430,7 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "React to the player opening the archive door.",
                                 "reason": "Ada is present in the scene.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             }
                         ],
                         "parallel_groups": [],
@@ -1446,12 +1462,14 @@ class AgentOutputsTest(unittest.TestCase):
                                 "actor_id": "character:Ada",
                                 "prompt": "React first.",
                                 "reason": "Ada is nearby.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             },
                             {
                                 "call_id": "call-character-Ada-2",
                                 "actor_id": "character:Ada",
                                 "prompt": "React again.",
                                 "reason": "The exchange continues.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
                             },
                         ],
                         "parallel_groups": [],

@@ -16,6 +16,15 @@ def load_module(name):
     return module
 
 
+def visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test subGM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 class SubgmSchemasTest(unittest.TestCase):
     def setUp(self):
         self.schemas = load_module("agent_schemas")
@@ -53,6 +62,10 @@ class SubgmSchemasTest(unittest.TestCase):
             "next_resume_point": "",
         }
         payload.update(overrides)
+        for call in payload.get("actor_calls", []):
+            if isinstance(call, dict) and "visibility_basis" not in call:
+                actor_id = str(call.get("actor_id") or "").strip()
+                call["visibility_basis"] = visibility_basis(actor_id or "character:SuLi")
         return payload
 
     def test_gm_output_defaults_subgm_commands_to_empty_list(self):

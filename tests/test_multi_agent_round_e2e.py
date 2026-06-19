@@ -28,6 +28,15 @@ def _actor_call_id(actor_id):
     return f"call-{actor_id.replace(':', '-')}-1"
 
 
+def _visibility_basis(actor_id):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is directly addressed by this test GM prompt.",
+        "target_actor": actor_id,
+        "visible_to": [actor_id],
+    }
+
+
 def _structured_memory_summary_payload(agent_id, *, character_name="", key_memory="", active_goal=""):
     if agent_id == "player":
         self_understanding = "I remember opening the archive door and hearing machinery."
@@ -104,6 +113,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
                     "actor_id": actor_id,
                     "prompt": f"Respond from {actor_id}'s visible perspective.",
                     "reason": "The actor is directly present at the archive threshold.",
+                    "visibility_basis": _visibility_basis(actor_id),
                 }
                 for actor_id in actor_ids
             ],

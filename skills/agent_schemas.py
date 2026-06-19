@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+import agent_visibility
 import character_promotions
 
 
@@ -242,6 +243,7 @@ def _normalize_gm_scene_beat(item: Any, path: str) -> Dict[str, Any]:
     normalized = {"content": _require_str(data, "content", path)}
     if "metadata" in data:
         normalized["metadata"] = _optional_dict(data, "metadata", path)
+    normalized.update(_normalize_visibility_fields(data, path, require_basis=False))
     return normalized
 
 
@@ -257,6 +259,7 @@ def _normalize_gm_event(item: Any, path: str) -> Dict[str, Any]:
         normalized["source_call_id"] = _optional_str(data, "source_call_id", "", path)
     if "metadata" in data:
         normalized["metadata"] = _optional_dict(data, "metadata", path)
+    normalized.update(_normalize_visibility_fields(data, path, require_basis=False))
     return normalized
 
 
@@ -271,6 +274,7 @@ def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     }
     if "metadata" in data:
         normalized["metadata"] = _optional_dict(data, "metadata", path)
+    normalized.update(_normalize_visibility_fields(data, path, require_basis=True))
     return normalized
 
 
@@ -290,6 +294,7 @@ def _normalize_subgm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     }
     if "metadata" in data:
         normalized["metadata"] = _optional_dict(data, "metadata", path)
+    normalized.update(_normalize_visibility_fields(data, path, require_basis=True))
     return normalized
 
 
@@ -324,6 +329,35 @@ def _normalize_nonempty_str_item(item: Any, path: str) -> str:
     if not value:
         raise ValidationError(f"{path} must not be blank")
     return value
+
+
+def _normalize_visibility_fields(data: Dict[str, Any], path: str, *, require_basis: bool = False) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for field in ("scene_id", "location", "time_window", "source_actor", "target_actor"):
+        if field in data:
+            value = data[field]
+            if not isinstance(value, str):
+                value = str(value)
+            normalized[field] = value
+    for field in ("visible_to", "sensory_channels"):
+        if field in data:
+            normalized[field] = _normalize_list_items(
+                _optional_list(data, field, path),
+                _path(path, field),
+                _normalize_nonempty_str_item,
+            )
+    if "visibility_basis" in data:
+        basis = agent_visibility.normalize_visibility_basis(
+            data["visibility_basis"],
+            require_summary=require_basis,
+        )
+        if require_basis and not basis:
+            raise ValidationError(f"{_path(path, 'visibility_basis')} must be a visibility proof object")
+        normalized["visibility_basis"] = basis
+    elif require_basis:
+        raise ValidationError(f"{_path(path, 'visibility_basis')} is required")
+    _reject_forbidden_keys(normalized, path)
+    return normalized
 
 
 def _normalize_character_promotion(item: Any, path: str) -> Dict[str, Any]:
