@@ -496,7 +496,6 @@ def _preserve_remaining_parallel_groups(
         if isinstance(warning, dict)
     }
     remaining_call_ids = {str(call.get("call_id") or "") for call in remaining_calls}
-    remaining_actor_ids = {str(call.get("actor_id") or "") for call in remaining_calls}
     preserved: list[Any] = []
 
     for index, group in enumerate(_list(groups), start=1):
@@ -511,13 +510,23 @@ def _preserve_remaining_parallel_groups(
         if len(set(call_ids)) >= 2:
             preserved.append({"group_id": group_id, "call_ids": call_ids})
             continue
-        actors = [
-            actor_id
-            for actor_id in _pending_group_actor_ids(group)
-            if actor_id in remaining_actor_ids
-        ]
-        if len(set(actors)) >= 2:
-            preserved.append({"group_id": group_id, "actors": actors})
+        actors = _pending_group_actor_ids(group)
+        if len(set(actors)) != len(actors):
+            continue
+        actor_call_ids = []
+        for actor_id in actors:
+            matches = [
+                str(call.get("call_id") or "")
+                for call in remaining_calls
+                if str(call.get("actor_id") or "") == actor_id
+            ]
+            matches = [call_id for call_id in matches if call_id]
+            if len(matches) != 1:
+                actor_call_ids = []
+                break
+            actor_call_ids.append(matches[0])
+        if len(set(actor_call_ids)) >= 2:
+            preserved.append({"group_id": group_id, "call_ids": actor_call_ids})
     return preserved
 
 

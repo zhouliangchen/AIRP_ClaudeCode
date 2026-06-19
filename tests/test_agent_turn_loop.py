@@ -445,6 +445,86 @@ class AgentTurnLoopTest(unittest.TestCase):
             ],
         )
 
+    def test_transfer_to_later_group_member_preserves_original_parallel_call_ids(self):
+        self.register_characters("Ada", "Bea", "Cora")
+        bea_cora_barrier = threading.Barrier(2)
+        bea_dispatch_count = 0
+
+        def dispatch(agent_key, packet):
+            nonlocal bea_dispatch_count
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks to Bea before Bea and Cora react together."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Bea to check the signal.",
+                            "reason": "Ada creates an immediate transfer to a later group member.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You and Cora react to the room together.",
+                            "reason": "Original Bea call remains safe with Cora.",
+                        },
+                        {
+                            "call_id": "call-character-Cora-1",
+                            "actor_id": "character:Cora",
+                            "prompt": "You and Bea react to the room together.",
+                            "reason": "Original Cora call remains safe with Bea.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-later",
+                        "actors": ["character:Bea", "character:Cora"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Bea", "content": "Bea, check the signal."}]
+            elif agent_key == "character:Bea":
+                bea_dispatch_count += 1
+                if bea_dispatch_count == 1:
+                    events = [{"type": "action", "target": "", "content": "character:Bea checks the signal."}]
+                else:
+                    bea_cora_barrier.wait(timeout=2)
+                    events = [{"type": "action", "target": "", "content": "character:Bea reacts with Cora."}]
+            else:
+                self.assertEqual(agent_key, "character:Cora")
+                bea_cora_barrier.wait(timeout=2)
+                events = [{"type": "action", "target": "", "content": "character:Cora reacts with Bea."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(
+            result["called_actors"],
+            ["character:Ada", "character:Bea", "character:Bea", "character:Cora"],
+        )
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        later_parallel_batches = [
+            batch
+            for batch in trace["actor_batches"]
+            if batch["kind"] == "parallel" and batch["group_id"] == "group-later"
+        ]
+        self.assertEqual(len(later_parallel_batches), 1)
+        self.assertEqual(later_parallel_batches[0]["actors"], ["character:Bea", "character:Cora"])
+        self.assertEqual(
+            later_parallel_batches[0]["call_ids"],
+            ["call-character-Bea-1", "call-character-Cora-1"],
+        )
+
     def test_loop_routes_dialogue_to_target_character_and_stops_at_decision(self):
         calls = []
 
