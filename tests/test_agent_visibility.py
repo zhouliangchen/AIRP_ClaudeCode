@@ -96,6 +96,32 @@ class AgentVisibilityTest(unittest.TestCase):
             self.visibility.event_visible_to_actor(event, "character:Eve", {"location": "courtyard"})
         )
 
+    def test_public_mode_without_explicit_recipient_or_marker_fails_closed(self):
+        event = {
+            "type": "announcement",
+            "content": "A bell rings somewhere off-screen.",
+            "visibility_basis": basis("public"),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(event, "character:Eve", {"location": "courtyard"})
+        )
+
+    def test_actor_call_public_basis_can_reach_actor_other_than_call_actor_id(self):
+        actor_call = {
+            "actor_id": "character:Ada",
+            "prompt": "A bell rings across the school.",
+            "visibility_basis": basis("public", visible_to=["all"]),
+        }
+
+        self.assertTrue(
+            self.visibility.actor_call_visible_to_actor(
+                actor_call,
+                "character:Eve",
+                {"location": "courtyard"},
+            )
+        )
+
     def test_private_dialogue_reaches_speaker_target_and_explicit_witness_only(self):
         event = {
             "type": "dialogue",

@@ -284,8 +284,6 @@ def _event_sensory_channels(event: dict[str, Any], basis: dict[str, Any]) -> set
 
 def _public_visible(event: dict[str, Any], actor_id: str, basis: dict[str, Any]) -> bool:
     visible_to = _visible_to_values(event, basis)
-    if not visible_to:
-        return True
     return _contains_public_marker(visible_to) or _contains_actor(visible_to, actor_id)
 
 
@@ -443,9 +441,6 @@ def actor_call_visible_to_actor(actor_call: Any, actor_id: str, actor_state: Any
     """Return whether an actor call's basis proves visibility to this actor."""
     call = _as_dict(actor_call)
     if not call:
-        return False
-    call_actor_id = call.get("actor_id")
-    if call_actor_id is not None and not _source_bucket_grants_visibility(call_actor_id, actor_id):
         return False
 
     basis = actor_call_basis(call)
