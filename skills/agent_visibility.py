@@ -32,15 +32,18 @@ DEFAULT_ACTOR_SENSORY_CHANNELS = {"visual", "auditory", "tactile", "olfactory", 
 
 HIDDEN_MARKERS = {
     "gm_only",
+    "gm_only_text",
     "world_truth",
     "hidden_fact",
     "hidden_facts",
     "hidden_note",
+    "hidden_text",
     "hidden_truth",
     "user_instruction_channel",
     "omniscient",
     "out_of_character",
     "private_memory",
+    "private_notes",
     "internal_state",
     "internal_thoughts",
 }

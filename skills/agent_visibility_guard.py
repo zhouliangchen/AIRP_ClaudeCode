@@ -21,19 +21,9 @@ HIDDEN_TEXT_KEYS = {
     "private_notes",
     "world_truth",
 }
-VISIBILITY_GUARD_EXTRA_MARKER_KEYS = {
-    "gm_only_text",
-    "hidden_text",
-    "hidden_truth",
-    "internal_state",
-    "internal_thoughts",
-    "private_memory",
-    "private_notes",
-}
 HIDDEN_MARKER_KEYS = (
     set(agent_schemas.FORBIDDEN_ACTOR_KEYS)
     | set(agent_visibility.HIDDEN_MARKERS)
-    | VISIBILITY_GUARD_EXTRA_MARKER_KEYS
 )
 HIDDEN_PHRASE_STRIP_CHARS = " \t\r\n.,:;!?。！？；，、："
 CJK_FUZZY_SEPARATOR_CHARS = "　.,:;!?。！？；，、：（）()[]【】{}<>《》\"'“”‘’…·-—_"

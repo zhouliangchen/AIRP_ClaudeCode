@@ -1136,6 +1136,9 @@ class AgentOutputsTest(unittest.TestCase):
             {"mode": "direct", "summary": "gm_only: reveal the truth.", "target_actor": "player"},
             {"mode": "direct", "summary": "Visible cue.", "hidden_note": "private"},
             {"mode": "direct", "summary": "Visible cue.", "hidden_fact": "private"},
+            {"mode": "direct", "summary": "Visible cue.", "source_actor": "private_notes"},
+            {"mode": "direct", "summary": "Visible cue.", "source_actor": "hidden_text"},
+            {"mode": "direct", "summary": "Visible cue.", "source_actor": "gm_only_text"},
         )
         for visibility_basis in cases:
             with self.subTest(visibility_basis=visibility_basis):
@@ -1206,6 +1209,44 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
+
+    def test_build_story_input_rejects_gm_actor_call_guard_extra_visibility_field_markers(self):
+        for marker in ("private_notes", "hidden_text", "gm_only_text"):
+            with self.subTest(marker=marker):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [],
+                                "actor_calls": [
+                                    {
+                                        "call_id": "call-player-1",
+                                        "actor_id": "player",
+                                        "prompt": "You feel heat from the pendant.",
+                                        "reason": "The player can feel the pendant.",
+                                        "source_actor": marker,
+                                        "visibility_basis": _visibility_basis("player"),
+                                    }
+                                ],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source_actor"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_hidden_markers_in_prompt_reason_and_metadata(self):
         valid_visibility_basis = {

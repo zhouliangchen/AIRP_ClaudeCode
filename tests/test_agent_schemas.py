@@ -220,6 +220,35 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
             self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_guard_extra_actor_call_visibility_basis_markers(self):
+        for marker in ("private_notes", "hidden_text", "gm_only_text"):
+            with self.subTest(marker=marker):
+                payload = {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-1",
+                            "actor_id": "player",
+                            "prompt": "You look up.",
+                            "reason": "The player is present.",
+                            "visibility_basis": {
+                                "mode": "direct",
+                                "summary": "The player can perceive the cue.",
+                                "source_actor": marker,
+                            },
+                        }
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+                    self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_rejects_hidden_fact_actor_call_visibility_field(self):
         payload = {
             "agent": "gm",
@@ -243,6 +272,32 @@ class AgentSchemaTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_to"):
             self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_guard_extra_actor_call_visibility_field_markers(self):
+        for marker in ("private_notes", "hidden_text", "gm_only_text"):
+            with self.subTest(marker=marker):
+                payload = {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-1",
+                            "actor_id": "player",
+                            "prompt": "You look up.",
+                            "reason": "The player is present.",
+                            "source_actor": marker,
+                            "visibility_basis": visibility_basis("player"),
+                        }
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "source_actor"):
+                    self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_rejects_hidden_fact_optional_scene_visibility_basis(self):
         payload = {
