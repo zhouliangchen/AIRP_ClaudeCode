@@ -19,9 +19,13 @@ Route actor calls serially when one actor's visible action, dialogue, or percept
 
 Use `source_call_id` in traces and downstream records when a response depends on a previous call.
 
-## Metadata-Only Parallel Groups
+## Executable Parallel Groups
 
-`parallel_groups` is metadata only. It may declare that several calls can be dispatched together because they do not depend on each other's outputs, but it must not smuggle extra prompts, hidden facts, or scheduling instructions outside `actor_calls`.
+`parallel_groups` declares which existing `actor_calls` are safe to dispatch together. The runtime scheduler may execute safe groups concurrently when every call is independent, targets a different actor, has no `source_call_id` dependency, and does not conflict with active subGM reservations.
+
+The runtime may split a large safe group by `max_parallel_subagents`, and it will downgrade unsafe groups to serial routing with traceable routing warnings. Do not rely on a parallel group for correctness; every actor call must still contain its own second-person visible prompt, reason, and target actor.
+
+Use `call_ids` when a group needs exact call identity. Use `actors` or `actor_ids` only when each listed actor appears exactly once in the current `actor_calls`.
 
 ## Dialogue Transfer
 

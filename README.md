@@ -79,7 +79,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 `round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。该目录包含 `input.json`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。运行中还会按需写入 `gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
-每轮会为已注册的重要角色生成隔离上下文；`max_parallel_subagents` 只限制运行时同一批次最多并行调度多少角色，不限制已注册重要角色的上下文数量。Claude Code 工作流会在场景强相关时最多并行调用配置允许数量的核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
+每轮会为已注册的重要角色生成隔离上下文；`max_parallel_subagents` 只限制运行时同一安全批次最多并行调度多少角色，不限制已注册重要角色的上下文数量。GM 输出的 `parallel_groups` 会被控制面校验；互不依赖、不同角色且无 subGM 占用冲突的 actor calls 可并行执行，不安全的并行声明会降级为串行并写入路由警告。Claude Code 工作流会在场景强相关时最多并行调用配置允许数量的核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 
 GM 输出进入 actor/story-facing 字段前会先执行可见性清理。来自 `user_instruction_channel`、隐藏设定和 GM-only 历史的隐藏短语不得保留在 `scene_beats`、`events`、`actor_calls.prompt/reason/metadata`、`character_promotions.reason/profile_seed` 中；确定性 control-plane smoke 会构造一次原始 GM actor call 泄漏，并验证落盘后的 loop output 与 actor packet 只保留清理后的内容。
 
