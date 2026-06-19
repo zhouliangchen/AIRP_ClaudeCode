@@ -151,15 +151,14 @@ FORBIDDEN_ACTOR_KEY_TOKENS = {
 
 def _forbidden_actor_marker(text: str) -> str:
     tokens = _canonical_tokens(text)
-    if not tokens:
-        return ""
-    for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
-        if not marker_tokens or len(marker_tokens) > len(tokens):
-            continue
-        for index in range(0, len(tokens) - len(marker_tokens) + 1):
-            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
-                return marker
-    return ""
+    if tokens:
+        for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
+            if not marker_tokens or len(marker_tokens) > len(tokens):
+                continue
+            for index in range(0, len(tokens) - len(marker_tokens) + 1):
+                if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                    return marker
+    return agent_visibility.hidden_marker_name(text, FORBIDDEN_ACTOR_MARKERS)
 
 
 def _validate_actor_id_marker(actor_id: str, path: str) -> str:

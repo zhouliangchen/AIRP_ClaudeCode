@@ -20,6 +20,7 @@ import self_repair
 MAX_CRITIC_RETRIES = 2
 ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
+FORBIDDEN_ACTOR_MARKERS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
 
 
 class AgentOutputError(RuntimeError):
@@ -35,21 +36,20 @@ def _canonical_tokens(text: str) -> list[str]:
 
 FORBIDDEN_ACTOR_KEY_TOKENS = {
     marker: tuple(_canonical_tokens(marker))
-    for marker in sorted(set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS))
+    for marker in sorted(FORBIDDEN_ACTOR_MARKERS)
 }
 
 
 def _forbidden_actor_marker(text: str) -> str:
     tokens = _canonical_tokens(text)
-    if not tokens:
-        return ""
-    for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
-        if not marker_tokens or len(marker_tokens) > len(tokens):
-            continue
-        for index in range(0, len(tokens) - len(marker_tokens) + 1):
-            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
-                return marker
-    return ""
+    if tokens:
+        for marker, marker_tokens in FORBIDDEN_ACTOR_KEY_TOKENS.items():
+            if not marker_tokens or len(marker_tokens) > len(tokens):
+                continue
+            for index in range(0, len(tokens) - len(marker_tokens) + 1):
+                if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
+                    return marker
+    return agent_visibility.hidden_marker_name(text, FORBIDDEN_ACTOR_MARKERS)
 
 
 def _reject_actor_facing_gm_value(value: Any, path: str, hidden_phrases: list[str]) -> None:

@@ -90,12 +90,6 @@ def _canonical_tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", camel_separated.lower())
 
 
-HIDDEN_MARKER_TOKENS = {
-    marker: tuple(_canonical_tokens(marker))
-    for marker in HIDDEN_MARKER_KEYS
-}
-
-
 def _has_non_ascii_text(value: str) -> bool:
     return any(ord(char) > 127 and not char.isspace() for char in value)
 
@@ -266,16 +260,7 @@ def redact_text(text: str, phrases: Iterable[str]) -> str:
 
 
 def _contains_hidden_marker(value: Any) -> bool:
-    tokens = _canonical_tokens(str(value or ""))
-    if not tokens:
-        return False
-    for marker_tokens in HIDDEN_MARKER_TOKENS.values():
-        if not marker_tokens or len(marker_tokens) > len(tokens):
-            continue
-        for index in range(0, len(tokens) - len(marker_tokens) + 1):
-            if tuple(tokens[index:index + len(marker_tokens)]) == marker_tokens:
-                return True
-    return False
+    return bool(agent_visibility.hidden_marker_name(value, HIDDEN_MARKER_KEYS))
 
 
 def _redact_value(value: Any, phrases: Iterable[str], *, redact_markers: bool = False) -> Any:

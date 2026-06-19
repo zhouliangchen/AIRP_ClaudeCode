@@ -908,6 +908,56 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertNotIn("teacher is an illusion", persisted)
         self.assertIn("[redacted]", persisted)
 
+    def test_actor_packet_redacts_compact_hidden_marker_prompt(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I ask about the pendant.",
+                "user_instruction_channel": "",
+            },
+            "character_contexts": {"characters": [{"name": "SuLi"}]},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "gmonlyroom",
+                        "reason": "worldtruthactor",
+                        "metadata": {"note": "hiddenfactwitness"},
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "The player is directly addressed.",
+                            "target_actor": "player",
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "word_target",
+                }
+            self.assertEqual(agent_key, "player")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "action", "target": "", "content": "I wait."}],
+                "stop_reason": "continue",
+            }
+
+        self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        serialized_packets = json.dumps(actor_packets, ensure_ascii=False).lower()
+        self.assertNotIn("gmonlyroom", serialized_packets)
+        self.assertNotIn("worldtruthactor", serialized_packets)
+        self.assertNotIn("hiddenfactwitness", serialized_packets)
+        self.assertIn("[redacted]", serialized_packets)
+
     def test_gm_metadata_marker_keys_are_dropped_before_persisted_loop_output(self):
         actor_packets = []
 

@@ -33,6 +33,7 @@ DEFAULT_ACTOR_SENSORY_CHANNELS = {"visual", "auditory", "tactile", "olfactory", 
 HIDDEN_MARKERS = {
     "gm_only",
     "gm_only_text",
+    "gm_notes",
     "world_truth",
     "hidden_fact",
     "hidden_facts",
@@ -86,6 +87,20 @@ def _compact_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
 
+def _marker_tokens(value: Any) -> list[str]:
+    raw = str(value or "")
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+def _alnum_compact_tokens(value: Any) -> list[str]:
+    return [
+        _compact_marker(chunk)
+        for chunk in re.findall(r"[A-Za-z0-9]+", str(value or ""))
+    ]
+
+
 def _actor_identity_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
@@ -98,21 +113,48 @@ def _sensory_identity_key(value: Any) -> str:
     return _actor_identity_key(value)
 
 
-HIDDEN_MARKER_CANONICALS = {_canonical_marker(marker) for marker in HIDDEN_MARKERS}
-HIDDEN_MARKER_COMPACTS = {_compact_marker(marker) for marker in HIDDEN_MARKERS}
 PUBLIC_MARKER_CANONICALS = {_canonical_marker(marker) for marker in PUBLIC_MARKERS}
 SOURCE_BUCKET_PUBLIC_MARKER_CANONICALS = {
     _canonical_marker(marker) for marker in SOURCE_BUCKET_PUBLIC_MARKERS
 }
 
 
-def _contains_hidden_marker_text(value: Any) -> bool:
-    canonical = _canonical_marker(value)
-    compact = _compact_marker(value)
-    return any(marker and marker in canonical for marker in HIDDEN_MARKER_CANONICALS) or any(
-        marker and marker in compact
-        for marker in HIDDEN_MARKER_COMPACTS
+def hidden_marker_name(value: Any, markers: Iterable[str] | None = None) -> str:
+    """Return the hidden marker matched by value, including compact/camel variants."""
+    tokens = _marker_tokens(value)
+    compact_tokens = _alnum_compact_tokens(value)
+    if not tokens and not compact_tokens:
+        return ""
+    marker_values = tuple(HIDDEN_MARKERS if markers is None else markers)
+    markers_by_tokens = sorted(
+        marker_values,
+        key=lambda marker: (-len(_marker_tokens(marker)), str(marker)),
     )
+    for marker in markers_by_tokens:
+        marker_tokens = _marker_tokens(marker)
+        if not marker_tokens or len(marker_tokens) > len(tokens):
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == tuple(marker_tokens):
+                return marker
+    markers_by_compact = sorted(
+        marker_values,
+        key=lambda marker: (-len(_compact_marker(marker)), str(marker)),
+    )
+    for marker in markers_by_compact:
+        marker_compact = _compact_marker(marker)
+        if marker_compact and any(marker_compact in token for token in compact_tokens):
+            return marker
+    return ""
+
+
+def contains_hidden_marker_text(value: Any) -> bool:
+    """Return whether value contains any hidden marker text variant."""
+    return bool(hidden_marker_name(value))
+
+
+def _contains_hidden_marker_text(value: Any) -> bool:
+    return contains_hidden_marker_text(value)
 
 
 def _has_hidden_marker(value: Any) -> bool:
@@ -564,8 +606,10 @@ __all__ = [
     "VISIBILITY_FIELDS",
     "actor_call_basis",
     "actor_call_visible_to_actor",
+    "contains_hidden_marker_text",
     "event_visible_to_actor",
     "filter_visible_events",
+    "hidden_marker_name",
     "normalize_visibility_basis",
     "visibility_fields_from_event",
 ]

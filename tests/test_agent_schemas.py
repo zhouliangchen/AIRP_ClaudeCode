@@ -538,6 +538,69 @@ class AgentSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
                     self.agent_schemas.validate_gm_output(payload)
 
+    def test_validate_gm_output_rejects_compact_hidden_marker_actor_ids_and_visibility_fields(self):
+        base_call = {
+            "call_id": "call-1",
+            "actor_id": "character:SuLi",
+            "prompt": "You look up.",
+            "reason": "SuLi is present.",
+            "visibility_basis": visibility_basis("character:SuLi"),
+        }
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "The room goes quiet."}],
+            "events": [],
+            "actor_calls": [base_call],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        for actor_id, expected in (
+            ("character:gmonlyroom", "gm_only"),
+            ("character:worldtruthactor", "world_truth"),
+            ("character:hiddenfactwitness", "hidden_fact"),
+        ):
+            with self.subTest(actor_id=actor_id):
+                call = dict(base_call)
+                call["actor_id"] = actor_id
+                call["visibility_basis"] = visibility_basis(actor_id)
+                payload["actor_calls"] = [call]
+
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                    self.agent_schemas.validate_gm_output(payload)
+
+        call = dict(base_call)
+        call["source_actor"] = "worldtruthactor"
+        payload["actor_calls"] = [call]
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "source_actor"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_allows_cjk_actor_ids_after_compact_marker_checks(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [{"content": "教室安静下来。"}],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "character:苏莉",
+                    "prompt": "你听见教室里的钟声。",
+                    "reason": "苏莉在教室里。",
+                    "visibility_basis": visibility_basis("character:苏莉"),
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_gm_output(payload)
+
+        self.assertEqual(normalized["actor_calls"][0]["actor_id"], "character:苏莉")
+
     def test_validate_subgm_output_requires_actor_call_visibility_basis(self):
         payload = minimal_subgm_output(
             {

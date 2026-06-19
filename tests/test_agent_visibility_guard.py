@@ -89,6 +89,52 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertIn("[redacted]", sanitized["actor_calls"][0]["visible_to"])
         self.assertIn("[redacted]", sanitized["actor_calls"][0]["visibility_basis"]["visible_to"])
 
+    def test_sanitize_gm_output_redacts_compact_hidden_markers(self):
+        sanitized = self.guard.sanitize_gm_output(
+            {
+                "agent": "gm",
+                "scene_beats": [],
+                "events": [],
+                "actor_calls": [
+                    {
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "gmonlyroom",
+                        "reason": "worldtruthactor",
+                        "metadata": {
+                            "hiddenfactwitness": "drop this key",
+                            "note": "outofcharacternote",
+                        },
+                        "location": "gmonlyroom",
+                        "visible_to": ["player", "hiddenfactwitness"],
+                        "source_actor": "worldtruthactor",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "outofcharacternote",
+                            "source_actor": "worldtruthactor",
+                            "target_actor": "player",
+                            "visible_to": ["player", "hiddenfactwitness"],
+                        },
+                    }
+                ],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "continue",
+            },
+            {},
+        )
+
+        serialized = repr(sanitized).lower()
+        for marker in (
+            "gmonlyroom",
+            "worldtruthactor",
+            "hiddenfactwitness",
+            "outofcharacternote",
+        ):
+            self.assertNotIn(marker, serialized)
+        self.assertIn("[redacted]", serialized)
+
     def test_redacts_hidden_phrase_and_marker_from_character_promotions(self):
         input_payload = {
             "routed_input": {
