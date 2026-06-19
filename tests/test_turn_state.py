@@ -253,6 +253,26 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("我把地点改成雨夜码头。", content_js)
         self.assertIn("等待 Claude Code 回复", content_js)
 
+    def test_rebuild_content_activates_card_without_response_file(self):
+        (self.card / "chat_log.json").write_text(
+            json.dumps([
+                {
+                    "index": 0,
+                    "ai": "<content><p>Existing story.</p></content>",
+                    "summary": "Existing story",
+                }
+            ]),
+            encoding="utf-8",
+        )
+
+        result = self.handler.rebuild_content(str(self.card))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual((self.styles / ".card_path").read_text(encoding="utf-8"), str(self.card.resolve()))
+        content_js = (self.styles / "content.js").read_text(encoding="utf-8")
+        self.assertIn("Existing story.", content_js)
+        self.assertFalse((self.styles / "response.txt").exists())
+
     def test_player_input_log_is_authoritative_jsonl(self):
         entry = self.handler.record_player_input(str(self.card), "原始输入", "【玩家】原始输入")
 
