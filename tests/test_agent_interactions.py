@@ -382,6 +382,38 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "call_ids": ["call-character-Ada-1"],
         }])
 
+    def test_trace_summary_sanitizes_compact_hidden_batch_and_warning_ids(self):
+        self.agent_interactions.init_trace(self.run_dir, participants=["gm"])
+        self.agent_interactions.record_actor_batch(
+            self.run_dir,
+            batch_id="batch-hiddenfactwitness",
+            kind="parallel",
+            actors=["character:Ada", "character:Hiddenfactwitness"],
+            call_ids=["call-character-Ada-1", "call-character-Hiddenfactwitness-1"],
+            group_id="group-hiddenfactwitness",
+        )
+        self.agent_interactions.record_routing_warning(
+            self.run_dir,
+            code="dependent_call_in_parallel_group",
+            message="hiddenfactwitness should not be visible",
+            group_id="group-hiddenfactwitness",
+            actors=["character:Ada", "character:Hiddenfactwitness"],
+            call_ids=["call-character-Ada-1", "call-character-Hiddenfactwitness-1"],
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+        summary_text = json.dumps(summary, ensure_ascii=False).lower()
+
+        self.assertEqual(summary["actor_batches"], [])
+        self.assertEqual(summary["routing_warnings"], [{
+            "code": "dependent_call_in_parallel_group",
+            "message": "[redacted]",
+            "group_id": "",
+            "actors": ["character:Ada"],
+            "call_ids": ["call-character-Ada-1"],
+        }])
+        self.assertNotIn("hiddenfactwitness", summary_text)
+
     def test_public_api_drops_hidden_shaped_ids_from_story_summary(self):
         self.agent_interactions.init_trace(
             self.run_dir,
@@ -636,6 +668,33 @@ class AgentInteractionTraceTest(unittest.TestCase):
         self.assertNotIn("Do not leak this", summary_text)
         self.assertNotIn("Secret fear", summary_text)
         self.assertNotIn("private tactical reason", summary_text)
+
+    def test_summary_sanitizes_compact_hidden_public_decision_fields(self):
+        trace = {
+            "round_id": "round-000001",
+            "status": "decision_point",
+            "events": [],
+            "decision_point": {
+                "reason": "private tactical reason",
+                "public_reason": "choose before worldtruthactor tells you",
+                "options": ["secret route"],
+                "public_options": ["wait", "gmonlyroom", "look around"],
+            },
+            "stop_reason": "private tactical reason",
+            "public_stop_reason": "hiddenfactwitness stops the scene",
+        }
+        (self.run_dir / "interaction.trace.json").write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+        summary_text = json.dumps(summary, ensure_ascii=False).lower()
+
+        self.assertEqual(summary["decision_point"], {
+            "reason": "[redacted]",
+            "options": ["wait", "look around"],
+        })
+        self.assertEqual(summary["stop_reason"], "[redacted]")
+        for hidden in ("worldtruthactor", "gmonlyroom", "hiddenfactwitness"):
+            self.assertNotIn(hidden, summary_text)
 
     def test_summary_omits_private_decision_fields_without_public_copy(self):
         trace = {

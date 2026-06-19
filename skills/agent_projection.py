@@ -29,12 +29,6 @@ PROJECTION_FORBIDDEN_NESTED_KEYS = {
 
 FORBIDDEN_NESTED_KEYS = FORBIDDEN_WORLD_KEYS | PROJECTION_FORBIDDEN_NESTED_KEYS
 
-def _canonical_marker(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
-
-
-FORBIDDEN_NESTED_KEY_MARKERS = {_canonical_marker(key) for key in FORBIDDEN_NESTED_KEYS}
-
 
 def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -45,12 +39,11 @@ def _text(value: Any) -> str:
 
 
 def _is_forbidden_key(key: Any) -> bool:
-    return _canonical_marker(key) in FORBIDDEN_NESTED_KEY_MARKERS
+    return bool(agent_visibility.hidden_marker_name(key, FORBIDDEN_NESTED_KEYS))
 
 
 def _contains_forbidden_text(value: Any) -> bool:
-    canonical = _canonical_marker(value)
-    return any(marker and marker in canonical for marker in FORBIDDEN_NESTED_KEY_MARKERS)
+    return bool(agent_visibility.hidden_marker_name(value, FORBIDDEN_NESTED_KEYS))
 
 
 def _safe_text(value: Any) -> str:

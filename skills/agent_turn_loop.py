@@ -411,7 +411,7 @@ def _actor_packet(
     actor_id: str,
     prompt: str,
     hidden_phrases: Iterable[str],
-    visibility_basis: dict | None = None,
+    actor_call: dict | None = None,
 ) -> dict:
     safe_prompt = agent_visibility_guard.redact_text(prompt, hidden_phrases)
     return agent_projection.project_actor_context(
@@ -419,7 +419,7 @@ def _actor_packet(
         world_state,
         _actor_state(actor_id, input_payload),
         safe_prompt,
-        agent_visibility.actor_call_basis({"visibility_basis": visibility_basis or {}}),
+        agent_visibility.actor_call_basis(actor_call or {}),
     )
 
 
@@ -577,7 +577,7 @@ def _dispatch_actor_call(
         actor_id,
         str(call.get("prompt") or ""),
         hidden_phrases,
-        call.get("visibility_basis"),
+        call,
     )
     return _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
 

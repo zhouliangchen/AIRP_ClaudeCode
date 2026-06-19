@@ -20,12 +20,6 @@ SAFE_ID_PATTERNS = (
     re.compile(r"^group-[a-z0-9]+(?:-[a-z0-9]+)*$"),
     re.compile(r"^batch-[a-z0-9]+(?:-[a-z0-9]+)*$"),
 )
-HIDDEN_ID_TOKENS = (
-    "hiddentruth",
-    "gmonly",
-    "worldtruth",
-    "outofcharacter",
-)
 
 
 def _now() -> str:
@@ -70,8 +64,7 @@ def _safe_id(value: Any) -> str:
     text = value.strip()
     if not text:
         return ""
-    compact = re.sub(r"[^a-z0-9]", "", text.lower())
-    if any(token in compact for token in HIDDEN_ID_TOKENS):
+    if agent_visibility.contains_hidden_marker_text(text):
         return ""
     if any(pattern.fullmatch(text) for pattern in SAFE_ID_PATTERNS):
         return text
@@ -111,6 +104,8 @@ def _parallel_groups(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
 
 def _safe_warning_code(value: Any) -> str:
     text = str(value or "").strip()
+    if agent_visibility.contains_hidden_marker_text(text):
+        return ""
     if re.fullmatch(r"[a-z][a-z0-9_]*", text):
         return text
     return ""
@@ -118,10 +113,37 @@ def _safe_warning_code(value: Any) -> str:
 
 def _safe_warning_message(value: Any) -> str:
     text = str(value or "")
-    compact = re.sub(r"[^a-z0-9]", "", text.lower())
-    if any(token in compact for token in HIDDEN_ID_TOKENS):
+    if agent_visibility.contains_hidden_marker_text(text):
         return "[redacted]"
     return text[:500]
+
+
+def _safe_public_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if agent_visibility.contains_hidden_marker_text(text):
+        return "[redacted]"
+    return text
+
+
+def _safe_public_options(value: Any) -> list[str]:
+    if value is None or isinstance(value, (str, bytes, dict)):
+        return []
+    if isinstance(value, set):
+        values = sorted(value, key=str)
+    else:
+        try:
+            values = list(value)
+        except TypeError:
+            return []
+    options = []
+    for item in values:
+        text = str(item)
+        if agent_visibility.contains_hidden_marker_text(text):
+            continue
+        options.append(text)
+    return options
 
 
 def _actor_batches(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -328,13 +350,13 @@ def mark_decision_point(
     trace["status"] = "decision_point"
     trace["decision_point"] = {
         "reason": str(reason),
-        "public_reason": str(reason),
+        "public_reason": _safe_public_text(reason),
         "options": list(options or []),
-        "public_options": list(options or []),
+        "public_options": _safe_public_options(options),
         "created_at": _now(),
     }
     trace["stop_reason"] = str(reason)
-    trace["public_stop_reason"] = str(reason)
+    trace["public_stop_reason"] = _safe_public_text(reason)
     trace["updated_at"] = _now()
     return _write(run_dir, trace)
 
@@ -405,8 +427,8 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
         public_options = decision_point.get("public_options")
         if public_reason is not None or public_options is not None:
             decision_point = {
-                "reason": "" if public_reason is None else str(public_reason),
-                "options": list(public_options or []),
+                "reason": "" if public_reason is None else _safe_public_text(public_reason),
+                "options": _safe_public_options(public_options),
             }
         else:
             decision_point = None
@@ -422,6 +444,6 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
         "actor_batches": _actor_batches(trace),
         "routing_warnings": _routing_warnings(trace),
         "decision_point": decision_point,
-        "stop_reason": trace.get("public_stop_reason", ""),
+        "stop_reason": _safe_public_text(trace.get("public_stop_reason", "")),
         "chapter_target_words": trace.get("chapter_target_words", 0),
     }

@@ -151,6 +151,56 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
 
+    def test_actor_packet_visibility_basis_preserves_top_level_call_metadata(self):
+        self.register_characters("Ada")
+        packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear the bell over your desk.",
+                        "reason": "Ada is in the classroom.",
+                        "location": "classroom",
+                        "visible_to": ["character:Ada"],
+                        "sensory_channels": ["auditory"],
+                        "visibility_basis": {
+                            "mode": "location",
+                            "summary": "Ada is in the classroom and can hear the bell.",
+                            "target_actor": "character:Ada",
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I listen."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(packets), 1)
+        packet_basis = packets[0]["gm_visibility_basis"]
+        self.assertEqual(packet_basis.get("mode"), "location")
+        self.assertEqual(packet_basis.get("summary"), "Ada is in the classroom and can hear the bell.")
+        self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
+        self.assertEqual(packet_basis.get("location"), "classroom")
+        self.assertEqual(packet_basis.get("visible_to"), ["character:Ada"])
+        self.assertEqual(packet_basis.get("sensory_channels"), ["auditory"])
+
     def test_gm_scene_visibility_metadata_reaches_trace_summary(self):
         self.register_characters("Ada")
 

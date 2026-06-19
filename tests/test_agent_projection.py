@@ -264,6 +264,57 @@ class AgentProjectionTest(unittest.TestCase):
         ):
             self.assertNotIn(hidden, world_sensory_serialized)
 
+    def test_projection_scrubs_compact_hidden_markers_from_actor_packet_fields(self):
+        actor = {
+            "name": "Ada",
+            "memory": {
+                "long_term": ["I remember the archive.", "worldtruthactor"],
+                "key_memories": ["hiddenfactwitness"],
+                "short_term": ["The hallway is quiet.", "outofcharacternote"],
+                "goals": ["gmonlyroom"],
+            },
+            "sensory_context": {
+                "sound": "students whisper nearby",
+                "hiddenfactwitness": "drop compact hidden key",
+                "smell": "outofcharacternote",
+            },
+            "misconceptions": ["The hallway is safe.", "gmonlyroom"],
+        }
+        world = {
+            "role_channel": "I keep walking.",
+            "sensory_context": {
+                "sight": "chalk dust in the light",
+                "note": "worldtruthactor",
+            },
+            "visible_events": [
+                _public_event("The bell rings."),
+                _public_event("hiddenfactwitness"),
+            ],
+        }
+
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            world,
+            actor,
+            "You see chalk dust. gmonlyroom says the door is false. You should not see this.",
+        )
+        serialized = _packet_json(packet).lower()
+
+        self.assertIn("The hallway is safe.", _packet_json(packet))
+        self.assertIn("students whisper nearby", _packet_json(packet))
+        self.assertIn("The bell rings.", _packet_json(packet))
+        self.assertEqual(packet["gm_prompt"], "You see chalk dust.")
+        for hidden in (
+            "gmonlyroom",
+            "worldtruthactor",
+            "hiddenfactwitness",
+            "outofcharacternote",
+            "drop compact hidden key",
+            "door is false",
+            "You should not see this.",
+        ):
+            self.assertNotIn(hidden.lower(), serialized)
+
     def test_character_projection_keeps_own_memory_goals_and_visible_events_only(self):
         world = {
             "role_channel": "I hide the pendant.",

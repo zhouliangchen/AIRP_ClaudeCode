@@ -229,6 +229,50 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
 
+    def test_actor_packet_visibility_basis_preserves_top_level_subgm_call_metadata(self):
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You hear rain on the rooftop vent.",
+                            "reason": "SuLi is physically present in the side thread.",
+                            "location": "school rooftop",
+                            "visible_to": ["character:SuLi"],
+                            "sensory_channels": ["auditory"],
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "SuLi is on the rooftop and can hear the rain.",
+                                "target_actor": "character:SuLi",
+                            },
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                actor_packets.append(packet)
+                return character_output()
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(actor_packets), 1)
+        packet_basis = actor_packets[0]["gm_visibility_basis"]
+        self.assertEqual(packet_basis.get("mode"), "location")
+        self.assertEqual(packet_basis.get("summary"), "SuLi is on the rooftop and can hear the rain.")
+        self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
+        self.assertEqual(packet_basis.get("location"), "school rooftop")
+        self.assertEqual(packet_basis.get("visible_to"), ["character:SuLi"])
+        self.assertEqual(packet_basis.get("sensory_channels"), ["auditory"])
+
     def test_subgm_scene_visibility_metadata_reaches_side_trace_summary(self):
         def dispatch(agent_key, packet):
             if agent_key == "subGM:side_suli_rooftop":
