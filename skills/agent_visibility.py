@@ -45,6 +45,26 @@ HIDDEN_MARKERS = {
     "internal_thoughts",
 }
 
+PRIVATE_EVENT_TYPES = {
+    "gm_only",
+    "hidden",
+    "internal",
+    "memory_delta",
+    "out_of_character",
+    "private",
+    "thought",
+}
+
+PRIVATE_EVENT_VISIBILITIES = {
+    "gm_only",
+    "gm_visible",
+    "hidden",
+    "internal",
+    "omniscient",
+    "out_of_character",
+    "private",
+}
+
 SCALAR_VISIBILITY_FIELDS = (
     "scene_id",
     "location",
@@ -94,6 +114,13 @@ def _has_hidden_marker(value: Any) -> bool:
     if isinstance(value, str):
         return _contains_hidden_marker_text(value)
     return False
+
+
+def _has_private_classification(event: dict[str, Any]) -> bool:
+    return (
+        _canonical_marker(event.get("type")) in PRIVATE_EVENT_TYPES
+        or _canonical_marker(event.get("visibility")) in PRIVATE_EVENT_VISIBILITIES
+    )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -388,6 +415,8 @@ def event_visible_to_actor(
     if not isinstance(event, dict) or not _string(actor_id).strip():
         return False
     if _has_hidden_marker(event):
+        return False
+    if _has_private_classification(event):
         return False
 
     if _source_bucket_grants_visibility(source_bucket_actor_id, actor_id):

@@ -55,6 +55,27 @@ class AgentProjectionTest(unittest.TestCase):
 
         self.assertEqual(packet["visible_events"], [])
 
+    def test_projection_drops_private_type_even_with_public_basis(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {
+                "visible_events": [
+                    {
+                        "actor": "gm",
+                        "type": "private",
+                        "content": "The archive hides a moon base.",
+                        "visible_to": ["all"],
+                        "visibility_basis": _basis("public", visible_to=["all"]),
+                    }
+                ]
+            },
+            {"name": "Ada", "location": "courtyard"},
+            "You wait outside.",
+            {"mode": "direct", "summary": "Ada is addressed by GM.", "target_actor": "character:Ada"},
+        )
+
+        self.assertEqual(packet["visible_events"], [])
+
     def test_projection_keeps_location_proven_event_for_same_location_only(self):
         world = {
             "visible_events": [

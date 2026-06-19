@@ -229,6 +229,47 @@ class AgentVisibilityTest(unittest.TestCase):
             self.visibility.event_visible_to_actor(event, "character:Eve", {"location": "courtyard"})
         )
 
+    def test_hidden_event_type_remains_invisible_with_public_basis(self):
+        event = {
+            "type": "hidden",
+            "content": "The archive hides a moon base.",
+            "visible_to": ["all"],
+            "visibility_basis": basis("public", visible_to=["all"]),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(event, "character:Eve", {"location": "courtyard"})
+        )
+
+    def test_private_visibility_remains_invisible_with_public_basis(self):
+        event = {
+            "type": "scene",
+            "visibility": "private",
+            "content": "The archive hides a moon base.",
+            "visible_to": ["all"],
+            "visibility_basis": basis("public", visible_to=["all"]),
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(event, "character:Eve", {"location": "courtyard"})
+        )
+
+    def test_gm_visible_scope_remains_invisible_with_actor_bucket(self):
+        event = {
+            "type": "scene",
+            "visibility": "gm_visible",
+            "content": "GM trace note: the archive hides a moon base.",
+        }
+
+        self.assertFalse(
+            self.visibility.event_visible_to_actor(
+                event,
+                "character:Eve",
+                {"location": "courtyard"},
+                source_bucket_actor_id="character:Eve",
+            )
+        )
+
     def test_public_mode_without_explicit_recipient_or_marker_fails_closed(self):
         event = {
             "type": "announcement",
