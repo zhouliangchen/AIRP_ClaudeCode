@@ -841,6 +841,48 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(f'"character_name": "{display_name}"', char_prompt)
         self.assertNotIn(f'"agent_id": "character:{display_name}"', char_prompt)
 
+    def test_prepare_agent_run_materializes_all_registered_major_character_contexts(self):
+        round_prepare = _load_round_prepare()
+        card_data = {
+            "title": "All Registered Characters",
+            "character_orchestration": {
+                "major": ["Ada", "Bert", "Cora"],
+                "max_parallel_subagents": 2,
+            },
+        }
+        contexts = round_prepare.build_character_contexts(
+            self.card,
+            card_data,
+            {},
+            [],
+            "I enter the archive.",
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I enter the archive.",
+            chat_log=[],
+            card_data=card_data,
+            character_contexts=contexts,
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        self.assertEqual(
+            [item["name"] for item in contexts["characters"]],
+            ["Ada", "Bert", "Cora"],
+        )
+        for name in ("Ada", "Bert", "Cora"):
+            safe = self.agent_run.safe_name(name)
+            self.assertTrue((run_dir / "characters" / f"{safe}.context.json").exists())
+            self.assertTrue((run_dir / "prompts" / "characters" / f"{safe}.prompt.md").exists())
+
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [item["name"] for item in input_json["character_contexts"]["characters"]],
+            ["Ada", "Bert", "Cora"],
+        )
+
     def test_prepare_agent_run_builds_expected_context_files(self):
         user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
         chat_log = [{"index": 3, "summary": "\u5f00\u542f\u7b2c\u4e00\u8f6e"}]
