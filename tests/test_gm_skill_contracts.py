@@ -42,4 +42,5 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("Executable Parallel Groups", text)
         self.assertIn("The runtime scheduler may execute safe groups concurrently", text)
         self.assertIn("downgrade unsafe groups to serial routing", text)
-        self.assertNotIn("metadata only", text.lower())
+        self.assertIn("rejected before batching", text)
+        self.assertNotIn("`parallel_groups` is metadata only", text.lower())
