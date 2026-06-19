@@ -137,8 +137,15 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "call_ids": ["call-character-Ada-1", "call-character-Bea-1"],
         }])
         self.assertEqual(summary["actor_batches"], trace["actor_batches"])
-        self.assertEqual(summary["routing_warnings"][0]["code"], "dependent_call_in_parallel_group")
-        self.assertEqual(summary["routing_warnings"][0]["group_id"], "group-main")
+        expected_warnings = [{
+            "code": "dependent_call_in_parallel_group",
+            "message": "dependent calls run serially",
+            "group_id": "group-main",
+            "actors": ["character:Ada"],
+            "call_ids": ["call-character-Ada-2"],
+        }]
+        self.assertEqual(trace["routing_warnings"], expected_warnings)
+        self.assertEqual(summary["routing_warnings"], expected_warnings)
 
     def test_trace_summary_sanitizes_hidden_shaped_batch_and_warning_ids(self):
         self.agent_interactions.init_trace(self.run_dir, participants=["gm"])
