@@ -281,6 +281,7 @@ class AgentProjectionTest(unittest.TestCase):
                 "agent": "character",
                 "visibility": "first_person_character",
                 "gm_prompt": "",
+                "gm_visibility_basis": {},
                 "address_mode": "second_person_gm_narration",
                 "self_knowledge": {
                     "name": "",

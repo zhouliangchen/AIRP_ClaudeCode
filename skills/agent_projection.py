@@ -7,6 +7,8 @@ import math
 import re
 from typing import Any, Dict
 
+import agent_visibility
+
 
 ADDRESS_MODE = "second_person_gm_narration"
 SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?")
@@ -33,37 +35,6 @@ FORBIDDEN_NESTED_KEYS = FORBIDDEN_WORLD_KEYS | {
     "internal_state",
     "internal_thoughts",
 }
-
-PRIVATE_EVENT_TYPES = {
-    "gm_only",
-    "hidden",
-    "internal",
-    "memory_delta",
-    "out_of_character",
-    "private",
-    "thought",
-}
-
-PRIVATE_EVENT_VISIBILITIES = {
-    "gm_only",
-    "hidden",
-    "internal",
-    "omniscient",
-    "out_of_character",
-    "private",
-}
-
-PUBLIC_VISIBLE_MARKERS = {
-    "all",
-    "actor",
-    "actors",
-    "everyone",
-    "public",
-    "visible",
-    "world",
-    "world_visible",
-}
-
 
 def _canonical_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
@@ -205,72 +176,25 @@ def _sensory_context(world: Dict[str, Any], actor: Dict[str, Any], actor_id: str
     return {}
 
 
-def _has_forbidden_marker(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if _is_forbidden_key(key):
-                return True
-            if _has_forbidden_marker(child):
-                return True
-    elif isinstance(value, (list, tuple, set)):
-        return any(_has_forbidden_marker(item) for item in value)
-    elif isinstance(value, str):
-        return _contains_forbidden_text(value)
-    return False
+def _collect_events(
+    value: Any,
+    actor_id: str,
+    actor: Dict[str, Any],
+    *,
+    source_bucket_actor_id: str = "",
+) -> list[Any]:
+    return [
+        _json_safe(item)
+        for item in agent_visibility.filter_visible_events(
+            value,
+            actor_id,
+            actor,
+            source_bucket_actor_id=source_bucket_actor_id,
+        )
+    ]
 
 
-def _normalize_marker_list(value: Any) -> set[str]:
-    if value is None:
-        return set()
-    if isinstance(value, (list, tuple, set)):
-        return {_canonical_marker(item) for item in value}
-    return {_canonical_marker(value)}
-
-
-def _event_visible_to_actor(event: Any, actor_id: str) -> bool:
-    if not isinstance(event, dict):
-        return False
-    if _has_forbidden_marker(event):
-        return False
-
-    event_type = str(event.get("type", "")).lower()
-    visibility = str(event.get("visibility", "")).lower()
-    if event_type in PRIVATE_EVENT_TYPES or visibility in PRIVATE_EVENT_VISIBILITIES:
-        return False
-
-    visible_to = _normalize_marker_list(event.get("visible_to") or event.get("recipients"))
-    if visible_to and not (
-        _canonical_marker(actor_id) in visible_to
-        or _canonical_marker(_agent_type(actor_id)) in visible_to
-        or visible_to.intersection(PUBLIC_VISIBLE_MARKERS)
-    ):
-        return False
-    return True
-
-
-def _iter_raw_items(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    if isinstance(value, set):
-        return sorted(value, key=lambda item: str(item))
-    return [value]
-
-
-def _collect_events(value: Any, actor_id: str) -> list[Any]:
-    events = []
-    for item in _iter_raw_items(value):
-        if not isinstance(item, dict):
-            continue
-        if _event_visible_to_actor(item, actor_id):
-            events.append(_json_safe(item))
-    return events
-
-
-def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
+def _actor_specific_events(world: Dict[str, Any], actor_id: str, actor: Dict[str, Any]) -> list[Any]:
     actor_visible = _as_dict(world.get("actor_visible_events"))
     events = []
     checked_keys = []
@@ -279,23 +203,25 @@ def _actor_specific_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
             checked_keys.append(key)
     for key in checked_keys:
         if key in actor_visible:
-            events.extend(_collect_events(actor_visible.get(key), actor_id))
+            events.extend(
+                _collect_events(
+                    actor_visible.get(key),
+                    actor_id,
+                    actor,
+                    source_bucket_actor_id=key,
+                )
+            )
     return events
 
 
-def _visible_events(world: Dict[str, Any], actor_id: str) -> list[Any]:
+def _visible_events(world: Dict[str, Any], actor_id: str, actor: Dict[str, Any]) -> list[Any]:
     events = []
     for key in ("visible_events", "world_visible_events", "public_events"):
         if key in world:
-            events.extend(_collect_events(world.get(key), actor_id))
+            events.extend(_collect_events(world.get(key), actor_id, actor))
     if "events" in world:
-        for item in _iter_raw_items(world.get("events")):
-            if not isinstance(item, dict):
-                continue
-            visibility = str(item.get("visibility", "")).lower()
-            if visibility in PUBLIC_VISIBLE_MARKERS and _event_visible_to_actor(item, actor_id):
-                events.append(_json_safe(item))
-    events.extend(_actor_specific_events(world, actor_id))
+        events.extend(_collect_events(world.get("events"), actor_id, actor))
+    events.extend(_actor_specific_events(world, actor_id, actor))
     return events
 
 
@@ -304,6 +230,7 @@ def project_actor_context(
     world_state: dict | None,
     actor_state: dict | None,
     gm_prompt: str,
+    gm_visibility_basis: dict | None = None,
 ) -> dict:
     """Return the only compact context an actor agent may see for one GM call."""
     actor_key = _text(actor_id)
@@ -315,11 +242,14 @@ def project_actor_context(
         "agent": _agent_type(actor_key),
         "visibility": _actor_visibility(actor_key),
         "gm_prompt": _sanitize_prompt(gm_prompt),
+        "gm_visibility_basis": _json_safe(
+            agent_visibility.normalize_visibility_basis(gm_visibility_basis or {})
+        ),
         "address_mode": ADDRESS_MODE,
         "self_knowledge": _self_knowledge(actor),
         "memory": _memory(actor),
         "sensory_context": _sensory_context(world, actor, actor_key),
-        "visible_events": _visible_events(world, actor_key),
+        "visible_events": _visible_events(world, actor_key, actor),
         "misconceptions": _as_list(actor.get("misconceptions")),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
     }
