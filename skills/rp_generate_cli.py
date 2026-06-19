@@ -160,7 +160,18 @@ def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
         timeout=600,
     )
     if result.returncode != 0:
-        raise AgentExecutionError(f"claude exited with {result.returncode}: {result.stderr[:500]}")
+        stderr_tail = str(result.stderr or "").strip()[-500:]
+        stdout_tail = str(result.stdout or "").strip()[-500:]
+        if stderr_tail:
+            output_label = "stderr tail"
+            output_tail = stderr_tail
+        elif stdout_tail:
+            output_label = "stdout tail"
+            output_tail = stdout_tail
+        else:
+            output_label = "output"
+            output_tail = "no output"
+        raise AgentExecutionError(f"claude exited with {result.returncode} ({output_label}): {output_tail}")
     return result.stdout
 
 
@@ -280,8 +291,8 @@ def _dispatch_agent_payload(
     last_error: AgentExecutionError | None = None
     attempts = max(1, int(attempts or 1))
     for attempt in range(attempts):
-        stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
         try:
+            stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
             text = _extract_agent_or_direct_text(stream)
             payload = _extract_json_object(text)
             return _validate(agent_key, payload)

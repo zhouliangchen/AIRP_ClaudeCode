@@ -292,6 +292,43 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(all(ord(ch) < 128 for ch in text))
         self.assertEqual(json.loads(text)["text"], "中文\ufffd")
 
+    def test_dispatch_agent_payload_retries_claude_process_failure(self):
+        payload = _critic_pass()
+        attempts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            attempts.append((agent_key, prompt, Path(cwd)))
+            if len(attempts) == 1:
+                raise self.module.AgentExecutionError("claude exited with 1: ")
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        result = self.module._dispatch_agent_payload(
+            "critic",
+            "# critic\n",
+            self.root,
+            fake_run_claude,
+        )
+
+        self.assertEqual(result["decision"], "pass")
+        self.assertEqual(len(attempts), 2)
+
+    def test_run_claude_agent_reports_stdout_tail_when_stderr_empty(self):
+        original_run = self.module.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="diagnostic stdout from claude",
+                stderr="",
+            )
+
+        try:
+            self.module.subprocess.run = fake_run
+            with self.assertRaisesRegex(self.module.AgentExecutionError, "diagnostic stdout from claude"):
+                self.module.run_claude_agent("critic", "# critic\n", self.root)
+        finally:
+            self.module.subprocess.run = original_run
+
     def test_run_round_writes_subagent_artifacts_and_invokes_delivery(self):
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
