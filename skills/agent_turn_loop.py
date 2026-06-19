@@ -454,6 +454,73 @@ def _record_routing_warnings(run_dir: Path, warnings: list[dict]) -> None:
         )
 
 
+def _text_items(value: Any) -> list[str]:
+    if isinstance(value, (str, bytes, dict)):
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        try:
+            raw_items = list(value)
+        except TypeError:
+            return []
+    return [text for text in (str(item or "").strip() for item in raw_items) if text]
+
+
+def _pending_group_id(group: Any, fallback: str) -> str:
+    if isinstance(group, dict):
+        return str(group.get("group_id") or "").strip() or fallback
+    return fallback
+
+
+def _pending_group_actor_ids(group: Any) -> list[str]:
+    if isinstance(group, dict):
+        return _text_items(group.get("actors") or group.get("actor_ids") or [])
+    return _text_items(group)
+
+
+def _pending_group_call_ids(group: Any) -> list[str]:
+    if not isinstance(group, dict):
+        return []
+    return _text_items(group.get("call_ids") or [])
+
+
+def _preserve_remaining_parallel_groups(
+    groups: list[Any],
+    remaining_calls: list[dict],
+    warnings: list[dict],
+) -> list[Any]:
+    warned_group_ids = {
+        str(warning.get("group_id") or "").strip()
+        for warning in warnings
+        if isinstance(warning, dict)
+    }
+    remaining_call_ids = {str(call.get("call_id") or "") for call in remaining_calls}
+    remaining_actor_ids = {str(call.get("actor_id") or "") for call in remaining_calls}
+    preserved: list[Any] = []
+
+    for index, group in enumerate(_list(groups), start=1):
+        group_id = _pending_group_id(group, f"group-1-{index}")
+        if group_id in warned_group_ids:
+            continue
+        call_ids = [
+            call_id
+            for call_id in _pending_group_call_ids(group)
+            if call_id in remaining_call_ids
+        ]
+        if len(set(call_ids)) >= 2:
+            preserved.append({"group_id": group_id, "call_ids": call_ids})
+            continue
+        actors = [
+            actor_id
+            for actor_id in _pending_group_actor_ids(group)
+            if actor_id in remaining_actor_ids
+        ]
+        if len(set(actors)) >= 2:
+            preserved.append({"group_id": group_id, "actors": actors})
+    return preserved
+
+
 def _dispatch_actor_call(
     *,
     input_payload: dict,
@@ -749,13 +816,15 @@ def run_interactive_loop(
             if not queued_calls:
                 break
 
+            active_parallel_groups = _list(pending_parallel_groups)
             batch_plan = agent_actor_batches.build_actor_batches(
                 queued_calls,
-                pending_parallel_groups,
+                active_parallel_groups,
                 max_parallel=max_parallel,
             )
+            routing_warnings = batch_plan.get("warnings", [])
             pending_parallel_groups = []
-            _record_routing_warnings(root, batch_plan.get("warnings", []))
+            _record_routing_warnings(root, routing_warnings)
             batches = [batch for batch in batch_plan.get("batches", []) if isinstance(batch, dict)]
 
             for batch_index, batch in enumerate(batches):
@@ -842,6 +911,11 @@ def run_interactive_loop(
                     ]
                     actor_queue.extend(transfer_calls)
                     actor_queue.extend(remaining_calls)
+                    pending_parallel_groups = _preserve_remaining_parallel_groups(
+                        active_parallel_groups,
+                        remaining_calls,
+                        routing_warnings,
+                    )
                     break
 
         if stop_reason in STOP_REASONS:

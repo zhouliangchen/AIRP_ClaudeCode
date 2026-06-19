@@ -349,6 +349,102 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         self.assertEqual(result["called_actors"], ["character:Ada", "character:Cora", "character:Bea"])
 
+    def test_transfer_requeue_preserves_later_safe_parallel_group(self):
+        self.register_characters("Ada", "Bea", "Cora", "Dan")
+        bea_cora_barrier = threading.Barrier(2)
+        parallel_entries = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada speaks first; Bea and Cora react together after Dan."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You ask Dan to check the signal.",
+                            "reason": "Ada can create an immediate transfer.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You and Cora react to the room together.",
+                            "reason": "Bea is independent after the transfer.",
+                        },
+                        {
+                            "call_id": "call-character-Cora-1",
+                            "actor_id": "character:Cora",
+                            "prompt": "You and Bea react to the room together.",
+                            "reason": "Cora is independent after the transfer.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-late",
+                        "actors": ["character:Bea", "character:Cora"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "character:Ada":
+                events = [{"type": "dialogue", "target": "character:Dan", "content": "Dan, check the signal."}]
+            elif agent_key in {"character:Bea", "character:Cora"}:
+                parallel_entries.append(agent_key)
+                bea_cora_barrier.wait(timeout=2)
+                events = [{"type": "action", "target": "", "content": f"{agent_key} reacts with the group."}]
+            else:
+                self.assertEqual(agent_key, "character:Dan")
+                events = [{"type": "action", "target": "", "content": "character:Dan checks the signal."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(
+            result["called_actors"],
+            ["character:Ada", "character:Dan", "character:Bea", "character:Cora"],
+        )
+        self.assertCountEqual(parallel_entries, ["character:Bea", "character:Cora"])
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        self.assertEqual(
+            [
+                {
+                    "kind": batch["kind"],
+                    "actors": batch["actors"],
+                    "call_ids": batch["call_ids"],
+                    "group_id": batch["group_id"],
+                }
+                for batch in trace["actor_batches"]
+            ],
+            [
+                {
+                    "kind": "serial",
+                    "actors": ["character:Ada"],
+                    "call_ids": ["call-character-Ada-1"],
+                    "group_id": "",
+                },
+                {
+                    "kind": "serial",
+                    "actors": ["character:Dan"],
+                    "call_ids": ["call-character-Dan-1"],
+                    "group_id": "",
+                },
+                {
+                    "kind": "parallel",
+                    "actors": ["character:Bea", "character:Cora"],
+                    "call_ids": ["call-character-Bea-1", "call-character-Cora-1"],
+                    "group_id": "group-late",
+                },
+            ],
+        )
+
     def test_loop_routes_dialogue_to_target_character_and_stops_at_decision(self):
         calls = []
 
