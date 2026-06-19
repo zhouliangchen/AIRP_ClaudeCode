@@ -183,6 +183,87 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("recent_chat", serialized)
         self.assertNotIn("user_instruction_channel", serialized)
 
+    def test_projection_scrubs_shared_hidden_markers_from_actor_packet_fields(self):
+        actor = {
+            "name": "Ada",
+            "body_state": {"hands": "steady", "gm_only_text": "pulse reveals the lock"},
+            "relationships": {
+                "player": {
+                    "status": "trusted",
+                    "private_notes": "knows the forbidden pact",
+                }
+            },
+            "misconceptions": [
+                "The hallway is safe.",
+                "hidden_fact: the floor will collapse",
+            ],
+            "sensory_context": {
+                "sight": "chalk dust in the light",
+                "hidden_text": "secret sigil under the desk",
+                "private_notes": "GM sees the concealed scar",
+            },
+        }
+        world = {
+            "visible_events": [
+                _public_event("The bell rings."),
+                _public_event(
+                    "A chalk line glows.",
+                    metadata={"private_notes": "route to the vault"},
+                ),
+            ]
+        }
+
+        actor_packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            world,
+            actor,
+            "You hear the bell.",
+        )
+        actor_serialized = _packet_json(actor_packet)
+
+        self.assertIn("steady", actor_serialized)
+        self.assertIn("trusted", actor_serialized)
+        self.assertIn("The hallway is safe.", actor_serialized)
+        self.assertIn("chalk dust in the light", actor_serialized)
+        self.assertIn("The bell rings.", actor_serialized)
+        self.assertNotIn("A chalk line glows.", actor_serialized)
+        for hidden in (
+            "private_notes",
+            "hidden_text",
+            "gm_only_text",
+            "hidden_fact",
+            "pulse reveals the lock",
+            "forbidden pact",
+            "floor will collapse",
+            "secret sigil",
+            "concealed scar",
+            "route to the vault",
+        ):
+            self.assertNotIn(hidden, actor_serialized)
+
+        world_sensory_packet = self.agent_projection.project_actor_context(
+            "player",
+            {
+                "sensory_context": {
+                    "sound": "students whisper nearby",
+                    "hidden_text": "the bell is a trap",
+                    "private_notes": "GM-only route marker",
+                }
+            },
+            {},
+            "You hear the classroom.",
+        )
+        world_sensory_serialized = _packet_json(world_sensory_packet)
+
+        self.assertIn("students whisper nearby", world_sensory_serialized)
+        for hidden in (
+            "hidden_text",
+            "private_notes",
+            "bell is a trap",
+            "GM-only route marker",
+        ):
+            self.assertNotIn(hidden, world_sensory_serialized)
+
     def test_character_projection_keeps_own_memory_goals_and_visible_events_only(self):
         world = {
             "role_channel": "I hide the pendant.",

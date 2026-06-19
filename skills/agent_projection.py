@@ -13,28 +13,21 @@ import agent_visibility
 ADDRESS_MODE = "second_person_gm_narration"
 SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?")
 
-FORBIDDEN_WORLD_KEYS = {
-    "user_instruction_channel",
+PROJECTION_FORBIDDEN_WORLD_KEYS = {
     "gm_only_hidden_settings",
-    "hidden_facts",
-    "world_truth",
     "gm_notes",
     "recent_chat",
     "private_events",
-    "omniscient",
-    "out_of_character",
-    "hidden_note",
-    "hidden_truth",
-    "gm_only",
     "hidden_identity_facts",
 }
 
-FORBIDDEN_NESTED_KEYS = FORBIDDEN_WORLD_KEYS | {
+FORBIDDEN_WORLD_KEYS = set(agent_visibility.HIDDEN_MARKERS) | PROJECTION_FORBIDDEN_WORLD_KEYS
+
+PROJECTION_FORBIDDEN_NESTED_KEYS = {
     "hidden_identity",
-    "private_memory",
-    "internal_state",
-    "internal_thoughts",
 }
+
+FORBIDDEN_NESTED_KEYS = FORBIDDEN_WORLD_KEYS | PROJECTION_FORBIDDEN_NESTED_KEYS
 
 def _canonical_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
