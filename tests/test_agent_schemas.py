@@ -29,6 +29,33 @@ def visibility_basis(actor_id="character:SuLi"):
     }
 
 
+def minimal_subgm_output(actor_call=None):
+    return {
+        "agent": "subGM",
+        "thread_id": "side-thread-1",
+        "status": "running",
+        "scene_beats": [],
+        "events": [],
+        "actor_calls": [
+            actor_call
+            or {
+                "call_id": "call-suli-1",
+                "actor_id": "character:SuLi",
+                "prompt": "React to the classroom clue.",
+                "reason": "SuLi is present in the side scene.",
+                "visibility_basis": visibility_basis(),
+            }
+        ],
+        "messages_to_gm": [],
+        "world_state_delta": [],
+        "character_usage": ["character:SuLi"],
+        "promotion_requests": [],
+        "boundary_requests": [],
+        "notes_for_story": ["SuLi noticed the classroom clue."],
+        "next_resume_point": "",
+    }
+
+
 class AgentSchemaTest(unittest.TestCase):
     def setUp(self):
         self.agent_schemas = _load_agent_schemas()
@@ -310,6 +337,33 @@ class AgentSchemaTest(unittest.TestCase):
 
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
                     self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_subgm_output_requires_actor_call_visibility_basis(self):
+        payload = minimal_subgm_output(
+            {
+                "call_id": "call-suli-1",
+                "actor_id": "character:SuLi",
+                "prompt": "React to the classroom clue.",
+                "reason": "SuLi is present in the side scene.",
+            }
+        )
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_subgm_output(payload)
+
+    def test_validate_subgm_output_rejects_hidden_marker_visibility_basis(self):
+        payload = minimal_subgm_output(
+            {
+                "call_id": "call-suli-1",
+                "actor_id": "character:SuLi",
+                "prompt": "React to the classroom clue.",
+                "reason": "SuLi is present in the side scene.",
+                "visibility_basis": {"mode": "direct", "summary": "gm_only side-scene signal"},
+            }
+        )
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_subgm_output(payload)
 
     def test_validate_actor_output_requires_events_protocol(self):
         payload = {
