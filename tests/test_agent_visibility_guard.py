@@ -352,6 +352,78 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("moon_base_archive", serialized)
         self.assertNotIn("moon.base.archive", serialized)
 
+    def test_sanitize_gm_output_redacts_punctuation_separator_hidden_phrase_variants(self):
+        input_payload = {
+            "routed_input": {
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+        }
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [
+                {
+                    "type": "npc_action",
+                    "target": "moon/base/archive",
+                    "source_call_id": "moon:base:archive",
+                    "content": "Ada reads the public signal.",
+                },
+                {
+                    "type": "npc_action",
+                    "target": "moon|base|archive",
+                    "source_call_id": "moon—base—archive",
+                    "content": "Ada checks another signal.",
+                },
+            ],
+            "actor_calls": [{
+                "call_id": "call-player-1",
+                "actor_id": "player",
+                "prompt": "React without saying moon/base/archive or moon|base|archive.",
+                "reason": "Visible prompt.",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "The player is directly addressed.",
+                    "target_actor": "player",
+                    "visible_to": ["player"],
+                },
+            }],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": {
+                "reason": "Choose whether to reveal moon:base:archive.",
+                "options": ["ask about moon—base—archive", "walk away"],
+            },
+            "stop_reason": "player_decision",
+        }
+
+        sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
+        serialized = repr(sanitized).lower()
+
+        self.assertEqual(sanitized["events"][0]["target"], "[redacted]")
+        self.assertEqual(sanitized["events"][0]["source_call_id"], "[redacted]")
+        self.assertEqual(sanitized["events"][1]["target"], "[redacted]")
+        self.assertEqual(sanitized["events"][1]["source_call_id"], "[redacted]")
+        self.assertIn("[redacted]", sanitized["actor_calls"][0]["prompt"])
+        self.assertIn("[redacted]", sanitized["decision_point"]["reason"])
+        self.assertIn("[redacted]", sanitized["decision_point"]["options"][0])
+        self.assertEqual(sanitized["stop_reason"], "player_decision")
+        self.assertNotIn("moon/base/archive", serialized)
+        self.assertNotIn("moon:base:archive", serialized)
+        self.assertNotIn("moon|base|archive", serialized)
+        self.assertNotIn("moon—base—archive", serialized)
+
+    def test_redact_text_preserves_alphanumeric_boundaries_for_separator_variants(self):
+        redacted = self.guard.redact_text(
+            "premoon/base/archive moon/base/archive2 moonbasearchive moon/base/archive",
+            ["moon base archive"],
+        )
+
+        self.assertEqual(
+            redacted,
+            "premoon/base/archive moon/base/archive2 moonbasearchive [redacted]",
+        )
+
     def test_sanitize_gm_output_preserves_valid_stop_reason_matching_hidden_phrase_tokens(self):
         input_payload = {
             "hidden_facts": [{"fact": "player decision"}],

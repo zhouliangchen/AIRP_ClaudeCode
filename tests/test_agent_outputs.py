@@ -1556,6 +1556,10 @@ class AgentOutputsTest(unittest.TestCase):
         cases = (
             ("source_call_id", "moon-base-archive"),
             ("target", "moon_base_archive"),
+            ("source_call_id", "moon/base/archive"),
+            ("target", "moon:base:archive"),
+            ("source_call_id", "moon|base|archive"),
+            ("target", "moon—base—archive"),
         )
         for field, value in cases:
             with self.subTest(field=field, value=value):
