@@ -498,12 +498,10 @@ class AgentProjectionTest(unittest.TestCase):
             "player",
             {
                 "visible_events": [
-                    {
-                        "actor": "gm",
-                        "type": "scene",
-                        "content": "The room tilts.",
-                        "metadata": {"angle": float("nan"), "distance": float("inf")},
-                    }
+                    _public_event(
+                        "The room tilts.",
+                        metadata={"angle": float("nan"), "distance": float("inf")},
+                    )
                 ],
             },
             {
@@ -519,6 +517,7 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("NaN", serialized)
         self.assertNotIn("Infinity", serialized)
         self.assertIn("null", serialized)
+        self.assertEqual(packet["visible_events"][0]["metadata"], {"angle": None, "distance": None})
 
 
 if __name__ == "__main__":
