@@ -35,3 +35,75 @@ class RoundPrepareHelperTest(unittest.TestCase):
         self.assertEqual(round_prepare.grep_reference_section(sections, "佐天泪子"), "line one\nline two")
         self.assertEqual(round_prepare.grep_reference_section(sections, "## 初春饰利"), "line three")
         self.assertEqual(round_prepare.grep_reference_section(sections, "missing"), "")
+
+    def test_build_character_contexts_keeps_all_explicit_major_characters_when_parallel_cap_is_two(self):
+        round_prepare = _load_round_prepare()
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            for name in ("Ada", "Bert", "Cora"):
+                char_dir = card / "memory" / "characters" / name
+                char_dir.mkdir(parents=True)
+                (char_dir / "profile.md").write_text(f"{name} profile.", encoding="utf-8")
+
+            result = round_prepare.build_character_contexts(
+                card,
+                {
+                    "character_orchestration": {
+                        "major": ["Ada", "Bert", "Cora"],
+                        "max_parallel_subagents": 2,
+                    }
+                },
+                {},
+                [],
+                "Ada looks toward the door.",
+            )
+
+        self.assertEqual(
+            [item["name"] for item in result["characters"]],
+            ["Ada", "Bert", "Cora"],
+        )
+        self.assertEqual(result["characters"][0]["scene_relevance"], "high")
+        self.assertEqual(result["characters"][1]["scene_relevance"], "normal")
+        self.assertEqual(result["characters"][2]["profile_summary"], "Cora profile.")
+
+    def test_build_character_contexts_keeps_blank_self_and_all_explicit_major_characters(self):
+        round_prepare = _load_round_prepare()
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            result = round_prepare.build_character_contexts(
+                card,
+                {
+                    "mode": "blank_bootstrap",
+                    "character_orchestration": {
+                        "major": ["Ada", "Bert", "Cora"],
+                        "max_parallel_subagents": 2,
+                    },
+                },
+                {},
+                [],
+                "Bert listens.",
+            )
+
+        self.assertEqual(
+            [item["name"] for item in result["characters"]],
+            ["_self", "Ada", "Bert", "Cora"],
+        )
+        self.assertEqual(result["characters"][0]["scene_relevance"], "high")
+        self.assertEqual(result["characters"][2]["scene_relevance"], "high")
+
+    def test_build_character_contexts_keeps_passive_card_structure_fallback_small(self):
+        round_prepare = _load_round_prepare()
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            result = round_prepare.build_character_contexts(
+                card,
+                {"character_orchestration": {"max_parallel_subagents": 2}},
+                {"characters": {"Ada": {}, "Bert": {}, "Cora": {}}},
+                [],
+                "",
+            )
+
+        self.assertEqual(
+            [item["name"] for item in result["characters"]],
+            ["Ada", "Bert"],
+        )
