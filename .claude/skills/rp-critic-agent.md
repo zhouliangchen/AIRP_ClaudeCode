@@ -37,6 +37,15 @@ If the same hard failure repeats:
 3. If this is a development task or the user authorized system iteration, include 系统迭代建议 for prompts, tests, or code. The orchestrator may then modify the project and regenerate.
 4. Otherwise ask the orchestrator to append the systemic issue to `improvement_queue.jsonl`.
 
+For every `revise` or `block`, also classify the repair route:
+
+- `stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, perspective, or polish need regeneration.
+- `stage: "delivery_gate"` when the failure is a mechanical delivery contract such as word count, required tags, or parser-visible formatting.
+- `stage: "gm_loop"` when the scene plan, causality, decision boundary, world-state delta, or GM handling of player authority is wrong and the current round should be replayed from before GM progression.
+- `stage: "actor_agent"` or `stage: "subgm"` when a character/player/subGM artifact caused the issue; name the target agent. The orchestrator will currently roll these back to the GM-loop checkpoint rather than patching one artifact in place.
+- `stage: "system_code"` only when the likely cause is a reusable prompt/code/tooling defect rather than the current story draft. This does not authorize source edits by itself; runtime config must allow source self-repair.
+- Use `rollback: "story_only"` for story/delivery issues, `rollback: "round_progression"` for GM/actor/subGM issues, and `rollback: "none"` for source-code/system analysis.
+
 ## Output File
 
 Write `critic.report.json`:
@@ -47,11 +56,18 @@ Write `critic.report.json`:
   "hard_failures": [],
   "soft_issues": [],
   "repair_instruction": "",
-  "system_iteration_suggestion": ""
+  "system_iteration_suggestion": "",
+  "repair_routing": {
+    "stage": "story_composition",
+    "target_agents": ["story"],
+    "rollback": "story_only",
+    "can_auto_repair": true,
+    "risk": "low"
+  }
 }
 ```
 
-Use only these top-level keys. Put all review notes inside `hard_failures`, `soft_issues`, `repair_instruction`, or `system_iteration_suggestion`.
+Use only these top-level keys. Put all review notes inside `hard_failures`, `soft_issues`, `repair_instruction`, `system_iteration_suggestion`, or `repair_routing`.
 
 Use `decision: "pass"` only when delivery is safe. Use `decision: "revise"` for fixable issues and `decision: "block"` for severe authority, logic, or safety failures.
 

@@ -37,7 +37,7 @@ Add focused `unittest` coverage for every behavior change. For multi-agent chang
 
 Maintain technical documentation under `docs/` and keep `README.md` as the top-level user guide. At the start of every non-trivial project task, read `README.md` and the relevant files under `docs/`, then review the user's request item by item before acting. User instructions may be unreasonable, inaccurate, or imprecise; reject unsafe or incoherent requests, correct inaccurate wording into a technically sound objective, and execute the corrected objective.
 
-After each task, update `README.md` and the relevant `docs/` files when the implementation, workflow, commands, or architecture changed. If no documentation needs to change, state that explicitly in the final response.
+After each task, update `README.md` and the relevant `docs/` files when the implementation, workflow, commands, or architecture changed, but don't update the `docs/superpowers/` file without permission. If no documentation needs to change, state that explicitly in the final response.
 
 This project is still in active development. Do not add compatibility layers for old generated game files, old runtime artifacts, or obsolete internal APIs unless the user explicitly requests it. Prefer simple current-format logic over backward-compatible branches.
 

@@ -5,5 +5,7 @@
   "antiImpersonation": false,
   "bgNpc": true,
   "charName": "良辰",
-  "wordCount": 4000
+  "wordCount": 4000,
+  "selfRepairMode": "limited",
+  "allowSourceCodeSelfRepair": false
 }

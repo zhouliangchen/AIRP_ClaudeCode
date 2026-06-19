@@ -172,7 +172,7 @@ class AgentOutputsTest(unittest.TestCase):
             source_call_id="call-character-Ada-1",
         )
 
-    def _write_story_and_critic(self, decision="pass", system_iteration_suggestion=""):
+    def _write_story_and_critic(self, decision="pass", system_iteration_suggestion="", repair_routing=None):
         _write_json(
             self.run_dir / "story.output.json",
             {
@@ -191,6 +191,7 @@ class AgentOutputsTest(unittest.TestCase):
                 "soft_issues": ["needs sharper sensory detail"] if decision == "revise" else [],
                 "repair_instruction": "Revise sensory continuity." if decision == "revise" else "",
                 "system_iteration_suggestion": system_iteration_suggestion,
+                **({"repair_routing": repair_routing} if repair_routing is not None else {}),
             },
         )
 
@@ -1479,8 +1480,8 @@ class AgentOutputsTest(unittest.TestCase):
         result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["action"], "retry")
-        self.assertEqual(result["reason"], "critic_block")
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "self_repair_mode_blocks_route")
         self.assertFalse((self.styles_dir / "response.txt").exists())
 
     def test_prepare_delivery_blocks_missing_story_output(self):
@@ -1527,7 +1528,14 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertFalse((self.styles_dir / "response.txt").exists())
 
     def test_prepare_delivery_records_critic_repair_history(self):
-        self._write_story_and_critic(decision="revise")
+        routing = {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": True,
+            "risk": "low",
+        }
+        self._write_story_and_critic(decision="revise", repair_routing=routing)
 
         result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
@@ -1539,7 +1547,57 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(history[0]["decision"], "revise")
         self.assertEqual(history[0]["soft_issues"], ["needs sharper sensory detail"])
         self.assertEqual(history[0]["repair_instruction"], "Revise sensory continuity.")
+        self.assertEqual(history[0]["repair_routing"]["stage"], "story_composition")
+        self.assertEqual(history[0]["repair_routing"]["rollback"], "story_only")
         self.assertEqual(history[0]["source"], "critic.report.json")
+
+    def test_prepare_delivery_limited_mode_blocks_progression_repair_route(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "limited"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._write_story_and_critic(
+            decision="revise",
+            repair_routing={
+                "stage": "gm_loop",
+                "target_agents": ["gm"],
+                "rollback": "round_progression",
+                "can_auto_repair": True,
+                "risk": "medium",
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "self_repair_mode_blocks_route")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest.get("critic_retry_count", 0), 0)
+
+    def test_prepare_delivery_full_mode_allows_progression_repair_route(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._write_story_and_critic(
+            decision="block",
+            repair_routing={
+                "stage": "gm_loop",
+                "target_agents": ["gm"],
+                "rollback": "round_progression",
+                "can_auto_repair": True,
+                "risk": "high",
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        self.assertEqual(result["reason"], "critic_block")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["critic_retry_count"], 1)
 
     def test_prepare_delivery_appends_system_iteration_suggestion_to_improvement_queue(self):
         self._write_story_and_critic(
@@ -1558,6 +1616,10 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(queue[0]["source"], str((self.run_dir / "critic.report.json").resolve()))
 
     def test_prepare_delivery_returns_terminal_block_after_retry_limit(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
         self._write_story_and_critic(
             decision="block",
             system_iteration_suggestion="Tighten prompt isolation checks.",
@@ -1589,6 +1651,10 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(history[0]["attempt"], 1)
 
     def test_prepare_delivery_does_not_duplicate_unchanged_critic_repair(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
         self._write_story_and_critic(
             decision="block",
             system_iteration_suggestion="Add a context-isolation regression test.",

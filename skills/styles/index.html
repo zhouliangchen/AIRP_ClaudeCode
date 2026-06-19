@@ -1221,6 +1221,15 @@ body {
         <input type="number" id="set-wordcount" onchange="saveSettings()" min="100" max="6000" step="100" style="width:80px;text-align:center;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.78em;font-family:var(--font-ui);outline:none;">
       </div>
       <div class="setting-row">
+        <span class="label">自我修复</span>
+        <select id="set-self-repair-mode" onchange="saveSettings()">
+          <option value="off">关闭</option>
+          <option value="analysis_only">仅分析定位</option>
+          <option value="limited">受限修复</option>
+          <option value="full">完全修复</option>
+        </select>
+      </div>
+      <div class="setting-row">
         <span class="label">防抢话</span>
         <label class="toggle-switch">
           <input type="checkbox" id="set-antiimp" onchange="saveSettings()" checked>
@@ -2135,6 +2144,7 @@ async function loadSettings() {
     document.getElementById('set-antiimp').checked = s.antiImpersonation !== false;
     document.getElementById('set-bgnpc').checked = s.bgNpc === true;
     document.getElementById('set-wordcount').value = s.wordCount || 600;
+    document.getElementById('set-self-repair-mode').value = s.selfRepairMode || 'limited';
     if (s.charName) document.getElementById('player-name-input').value = s.charName;
     render();
   } catch(e) { /* server may not be ready yet */ }
@@ -2148,6 +2158,7 @@ async function saveSettings() {
     antiImpersonation: document.getElementById('set-antiimp').checked,
     bgNpc: document.getElementById('set-bgnpc').checked,
     wordCount: parseInt(document.getElementById('set-wordcount').value) || 600,
+    selfRepairMode: document.getElementById('set-self-repair-mode').value,
     charName: document.getElementById('player-name-input').value.trim()
   };
   try {

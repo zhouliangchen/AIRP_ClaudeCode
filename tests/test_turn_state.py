@@ -555,6 +555,16 @@ class TurnStateTest(unittest.TestCase):
         self.assertLess(instruction_index, input_panel_index)
         self.assertIn("mobile-settings-open", html)
 
+    def test_frontend_exposes_self_repair_mode_setting(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="set-self-repair-mode"', html)
+        self.assertIn('value="analysis_only"', html)
+        self.assertIn('value="limited"', html)
+        self.assertIn('value="full"', html)
+        self.assertIn("s.selfRepairMode || 'limited'", html)
+        self.assertIn("selfRepairMode: document.getElementById('set-self-repair-mode').value", html)
+
     def test_frontend_dual_channel_submit_and_bridge_contract(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 

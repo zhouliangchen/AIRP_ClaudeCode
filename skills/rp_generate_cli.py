@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ import agent_run
 import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
+import self_repair
 
 
 class AgentExecutionError(RuntimeError):
@@ -384,14 +386,18 @@ def _run_interactive_agent_loop(
     manifest: Dict[str, Any],
     root: Path,
     run_claude: Callable[[str, str, str | Path], str],
+    repair_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
+        extra_context = {"loop_packet": packet}
+        if repair_context and agent_key == "gm":
+            extra_context["repair_context"] = repair_context
         return _dispatch_agent_payload(
             agent_key,
             _read_loop_prompt(run_dir, manifest, agent_key, packet),
             root,
             run_claude,
-            extra_context={"loop_packet": packet},
+            extra_context=extra_context,
         )
 
     try:
@@ -431,6 +437,47 @@ def _run_delivery(card_folder: Path, root: Path, run_command: Callable[..., Any]
         "stderr": str(getattr(result, "stderr", "") or "")[-1000:],
         "result": parsed,
     }
+
+
+def _delivery_retry_decision(delivery_result: Dict[str, Any]) -> str:
+    detail = delivery_result.get("detail")
+    if isinstance(detail, dict):
+        decision = str(detail.get("decision") or "")
+        if decision in {"revise", "block"}:
+            return decision
+    reason = str(delivery_result.get("reason") or "")
+    return "block" if "block" in reason else "revise"
+
+
+def _reset_round_progression_outputs(run_dir: Path) -> None:
+    for name in [
+        "gm.output.json",
+        "actor.outputs.json",
+        "interaction.trace.json",
+        "story.input.json",
+        "story.output.json",
+        "critic.report.json",
+    ]:
+        try:
+            (run_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    for name in ["side_threads", "memory_summaries"]:
+        path = run_dir / name
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+    manifest_path = run_dir / "manifest.json"
+    manifest = agent_run.read_json(manifest_path, {}) or {}
+    agent_run.append_manifest_stage(
+        manifest,
+        "awaiting_agent_outputs",
+        "Rolled back current round progression artifacts for self-repair.",
+    )
+    agent_run.write_json(manifest_path, manifest)
 
 
 def _stdout_json(payload: Dict[str, Any], indent: int | None = None) -> str:
@@ -524,6 +571,7 @@ def _delivery_retry_context(
         "do_not_preserve_rejected_content": True,
         "repair_attempt": attempt,
         "max_repair_attempts": MAX_DELIVERY_REPAIR_ATTEMPTS,
+        "repair_routing": self_repair.routing_from_delivery_result(delivery_result),
         "instruction": repair_instruction,
     }
 
@@ -862,6 +910,7 @@ def _story_preflight_repair_context(
     requirements: Dict[str, Any],
     attempt: int,
     repair_context: Dict[str, Any] | None,
+    max_attempts: int = MAX_STORY_PREFLIGHT_ATTEMPTS,
 ) -> Dict[str, Any]:
     minimum = int(requirements.get("minimum_chinese_chars", 0) or 0)
     target = int(requirements.get("word_count_target", 0) or 0)
@@ -885,7 +934,7 @@ def _story_preflight_repair_context(
         "previous_rejected_story_output": story,
         "do_not_preserve_rejected_content": True,
         "repair_attempt": attempt,
-        "max_repair_attempts": MAX_STORY_PREFLIGHT_ATTEMPTS,
+        "max_repair_attempts": max_attempts,
         "prior_repair_context": repair_context or {},
         "instruction": (
             "Rewrite story.output.json from story_input and current agent artifacts. "
@@ -1015,6 +1064,7 @@ def run_round(
     if run_dir is None:
         raise AgentExecutionError(f"{card / '.agent_runs' / 'current'} is missing or invalid.")
 
+    repair_policy = self_repair.load_policy(root / "skills" / "styles" / "settings.json")
     manifest = _load_manifest(run_dir)
     manifest = _reset_delivery_retry_budget(run_dir, manifest)
     _ensure_input_analysis(run_dir, manifest, card, root, run_claude)
@@ -1042,7 +1092,7 @@ def run_round(
             story_extra["repair_context"] = repair_context
         next_story = {}
         active_repair_context = repair_context
-        for preflight_attempt in range(MAX_STORY_PREFLIGHT_ATTEMPTS + 1):
+        for preflight_attempt in range(repair_policy.story_preflight_attempts + 1):
             next_story = _dispatch_and_write(
                 "story",
                 story_path,
@@ -1054,7 +1104,7 @@ def run_round(
             next_story = _normalize_story_output(next_story, story_input)
             agent_run.write_json(story_path, next_story)
             issues = _story_preflight_issues(next_story, requirements)
-            if not issues or preflight_attempt == MAX_STORY_PREFLIGHT_ATTEMPTS:
+            if not issues or preflight_attempt == repair_policy.story_preflight_attempts:
                 break
             active_repair_context = _story_preflight_repair_context(
                 next_story,
@@ -1062,6 +1112,7 @@ def run_round(
                 requirements,
                 preflight_attempt + 1,
                 active_repair_context,
+                repair_policy.story_preflight_attempts,
             )
             story_extra = {
                 "story_input": story_input,
@@ -1088,10 +1139,23 @@ def run_round(
     while (
         not _delivery_complete(delivery)
         and delivery_result.get("action") == "retry"
-        and repair_attempt < MAX_DELIVERY_REPAIR_ATTEMPTS
+        and repair_attempt < repair_policy.delivery_repair_attempts
     ):
         repair_attempt += 1
-        story, critic = dispatch_story_and_critic(_delivery_retry_context(delivery_result, story, critic, repair_attempt))
+        repair_context = _delivery_retry_context(delivery_result, story, critic, repair_attempt)
+        repair_context["max_repair_attempts"] = repair_policy.delivery_repair_attempts
+        repair_routing = self_repair.routing_from_delivery_result(delivery_result)
+        repair_decision = _delivery_retry_decision(delivery_result)
+        if not self_repair.policy_allows_route(repair_policy, repair_routing, repair_decision):
+            break
+        if repair_routing.get("rollback") == "round_progression":
+            _reset_round_progression_outputs(run_dir)
+            manifest = _load_manifest(run_dir)
+            loop_result = _run_interactive_agent_loop(run_dir, manifest, root, run_claude, repair_context)
+            story_input = agent_outputs.build_story_input(run_dir)
+            requirements = _delivery_requirements(root)
+            requirements["player_character_names"] = _player_character_names_from_story_input(story_input)
+        story, critic = dispatch_story_and_critic(repair_context)
         delivery = _run_delivery(card, root, run_command)
         delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
     delivery_complete = _delivery_complete(delivery)

@@ -39,6 +39,8 @@ DEFAULT_SETTINGS = {
     "bgNpc": False,
     "charName": "",
     "wordCount": 600,
+    "selfRepairMode": "limited",
+    "allowSourceCodeSelfRepair": False,
 }
 
 os.chdir(str(ROOT))

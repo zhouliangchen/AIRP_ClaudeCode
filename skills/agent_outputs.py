@@ -13,6 +13,7 @@ import agent_run
 import agent_interactions
 import agent_schemas
 import agent_visibility_guard
+import self_repair
 
 
 MAX_CRITIC_RETRIES = 2
@@ -808,6 +809,7 @@ def _critic_fingerprint(critic_report: Dict[str, Any]) -> str:
         "soft_issues": critic_report.get("soft_issues", []),
         "repair_instruction": critic_report.get("repair_instruction", ""),
         "system_iteration_suggestion": critic_report.get("system_iteration_suggestion", ""),
+        "repair_routing": critic_report.get("repair_routing", {}),
     }
     return json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -830,6 +832,7 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
         "soft_issues": critic_report.get("soft_issues", []),
         "repair_instruction": critic_report.get("repair_instruction", ""),
         "system_iteration_suggestion": critic_report.get("system_iteration_suggestion", ""),
+        "repair_routing": self_repair.normalize_repair_routing(critic_report.get("repair_routing")),
         "fingerprint": fingerprint,
         "source": "critic.report.json",
         "timestamp": datetime.now(agent_run.CST).isoformat(timespec="seconds"),
@@ -847,6 +850,7 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
                 "suggestion": suggestion,
                 "hard_failures": entry["hard_failures"],
                 "soft_issues": entry["soft_issues"],
+                "repair_routing": entry["repair_routing"],
                 "source": str((run_dir / "critic.report.json").resolve()),
                 "timestamp": entry["timestamp"],
             },
@@ -860,6 +864,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     run_dir = agent_run.current_run_dir(card_folder)
     if run_dir is None:
         return {"ok": True, "mode": "legacy"}
+    policy = self_repair.load_policy(Path(styles_dir) / "settings.json")
 
     manifest = _load_manifest(run_dir)
     if manifest is None:
@@ -893,14 +898,22 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        if _critic_retry_count(manifest) >= MAX_CRITIC_RETRIES:
+        routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
+        if not self_repair.policy_allows_route(policy, routing, decision):
+            _mark_blocked_without_retry(run_dir, manifest)
+            return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
+        if _critic_retry_count(manifest) >= policy.critic_retry_limit:
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        if _critic_retry_count(manifest) >= MAX_CRITIC_RETRIES:
+        routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
+        if not self_repair.policy_allows_route(policy, routing, decision):
+            _mark_blocked_without_retry(run_dir, manifest)
+            return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
+        if _critic_retry_count(manifest) >= policy.critic_retry_limit:
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         _increment_critic_retry(run_dir, manifest)

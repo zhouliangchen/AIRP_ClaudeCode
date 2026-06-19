@@ -93,6 +93,32 @@ subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。
 
 结构化 actor 记忆摘要会写入 `memory/player/` 或 `memory/characters/<name>/` 下的 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json`。`recent.md` 是回合内增量的暂存来源，成功整理后会被消费；actor 记忆更新必须使用 `source: self` 与 `visibility: actor`，不得写入角色档案字段或隐藏标记。
 
+## 自我修复配置
+
+系统支持四档自我修复模式，配置键为 `selfRepairMode`，默认值是 `limited`（受限修复）。可在浏览器侧栏“自我修复”下拉框调整，也可直接写入 `skills/styles/settings.json`：
+
+```json
+{
+  "selfRepairMode": "limited",
+  "allowSourceCodeSelfRepair": false
+}
+```
+
+`selfRepairMode` 支持 `off`（关闭）、`analysis_only`（仅分析定位）、`limited`（受限修复）和 `full`（完全修复）。调试测试时建议使用 `analysis_only`，也可以通过环境变量临时覆盖：
+
+```powershell
+$env:AIRP_SELF_REPAIR_MODE="analysis_only"
+```
+
+- `off`：跳过自动修复步骤，失败后等待人工或外部工具处理。
+- `analysis_only`：只保留 critic/交付门禁诊断与修复建议，不自动重写 story 或重跑 GM。
+- `limited`：默认模式，只自动处理低风险的 story/delivery 类问题，例如字数、标签、格式、视角或润色整理问题；不会自动修复 critic `block` 或重跑整轮剧情推进。
+- `full`：允许更高上限的修复循环，并可在 critic 判断问题出在 GM/actor/subGM 剧情推进环节时，回退本轮 `.agent_runs/<round>/` 内的推演派生产物，再让 GM 带着修复上下文重新开始本轮推演。
+
+critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退范围。`story_composition` 与 `delivery_gate` 只重跑 story/critic；`gm_loop`、`actor_agent` 与 `subgm` 会在 `full` 模式下回退到 GM loop 前重跑。当前第一版不做单个 actor/subGM 的局部热修补，以避免 `interaction.trace.json`、`source_call_id` 和 side thread 状态不一致。
+
+如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须额外开启 `allowSourceCodeSelfRepair: true`，默认关闭；普通游玩中不会因为 critic 报告而自动修改关键项目源码。
+
 ## 常用开发命令
 
 ```powershell
@@ -114,7 +140,7 @@ cd skills; npm install
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py`
+- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
 - 启动 `python skills/start_server.py .`，确认 `http://localhost:8765` 可访问。
 - 用手机或其他同一局域网设备访问启动输出中的 LAN URL。
 - 在 Claude Code 中对空白文件夹运行 `/rp`，完成至少 5 个玩家回合；检查玩家输入即时显示、重要角色独立对话框、进度更新、UI/图片热刷新，以及在玩家决策点停止。

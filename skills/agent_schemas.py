@@ -552,13 +552,16 @@ def validate_critic_report(payload: Any) -> Dict[str, Any]:
     decision = _require_str(data, "decision", "critic_report")
     if decision not in CRITIC_DECISIONS:
         raise ValidationError("critic_report.decision must be pass, revise, or block")
-    return {
+    normalized = {
         "decision": decision,
         "hard_failures": _optional_list(data, "hard_failures", "critic_report"),
         "soft_issues": _optional_list(data, "soft_issues", "critic_report"),
         "repair_instruction": _optional_str(data, "repair_instruction", path="critic_report"),
         "system_iteration_suggestion": _optional_str(data, "system_iteration_suggestion", path="critic_report"),
     }
+    if "repair_routing" in data:
+        normalized["repair_routing"] = _optional_dict(data, "repair_routing", "critic_report")
+    return normalized
 
 
 def load_json_checked(path: str | Path, validator: Callable[[Any], Dict[str, Any]]) -> Dict[str, Any]:

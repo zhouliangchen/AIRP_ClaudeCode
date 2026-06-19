@@ -58,7 +58,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。
 - 用户输入分为 `role_channel` 和 `user_instruction_channel`。角色行动/第一人称剧情梗概进入角色通道；第三人称上帝视角设定和直接给 Claude Code 的指令进入用户指令通道，二者互不干扰。
 - 每轮使用 `.agent_runs/<round>/` 作为 agent 文件邮箱。critic 通过后，`round_deliver.py` 才把 `story.output.json` 的正文镜像到 `skills/styles/response.txt` 并交付。
-- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再组织 story/critic 修复循环；若问题来自 prompt、代码或系统流程，且当前任务允许系统迭代，则可以修改项目后重新生成，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
+- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再按 `selfRepairMode` 与 `critic.report.json.repair_routing` 分流：story/delivery 问题只重跑 story/critic；GM/actor/subGM 推进问题仅在 `full` 模式下回退本轮推演产物并重跑 GM loop；若问题来自 prompt、代码或系统流程，且源码自修复配置明确允许，才进入项目源码修复流程，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
 - 图片生成和存档 UI 演化属于可选沉浸增强任务，必须异步执行，不得阻塞正文交付。
 
 
@@ -301,7 +301,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 ```
 python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"
 ```
-此脚本自动完成：校验 `.agent_runs/<round>/` 必需产物 → 必要时重建 `story.input.json` → critic `block/revise` 或产物缺失时返回 `action: retry`，并记录 `repair_history.jsonl` 与可选 `.agent_runs/improvement_queue.jsonl` → critic `pass` 时把 `story.output.json.content` 镜像到 `response.txt` → 字数门禁检查 → token 采集 → handler.py 交付前端 → write_memory.py 与 agent memory delta/summary 更新（summary 失败会记录 `agent_memory_error`，不阻断已通过正文交付）→ manifest 标记 `delivered` → 检查故事规划触发。
+此脚本自动完成：校验 `.agent_runs/<round>/` 必需产物 → 必要时重建 `story.input.json` → critic `block/revise` 或产物缺失时按 `selfRepairMode` 和 `repair_routing` 返回 `action: retry` 或 `action: blocked`，并记录 `repair_history.jsonl` 与可选 `.agent_runs/improvement_queue.jsonl` → critic `pass` 时把 `story.output.json.content` 镜像到 `response.txt` → 字数门禁检查 → token 采集 → handler.py 交付前端 → write_memory.py 与 agent memory delta/summary 更新（summary 失败会记录 `agent_memory_error`，不阻断已通过正文交付）→ manifest 标记 `delivered` → 检查故事规划触发。
 
 若 `round_deliver.py` 返回 `story_plan_due: true` → 执行下方「剧情规划」流程。
 

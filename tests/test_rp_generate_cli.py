@@ -134,6 +134,23 @@ def _critic_pass():
     }
 
 
+def _critic_revise_with_routing(stage, rollback, *, risk="medium"):
+    return {
+        "decision": "revise",
+        "hard_failures": ["repair routed by critic"],
+        "soft_issues": [],
+        "repair_instruction": "Redo the failed stage with stricter continuity.",
+        "system_iteration_suggestion": "",
+        "repair_routing": {
+            "stage": stage,
+            "target_agents": ["gm"] if rollback == "round_progression" else ["story"],
+            "rollback": rollback,
+            "can_auto_repair": True,
+            "risk": risk,
+        },
+    }
+
+
 def _basic_responses(*, gm=None, player=None, story=None, critic=None):
     return {
         "gm": gm if gm is not None else _gm_output(),
@@ -809,6 +826,33 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["delivery"]["result"]["action"], "retry")
 
+    def test_analysis_only_mode_does_not_auto_repair_delivery_retry(self):
+        _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "analysis_only", "wordCount": 1})
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>足够。</content>"),
+        )
+        calls = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        def fake_retry_delivery(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"word_count"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_retry_delivery,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
+        self.assertEqual(result["delivery"]["result"]["action"], "retry")
+
     def test_run_round_retries_once_when_outer_model_skips_task(self):
         valid = _basic_responses(
             player=_player_output("I follow the noise."),
@@ -834,6 +878,112 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls.count("gm"), 2)
+
+    def test_full_mode_rolls_back_and_reruns_gm_loop_for_progression_repair(self):
+        _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "full", "wordCount": 1})
+        calls = []
+        gm_payloads = [
+            _gm_output(scene_beats=[{"content": "The bad branch continues."}]),
+            _gm_output(scene_beats=[{"content": "The repaired branch restarts cleanly."}]),
+        ]
+        player_payloads = [
+            _player_output("I follow the bad branch."),
+            _player_output("I follow the repaired branch."),
+        ]
+        story_payloads = [
+            _story_output("<content>坏分支。</content>", metadata={"attempt": 1}),
+            _story_output("<content>修复分支。</content>", metadata={"attempt": 2}),
+        ]
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                payload = gm_payloads.pop(0)
+                if len(calls) > 1:
+                    self.assertIn("Redo the failed stage", prompt)
+            elif agent_key == "player":
+                payload = player_payloads.pop(0)
+            elif agent_key == "story":
+                payload = story_payloads.pop(0)
+            else:
+                payload = _critic_pass()
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        delivery_attempts = []
+
+        def fake_delivery(command, **kwargs):
+            delivery_attempts.append(command)
+            if len(delivery_attempts) == 1:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "action": "retry",
+                            "reason": "critic_revise",
+                            "detail": _critic_revise_with_routing("gm_loop", "round_progression"),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls.count("gm"), 2)
+        self.assertEqual(calls.count("player"), 2)
+        self.assertEqual(calls.count("story"), 2)
+        self.assertEqual(calls.count("critic"), 2)
+        final_story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            final_story_input["loop_outputs"]["gm"]["outputs"][0]["scene_beats"][0]["content"],
+            "The repaired branch restarts cleanly.",
+        )
+
+    def test_limited_mode_does_not_auto_repair_progression_routing(self):
+        _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "limited", "wordCount": 1})
+        calls = []
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>坏分支。</content>"),
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            calls.append(agent_key)
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        def fake_delivery(command, **kwargs):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "action": "retry",
+                        "reason": "critic_revise",
+                        "detail": _critic_revise_with_routing("gm_loop", "round_progression"),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                stderr="",
+            )
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_delivery,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(calls.count("gm"), 1)
+        self.assertEqual(calls.count("story"), 1)
 
     def test_run_round_retries_once_when_agent_returns_invalid_schema(self):
         calls = []
@@ -1067,6 +1217,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(final_story["metadata"]["attempt"], 2)
 
     def test_run_round_handles_sequential_delivery_repair_requests(self):
+        _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "full", "wordCount": 1})
         calls = []
         story_payloads = [
             {
