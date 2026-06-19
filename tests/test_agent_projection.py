@@ -22,9 +22,93 @@ def _packet_json(packet):
     return json.dumps(packet, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+def _basis(mode, summary="visible proof", **extra):
+    payload = {"mode": mode, "summary": summary}
+    payload.update(extra)
+    return payload
+
+
+def _public_event(content, **extra):
+    event = {
+        "actor": "gm",
+        "type": "scene",
+        "content": content,
+        "visible_to": ["all"],
+        "visibility_basis": _basis("public", visible_to=["all"]),
+    }
+    event.update(extra)
+    return event
+
+
 class AgentProjectionTest(unittest.TestCase):
     def setUp(self):
         self.agent_projection = _load_agent_projection()
+
+    def test_projection_drops_unproven_world_visible_event(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {"visible_events": [{"actor": "gm", "type": "scene", "content": "The archive opens."}]},
+            {"name": "Ada", "location": "courtyard"},
+            "You wait outside.",
+            {"mode": "direct", "summary": "Ada is addressed by GM.", "target_actor": "character:Ada"},
+        )
+
+        self.assertEqual(packet["visible_events"], [])
+
+    def test_projection_keeps_location_proven_event_for_same_location_only(self):
+        world = {
+            "visible_events": [
+                {
+                    "actor": "gm",
+                    "type": "scene",
+                    "content": "A red lamp flickers in the archive.",
+                    "location": "archive",
+                    "sensory_channels": ["visual"],
+                    "visibility_basis": _basis(
+                        "location",
+                        location="archive",
+                        sensory_channels=["visual"],
+                    ),
+                }
+            ]
+        }
+
+        ada = self.agent_projection.project_actor_context(
+            "character:Ada",
+            world,
+            {"name": "Ada", "location": "archive"},
+            "You see the lamp.",
+            {"mode": "direct", "summary": "Ada is addressed by GM.", "target_actor": "character:Ada"},
+        )
+        eve = self.agent_projection.project_actor_context(
+            "character:Eve",
+            world,
+            {"name": "Eve", "location": "courtyard"},
+            "You stand elsewhere.",
+            {"mode": "direct", "summary": "Eve is addressed by GM.", "target_actor": "character:Eve"},
+        )
+
+        self.assertEqual(len(ada["visible_events"]), 1)
+        self.assertEqual(eve["visible_events"], [])
+
+    def test_projection_includes_actor_call_visibility_basis(self):
+        basis = {
+            "mode": "direct",
+            "summary": "Ada is addressed because she sees the player's hand close.",
+            "location": "classroom",
+            "visible_to": ["character:Ada"],
+            "target_actor": "character:Ada",
+        }
+
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {},
+            {"name": "Ada"},
+            "You see the player's hand close.",
+            basis,
+        )
+
+        self.assertEqual(packet["gm_visibility_basis"], basis)
 
     def test_player_projection_removes_hidden_context_and_keeps_prompt_anchor(self):
         world = {
@@ -33,7 +117,7 @@ class AgentProjectionTest(unittest.TestCase):
             "gm_only_hidden_settings": [{"fact": "The pendant burns identity."}],
             "hidden_facts": {"pendant": "It is a soul furnace."},
             "recent_chat": [{"summary": "GM-only foreshadowing about the pendant."}],
-            "visible_events": [{"actor": "gm", "type": "scene", "content": "The classroom is noisy."}],
+            "visible_events": [_public_event("The classroom is noisy.")],
             "sensory_context": {"sight": "A teacher writes on the board."},
         }
         actor = {
@@ -84,7 +168,11 @@ class AgentProjectionTest(unittest.TestCase):
             "user_instruction_channel": "SuLi is secretly a former magical girl.",
             "private_events": [{"actor": "player", "type": "thought", "content": "I am scared."}],
             "visible_events": [
-                {"actor": "player", "type": "action", "content": "He closes his hand around something pink."},
+                _public_event(
+                    "He closes his hand around something pink.",
+                    actor="player",
+                    type="action",
+                ),
                 {"actor": "character:Other", "type": "internal", "content": "Other plans to betray SuLi."},
             ],
             "actor_visible_events": {
@@ -219,7 +307,7 @@ class AgentProjectionTest(unittest.TestCase):
         world = {
             "role_channel": "I look at SuLi.",
             "user_instruction_channel": "Keep the curse hidden.",
-            "visible_events": [{"actor": "player", "content": "The player looks up."}],
+            "visible_events": [_public_event("The player looks up.", actor="player")],
             "actor_visible_events": {
                 "player": [{"actor": "gm", "content": "A bell rings."}],
             },
@@ -333,7 +421,7 @@ class AgentProjectionTest(unittest.TestCase):
                         "content": "The lamp flickers.",
                         "metadata": {"World_Truth": "the lamp is fake"},
                     },
-                    {"actor": "gm", "type": "sound", "content": "Rain taps the glass."},
+                    _public_event("Rain taps the glass.", type="sound"),
                 ],
             },
             {
@@ -380,7 +468,7 @@ class AgentProjectionTest(unittest.TestCase):
                 "visible_events": [
                     "world_truth: the door is fake",
                     7,
-                    {"actor": "gm", "type": "scene", "content": "The door is closed."},
+                    _public_event("The door is closed."),
                 ],
                 "actor_visible_events": {
                     "player": [
@@ -396,7 +484,7 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertEqual(
             packet["visible_events"],
             [
-                {"actor": "gm", "type": "scene", "content": "The door is closed."},
+                _public_event("The door is closed."),
                 {"actor": "gm", "type": "sound", "content": "A hinge creaks."},
             ],
         )
