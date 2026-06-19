@@ -18,6 +18,17 @@ def _load_agent_schemas():
     return module
 
 
+def visibility_basis(actor_id="character:SuLi"):
+    return {
+        "mode": "direct",
+        "summary": f"{actor_id} is present and can perceive the prompt.",
+        "location": "classroom",
+        "visible_to": [actor_id],
+        "sensory_channels": ["visual"],
+        "target_actor": actor_id,
+    }
+
+
 class AgentSchemaTest(unittest.TestCase):
     def setUp(self):
         self.agent_schemas = _load_agent_schemas()
@@ -25,14 +36,53 @@ class AgentSchemaTest(unittest.TestCase):
     def test_validate_gm_output_uses_interactive_event_contract(self):
         payload = {
             "agent": "gm",
-            "scene_beats": [{"content": "The classroom clock clicks once."}],
-            "events": [{"type": "npc_action", "target": "", "content": "A student shuts the door."}],
+            "scene_beats": [
+                {
+                    "content": "The classroom clock clicks once.",
+                    "scene_id": "classroom-1",
+                    "location": "classroom",
+                    "time_window": "current",
+                    "visible_to": ["all"],
+                    "sensory_channels": ["auditory"],
+                    "source_actor": "gm",
+                    "visibility_basis": {
+                        "mode": "public",
+                        "summary": "Everyone in the classroom can hear the clock.",
+                        "location": "classroom",
+                        "visible_to": ["all"],
+                        "sensory_channels": ["auditory"],
+                    },
+                }
+            ],
+            "events": [
+                {
+                    "type": "npc_action",
+                    "target": "",
+                    "content": "A student shuts the door.",
+                    "scene_id": "classroom-1",
+                    "location": "classroom",
+                    "time_window": "current",
+                    "visible_to": ["character:SuLi"],
+                    "sensory_channels": ["visual"],
+                    "source_actor": "character:ClassRep",
+                    "target_actor": "character:SuLi",
+                    "visibility_basis": visibility_basis(),
+                }
+            ],
             "actor_calls": [
                 {
                     "call_id": "call-1",
                     "actor_id": "character:SuLi",
                     "prompt": "You notice the pendant in his hand.",
                     "reason": "SuLi can see the pendant.",
+                    "scene_id": "classroom-1",
+                    "location": "classroom",
+                    "time_window": "current",
+                    "visible_to": ["character:SuLi"],
+                    "sensory_channels": ["visual"],
+                    "source_actor": "gm",
+                    "target_actor": "character:SuLi",
+                    "visibility_basis": visibility_basis(),
                 }
             ],
             "parallel_groups": [["character:SuLi", "character:ClassRep"]],
@@ -57,11 +107,57 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["scene_beats"], payload["scene_beats"])
         self.assertEqual(normalized["events"], payload["events"])
         self.assertEqual(normalized["actor_calls"][0]["actor_id"], "character:SuLi")
+        self.assertEqual(normalized["actor_calls"][0]["visibility_basis"], visibility_basis())
         self.assertEqual(normalized["parallel_groups"], payload["parallel_groups"])
         self.assertEqual(normalized["world_state_delta"], payload["world_state_delta"])
         self.assertEqual(normalized["character_promotions"][0]["name"], "ClassRep")
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")
+
+    def test_validate_gm_output_requires_actor_call_visibility_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "player",
+                    "prompt": "You look up.",
+                    "reason": "The player is present.",
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_hidden_marker_visibility_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [
+                {
+                    "call_id": "call-1",
+                    "actor_id": "player",
+                    "prompt": "You look up.",
+                    "reason": "The player is present.",
+                    "visibility_basis": {"mode": "direct", "summary": "world_truth says this matters"},
+                }
+            ],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_defaults_character_promotions_to_empty_list(self):
         payload = {

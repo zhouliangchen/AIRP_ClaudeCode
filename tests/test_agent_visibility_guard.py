@@ -51,6 +51,38 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("burns identity", text)
         self.assertIn("[redacted]", text)
 
+    def test_sanitize_gm_output_redacts_visibility_basis(self):
+        sanitized = self.guard.sanitize_gm_output(
+            {
+                "agent": "gm",
+                "scene_beats": [],
+                "events": [],
+                "actor_calls": [
+                    {
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "You feel heat.",
+                        "reason": "Visible touch.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "The pendant burns identity.",
+                            "target_actor": "player",
+                        },
+                    }
+                ],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "continue",
+            },
+            {"hidden_facts": [{"fact": "The pendant burns identity."}]},
+        )
+
+        self.assertEqual(
+            sanitized["actor_calls"][0]["visibility_basis"]["summary"],
+            "[redacted]",
+        )
+
     def test_redacts_hidden_phrase_and_marker_from_character_promotions(self):
         input_payload = {
             "routed_input": {
