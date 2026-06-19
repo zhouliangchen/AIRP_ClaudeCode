@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 
 HIDDEN_SMOKE_PHRASE = "the pendant burns identity"
+VISIBLE_ADA_PROMPT = "You notice the player trying to hide the pendant and respond only from Ada's visible perception."
 PROMOTED_CHARACTER = "SuLi"
 PROMOTION_RECORD = {
     "name": PROMOTED_CHARACTER,
@@ -80,6 +81,41 @@ def _assert_actor_calls_have_visibility_basis(output: Dict[str, Any], label: str
         basis = call.get("visibility_basis")
         if not isinstance(basis, dict) or not str(basis.get("summary") or "").strip():
             raise RuntimeError(f"{label}.actor_calls[{index}] missing visibility_basis.summary")
+
+
+def _actor_packet_visibility_basis_evidence(packet: Dict[str, Any] | None) -> Dict[str, Any]:
+    basis = packet.get("gm_visibility_basis", {}) if isinstance(packet, dict) else {}
+    if not isinstance(basis, dict):
+        basis = {}
+    visible_to = basis.get("visible_to")
+    sensory_channels = basis.get("sensory_channels")
+    return {
+        "mode": basis.get("mode"),
+        "summary_present": bool(str(basis.get("summary") or "").strip()),
+        "summary_hidden_text_absent": not _contains_text(basis.get("summary", ""), HIDDEN_SMOKE_PHRASE),
+        "location": basis.get("location"),
+        "visible_to": visible_to if isinstance(visible_to, list) else [],
+        "sensory_channels": sensory_channels if isinstance(sensory_channels, list) else [],
+        "target_actor": basis.get("target_actor"),
+    }
+
+
+def _assert_actor_packet_visibility_basis(packet: Dict[str, Any]) -> None:
+    evidence = _actor_packet_visibility_basis_evidence(packet)
+    expected = {
+        "mode": "location",
+        "location": "classroom",
+        "visible_to": ["character:Ada"],
+        "sensory_channels": ["visual"],
+        "target_actor": "character:Ada",
+    }
+    for key, value in expected.items():
+        if evidence.get(key) != value:
+            raise RuntimeError(f"unexpected actor packet visibility basis {key}: {evidence!r}")
+    if not evidence["summary_present"]:
+        raise RuntimeError(f"actor packet visibility basis summary is empty: {evidence!r}")
+    if not evidence["summary_hidden_text_absent"]:
+        raise RuntimeError("hidden pendant identity text leaked into actor packet visibility basis")
 
 
 def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], input_analysis) -> Dict[str, Any]:
@@ -202,11 +238,11 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
             {
                 "call_id": "call-character-Ada-1",
                 "actor_id": "character:Ada",
-                "prompt": "You notice the player trying to hide the pendant and respond only from Ada's visible perception.",
-                "reason": "Ada can see the player's hand move toward the pendant.",
+                "prompt": VISIBLE_ADA_PROMPT,
+                "reason": f"Ada can see the player's hand move toward the pendant. Smoke hidden leak: {HIDDEN_SMOKE_PHRASE}.",
                 "visibility_basis": {
                     "mode": "location",
-                    "summary": "Ada is nearby and can see the player move the pendant.",
+                    "summary": f"Ada is nearby and can see the player move the pendant. Smoke hidden leak: {HIDDEN_SMOKE_PHRASE}.",
                     "location": "classroom",
                     "visible_to": ["character:Ada"],
                     "sensory_channels": ["visual"],
@@ -314,9 +350,10 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
     captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=1)
     if not captured["actor_packets"]:
         raise RuntimeError("deterministic actor dispatch did not capture actor packets")
-    basis = captured["actor_packets"][0].get("gm_visibility_basis", {})
-    if basis.get("target_actor") != "character:Ada":
-        raise RuntimeError(f"unexpected actor packet visibility basis target: {basis!r}")
+    actor_packet = captured["actor_packets"][0]
+    _assert_actor_packet_visibility_basis(actor_packet)
+    if actor_packet.get("gm_prompt") != VISIBLE_ADA_PROMPT:
+        raise RuntimeError(f"actor packet prompt is not the expected visible-only prompt: {actor_packet.get('gm_prompt')!r}")
     if "burns identity" in json.dumps(captured["actor_packets"], ensure_ascii=False).lower():
         raise RuntimeError("hidden pendant identity text leaked into actor packets")
     return captured
@@ -532,22 +569,55 @@ def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> 
     input_json = _read_json(run_dir / "input.json")
     loop_outputs = story_input.get("loop_outputs", {})
     actor_packets = captured_loop.get("actor_packets", [])
+    first_actor_packet = actor_packets[0] if actor_packets and isinstance(actor_packets[0], dict) else {}
+    raw_actor_calls = (
+        captured_loop.get("raw_gm_output", {}).get("actor_calls", [])
+        if isinstance(captured_loop.get("raw_gm_output"), dict)
+        else []
+    )
     hidden_source_present = _contains_text(input_json, HIDDEN_SMOKE_PHRASE)
-    sanitized_actor_fields = [gm_output.get("outputs", []), loop_outputs.get("gm", {}), actor_packets]
-    actor_packet_basis_target = bool(actor_packets) and (
-        actor_packets[0].get("gm_visibility_basis", {}).get("target_actor") == "character:Ada"
+    raw_actor_facing_fields = [
+        {
+            "prompt": call.get("prompt"),
+            "reason": call.get("reason"),
+            "visibility_basis": call.get("visibility_basis"),
+            "metadata": call.get("metadata"),
+        }
+        for call in raw_actor_calls
+        if isinstance(call, dict)
+    ]
+    sanitized_loop_fields = [gm_output.get("outputs", []), loop_outputs.get("gm", {})]
+    raw_actor_facing_hidden_leak_detected = any(
+        _contains_text(field, HIDDEN_SMOKE_PHRASE)
+        for field in raw_actor_facing_fields
+    )
+    sanitized_loop_output_hidden_text_absent = not any(
+        _contains_text(field, HIDDEN_SMOKE_PHRASE)
+        for field in sanitized_loop_fields
     )
     actor_packet_hidden_text_absent = "burns identity" not in json.dumps(actor_packets, ensure_ascii=False).lower()
+    actor_packet_prompt_visible_only = first_actor_packet.get("gm_prompt") == VISIBLE_ADA_PROMPT
+    actor_packet_visibility_basis = _actor_packet_visibility_basis_evidence(first_actor_packet)
+    sanitized_actor_facing_redaction_marker_present = any(
+        _contains_text(field, "[redacted]")
+        for field in [*sanitized_loop_fields, actor_packets]
+    )
     redacted_actor_call = (
         hidden_source_present
-        and actor_packet_basis_target
+        and raw_actor_facing_hidden_leak_detected
+        and sanitized_loop_output_hidden_text_absent
         and actor_packet_hidden_text_absent
-        and not any(_contains_text(field, HIDDEN_SMOKE_PHRASE) for field in sanitized_actor_fields)
+        and actor_packet_prompt_visible_only
+        and sanitized_actor_facing_redaction_marker_present
     )
     return {
         "redacted_actor_call": redacted_actor_call,
-        "actor_packet_basis_target": actor_packet_basis_target,
+        "raw_actor_facing_hidden_leak_detected": raw_actor_facing_hidden_leak_detected,
+        "sanitized_loop_output_hidden_text_absent": sanitized_loop_output_hidden_text_absent,
+        "sanitized_actor_facing_redaction_marker_present": sanitized_actor_facing_redaction_marker_present,
+        "actor_packet_visibility_basis": actor_packet_visibility_basis,
         "actor_packet_hidden_text_absent": actor_packet_hidden_text_absent,
+        "actor_packet_prompt_visible_only": actor_packet_prompt_visible_only,
     }
 
 

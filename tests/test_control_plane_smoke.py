@@ -51,7 +51,19 @@ class ControlPlaneSmokeTest(unittest.TestCase):
             {item["thread_id"]: item["status"] for item in results},
             {"side_gate_noise": "paused", "side_suli_rooftop": "completed"},
         )
-        self.assertTrue(payload["visibility_guard"]["redacted_actor_call"])
+        visibility_guard = payload["visibility_guard"]
+        self.assertTrue(visibility_guard["redacted_actor_call"])
+        self.assertTrue(visibility_guard["raw_actor_facing_hidden_leak_detected"])
+        self.assertTrue(visibility_guard["sanitized_loop_output_hidden_text_absent"])
+        self.assertTrue(visibility_guard["actor_packet_hidden_text_absent"])
+        self.assertTrue(visibility_guard["actor_packet_prompt_visible_only"])
+        basis = visibility_guard["actor_packet_visibility_basis"]
+        self.assertEqual(basis["mode"], "location")
+        self.assertTrue(basis["summary_present"])
+        self.assertEqual(basis["location"], "classroom")
+        self.assertEqual(basis["visible_to"], ["character:Ada"])
+        self.assertEqual(basis["sensory_channels"], ["visual"])
+        self.assertEqual(basis["target_actor"], "character:Ada")
         self.assertIn("SuLi", payload["promotions"]["promoted"])
         self.assertTrue(payload["structured_memory"]["character:SuLi"])
         self.assertEqual(payload["manifest_stage"], "delivered")

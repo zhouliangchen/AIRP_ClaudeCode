@@ -46,4 +46,5 @@ Use `stop_reason` to mark the next control-plane step:
 - `continue` when GM can safely continue routing or composing.
 - `player_decision` when the next meaningful choice belongs to the real player.
 - `word_target` when the scene has reached a requested chapter or response size target.
-- `blocked` when required artifacts, contradictions, or visibility risks prevent safe delivery.
+- `complete` when the scene or requested generation unit is complete.
+- `max_steps` when the GM loop reaches the configured iteration limit.

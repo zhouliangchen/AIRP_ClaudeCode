@@ -65,3 +65,15 @@ class GmSkillContractsTest(unittest.TestCase):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
         self.assertIn("visibility_basis", text)
         self.assertIn("per call", text)
+
+    def test_actor_routing_stop_reasons_match_schema(self):
+        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        for reason in (
+            "`continue`",
+            "`player_decision`",
+            "`word_target`",
+            "`complete`",
+            "`max_steps`",
+        ):
+            self.assertIn(reason, text)
+        self.assertNotIn("`blocked`", text)
