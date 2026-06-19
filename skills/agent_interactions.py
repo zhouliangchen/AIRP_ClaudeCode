@@ -385,9 +385,15 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "source_call_id": _safe_id(item.get("source_call_id", "")),
             "causal_links": _safe_id_list(item.get("causal_links", [])),
         }
+        raw_visibility_metadata = {
+            field: item[field]
+            for field in agent_visibility.VISIBILITY_FIELDS
+            if field in item
+        }
+        visibility_metadata = agent_visibility.visibility_fields_from_event(raw_visibility_metadata)
         for field in agent_visibility.VISIBILITY_FIELDS:
-            if field in item:
-                visible_item[field] = item[field]
+            if field in visibility_metadata:
+                visible_item[field] = visibility_metadata[field]
         visible.append(visible_item)
     private_count = len([
         item for item in events

@@ -82,6 +82,10 @@ def _canonical_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
 
 
+def _compact_marker(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
 def _actor_identity_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
@@ -95,6 +99,7 @@ def _sensory_identity_key(value: Any) -> str:
 
 
 HIDDEN_MARKER_CANONICALS = {_canonical_marker(marker) for marker in HIDDEN_MARKERS}
+HIDDEN_MARKER_COMPACTS = {_compact_marker(marker) for marker in HIDDEN_MARKERS}
 PUBLIC_MARKER_CANONICALS = {_canonical_marker(marker) for marker in PUBLIC_MARKERS}
 SOURCE_BUCKET_PUBLIC_MARKER_CANONICALS = {
     _canonical_marker(marker) for marker in SOURCE_BUCKET_PUBLIC_MARKERS
@@ -103,7 +108,11 @@ SOURCE_BUCKET_PUBLIC_MARKER_CANONICALS = {
 
 def _contains_hidden_marker_text(value: Any) -> bool:
     canonical = _canonical_marker(value)
-    return any(marker and marker in canonical for marker in HIDDEN_MARKER_CANONICALS)
+    compact = _compact_marker(value)
+    return any(marker and marker in canonical for marker in HIDDEN_MARKER_CANONICALS) or any(
+        marker and marker in compact
+        for marker in HIDDEN_MARKER_COMPACTS
+    )
 
 
 def _has_hidden_marker(value: Any) -> bool:

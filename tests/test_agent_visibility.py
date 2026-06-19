@@ -507,6 +507,43 @@ class AgentVisibilityTest(unittest.TestCase):
 
         self.assertFalse(self.visibility.event_visible_to_actor(event, "player", {}))
 
+    def test_camel_and_compact_hidden_markers_are_rejected_from_visibility_fields(self):
+        fields = self.visibility.visibility_fields_from_event({
+            "location": "gmOnlyRoom",
+            "source_actor": "worldTruthActor",
+            "target_actor": "character:Ada",
+            "visible_to": ["hiddenFactWitness"],
+            "sensory_channels": ["auditory"],
+            "visibility_basis": {
+                "mode": "direct",
+                "summary": "outOfCharacterNote",
+                "target_actor": "character:Ada",
+            },
+        })
+
+        self.assertNotIn("location", fields)
+        self.assertNotIn("source_actor", fields)
+        self.assertNotIn("visible_to", fields)
+        self.assertNotIn("visibility_basis", fields)
+        self.assertEqual(fields["target_actor"], "character:Ada")
+        self.assertEqual(fields["sensory_channels"], ["auditory"])
+
+        compact_fields = self.visibility.visibility_fields_from_event({
+            "location": "gmonlyroom",
+            "source_actor": "worldtruthactor",
+            "visible_to": ["outofcharacternote"],
+        })
+
+        self.assertEqual(compact_fields, {})
+        self.assertEqual(
+            self.visibility.normalize_visibility_basis({
+                "mode": "direct",
+                "summary": "worldtruthactor",
+                "target_actor": "character:Ada",
+            }),
+            {},
+        )
+
     def test_normalized_basis_is_json_safe_and_compact(self):
         normalized = self.visibility.normalize_visibility_basis({
             "mode": "location",

@@ -190,6 +190,123 @@ class AgentInteractionTraceTest(unittest.TestCase):
             json.dumps(summary, ensure_ascii=False),
         )
 
+    def test_summary_drops_camel_and_compact_hidden_visibility_metadata_fields(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="scene",
+            content="Ada hears a bell.",
+            visibility_metadata={
+                "location": "gmOnlyRoom",
+                "visible_to": ["hiddenFactWitness"],
+                "sensory_channels": ["auditory"],
+                "source_actor": "worldTruthActor",
+                "target_actor": "character:Ada",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "outOfCharacterNote",
+                    "target_actor": "character:Ada",
+                },
+            },
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="scene",
+            content="Ada sees a desk.",
+            visibility_metadata={
+                "location": "gmonlyroom",
+                "visible_to": ["worldtruthactor"],
+                "sensory_channels": ["visual"],
+                "source_actor": "hiddenfactwitness",
+                "target_actor": "character:Ada",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "worldtruthactor",
+                    "target_actor": "character:Ada",
+                },
+            },
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(len(summary["visible_events"]), 2)
+        for visible_event in summary["visible_events"]:
+            self.assertNotIn("location", visible_event)
+            self.assertNotIn("visible_to", visible_event)
+            self.assertNotIn("source_actor", visible_event)
+            self.assertNotIn("visibility_basis", visible_event)
+            self.assertEqual(visible_event["target_actor"], "character:Ada")
+        serialized = json.dumps(summary, ensure_ascii=False).lower()
+        for hidden_text in (
+            "gmonlyroom",
+            "gmOnlyRoom".lower(),
+            "hiddenfact",
+            "hiddenfactwitness",
+            "worldtruthactor",
+            "outofcharacternote",
+        ):
+            self.assertNotIn(hidden_text, serialized)
+
+    def test_summary_renormalizes_persisted_visibility_fields(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="scene",
+            content="Ada hears a bell.",
+            visibility_metadata={
+                "location": "classroom",
+                "visible_to": ["character:Ada"],
+                "sensory_channels": ["auditory"],
+                "source_actor": "gm",
+                "target_actor": "character:Ada",
+                "visibility_basis": {
+                    "mode": "direct",
+                    "summary": "Ada can hear the bell.",
+                    "target_actor": "character:Ada",
+                },
+            },
+        )
+        path = self.run_dir / "interaction.trace.json"
+        trace = json.loads(path.read_text(encoding="utf-8"))
+        trace["events"][0].update({
+            "location": "gmOnlyRoom",
+            "visible_to": ["hiddenFactWitness"],
+            "source_actor": "worldtruthactor",
+            "visibility_basis": {
+                "mode": "direct",
+                "summary": "outOfCharacterNote",
+                "target_actor": "character:Ada",
+            },
+        })
+        path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        visible_event = summary["visible_events"][0]
+        self.assertNotIn("location", visible_event)
+        self.assertNotIn("visible_to", visible_event)
+        self.assertNotIn("source_actor", visible_event)
+        self.assertNotIn("visibility_basis", visible_event)
+        self.assertEqual(visible_event["sensory_channels"], ["auditory"])
+        self.assertEqual(visible_event["target_actor"], "character:Ada")
+        serialized = json.dumps(summary, ensure_ascii=False).lower()
+        self.assertNotIn("gmonlyroom", serialized)
+        self.assertNotIn("hiddenfactwitness", serialized)
+        self.assertNotIn("worldtruthactor", serialized)
+        self.assertNotIn("outofcharacternote", serialized)
+
     def test_trace_records_actor_batches_and_routing_warnings(self):
         self.agent_interactions.init_trace(
             self.run_dir,
