@@ -1149,6 +1149,32 @@ class AgentPacketTest(unittest.TestCase):
         player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
         self.assertNotIn(input_payload["user_instruction_text"], json.dumps(player_packet, ensure_ascii=False))
 
+    def test_input_analyst_prompt_and_skill_define_world_update_record_contract(self):
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="Omniscient: the old seal is a hidden covenant.",
+            chat_log=[],
+            card_data={"title": "World Update Contract Test"},
+            character_contexts={"characters": []},
+            turn_index=0,
+        )
+        run_dir = Path(result["run_dir"])
+        prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
+        generated_prompt_contract = prompt.split("## Skill Body", 1)[0]
+        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+
+        required_fragments = (
+            'world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`',
+            'world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`',
+            'world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`',
+            'world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`',
+            "If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.",
+        )
+        for text in (generated_prompt_contract, skill):
+            for fragment in required_fragments:
+                with self.subTest(fragment=fragment):
+                    self.assertIn(fragment, text)
+
     def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(
             self.card,

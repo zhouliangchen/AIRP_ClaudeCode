@@ -24,6 +24,15 @@ SKILL_PATHS = {
 
 AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character"}
 
+WORLD_UPDATE_RECORD_CONTRACT = """World update record contract:
+
+- world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
+- world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`
+- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`
+- world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`
+
+If a world update cannot satisfy the record schema, omit it and keep the semantic unit only."""
+
 
 def _rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
@@ -70,10 +79,12 @@ def _base_prompt(
     contract: str,
     context: Dict[str, Any],
     output_instruction: str | None = None,
+    contract_notes: str | None = None,
 ) -> str:
     skill_path = SKILL_PATHS[skill_key]
     if output_instruction is None:
         output_instruction = f"Use only the allowed context below and write the required JSON artifact to `{output_path}`."
+    notes = f"\n\n{contract_notes.strip()}" if contract_notes else ""
     return f"""
 # {title}
 
@@ -90,6 +101,7 @@ Do not write final prose unless this is the story agent.
 ```json
 {contract}
 ```
+{notes}
 
 ## Context Packet
 
@@ -147,6 +159,7 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "input_analysis.output.json",
         contract,
         context,
+        contract_notes=WORLD_UPDATE_RECORD_CONTRACT,
     ) + (
         "\n\nSemantic unit enum contract: every `semantic_units[]` item must use "
         "exactly one of the allowed `type` values and exactly one of the allowed "

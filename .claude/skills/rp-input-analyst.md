@@ -52,6 +52,15 @@ Every `semantic_units` item must use exactly one of these `visibility` values:
 
 Invalid semantic unit visibility aliases: public, private, player, character, world_visible, actor_visible. Do not write these aliases in `input_analysis.output.json`.
 
+## World Update Record Contract
+
+- world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
+- world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`
+- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`
+- world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`
+
+If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.
+
 ## Output
 
 Write exactly one JSON object to `input_analysis.output.json`. No prose, Markdown, or code fences.
