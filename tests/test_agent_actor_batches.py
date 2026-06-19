@@ -124,6 +124,75 @@ class ActorBatchPlannerTest(unittest.TestCase):
         )
         self.assertEqual(plan["warnings"][0]["code"], "unknown_parallel_group_member")
 
+    def test_scalar_actors_group_downgrades_to_serial_with_warning(self):
+        calls = [
+            call("call-character-Ada-1", "character:Ada"),
+            call("call-character-Bea-1", "character:Bea"),
+        ]
+
+        plan = self.batches.build_actor_batches(
+            calls,
+            [{"group_id": "group-scalar-actors", "actors": 123}],
+            max_parallel=2,
+        )
+
+        self.assertEqual(
+            [(batch["kind"], [item["actor_id"] for item in batch["calls"]]) for batch in plan["batches"]],
+            [
+                ("serial", ["character:Ada"]),
+                ("serial", ["character:Bea"]),
+            ],
+        )
+        self.assertEqual(plan["warnings"][0]["code"], "empty_parallel_group")
+        self.assertEqual(plan["warnings"][0]["group_id"], "group-scalar-actors")
+
+    def test_scalar_call_ids_group_downgrades_to_serial_with_warning(self):
+        calls = [
+            call("call-character-Ada-1", "character:Ada"),
+            call("call-character-Bea-1", "character:Bea"),
+        ]
+
+        plan = self.batches.build_actor_batches(
+            calls,
+            [{"group_id": "group-scalar-call-ids", "call_ids": 123}],
+            max_parallel=2,
+        )
+
+        self.assertEqual(
+            [(batch["kind"], [item["actor_id"] for item in batch["calls"]]) for batch in plan["batches"]],
+            [
+                ("serial", ["character:Ada"]),
+                ("serial", ["character:Bea"]),
+            ],
+        )
+        self.assertEqual(plan["warnings"][0]["code"], "empty_parallel_group")
+        self.assertEqual(plan["warnings"][0]["group_id"], "group-scalar-call-ids")
+
+    def test_nonnumeric_direct_max_parallel_defaults_safely(self):
+        calls = [
+            call("call-character-Ada-1", "character:Ada"),
+            call("call-character-Bea-1", "character:Bea"),
+            call("call-character-Cora-1", "character:Cora"),
+        ]
+
+        plan = self.batches.build_actor_batches(
+            calls,
+            [{"group_id": "group-main", "actors": ["character:Ada", "character:Bea"]}],
+            max_parallel="bad",
+        )
+
+        self.assertEqual(plan["warnings"], [])
+        self.assertEqual(
+            [
+                (batch["kind"], batch["group_id"], [item["actor_id"] for item in batch["calls"]])
+                for batch in plan["batches"]
+            ],
+            [
+                ("parallel", "group-main", ["character:Ada", "character:Bea"]),
+                ("serial", "", ["character:Cora"]),
+            ],
+        )
+
     def test_max_parallel_from_input_reads_card_orchestration_and_defaults_to_two(self):
         self.assertEqual(
             self.batches.max_parallel_from_input({

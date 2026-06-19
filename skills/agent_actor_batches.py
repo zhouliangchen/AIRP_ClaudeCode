@@ -20,15 +20,32 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _text_items(value: Any) -> list[str]:
+    if isinstance(value, (str, bytes, dict)):
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        try:
+            raw_items = list(value)
+        except TypeError:
+            return []
+    return [_text(item) for item in raw_items if _text(item)]
+
+
+def _max_parallel(value: Any, default: int = DEFAULT_MAX_PARALLEL) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
+
+
 def max_parallel_from_input(input_payload: dict, default: int = DEFAULT_MAX_PARALLEL) -> int:
     card_data = _dict(input_payload.get("card_data"))
     orchestration = _dict(card_data.get("character_orchestration"))
     raw = orchestration.get("max_parallel_subagents", default)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = default
-    return max(1, value)
+    return _max_parallel(raw, default)
 
 
 def _chunk(items: list[int], size: int) -> Iterable[list[int]]:
@@ -47,26 +64,14 @@ def _group_actor_ids(group: Any) -> list[str]:
         raw = group.get("actors") or group.get("actor_ids") or []
     else:
         raw = group
-    if isinstance(raw, (str, bytes, dict)):
-        return []
-    return [
-        _text(item)
-        for item in _list(list(raw) if not isinstance(raw, list) else raw)
-        if _text(item)
-    ]
+    return _text_items(raw)
 
 
 def _group_call_ids(group: Any) -> list[str]:
     if not isinstance(group, dict):
         return []
     raw = group.get("call_ids") or []
-    if isinstance(raw, (str, bytes, dict)):
-        return []
-    return [
-        _text(item)
-        for item in _list(list(raw) if not isinstance(raw, list) else raw)
-        if _text(item)
-    ]
+    return _text_items(raw)
 
 
 def _warning(
@@ -193,7 +198,7 @@ def build_actor_batches(
     max_parallel: int = DEFAULT_MAX_PARALLEL,
 ) -> dict:
     calls = [call for call in actor_calls if isinstance(call, dict)]
-    limit = max(1, int(max_parallel or 1))
+    limit = _max_parallel(max_parallel)
     consumed: set[int] = set()
     group_by_first_index: dict[int, tuple[str, list[int]]] = {}
     warnings: list[dict] = []
