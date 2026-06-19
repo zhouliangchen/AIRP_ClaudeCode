@@ -22,6 +22,31 @@ PROMOTION_RECORD = {
 }
 
 
+def _side_thread_start_command(
+    thread_id: str,
+    *,
+    title: str,
+    outline: str,
+    location: str,
+    objective: str,
+    allowed_character: str,
+) -> Dict[str, Any]:
+    return {
+        "action": "start",
+        "thread_id": thread_id,
+        "title": title,
+        "outline": outline,
+        "time_window": "same morning",
+        "location": location,
+        "objective": objective,
+        "allowed_characters": [allowed_character],
+        "forbidden_characters": ["player"],
+        "priority": "normal",
+        "message": "Start this scoped side thread now.",
+        "metadata": {"source": "control_plane_smoke"},
+    }
+
+
 def _insert_skills_path(repo: Path) -> None:
     skills_dir = str((repo / "skills").resolve())
     if skills_dir not in sys.path:
@@ -113,27 +138,91 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
     )
 
 
+def _smoke_character_contexts() -> list[Dict[str, Any]]:
+    return [
+        {
+            "name": "Ada",
+            "role": "archive guide",
+            "memory": {
+                "long_term": ["I guide the player near the archive."],
+                "key_memories": [],
+                "short_term": [],
+                "goals": ["Keep the player steady near the archive."],
+            },
+        },
+        {
+            "name": "GateKeeper",
+            "role": "quiet gate watcher",
+            "memory": {
+                "long_term": ["I know the sound of the old school gate."],
+                "key_memories": [],
+                "short_term": [],
+                "goals": ["Find the source of gate noises."],
+            },
+        },
+    ]
+
+
+def _ensure_smoke_character_contexts(run_dir: Path) -> None:
+    input_json = _read_json(run_dir / "input.json")
+    contexts = input_json.get("character_contexts")
+    if not isinstance(contexts, dict):
+        contexts = {}
+    characters = contexts.get("characters")
+    if not isinstance(characters, list):
+        characters = []
+    existing = {
+        str(item.get("name") or item.get("character_name") or "")
+        for item in characters
+        if isinstance(item, dict)
+    }
+    for context in _smoke_character_contexts():
+        if context["name"] not in existing:
+            characters.append(context)
+    contexts["characters"] = characters
+    input_json["character_contexts"] = contexts
+    _write_json(run_dir / "input.json", input_json)
+
+
 def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]:
     raw_gm_output = {
         "agent": "gm",
-        "scene_beats": [{"content": "SuLi notices the pendant before the player can hide it."}],
+        "scene_beats": [{"content": "Ada notices the pendant before the player can hide it."}],
         "events": [],
         "actor_calls": [
             {
-                "call_id": "call-character-SuLi-1",
-                "actor_id": "character:SuLi",
+                "call_id": "call-character-Ada-1",
+                "actor_id": "character:Ada",
                 "prompt": (
                     "You recognize the pendant burns identity, but respond only from "
-                    "what SuLi can safely perceive."
+                    "what Ada can safely perceive."
                 ),
                 "reason": "GM must test that the hidden pendant truth is redacted.",
             }
         ],
         "parallel_groups": [],
-        "world_state_delta": [{"scope": "pendant", "fact": "SuLi notices the pendant publicly."}],
+        "world_state_delta": [{"scope": "pendant", "fact": "Ada notices the pendant publicly."}],
         "character_promotions": [PROMOTION_RECORD],
+        "subgm_commands": [
+            _side_thread_start_command(
+                "side_suli_rooftop",
+                title="Rooftop warning",
+                outline="SuLi checks whether the rooftop sigil reacts to the pendant.",
+                location="school rooftop",
+                objective="Resolve the off-screen rooftop clue and report it to GM.",
+                allowed_character="character:SuLi",
+            ),
+            _side_thread_start_command(
+                "side_gate_noise",
+                title="Gate noise",
+                outline="GateKeeper traces the sound at the school gate.",
+                location="school gate",
+                objective="Pause once the gate clue reaches a GM decision point.",
+                allowed_character="character:GateKeeper",
+            ),
+        ],
         "decision_point": {
-            "reason": "The player must choose whether to show SuLi the pendant.",
+            "reason": "The player must choose whether to show Ada the pendant.",
             "options": ["show the pendant", "hide the pendant"],
         },
         "stop_reason": "player_decision",
@@ -143,12 +232,44 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         if agent_key == "gm":
             return raw_gm_output
-        if agent_key == "character:SuLi":
+        if agent_key == "subGM:side_suli_rooftop":
+            return {
+                "agent": "subGM",
+                "thread_id": "side_suli_rooftop",
+                "status": "completed",
+                "scene_beats": [{"content": "SuLi finds chalk dust beside the rooftop vent."}],
+                "events": [{"type": "scene", "content": "The rooftop sigil no longer glows."}],
+                "actor_calls": [],
+                "messages_to_gm": [{"content": "The rooftop clue is complete and ready to merge."}],
+                "world_state_delta": [{"scope": "rooftop", "fact": "The rooftop sigil is dormant."}],
+                "character_usage": ["character:SuLi"],
+                "promotion_requests": [],
+                "boundary_requests": [],
+                "notes_for_story": ["Use only if GM merges the side-thread clue."],
+                "next_resume_point": "",
+            }
+        if agent_key == "subGM:side_gate_noise":
+            return {
+                "agent": "subGM",
+                "thread_id": "side_gate_noise",
+                "status": "paused",
+                "scene_beats": [{"content": "GateKeeper hears metal scrape behind the locked gate."}],
+                "events": [{"type": "scene", "content": "The gate noise stops before anyone arrives."}],
+                "actor_calls": [],
+                "messages_to_gm": [{"content": "Gate thread paused at the locked gate."}],
+                "world_state_delta": [{"scope": "gate", "fact": "A metal scrape came from behind the gate."}],
+                "character_usage": ["character:GateKeeper"],
+                "promotion_requests": [],
+                "boundary_requests": [],
+                "notes_for_story": ["Resume only when GM wants to reveal the gate clue."],
+                "next_resume_point": "resume when the main scene moves toward the school gate",
+            }
+        if agent_key == "character:Ada":
             captured["actor_packets"].append(packet)
             return {
                 "agent": "character",
-                "agent_id": "character:SuLi",
-                "character_name": "SuLi",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
                 "events": [
                     {
                         "type": "dialogue",
@@ -184,14 +305,14 @@ def _write_story_and_critic_outputs(run_dir: Path) -> None:
         run_dir / "story.output.json",
         {
             "content": (
-                '<content>SuLi lowered her voice. "That pendant is older than this school," '
+                '<content>Ada lowered her voice. "That pendant is older than this school," '
                 "she said, stopping before the next choice belonged to the player.</content>"
             ),
             "character_dialogues": [
                 {
-                    "character": "SuLi",
+                    "character": "Ada",
                     "text": "That pendant is older than this school.",
-                    "source_agent": "character:SuLi",
+                    "source_agent": "character:Ada",
                 }
             ],
             "metadata": {"round_id": run_dir.name, "source": "control_plane_smoke"},
@@ -398,6 +519,108 @@ def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> 
     return {"redacted_actor_call": redacted_actor_call}
 
 
+def _subgm_promotion_blocked(agent_schemas) -> bool:
+    try:
+        agent_schemas.validate_subgm_output(
+            {
+                "agent": "subGM",
+                "thread_id": "side_suli_rooftop",
+                "status": "completed",
+                "scene_beats": [],
+                "events": [],
+                "actor_calls": [],
+                "messages_to_gm": [],
+                "world_state_delta": [],
+                "character_usage": ["character:SuLi"],
+                "promotion_requests": [],
+                "boundary_requests": [],
+                "notes_for_story": ["negative promotion smoke"],
+                "next_resume_point": "",
+                "character_promotions": [PROMOTION_RECORD],
+            }
+        )
+    except agent_schemas.ValidationError:
+        return True
+    return False
+
+
+def _subgm_evidence(
+    run_dir: Path,
+    side_thread_results: list[Dict[str, Any]],
+    agent_schemas,
+    subgm_threads,
+) -> Dict[str, Any]:
+    summaries = subgm_threads.load_thread_summaries(run_dir)
+    statuses = [str(item.get("status") or "") for item in summaries]
+    threads = {
+        str(item.get("thread_id")): {
+            "status": str(item.get("status") or ""),
+            "last_message": item.get("last_message") if isinstance(item.get("last_message"), dict) else {},
+            "next_resume_point": str(item.get("next_resume_point") or ""),
+        }
+        for item in summaries
+        if item.get("thread_id")
+    }
+    allowed_sets = [
+        item.get("allowed_characters", [])
+        for item in summaries
+        if isinstance(item.get("allowed_characters", []), list)
+    ]
+    forbidden_sets = [
+        item.get("forbidden_characters", [])
+        for item in summaries
+        if isinstance(item.get("forbidden_characters", []), list)
+    ]
+    player_excluded = bool(summaries) and all(
+        "player" not in allowed for allowed in allowed_sets
+    ) and all(
+        "player" in forbidden for forbidden in forbidden_sets
+    )
+    return {
+        "started_count": len(summaries),
+        "completed_count": statuses.count("completed"),
+        "paused_count": statuses.count("paused"),
+        "player_excluded": player_excluded,
+        "promotion_blocked": _subgm_promotion_blocked(agent_schemas),
+        "threads": threads,
+        "results": side_thread_results,
+    }
+
+
+def _story_evidence(run_dir: Path) -> Dict[str, Any]:
+    story_output = _read_json(run_dir / "story.output.json")
+    dialogues = story_output.get("character_dialogues", [])
+    if not isinstance(dialogues, list):
+        dialogues = []
+    source_agents = [
+        str(item.get("source_agent") or "")
+        for item in dialogues
+        if isinstance(item, dict) and item.get("source_agent")
+    ]
+
+    gm_output = _read_json(run_dir / "gm.output.json")
+    main_actor_calls = {
+        str(call.get("actor_id") or "")
+        for output in gm_output.get("outputs", [])
+        if isinstance(output, dict)
+        for call in output.get("actor_calls", [])
+        if isinstance(call, dict)
+    }
+    side_actor_outputs = set()
+    side_root = run_dir / "side_threads"
+    if side_root.exists():
+        for path in side_root.glob("*/actor.outputs.json"):
+            data = _read_json(path)
+            side_actor_outputs.update(str(key) for key in data if key)
+
+    backed_sources = main_actor_calls | side_actor_outputs
+    return {
+        "character_dialogue_source_agents": source_agents,
+        "character_dialogues_source_backed": bool(source_agents)
+        and all(source in backed_sources for source in source_agents),
+    }
+
+
 def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
@@ -405,7 +628,9 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     import agent_memory
     import agent_outputs
     import agent_packets
+    import agent_schemas
     import agent_turn_loop
+    import subgm_threads
 
     with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-") as tmp:
         temp_root = Path(tmp)
@@ -440,7 +665,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             user_text="fallback text should not be routed",
             chat_log=[{"index": 4, "summary": "The player reached the archive door with a pendant."}],
             card_data=card_data,
-            character_contexts={"characters": []},
+            character_contexts={"characters": _smoke_character_contexts()},
             turn_index=5,
             input_payload=input_payload,
         )
@@ -454,6 +679,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         analysis = _build_input_analysis_fixture(run_dir, input_payload, input_analysis)
         _write_json(run_dir / "input_analysis.output.json", analysis)
         applied_analysis = input_analysis_apply.apply_current_run(card, repo)
+        _ensure_smoke_character_contexts(run_dir)
 
         captured_loop = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
         _schedule_suli_memory_summary(card, run_dir, agent_memory)
@@ -487,12 +713,19 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "stage": applied_analysis.get("stage"),
             },
             "visibility_guard": _visibility_guard_evidence(run_dir, captured_loop),
+            "subgm": _subgm_evidence(
+                run_dir,
+                captured_loop.get("loop_result", {}).get("side_thread_results", []),
+                agent_schemas,
+                subgm_threads,
+            ),
             "promotions": _promotion_evidence(card),
             "structured_memory": _structured_memory_evidence(card),
             "delivery": {
                 "ok": bool(delivery.get("ok")),
                 "mode": delivery.get("mode"),
             },
+            "story": _story_evidence(run_dir),
             "manifest_stage": manifest.get("stage") or delivered.get("stage"),
             "trace": trace,
             "loop": captured_loop.get("loop_result", {}),
