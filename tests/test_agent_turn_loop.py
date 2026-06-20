@@ -1283,7 +1283,7 @@ class AgentTurnLoopTest(unittest.TestCase):
                 self.assertNotIn("梦境", serialized)
                 self.assertIn("光线变亮", serialized)
 
-    def test_perception_requests_are_sent_to_next_gm_step_once(self):
+    def test_perception_requests_are_sent_until_gm_closes_them(self):
         gm_packets = []
 
         def dispatch(agent_key, packet):
@@ -1313,6 +1313,13 @@ class AgentTurnLoopTest(unittest.TestCase):
                     "actor_calls": [],
                     "parallel_groups": [],
                     "world_state_delta": [],
+                    "perception_responses": [{
+                        "request_id": "perception-player-call-player-1-1",
+                        "actor_id": "player",
+                        "source_call_id": "call-player-1",
+                        "status": "closed",
+                        "reason": "The GM has no extra sensory detail to provide.",
+                    }] if step == 2 else [],
                     "decision_point": None,
                     "stop_reason": "continue" if step == 2 else "complete",
                 }
@@ -1339,6 +1346,244 @@ class AgentTurnLoopTest(unittest.TestCase):
         )
         self.assertEqual(gm_packets[2]["pending_perception_requests"], [])
         self.assertEqual(gm_packets[2]["world_state"]["pending_perception_requests"], [])
+
+    def test_perception_feedback_schedules_origin_actor_continuation(self):
+        self.register_character_states({
+            "name": "Ada",
+            "location": "archive",
+            "sensory_channels": ["auditory"],
+        })
+        gm_packets = []
+        actor_packets = []
+        called_actors = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_packets.append(json_copy(packet))
+                step = len(gm_packets)
+                if step == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "Listen near the archive shelf.",
+                            "reason": "Ada is near the archive shelf.",
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "Ada is in the archive and can hear activity near the shelf.",
+                                "location": "archive",
+                                "sensory_channels": ["auditory"],
+                            },
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                self.assertEqual(len(packet["pending_perception_requests"]), 1)
+                self.assertEqual(
+                    packet["pending_perception_requests"][0]["content"],
+                    "I listen for movement behind the shelf.",
+                )
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [{
+                        "request_id": "perception-Ada-call-character-Ada-1-1",
+                        "actor_id": "character:Ada",
+                        "source_call_id": "call-character-Ada-1",
+                        "status": "answered",
+                        "channel": "auditory",
+                        "content": "You hear slow footsteps behind the shelf.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Ada directly receives the GM's auditory answer.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["auditory"],
+                        },
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            called_actors.append(agent_key)
+            actor_packets.append(json_copy(packet))
+            if len(actor_packets) == 1:
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{
+                        "type": "perceive_request",
+                        "target": "archive shelf",
+                        "content": "I listen for movement behind the shelf.",
+                        "metadata": {"channel": "auditory"},
+                    }],
+                    "stop_reason": "continue",
+                }
+            self.assertIn("You hear slow footsteps behind the shelf.", packet["gm_prompt"])
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{
+                    "type": "action",
+                    "target": "archive shelf",
+                    "content": "I hold still and listen.",
+                }],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(called_actors, ["character:Ada", "character:Ada"])
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Ada"])
+
+    def test_gm_must_answer_or_close_pending_perception_request(self):
+        self.register_character_states({
+            "name": "Ada",
+            "location": "archive",
+            "sensory_channels": ["auditory"],
+        })
+        gm_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_packets.append(json_copy(packet))
+                if len(gm_packets) == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "Listen near the archive shelf.",
+                            "reason": "Ada is near the archive shelf.",
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "Ada is in the archive and can hear activity near the shelf.",
+                                "location": "archive",
+                                "sensory_channels": ["auditory"],
+                            },
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                self.assertEqual(len(packet["pending_perception_requests"]), 1)
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{
+                    "type": "perceive_request",
+                    "target": "archive shelf",
+                    "content": "I listen for movement behind the shelf.",
+                    "metadata": {"channel": "auditory"},
+                }],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, r"pending perception"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+    def test_gm_can_close_pending_perception_without_actor_continuation(self):
+        self.register_character_states({
+            "name": "Ada",
+            "location": "archive",
+            "sensory_channels": ["auditory"],
+        })
+        gm_packets = []
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_packets.append(json_copy(packet))
+                if len(gm_packets) == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "Listen near the archive shelf.",
+                            "reason": "Ada is near the archive shelf.",
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "Ada is in the archive and can hear activity near the shelf.",
+                                "location": "archive",
+                                "sensory_channels": ["auditory"],
+                            },
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                self.assertEqual(len(packet["pending_perception_requests"]), 1)
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [{
+                        "request_id": "perception-Ada-call-character-Ada-1-1",
+                        "actor_id": "character:Ada",
+                        "source_call_id": "call-character-Ada-1",
+                        "status": "closed",
+                        "reason": "No movement is audible enough to report.",
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            actor_packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{
+                    "type": "perceive_request",
+                    "target": "archive shelf",
+                    "content": "I listen for movement behind the shelf.",
+                    "metadata": {"channel": "auditory"},
+                }],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(actor_packets), 1)
+        self.assertEqual(result["called_actors"], ["character:Ada"])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertIn("perception_closed", [event["type"] for event in trace["events"]])
 
     def test_world_state_delta_is_visible_to_later_gm_steps(self):
         gm_packets = []
@@ -1913,14 +2158,24 @@ class AgentTurnLoopTest(unittest.TestCase):
                 return {
                     "agent": "gm",
                     "scene_beats": [],
-                    "events": [{
-                        "type": "perception_feedback",
-                        "target": "character:SuLi",
-                        "content": "The pendant gives off a faint heat.",
-                    }],
+                    "events": [],
                     "actor_calls": [],
                     "parallel_groups": [],
                     "world_state_delta": [],
+                    "perception_responses": [{
+                        "request_id": "perception-SuLi-call-character-SuLi-1-1",
+                        "actor_id": "character:SuLi",
+                        "source_call_id": "call-character-SuLi-1",
+                        "status": "answered",
+                        "channel": "pendant",
+                        "content": "The pendant gives off a faint heat.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "SuLi directly receives the GM's sensory feedback.",
+                            "target_actor": "character:SuLi",
+                            "visible_to": ["character:SuLi"],
+                        },
+                    }],
                     "decision_point": None,
                     "stop_reason": "complete",
                 }
@@ -1938,6 +2193,8 @@ class AgentTurnLoopTest(unittest.TestCase):
                     }],
                     "stop_reason": "continue",
                 }
+            if actor_call_count == 3:
+                self.assertIn("The pendant gives off a faint heat.", packet["gm_prompt"])
             return {
                 "agent": "character",
                 "agent_id": "character:SuLi",
@@ -1949,9 +2206,9 @@ class AgentTurnLoopTest(unittest.TestCase):
         result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=4)
 
         self.assertEqual(result["stop_reason"], "complete")
-        self.assertEqual(result["called_actors"], ["character:SuLi", "character:SuLi"])
+        self.assertEqual(result["called_actors"], ["character:SuLi", "character:SuLi", "character:SuLi"])
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
-        self.assertEqual(len(actor_outputs["character:SuLi"]), 2)
+        self.assertEqual(len(actor_outputs["character:SuLi"]), 3)
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         event_types = [event["type"] for event in trace["events"]]
         self.assertIn("perceive_request", event_types)

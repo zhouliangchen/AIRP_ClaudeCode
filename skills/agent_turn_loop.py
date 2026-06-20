@@ -306,6 +306,14 @@ def _ascii_actor_slug(actor_id: str) -> str:
     return slug
 
 
+def _perception_request_id(actor_id: str, source_call_id: str, index: int) -> str:
+    safe_actor = _ascii_actor_slug(actor_id)
+    safe_source = re.sub(r"[^A-Za-z0-9_:-]+", "_", str(source_call_id or "")).strip("_")
+    if not safe_source:
+        safe_source = "call"
+    return f"perception-{safe_actor}-{safe_source}-{index}"
+
+
 def _dialogue_transfer_call(
     actor_id: str,
     target: str,
@@ -323,6 +331,29 @@ def _dialogue_transfer_call(
         "reason": "Visible dialogue transfer.",
         "source_call_id": call_id,
         "visibility_basis": visibility_basis,
+    }
+
+
+def _perception_feedback_call(
+    response: dict,
+    generated_call_counts: dict[str, int],
+    used_call_ids: set[str],
+) -> dict:
+    actor_id = str(response.get("actor_id") or "")
+    channel = str(response.get("channel") or "general")
+    content = _event_content(response)
+    request_id = str(response.get("request_id") or "")
+    return {
+        "call_id": _next_unique_actor_call_id(actor_id, generated_call_counts, used_call_ids),
+        "actor_id": actor_id,
+        "prompt": f"GM answers your {channel} perception request: {content}",
+        "reason": "Visible sensory feedback continuation.",
+        "source_call_id": str(response.get("source_call_id") or ""),
+        "visibility_basis": agent_visibility.actor_call_basis(response),
+        "metadata": {
+            "perception_request_id": request_id,
+            "perception_channel": channel,
+        },
     }
 
 
@@ -370,13 +401,20 @@ def _record_perception_continuation(
     source_call_id: str,
     world_state: dict,
 ) -> None:
+    pending_requests = world_state.setdefault("pending_perception_requests", [])
+    metadata = _dict(event.get("metadata"))
+    channel = str(metadata.get("channel") or event.get("target") or "general").strip()
+    if not channel:
+        channel = "general"
     request = {
+        "request_id": _perception_request_id(actor_id, source_call_id, len(pending_requests) + 1),
         "actor_id": actor_id,
         "target": str(event.get("target") or ""),
+        "channel": channel,
         "content": _event_content(event),
         "source_call_id": source_call_id,
     }
-    world_state.setdefault("pending_perception_requests", []).append(request)
+    pending_requests.append(request)
     agent_interactions.append_event(
         run_dir,
         actor="gm",
@@ -394,7 +432,6 @@ def _update_visible_events(run_dir: Path, world_state: dict) -> None:
 
 def _gm_packet(run_dir: Path, world_state: dict, step_index: int) -> dict:
     pending_perception_requests = list(world_state.get("pending_perception_requests") or [])
-    world_state["pending_perception_requests"] = []
     packet_world_state = dict(world_state)
     packet_world_state["pending_perception_requests"] = pending_perception_requests
     return {
@@ -403,6 +440,103 @@ def _gm_packet(run_dir: Path, world_state: dict, step_index: int) -> dict:
         "trace_summary": agent_interactions.summarize_for_story_input(run_dir),
         "pending_perception_requests": pending_perception_requests,
     }
+
+
+def _resolve_perception_responses(
+    run_dir: Path,
+    gm_output: dict,
+    world_state: dict,
+    generated_call_counts: dict[str, int],
+    used_call_ids: set[str],
+) -> list[dict]:
+    pending = [
+        request
+        for request in world_state.get("pending_perception_requests") or []
+        if isinstance(request, dict)
+    ]
+    if not pending:
+        return []
+
+    responses = _list(gm_output.get("perception_responses"))
+    if not responses:
+        raise AgentTurnLoopError(
+            "pending perception requests must be answered or closed by the next GM output"
+        )
+
+    pending_by_id = {str(request.get("request_id") or ""): request for request in pending}
+    handled: set[str] = set()
+    feedback_calls: list[dict] = []
+
+    for response in responses:
+        request_id = str(response.get("request_id") or "")
+        request = pending_by_id.get(request_id)
+        if request is None:
+            raise AgentTurnLoopError(f"unknown perception request response: {request_id}")
+        if request_id in handled:
+            raise AgentTurnLoopError(f"duplicate perception response for request: {request_id}")
+
+        actor_id = str(response.get("actor_id") or "")
+        expected_actor_id = str(request.get("actor_id") or "")
+        if actor_id != expected_actor_id:
+            raise AgentTurnLoopError(
+                f"perception response actor_id mismatch for {request_id}: "
+                f"expected {expected_actor_id}, got {actor_id}"
+            )
+
+        source_call_id = str(response.get("source_call_id") or "")
+        expected_source_call_id = str(request.get("source_call_id") or "")
+        if source_call_id != expected_source_call_id:
+            raise AgentTurnLoopError(
+                f"perception response source_call_id mismatch for {request_id}: "
+                f"expected {expected_source_call_id}, got {source_call_id}"
+            )
+
+        handled.add(request_id)
+        status = str(response.get("status") or "")
+        if status == "answered":
+            agent_interactions.append_event(
+                run_dir,
+                actor="gm",
+                visibility="world_visible",
+                event_type="perception_feedback",
+                content=_event_content(response),
+                target=actor_id,
+                source_call_id=source_call_id,
+                visibility_metadata=agent_visibility.visibility_fields_from_event(response),
+            )
+            feedback_calls.append(
+                _perception_feedback_call(
+                    response,
+                    generated_call_counts,
+                    used_call_ids,
+                )
+            )
+        elif status == "closed":
+            agent_interactions.append_event(
+                run_dir,
+                actor="gm",
+                visibility="gm_visible",
+                event_type="perception_closed",
+                content=str(response.get("reason") or ""),
+                target=actor_id,
+                source_call_id=source_call_id,
+            )
+        else:
+            raise AgentTurnLoopError(f"invalid perception response status for {request_id}: {status}")
+
+    missing = [
+        str(request.get("request_id") or "")
+        for request in pending
+        if str(request.get("request_id") or "") not in handled
+    ]
+    if missing:
+        raise AgentTurnLoopError(
+            "pending perception requests were not answered or closed: "
+            + ", ".join(missing)
+        )
+
+    world_state["pending_perception_requests"] = []
+    return feedback_calls
 
 
 def _actor_packet(
@@ -844,6 +978,14 @@ def run_interactive_loop(
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
         _update_visible_events(root, world_state)
+        perception_feedback_calls = _resolve_perception_responses(
+            root,
+            gm_output,
+            world_state,
+            generated_call_counts,
+            used_actor_call_ids,
+        )
+        _update_visible_events(root, world_state)
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
         gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
@@ -852,7 +994,8 @@ def run_interactive_loop(
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
         pending_parallel_groups = gm_output.get("parallel_groups") or []
         batch_trace_index = 0
-        actor_queue: Deque[dict] = deque(gm_output.get("actor_calls") or [])
+        actor_queue: Deque[dict] = deque(perception_feedback_calls)
+        actor_queue.extend(gm_output.get("actor_calls") or [])
         while actor_queue:
             queued_calls: list[dict] = []
             while actor_queue:
