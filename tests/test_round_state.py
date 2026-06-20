@@ -112,6 +112,7 @@ class RoundStateTest(unittest.TestCase):
 
         manifest = self._read_manifest()
 
+        self.assertEqual(manifest["stage"], "awaiting_input_analysis")
         self.assertEqual(manifest["progress_state"], "input_analysis.applied")
         self.assertEqual(manifest["status"][-1]["stage"], "input_analysis.applied")
         self.assertEqual(manifest["status"][-1]["message"], "Input analysis applied.")

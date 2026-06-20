@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, NamedTuple
 
-from agent_run import append_manifest_stage, read_json, write_json
+from agent_run import read_json, write_json
 
 
 class RoundStateError(ValueError):
@@ -123,6 +123,21 @@ def _write_manifest(run_dir: str | Path, manifest: Dict[str, Any]) -> None:
     write_json(Path(run_dir) / "manifest.json", manifest)
 
 
+def _append_progress_entry(manifest: Dict[str, Any], state: str, message: str) -> None:
+    status = manifest.setdefault("status", [])
+    if not isinstance(status, list):
+        status = []
+        manifest["status"] = status
+    entry = {
+        "stage": state,
+        "message": message,
+        "timestamp": _utc_timestamp(),
+    }
+    status.append(entry)
+    manifest["progress"] = entry
+    manifest["progress_message"] = message
+
+
 def _ensure_complete_allowed(state: str, run_dir: str | Path | None) -> None:
     if state != "complete" or run_dir is None:
         return
@@ -160,7 +175,7 @@ def write_progress_state(
         manifest = _read_manifest(run_dir)
         manifest["progress_state"] = normalized
         if manifest_message is not None:
-            append_manifest_stage(manifest, normalized, manifest_message)
+            _append_progress_entry(manifest, normalized, manifest_message)
         _write_manifest(run_dir, manifest)
 
     return record
