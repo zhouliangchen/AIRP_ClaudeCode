@@ -193,7 +193,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         input_schema="dual_channel_v1",
                     )
                     handler.write_content_js(card)
-                handler.write_progress("received", "已接收玩家输入", percent=10)
+                handler.write_progress("input.received", "已接收玩家输入", percent=10)
                 PENDING_FILE.touch()
                 self._json({"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None})
             elif text.strip():
@@ -211,7 +211,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         input_id=player_entry.get("id"),
                     )
                     handler.write_content_js(card)
-                handler.write_progress("received", "已接收玩家输入", percent=10)
+                handler.write_progress("input.received", "已接收玩家输入", percent=10)
                 PENDING_FILE.touch()
                 self._json({"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None})
             else:
@@ -356,7 +356,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             input_id=player_entry.get("id"),
                         )
                         handler.write_content_js(card)
-                    handler.write_progress("received", "已接收玩家开局设定", percent=10)
+                    handler.write_progress("input.received", "已接收玩家开局设定", percent=10)
                     PENDING_FILE.touch()
                     SESSION_FILE.touch()
                     self._json({"ok": True, "card_initvar_used": True})
@@ -419,7 +419,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         input_id=player_entry.get("id"),
                     )
                     handler.write_content_js(card)
-                handler.write_progress("received", "已接收玩家开局设定", percent=10)
+                handler.write_progress("input.received", "已接收玩家开局设定", percent=10)
                 PENDING_FILE.touch()
                 SESSION_FILE.touch()
                 self._json({"ok": True})

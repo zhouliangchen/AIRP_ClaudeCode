@@ -194,7 +194,7 @@ def main():
     card_folder = sys.argv[1]
     root = sys.argv[2]
     styles_dir = Path(root) / "skills" / "styles"
-    write_progress("preparing", "正在整理回合上下文", percent=30)
+    write_progress("round.preparing", "正在整理回合上下文", percent=30)
 
     # ── Token delta capture (retroactively fixes previous turn) ──
     pending_tokens = {}
@@ -556,7 +556,7 @@ def main():
     with open(character_contexts_path, "w", encoding="utf-8") as f:
         json.dump(character_contexts, f, ensure_ascii=False, indent=2)
 
-    write_progress("generating", "Claude Code 正在生成回复", percent=60)
+    write_progress("input_analysis.awaiting", "等待输入分析", percent=35)
 
     print(json.dumps({
         "ok": True,

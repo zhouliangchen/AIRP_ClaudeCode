@@ -25,6 +25,11 @@ from response_parser import (
     extract_options as _extract_options,
 )
 
+try:
+    import round_state
+except Exception:
+    round_state = None
+
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
 
@@ -293,6 +298,14 @@ def edit_player_input(card_folder, input_id, new_text, mode="update_only"):
 
 
 def write_progress(stage, label, percent=None, detail=None):
+    if round_state is not None:
+        try:
+            data = round_state.legacy_progress_record(stage, label, percent=percent, detail=detail)
+        except Exception:
+            pass
+        else:
+            _write_json_file(_progress_path(), data)
+            return data
     data = {
         "stage": stage,
         "label": label,
@@ -310,7 +323,7 @@ def read_progress():
     data = _read_json_file(_progress_path(), None)
     if isinstance(data, dict):
         return data
-    return {"stage": "idle", "label": "", "percent": None, "detail": ""}
+    return {"stage": "idle", "state": "idle", "label": "", "percent": None, "detail": ""}
 
 
 def read_state():

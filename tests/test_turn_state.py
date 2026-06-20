@@ -338,7 +338,9 @@ class TurnStateTest(unittest.TestCase):
 
         progress = self.handler.read_progress()
 
-        self.assertEqual(progress["stage"], "delivering")
+        self.assertEqual(progress["schema_version"], 2)
+        self.assertEqual(progress["stage"], "delivery.delivering")
+        self.assertEqual(progress["state"], "delivery.delivering")
         self.assertEqual(progress["label"], "正在交付到前端")
         self.assertEqual(progress["percent"], 85)
 
@@ -356,6 +358,78 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(progress["state"], "delivery.delivering")
         self.assertEqual(progress["stage"], "delivery.delivering")
         self.assertEqual(progress["detail"]["attempt"], 1)
+
+    def test_progress_write_falls_back_to_old_shape_without_round_state(self):
+        old_round_state = self.handler.round_state
+        try:
+            self.handler.round_state = None
+
+            self.handler.write_progress("delivering", "正在交付到前端", percent=85)
+            progress = self.handler.read_progress()
+
+            self.assertNotIn("schema_version", progress)
+            self.assertEqual(progress["stage"], "delivering")
+            self.assertEqual(progress["label"], "正在交付到前端")
+            self.assertEqual(progress["percent"], 85)
+        finally:
+            self.handler.round_state = old_round_state
+
+    def test_progress_write_falls_back_to_old_shape_when_conversion_fails(self):
+        old_round_state = self.handler.round_state
+
+        class BrokenRoundState:
+            @staticmethod
+            def legacy_progress_record(stage, label, percent=None, detail=None):
+                raise ValueError("conversion failed")
+
+        try:
+            self.handler.round_state = BrokenRoundState
+
+            self.handler.write_progress("delivering", "正在交付到前端", percent=85)
+            progress = self.handler.read_progress()
+
+            self.assertNotIn("schema_version", progress)
+            self.assertEqual(progress["stage"], "delivering")
+            self.assertEqual(progress["label"], "正在交付到前端")
+            self.assertEqual(progress["percent"], 85)
+        finally:
+            self.handler.round_state = old_round_state
+
+    def test_progress_write_does_not_swallow_v2_write_failure(self):
+        old_round_state = self.handler.round_state
+        old_write_json_file = self.handler._write_json_file
+        write_calls = []
+
+        class WorkingRoundState:
+            @staticmethod
+            def legacy_progress_record(stage, label, percent=None, detail=None):
+                return {
+                    "schema_version": 2,
+                    "stage": "delivery.delivering",
+                    "state": "delivery.delivering",
+                    "label": label,
+                    "percent": percent,
+                    "detail": detail or {},
+                }
+
+        def fail_first_write(path, data):
+            write_calls.append(data)
+            if len(write_calls) == 1:
+                raise RuntimeError("progress write failed")
+            old_write_json_file(path, data)
+
+        try:
+            self.handler.round_state = WorkingRoundState
+            self.handler._write_json_file = fail_first_write
+
+            with self.assertRaisesRegex(RuntimeError, "progress write failed"):
+                self.handler.write_progress("delivering", "正在交付到前端", percent=85)
+
+            self.assertEqual(len(write_calls), 1)
+            self.assertEqual(write_calls[0]["schema_version"], 2)
+        finally:
+            self.handler.round_state = old_round_state
+            self.handler._write_json_file = old_write_json_file
 
     def test_blank_profile_derives_self_identity_from_authoritative_player_input(self):
         (self.card / "memory" / "characters" / "_self").mkdir(parents=True)

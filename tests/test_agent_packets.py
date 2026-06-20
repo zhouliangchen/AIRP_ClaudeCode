@@ -1627,7 +1627,8 @@ class AgentPacketTest(unittest.TestCase):
             }
 
         round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
-        round_prepare.write_progress = lambda *args, **kwargs: None
+        progress_calls = []
+        round_prepare.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         round_prepare.apply_injections = lambda card_folder: []
         round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
         round_prepare.mvu_check.generate_checklist = lambda card_folder: None
@@ -1658,6 +1659,8 @@ class AgentPacketTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
+        self.assertTrue(any(args and args[0] == "round.preparing" for args, _ in progress_calls))
+        self.assertTrue(any(args and args[0] == "input_analysis.awaiting" for args, _ in progress_calls))
 
     def test_round_prepare_passes_latest_dual_channel_payload_to_agent_run(self):
         temp_root, _styles_dir = self._make_round_prepare_fixture()
