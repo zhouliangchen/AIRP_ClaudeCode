@@ -84,6 +84,14 @@ def _validate_gm_output_visibility(
     scene_beat_fields = ("content", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     event_fields = ("content", "target", "source_call_id", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     actor_call_fields = ("source_call_id", "prompt", "reason", "metadata", *agent_visibility.VISIBILITY_FIELDS)
+    perception_response_fields = (
+        "request_id",
+        "source_call_id",
+        "channel",
+        "content",
+        "reason",
+        *agent_visibility.VISIBILITY_FIELDS,
+    )
     for gm_index, gm_output in enumerate(gm_outputs):
         output_context = f"{gm_path}.outputs[{gm_index}]"
         for beat_index, beat in enumerate(gm_output.get("scene_beats", [])):
@@ -101,6 +109,11 @@ def _validate_gm_output_visibility(
             for field in actor_call_fields:
                 if field in call:
                     _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
+        for response_index, response in enumerate(gm_output.get("perception_responses", [])):
+            context = f"{output_context}.perception_responses[{response_index}]"
+            for field in perception_response_fields:
+                if field in response:
+                    _reject_actor_facing_gm_value(response[field], f"{context}.{field}", hidden_phrases)
         if gm_output.get("decision_point") is not None:
             _reject_actor_facing_gm_value(
                 gm_output["decision_point"],

@@ -451,6 +451,170 @@ class AgentSchemaTest(unittest.TestCase):
 
         self.assertEqual(normalized["character_promotions"], [])
 
+    def test_validate_gm_output_accepts_perception_response_answer(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "perception_responses": [
+                {
+                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                    "actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                    "status": "answered",
+                    "channel": "auditory",
+                    "content": "You hear slow footsteps behind the shelf.",
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "Ada receives sensory feedback for her own perception request.",
+                        "target_actor": "character:Ada",
+                        "visible_to": ["character:Ada"],
+                        "sensory_channels": ["auditory"],
+                    },
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_gm_output(payload)
+
+        response = normalized["perception_responses"][0]
+        self.assertEqual(response["status"], "answered")
+        self.assertEqual(response["channel"], "auditory")
+        self.assertEqual(response["visibility_basis"]["target_actor"], "character:Ada")
+
+    def test_validate_gm_output_accepts_perception_response_close(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "perception_responses": [
+                {
+                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                    "actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                    "status": "closed",
+                    "reason": "The request is no longer relevant after Ada steps away.",
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_gm_output(payload)
+
+        self.assertEqual(normalized["perception_responses"][0]["status"], "closed")
+        self.assertEqual(
+            normalized["perception_responses"][0]["reason"],
+            "The request is no longer relevant after Ada steps away.",
+        )
+
+    def test_validate_gm_output_rejects_closed_perception_with_actor_facing_fields(self):
+        cases = (
+            ("content", "You hear slow footsteps behind the shelf."),
+            ("channel", "auditory"),
+            (
+                "visibility_basis",
+                {
+                    "mode": "direct",
+                    "summary": "Ada receives sensory feedback for her own perception request.",
+                    "target_actor": "character:Ada",
+                    "visible_to": ["character:Ada"],
+                },
+            ),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                payload = {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [
+                        {
+                            "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                            "actor_id": "character:Ada",
+                            "source_call_id": "call-character-Ada-1",
+                            "status": "closed",
+                            "reason": "The request is no longer relevant after Ada steps away.",
+                            field: value,
+                        }
+                    ],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(
+                    self.agent_schemas.ValidationError,
+                    f"perception_responses\\[0\\].{field}",
+                ):
+                    self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_answered_perception_without_basis(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "perception_responses": [
+                {
+                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                    "actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                    "status": "answered",
+                    "channel": "visual",
+                    "content": "You see the shelf move.",
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "perception_responses\\[0\\].visibility_basis"):
+            self.agent_schemas.validate_gm_output(payload)
+
+    def test_validate_gm_output_rejects_hidden_perception_response_content(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "perception_responses": [
+                {
+                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                    "actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                    "status": "answered",
+                    "channel": "visual",
+                    "content": "world_truth says the shelf is haunted.",
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "Ada receives visible shelf feedback.",
+                        "target_actor": "character:Ada",
+                        "visible_to": ["character:Ada"],
+                    },
+                }
+            ],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "perception_responses\\[0\\].content"):
+            self.agent_schemas.validate_gm_output(payload)
+
     def test_validate_gm_output_rejects_subgm_character_promotions(self):
         payload = {
             "agent": "gm",

@@ -1219,6 +1219,67 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_build_story_input_rejects_gm_perception_response_hidden_phrase_fields(self):
+        cases = (
+            ("content", "You hear moon-base-archive behind the shelf.", "Ada hears movement behind the shelf."),
+            ("visibility_basis", "You hear slow footsteps behind the shelf.", "Ada hears moon-base-archive."),
+        )
+        for field, content, basis_summary in cases:
+            with self.subTest(field=field):
+                if (self.run_dir / "story.input.json").exists():
+                    (self.run_dir / "story.input.json").unlink()
+                _write_json(
+                    self.run_dir / "input.json",
+                    {
+                        "raw_text": "I listen near the shelf.",
+                        "routed_input": {
+                            "role_channel": "I listen near the shelf.",
+                            "user_instruction_channel": "Hidden truth: moon base archive.",
+                        },
+                        "hidden_facts": [{"fact": "moon base archive"}],
+                    },
+                )
+                _write_json(
+                    self.run_dir / "gm.output.json",
+                    {
+                        "agent": "gm_loop",
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "scene_beats": [],
+                                "events": [],
+                                "actor_calls": [],
+                                "parallel_groups": [],
+                                "world_state_delta": [],
+                                "perception_responses": [
+                                    {
+                                        "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                                        "actor_id": "character:Ada",
+                                        "source_call_id": "call-character-Ada-1",
+                                        "status": "answered",
+                                        "channel": "auditory",
+                                        "content": content,
+                                        "visibility_basis": {
+                                            "mode": "direct",
+                                            "summary": basis_summary,
+                                            "target_actor": "character:Ada",
+                                            "visible_to": ["character:Ada"],
+                                            "sensory_channels": ["auditory"],
+                                        },
+                                    }
+                                ],
+                                "decision_point": None,
+                                "stop_reason": "complete",
+                            }
+                        ],
+                    },
+                )
+
+                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"perception_responses\[0\].{field}"):
+                    self.agent_outputs.build_story_input(self.run_dir)
+
+                self.assertFalse((self.run_dir / "story.input.json").exists())
+
     def test_build_story_input_rejects_gm_actor_call_visibility_basis_hidden_markers(self):
         cases = (
             {"mode": "direct", "summary": "gm_only: reveal the truth.", "target_actor": "player"},

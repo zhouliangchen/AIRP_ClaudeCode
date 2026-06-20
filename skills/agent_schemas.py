@@ -46,6 +46,17 @@ ACTOR_EVENT_TYPES = {
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 
 GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
+PERCEPTION_RESPONSE_STATUSES = {"answered", "closed"}
+PERCEPTION_RESPONSE_KEYS = {
+    "request_id",
+    "actor_id",
+    "source_call_id",
+    "status",
+    "channel",
+    "content",
+    "reason",
+    "visibility_basis",
+}
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 
 SUBGM_COMMAND_ACTIONS = {"start", "message", "accelerate", "pause", "resume", "merge", "close"}
@@ -279,6 +290,53 @@ def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_perception_response(item: Any, path: str) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    for key in sorted(data):
+        if key not in PERCEPTION_RESPONSE_KEYS:
+            raise ValidationError(f"{_path(path, str(key))} is not an allowed perception response field")
+    _reject_forbidden_keys(data, path)
+
+    status = _require_nonempty_str(data, "status", path)
+    if status not in PERCEPTION_RESPONSE_STATUSES:
+        allowed = ", ".join(sorted(PERCEPTION_RESPONSE_STATUSES))
+        raise ValidationError(f"{_path(path, 'status')} must be one of: {allowed}")
+    if status == "closed":
+        for field in ("channel", "content", "visibility_basis"):
+            if field in data:
+                raise ValidationError(f"{_path(path, field)} is not allowed for closed perception responses")
+
+    normalized = {
+        "request_id": _require_nonempty_str(data, "request_id", path),
+        "actor_id": _validate_actor_id_marker(_require_nonempty_str(data, "actor_id", path), _path(path, "actor_id")),
+        "source_call_id": _require_nonempty_str(data, "source_call_id", path),
+        "status": status,
+    }
+
+    if "channel" in data:
+        normalized["channel"] = _require_nonempty_str(data, "channel", path)
+    if "content" in data:
+        normalized["content"] = _require_nonempty_str(data, "content", path)
+    if "reason" in data:
+        normalized["reason"] = _require_nonempty_str(data, "reason", path)
+    if "visibility_basis" in data:
+        basis_fields = _normalize_visibility_fields(
+            {"visibility_basis": data["visibility_basis"]},
+            path,
+            require_basis=True,
+        )
+        normalized["visibility_basis"] = basis_fields["visibility_basis"]
+
+    if status == "answered":
+        for required_key in ("channel", "content", "visibility_basis"):
+            if required_key not in normalized:
+                raise ValidationError(f"{_path(path, required_key)} is required")
+    if status == "closed" and "reason" not in normalized:
+        raise ValidationError(f"{_path(path, 'reason')} is required")
+
+    return normalized
+
+
 def _normalize_subgm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
     raw_actor_id = _require_str(data, "actor_id", path).strip()
@@ -475,6 +533,11 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         ),
         "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
+        "perception_responses": _normalize_list_items(
+            _optional_list(data, "perception_responses", "gm_output"),
+            "gm_output.perception_responses",
+            _normalize_perception_response,
+        ),
         "character_promotions": _normalize_list_items(
             _optional_list(data, "character_promotions", "gm_output"),
             "gm_output.character_promotions",
