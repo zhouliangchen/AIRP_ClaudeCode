@@ -62,7 +62,7 @@ class RoundPrepareHelperTest(unittest.TestCase):
             [item["name"] for item in result["characters"]],
             ["Ada", "Bert", "Cora"],
         )
-        self.assertEqual(result["characters"][0]["scene_relevance"], "high")
+        self.assertEqual(result["characters"][0]["scene_relevance"], "normal")
         self.assertEqual(result["characters"][1]["scene_relevance"], "normal")
         self.assertEqual(result["characters"][2]["profile_summary"], "Cora profile.")
 
@@ -89,7 +89,7 @@ class RoundPrepareHelperTest(unittest.TestCase):
             ["_self", "Ada", "Bert", "Cora"],
         )
         self.assertEqual(result["characters"][0]["scene_relevance"], "high")
-        self.assertEqual(result["characters"][2]["scene_relevance"], "high")
+        self.assertEqual(result["characters"][2]["scene_relevance"], "normal")
 
     def test_build_character_contexts_keeps_passive_card_structure_fallback_small(self):
         round_prepare = _load_round_prepare()

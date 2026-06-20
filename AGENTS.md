@@ -29,6 +29,10 @@ This repository runs a Claude Code-driven local RP engine. Core Python runtime l
 
 Use Python standard-library code unless the project already depends on a package. Keep file protocols explicit JSON objects with stable keys and UTF-8 encoding. Prefer small helper modules over hidden behavior in `round_prepare.py` or `round_deliver.py`. Use snake_case for Python functions and files; preserve existing mixed Chinese/English user-facing text only when it is part of the tested UI, runtime output, or prompt contract.
 
+## Semantic Input Policy
+
+Production code must not infer the meaning, intent, routing, visibility, character participation, hidden facts, retcons, or important-character declarations of user-authored input through fixed keyword, substring, or regex matches. User-input semantics must come from explicit structured UI payloads or validated model-produced `input_analysis.output.json`. Fallback code may preserve raw text, hashes, and file-mailbox state, but must not persist or route semantic decisions from player text. Tests may use scenario text as fixtures, but source logic must not special-case fixture phrases.
+
 ## Testing Guidelines
 
 Add focused `unittest` coverage for every behavior change. For multi-agent changes, test missing artifacts, schema rejection, semantic input routing, context isolation, interaction traces, `repair_history.jsonl`, scheduled `memory_summaries/`, and preservation of raw player input. Keep live model calls out of tests; use temporary directories and fixtures such as `tests/fixtures/multi_agent_round/`.

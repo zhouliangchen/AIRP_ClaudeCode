@@ -218,6 +218,15 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             card_data={"title": "E2E", "character_orchestration": {"major": scenario["characters"]}},
             character_contexts={"characters": [{"name": name} for name in scenario["characters"]]},
             turn_index=0,
+            input_payload={
+                "input_schema": "dual_channel_v1",
+                "raw_text": scenario["user_text"],
+                "role_text": "I open the archive door.",
+                "user_instruction_text": (
+                    "the archive is secretly a moon base, but characters can only "
+                    "perceive machinery and cold air for now."
+                ),
+            },
         )
         run_dir = Path(result["run_dir"])
 

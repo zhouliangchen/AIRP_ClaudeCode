@@ -10,7 +10,6 @@ round_deliver.py — 回合后处理管线。
 """
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -28,91 +27,14 @@ def _extract_tag(text, tag):
     return m.group(1).strip() if m else ""
 
 
-def _has_processing_evidence(kind, probe):
-    if kind in probe:
-        return True
-    text = str(probe or "")
-    semantic_terms = {
-        "ACTION": ["action", "attempt", "attempted", "direct consequence", "尝试", "行动", "丢弃", "扔掉", "直接后果"],
-        "SYNOPSIS": ["synopsis", "dream", "expanded", "梦境", "梦醒", "梦境残留", "梗概", "扩写", "预兆"],
-        "OMNISCIENT_SETTING": ["omniscient", "hidden", "future setting", "长期", "暗线", "隐藏", "不向角色", "显性揭露", "真实用途", "代价"],
-        "DERIVED_CONTENT_EDIT": ["derived_content_edits", "prior", "repair", "rewrite", "上一轮", "前文", "修正", "重写", "降级"],
-        "IMPORTANT_CHARACTER_DECLARATION": ["important character", "character_dialogues", "核心角色", "重要角色", "subagent"],
-    }
-    return any(term in text for term in semantic_terms.get(kind, []))
-
-
-def _derived_edits_actionable(raw):
-    try:
-        edits = json.loads(raw)
-    except Exception:
-        return False
-    if not isinstance(edits, list):
-        return False
-    action_keys = {"ai", "content", "new_ai", "first_paragraph", "new_first_paragraph", "summary"}
-    for edit in edits:
-        if not isinstance(edit, dict):
-            continue
-        if "turn_index" not in edit:
-            continue
-        if any(isinstance(edit.get(key), str) and edit.get(key).strip() for key in action_keys):
-            return True
-    return False
-
-
 def validate_player_processing(response_text, round_context):
-    """Guardrail for mixed player inputs and conflict repairs.
+    """No-op compatibility hook.
 
-    This is intentionally heuristic: it catches the common failure mode where the
-    model notices a player correction in prose but does not persist the repaired
-    facts into MVU state for future turns.
+    Semantic player-input handling is validated when input_analysis.output.json
+    is applied and when agent artifacts are prepared for delivery. This stage
+    must not infer player intent by scanning the preserved input text.
     """
-    warnings = []
-    ctx = round_context or ""
-    polished = _extract_tag(response_text, "polished_input")
-    update_block = _extract_tag(response_text, "UpdateVariable")
-    patch_block = _extract_tag(response_text, "JSONPatch")
-    derived_edits = _extract_tag(response_text, "derived_content_edits")
-    summary = _extract_tag(response_text, "summary")
-    response_probe = "\n".join([polished, update_block, patch_block, derived_edits, summary])
-
-    classified = re.findall(r"^\s*\d+\.\s+(OMNISCIENT_SETTING|SYNOPSIS|ACTION|UNCLASSIFIED|DERIVED_CONTENT_EDIT|IMPORTANT_CHARACTER_DECLARATION):", ctx, flags=re.MULTILINE)
-    if len(set(classified)) >= 2:
-        missing = [kind for kind in sorted(set(classified)) if not _has_processing_evidence(kind, response_probe)]
-        if missing:
-            warnings.append("Mixed input handling evidence must explicitly list: " + ", ".join(missing))
-
-    if "conflict_cues: (none detected" not in ctx and "required_repair:" in ctx:
-        repair_terms = ["修正", "覆盖", "降级", "梦", "预示", "现实", "分支", "派生", "上一轮"]
-        if not any(term in response_probe for term in repair_terms):
-            warnings.append("Detected conflict cues, but response does not explicitly describe repair/reframing in polished_input/summary/UpdateVariable.")
-        if not patch_block:
-            warnings.append("Detected conflict cues, but no <JSONPatch> was written to persist repaired derived state.")
-        patch_terms = ["梦", "预示", "现实", "覆盖", "分支", "核心异常", "长期", "规则", "吊坠"]
-        if patch_block and not any(term in patch_block for term in patch_terms):
-            warnings.append("JSONPatch exists but does not appear to persist the player's reframing/long-term setting.")
-        if "prior_ai_to_reconcile:" in ctx and not derived_edits:
-            warnings.append("Detected required repair of prior AI-derived content, but response lacks <derived_content_edits>; rewrite or reframe the affected earlier turn without touching player inputs.")
-        elif "prior_ai_to_reconcile:" in ctx and not _derived_edits_actionable(derived_edits):
-            warnings.append("Detected required repair of prior AI-derived content, but <derived_content_edits> is not actionable by handler.py; include turn_index plus ai/content/new_ai/first_paragraph/summary.")
-
-    if "DERIVED_CONTENT_EDIT" in classified and "<derived_content_edits>" not in response_text:
-        warnings.append("Player requested editing existing AI-derived content, but response lacks <derived_content_edits>; do not merely place the requested scene in the latest reply.")
-
-    edit_only = _extract_tag(response_text, "edit_only")
-    if edit_only and "<derived_content_edits>" in response_text:
-        return warnings
-
-    if "IMPORTANT_CHARACTER_DECLARATION" in classified:
-        if "source=\"subagent\"" not in response_text and '"source":"subagent"' not in response_text and '"source": "subagent"' not in response_text:
-            warnings.append("Player declared an important character, but no subagent-sourced <character_dialogues> entry was provided.")
-
-    if "OMNISCIENT_SETTING" in classified and patch_block:
-        setting_terms = ["长期", "规则", "代价", "真相", "暗线", "吊坠", "变身", "黑暗", "魔力"]
-        if not any(term in patch_block for term in setting_terms):
-            warnings.append("Omniscient setting detected, but JSONPatch does not appear to store it as an ongoing rule/hidden truth.")
-
-    return warnings
+    return []
 
 
 def count_chinese(text):
@@ -244,7 +166,7 @@ def main():
             "warnings": processing_warnings,
             "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
             "tokens": token_data,
-            "hint": "必须先按 PLAYER_INPUT_PROCESSING_PLAN 分类处理：冲突需修正派生设定/变量，梗概需先承认并扩写，上帝视角设定需存入暗线变量，最后才推进玩家行动。"
+            "hint": "请根据 input_analysis.output.json 的结构化结果和 critic.report.json 修复 story 输出。"
         }, ensure_ascii=False))
         sys.exit(0)
 

@@ -161,7 +161,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
         warnings = self.round_deliver.validate_player_processing(response, context)
 
-        self.assertTrue(any("derived_content_edits" in warning for warning in warnings))
+        self.assertEqual(warnings, [])
 
     def test_mixed_input_guard_accepts_semantic_evidence_without_english_labels(self):
         context = """
@@ -223,7 +223,7 @@ class PlayerProcessingGuardTest(unittest.TestCase):
 
         warnings = self.round_deliver.validate_player_processing(response, context)
 
-        self.assertTrue(any("actionable" in warning for warning in warnings))
+        self.assertEqual(warnings, [])
 
 
 class CriticGateRuntimeTest(unittest.TestCase):
@@ -572,6 +572,42 @@ class AgentRunTest(unittest.TestCase):
         self.assertEqual(report["hard_failures"], ["bad"])
 
 
+class SemanticInputPolicyTest(unittest.TestCase):
+    def test_production_code_has_no_player_input_keyword_heuristics(self):
+        forbidden = {
+            "skills/round_prepare.py": [
+                "PLAYER_INPUT_HEURISTIC_FALLBACK",
+                "setting_cues",
+                "synopsis_cues",
+                "important_character_cues",
+                "conflict_patterns",
+                "def _input_matches",
+                "name in user_text",
+            ],
+            "skills/agent_packets.py": [
+                "INSTRUCTION_PREFIXES",
+                "omniscient:",
+                "important character:",
+            ],
+            "skills/hidden_settings.py": [
+                "HIDDEN_SETTING_CUES",
+                "is_hidden_setting_instruction",
+                "def persist_hidden_setting(",
+            ],
+            "skills/round_deliver.py": [
+                "semantic_terms",
+                "conflict_cues:",
+                "DERIVED_CONTENT_EDIT",
+                "IMPORTANT_CHARACTER_DECLARATION",
+                "OMNISCIENT_SETTING",
+            ],
+        }
+        for rel, needles in forbidden.items():
+            source = (ROOT / rel).read_text(encoding="utf-8")
+            for needle in needles:
+                self.assertNotIn(needle, source, f"{rel} still contains {needle!r}")
+
+
 class AgentPacketTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -593,47 +629,45 @@ class AgentPacketTest(unittest.TestCase):
         (self.card / ".card_data.json").write_text("{}", encoding="utf-8")
         return temp_root, styles_dir
 
-    def test_route_player_input_splits_omniscient_setting_block(self):
+    def test_route_player_input_does_not_split_omniscient_setting_keywords(self):
         text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
         routed = self.agent_packets.route_player_input(text)
 
-        self.assertEqual(routed["role_channel"], "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002")
-        self.assertEqual(
-            routed["user_instruction_channel"],
-            "\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
-        )
-        self.assertEqual(
-            routed["components"],
-            [
-                {"channel": "role", "text": "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002"},
-                {
-                    "channel": "user_instruction",
-                    "text": "\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09",
-                },
-            ],
-        )
+        self.assertEqual(routed["role_channel"], text)
+        self.assertEqual(routed["user_instruction_channel"], "")
+        self.assertEqual(routed["components"], [{"channel": "role", "text": text}])
 
-    def test_route_player_input_supports_english_instruction_cues(self):
+    def test_route_player_input_does_not_split_english_instruction_keywords(self):
         routed = self.agent_packets.route_player_input(
             "I open the gate.\nSystem: make the castle a moon base.\n"
         )
-        self.assertEqual(routed["role_channel"], "I open the gate.")
-        self.assertEqual(routed["user_instruction_channel"], "System: make the castle a moon base.")
+        self.assertEqual(routed["role_channel"], "I open the gate.\nSystem: make the castle a moon base.")
+        self.assertEqual(routed["user_instruction_channel"], "")
 
-    def test_route_player_input_splits_inline_chinese_instruction_after_sentence_boundary(self):
+    def test_route_player_input_does_not_split_inline_chinese_setting_keyword(self):
         routed = self.agent_packets.route_player_input(
             "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
         )
 
+        self.assertEqual(
+            routed["role_channel"],
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+        )
+        self.assertEqual(routed["user_instruction_channel"], "")
+
+    def test_route_input_payload_uses_only_explicit_dual_channel_for_instruction_text(self):
+        routed = self.agent_packets.route_input_payload(
+            "fallback should not be interpreted",
+            {
+                "input_schema": "dual_channel_v1",
+                "role_text": "\u6211\u8d70\u8fdb\u623f\u95f4\u3002",
+                "user_instruction_text": "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            },
+        )
+
         self.assertEqual(routed["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
         self.assertEqual(routed["user_instruction_channel"], "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002")
-        self.assertEqual(
-            routed["components"],
-            [
-                {"channel": "role", "text": "\u6211\u8d70\u8fdb\u623f\u95f4\u3002"},
-                {"channel": "user_instruction", "text": "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"},
-            ],
-        )
+        self.assertEqual(routed["input_schema"], "dual_channel_v1")
 
     def test_route_player_input_keeps_parenthesized_action_as_role(self):
         routed = self.agent_packets.route_player_input("(I glance at the door and step inside.)")
@@ -645,8 +679,15 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(routed["role_channel"], "I rewrite the rune on the wall.")
         self.assertEqual(routed["user_instruction_channel"], "")
 
-    def test_build_player_packet_uses_role_channel_without_user_instructions(self):
-        routed = self.agent_packets.route_player_input("\u6211\u62ab\u51fa\u77ed\u5251\u3002\n\uff08\u7cfb\u7edf\u6307\u4ee4\uff1a\u5c06\u57ce\u5821\u8bbe\u5b9a\u4e3a\u88ab\u9057\u5fd8\u7684\u6708\u9762\u57fa\u5730\u3002\uff09")
+    def test_build_player_packet_uses_explicit_role_channel_without_user_instructions(self):
+        routed = self.agent_packets.route_input_payload(
+            "",
+            {
+                "input_schema": "dual_channel_v1",
+                "role_text": "\u6211\u62ab\u51fa\u77ed\u5251\u3002",
+                "user_instruction_text": "\u5c06\u57ce\u5821\u8bbe\u5b9a\u4e3a\u88ab\u9057\u5fd8\u7684\u6708\u9762\u57fa\u5730\u3002",
+            },
+        )
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
         self.assertEqual(packet["visibility"], "first_person_player")
@@ -655,13 +696,14 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("user_instruction_channel", packet)
         self.assertEqual(packet["agent"], "player")
 
-    def test_build_player_packet_excludes_inline_chinese_instruction_text(self):
-        routed = self.agent_packets.route_player_input(
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+    def test_build_player_packet_holds_unanalysed_single_channel_input(self):
+        routed = self.agent_packets.route_input_payload(
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            None,
         )
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
-        self.assertEqual(packet["role_channel_anchor"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
+        self.assertEqual(packet["role_channel_anchor"], "")
         self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
 
     def test_prepare_agent_run_projects_actor_context_without_hidden_channels(self):
@@ -703,7 +745,7 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(player_packet["visibility"], "first_person_player")
         self.assertEqual(character_packet["visibility"], "first_person_character")
-        self.assertEqual(player_packet["role_channel_anchor"], "I open the archive door.")
+        self.assertEqual(player_packet["role_channel_anchor"], "")
         self.assertEqual(character_packet["role_channel_anchor"], "")
         self.assertEqual(character_packet["self_knowledge"]["name"], "Ada")
         self.assertIn("I keep the archive keys.", json.dumps(character_packet, ensure_ascii=False))
@@ -1518,7 +1560,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertFalse((run_dir / "characters" / "meta.context.json").exists())
 
     def test_build_character_packet_excludes_user_instruction_text(self):
-        routed = self.agent_packets.route_player_input("I step toward the gate.\nOmniscient: the door is a dream echo.")
+        routed = self.agent_packets.route_input_payload(
+            "I step toward the gate.\nOmniscient: the door is a dream echo.",
+            None,
+        )
         packet = self.agent_packets.build_character_packet(
             self.card,
             {"name": "Ada", "profile_summary": "Ada is cautious."},
@@ -1531,8 +1576,9 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("dream echo", json.dumps(packet, ensure_ascii=False))
 
     def test_build_character_packet_excludes_inline_chinese_instruction_text(self):
-        routed = self.agent_packets.route_player_input(
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+        routed = self.agent_packets.route_input_payload(
+            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            None,
         )
         packet = self.agent_packets.build_character_packet(
             self.card,
@@ -1604,6 +1650,8 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("=== AGENT_RUN ===", round_context)
         self.assertIn("=== AGENT_WORKFLOW ===", round_context)
         self.assertIn("dispatch_agent_outputs", round_context)
+        self.assertNotIn("PLAYER_INPUT_HEURISTIC_FALLBACK", round_context)
+        self.assertNotIn("=== INPUT_MATCHES ===", round_context)
 
         character_contexts_path = styles_dir / "character_contexts.json"
         self.assertTrue(character_contexts_path.exists())

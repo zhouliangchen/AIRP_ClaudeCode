@@ -24,7 +24,7 @@ AIRP_ClaudeCode/
 │  ├─ server.py             # 浏览器桥接服务，默认监听 0.0.0.0:8765
 │  ├─ start_server.py       # 启动 server.py 与 MVU 服务
 │  ├─ import_prepare.py     # 启动/导入管线
-│  ├─ round_prepare.py      # 每轮上下文收集
+│  ├─ round_prepare.py      # 每轮控制面上下文与 agent 邮箱准备
 │  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
 │  ├─ agent_workflow.py     # 根据 manifest 给出下一步控制面动作
 │  ├─ agent_prompts.py      # 生成 GM/player/character/story/critic prompt
@@ -48,7 +48,7 @@ AIRP_ClaudeCode/
 
 旧存档：检测到 `chat_log.json` 与 `memory/` 后，系统会恢复最近剧情、角色状态和用户偏好。玩家输入会额外记录到 `.player_inputs.jsonl`，这是玩家原文的权威日志；Claude Code 可以重写 AI 派生叙事、角色资料、变量和记忆来服从玩家新设定，但不得改写、裁剪或摘要玩家原始输入。
 
-玩家输入可以是第一人称行动、第一人称剧情梗概、第三人称上帝视角设定，或三者混合。行动会被简短复述后推进；剧情梗概会先扩写再推进；上帝视角设定会作为权威事实用于修正相关派生文件。
+玩家输入可以是第一人称行动、第一人称剧情梗概、第三人称上帝视角设定，或三者混合；但生产代码不会通过固定关键词、子串或正则去判断这些语义。单通道玩家原文会先被完整保留给 input analyst 与 GM，语义路由、隐藏事实、重要角色声明和改写意图只能来自显式双通道输入或已校验的 `input_analysis.output.json`。在输入分析应用前，player/character actor-facing packet 不会接收未经分析的原始玩家文本。
 
 空白启动：当前文件夹没有 PNG/JSON/TXT 时，会创建 `.card_data.json`、`.initvar.json`、`memory/characters/_self/` 和 `ui_manifest.json`。系统不会自动生成 AI 开场，而是等待你在浏览器输入第一轮设定，之后逐轮沉淀角色卡、变量和记忆。
 
@@ -77,7 +77,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 ## 核心角色 subagent
 
-`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。该目录包含 `input.json`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。运行中还会按需写入 `gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
+`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。它保留原始输入、创建 input analyst 请求、生成初始 GM/actor/story/critic prompt 与 manifest，但不负责从玩家文本中推断语义。该目录包含 `input.json`、`input.raw.json`、`input_analysis.request.md`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。运行中还会按需写入 `input_analysis.output.json`、`gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_input_analysis`、`analysis_applied`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
 每轮会为已注册的重要角色生成隔离上下文；`max_parallel_subagents` 只限制运行时同一安全批次最多并行调度多少角色，不限制已注册重要角色的上下文数量。GM 输出的 `parallel_groups` 会被控制面校验；互不依赖、不同角色的合法 actor calls 可并行执行，不安全的并行声明会降级为串行并写入路由警告；若 actor call 与活跃 subGM 占用冲突，则会在批次调度前被拒绝。Claude Code 工作流会在场景强相关时最多并行调用配置允许数量的核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 

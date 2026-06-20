@@ -116,227 +116,8 @@ def _short_context(text, limit=260):
     return text[: limit - 1] + "…"
 
 
-def _analyze_player_input_for_plan(user_text, chat_log):
-    """Heuristic, non-authoritative breakdown used to force generation-time discipline.
-
-    The model still makes the final literary decision, but this section prevents mixed
-    player inputs from being treated as a single ordinary action.
-    """
-    text = user_text or ""
-    paragraphs = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
-    components = []
-
-    setting_cues = ["用于长期剧情引导", "长期剧情", "上帝视角", "设定", "主角是", "吊坠为", "代价是", "不需要立刻", "规则", "真相"]
-    derived_edit_cues = ["第一段", "首段", "上一段", "上轮", "前文", "前面", "所有章节", "章节", "修改", "改写", "重写", "重新构思", "重新编写", "编写", "修正", "回复"]
-    important_character_cues = ["设定重要角色", "重要角色", "核心角色"]
-    synopsis_cues = ["直到", "之后", "再回过神", "梦境", "梦醒", "醒来", "时间却", "唯一提醒", "正在", "化作泡影", "记住", "预示", "过去了", "下课后"]
-    action_pattern = re.compile(r"(^|[。！？，,\n])\s*我\s*(尝试|决定|打算|伸手|走向|冲向|询问|问|说|拿起|捡起|扔掉|丢掉|后退|离开|跟上|拉住|打开|看向|靠近|躲开|拒绝|同意)")
-
-    def add(kind, para, reason):
-        snippet = _short_context(para)
-        if not any(c["type"] == kind and c["text"] == snippet for c in components):
-            components.append({"type": kind, "text": snippet, "reason": reason})
-
-    for para in paragraphs:
-        stripped = para.strip()
-        inner = stripped[1:-1].strip() if stripped.startswith("（") and stripped.endswith("）") else stripped
-        if stripped.startswith("（") and stripped.endswith("）") or any(cue in inner for cue in setting_cues):
-            # Parenthetical authorial guidance is not character action unless it also has action cues below.
-            kind = "OMNISCIENT_SETTING"
-            reason = "括号/设定提示/长期剧情规则，必须作为权威设定或暗线保存"
-            if any(cue in inner for cue in derived_edit_cues):
-                kind = "DERIVED_CONTENT_EDIT"
-                reason = "玩家要求修改既有 AI 回复/前文；必须写入 <derived_content_edits> 修正旧派生内容，不得只在新回复里演出"
-            elif any(cue in inner for cue in important_character_cues):
-                kind = "IMPORTANT_CHARACTER_DECLARATION"
-                reason = "玩家手动指定重要角色；必须更新 character_orchestration.major 并为该角色开启 subagent/独立上下文"
-            add(kind, para, reason)
-        if any(cue in para for cue in synopsis_cues):
-            add("SYNOPSIS", para, "玩家概述已发生或将发生的剧情，先按原顺序扩写/承认")
-        if action_pattern.search(para):
-            add("ACTION", para, "玩家当前行动，必须在处理完设定与梗概后解析其直接后果")
-
-    if not components and text.strip():
-        components.append({"type": "UNCLASSIFIED", "text": _short_context(text), "reason": "未命中启发式分类；仍以玩家原文为权威"})
-
-    conflict_patterns = [
-        "梦境破碎", "醒来", "梦醒", "现实", "时间却只过去", "只过去了一分钟",
-        "不是梦境", "唯一提醒", "之前", "其实", "而是", "不需要立刻在剧情中体现",
-        "长期剧情引导", "无法再被回忆", "化作泡影",
-    ]
-    conflict_cues = [cue for cue in conflict_patterns if cue in text]
-    previous = {}
-    if chat_log:
-        last = chat_log[-1] or {}
-        previous = {
-            "index": last.get("index", "?"),
-            "summary": _short_context(last.get("summary", ""), 220),
-            "ai_excerpt": _short_context(re.sub(r"<[^>]+>", "", last.get("ai", "")), 260),
-        }
-    declared_major = []
-    for m in re.finditer(r"(?:设定重要角色|重要角色|核心角色)[：:，,\s]*([一-鿿A-Za-z0-9_·]{1,20})", text):
-        name = m.group(1).strip()
-        if name and name not in declared_major:
-            declared_major.append(name)
-
-    return {"components": components, "conflict_cues": conflict_cues, "previous": previous, "declared_major_characters": declared_major}
-
-
-def _keyword_score(keyword, text):
-    """Score a keyword against text — mirrors match_worldbook.py logic.
-
-    Returns integer score, 0 if no meaningful match.
-    """
-    if not keyword or not text:
-        return 0
-    if keyword in text:
-        return 10
-    if text in keyword:
-        return 6
-    # CJK character overlap (2+ shared chars)
-    kw_chars = set(keyword)
-    txt_chars = set(text)
-    overlap = len(kw_chars & txt_chars)
-    if overlap >= 2:
-        return 3 + min(overlap, 5)
-    return 0
-
-
-def _input_matches(wb_index, user_text, ref_sections):
-    """Scan user input against worldbook index keywords, return top-3 with full entry text."""
-    scored = []
-    for entry in wb_index:
-        keyword = entry.get("keyword", "")
-        score = _keyword_score(keyword, user_text)
-        if score > 0:
-            scored.append({**entry, "score": score})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-
-    lines = []
-    if not scored:
-        lines.append("  (no matches)")
-        return lines
-
-    for i, m in enumerate(scored[:3]):
-        lines.append(f"\n  --- Input Match {i+1}: {m['keyword']} (score={m['score']}) ---")
-        lines.append(f"  Title: {m['title']}")
-        lines.append(f"  One-liner: {m['one_liner'][:100]}")
-        full = grep_reference_section(ref_sections, m["section"].lstrip("#").strip())
-        if full:
-            lines.append("  Full entry:")
-            for fl in full.split("\n")[:100]:
-                lines.append(f"    {fl}")
-    return lines
-
-
 def _safe_name(name):
     return re.sub(r'[\\/:*?"<>|]+', "_", name.strip()) or "_unknown"
-
-
-_IMPORTANT_CHARACTER_RE = re.compile(
-    r"(?:(?:设定\s*)?(?:重要|核心)角色|important\s+character|core\s+character)"
-    r"\s*[：:，,\s]*[“\"'「『《【（(]*\s*"
-    r"(?P<name>[^”\"'」』》】）)\n，,。；;：:]{1,40})",
-    re.IGNORECASE,
-)
-
-
-def _normalize_declared_character_name(name):
-    text = str(name or "").strip()
-    text = text.strip(" \t\r\n“”\"'「」『』《》【】（）()")
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:40]
-
-
-def _extract_important_character_declarations(text):
-    body = str(text or "").strip()
-    if not body:
-        return []
-    declarations = []
-    seen = set()
-    for match in _IMPORTANT_CHARACTER_RE.finditer(body):
-        name = _normalize_declared_character_name(match.group("name"))
-        if not name or name in seen:
-            continue
-        declarations.append({"name": name, "setting_text": body})
-        seen.add(name)
-    return declarations
-
-
-def _persist_important_character_declarations(
-    card_folder,
-    card_data,
-    declarations,
-    *,
-    source_input_id="",
-    round_id="",
-):
-    if not isinstance(card_data, dict) or not declarations:
-        return []
-
-    orchestration = card_data.setdefault("character_orchestration", {})
-    major = orchestration.setdefault("major", [])
-    if not isinstance(major, list):
-        major = []
-        orchestration["major"] = major
-    orchestration.setdefault("minor_policy", "main_agent")
-    orchestration.setdefault("max_parallel_subagents", 2)
-
-    persisted = []
-    changed_orchestration = False
-    for declaration in declarations:
-        name = _normalize_declared_character_name(declaration.get("name"))
-        if not name:
-            continue
-        setting_text = str(declaration.get("setting_text") or "").strip()
-        if name not in major:
-            major.append(name)
-            changed_orchestration = True
-
-        char_dir = Path(card_folder) / "memory" / "characters" / _safe_name(name)
-        char_dir.mkdir(parents=True, exist_ok=True)
-        profile_md = "\n".join(
-            [
-                f"# {name}",
-                "",
-                "## Authoritative Player Setting",
-                f"- source: user_instruction_channel",
-                f"- source_input_id: {source_input_id or ''}",
-                f"- round_id: {round_id or ''}",
-                "- importance: major",
-                "- visibility: character_private_and_gm",
-                "",
-                setting_text,
-                "",
-            ]
-        )
-        (char_dir / "profile.md").write_text(profile_md, encoding="utf-8")
-        (char_dir / "profile.json").write_text(
-            json.dumps(
-                {
-                    "name": name,
-                    "importance": "major",
-                    "source": "player_instruction",
-                    "source_input_id": source_input_id or "",
-                    "round_id": round_id or "",
-                    "visibility": "character_private_and_gm",
-                    "status": "active",
-                    "authoritative_setting": setting_text,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        persisted.append(name)
-
-    if changed_orchestration:
-        try:
-            with open(Path(card_folder) / ".card_data.json", "w", encoding="utf-8") as f:
-                json.dump(card_data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-    return persisted
 
 
 def _read_character_file(card_folder, name, fname):
@@ -393,7 +174,7 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
         packets.append({
             "name": name,
             "importance": "major",
-            "scene_relevance": "high" if name == "_self" or name in user_text else "normal",
+            "scene_relevance": "high" if name == "_self" else "normal",
             "profile_summary": profile_md[:1200],
             "recent_state": recent_md[:1200],
             "goals": goals_md[:1000],
@@ -472,8 +253,6 @@ def main():
     if user_input is None:
         user_input = ""
     user_text = user_input
-    user_text_for_matching = user_text.strip()
-
     settings_path = styles_dir / "settings.json"
     settings = read_json(settings_path) or {}
 
@@ -544,19 +323,10 @@ def main():
             or latest_role_text.strip() == current_user_text_for_matching
         ):
             explicit_input_payload = dict(latest_player_input)
-    input_plan = _analyze_player_input_for_plan(user_text_for_matching, chat_log)
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
     except Exception:
         hidden_setting_records = []
-
-    declared_major = []
-    for name in input_plan.get("declared_major_characters", []):
-        normalized = _normalize_declared_character_name(name)
-        if normalized and normalized not in declared_major:
-            declared_major.append(normalized)
-    if declared_major:
-        input_plan["declared_major_characters"] = declared_major
 
     # Load reference.md once for O(1) section lookups this round
     ref_sections = _load_reference_sections(card_folder)
@@ -636,33 +406,9 @@ def main():
     dynamic_parts.append("- 若玩家把上一轮 AI 推演改定为梦境、误会、预示、回忆、幻觉、演戏或已被覆盖的分支，本轮必须明确降级上一轮 AI 内容为对应性质，并阻止它继续作为现实事实污染后续变量。")
 
     dynamic_parts.append("\n=== PLAYER_INPUT_INTERPRETATION ===")
-    dynamic_parts.append("- 先分类，后创作；不要把混合输入整体当作 ACTION 直接推进。")
-    dynamic_parts.append("- SYNOPSIS: 玩家给出的剧情梗概/已发生经过，必须先承认并按玩家顺序扩写；不得跳过梗概直接续写下一幕。")
-    dynamic_parts.append("- OMNISCIENT_SETTING: heuristic classification is advisory only; do not write directly into variables, memory, hidden facts, or orchestration. Any persistence or promotion must come from validated input_analysis.output.json applied by input_analysis_apply.py.")
-    dynamic_parts.append("- ACTION: 玩家当前行动只在处理完设定与梗概后推进；先给出该行动的直接后果，再引出新的变化。")
-    dynamic_parts.append("- DERIVED_CONTENT_EDIT: 玩家要求修改第一段/首段/上一轮/前文/既有回复时，不是把指定内容写进最新回复；必须在 response.txt 写 <derived_content_edits> JSON，定点修正旧 AI 派生内容。")
-    dynamic_parts.append("- IMPORTANT_CHARACTER_DECLARATION: heuristic classification is advisory only; do not add characters directly to memory or character_orchestration. Persist/promote only through validated world_updates.important_characters in input_analysis.output.json plus input_analysis_apply.py.")
-    dynamic_parts.append("- MIXED: process derived edits, character declarations, omniscient settings, synopsis, and actions in order, but treat heuristic labels as debug guidance. All durable changes must pass validated input_analysis.output.json and input_analysis_apply.py; do not expose processing notes to the player.")
-
-    dynamic_parts.append("\n=== PLAYER_INPUT_HEURISTIC_FALLBACK (debug only; input_analysis.output.json is authoritative when present) ===")
-    comps = input_plan.get("components", [])
-    if comps:
-        for idx, comp in enumerate(comps, 1):
-            dynamic_parts.append(f"  {idx}. {comp.get('type')}: {comp.get('text')}")
-            dynamic_parts.append(f"     why: {comp.get('reason')}")
-    else:
-        dynamic_parts.append("  (no classified components; still obey raw user text)")
-    if input_plan.get("declared_major_characters"):
-        dynamic_parts.append("  declared_major_characters: " + ", ".join(input_plan.get("declared_major_characters", [])))
-        dynamic_parts.append("  analysis_apply_required: promote these names only through validated input_analysis.output.json and input_analysis_apply.py.")
-    if input_plan.get("conflict_cues"):
-        dynamic_parts.append("  conflict_cues: " + ", ".join(input_plan.get("conflict_cues", [])[:12]))
-        prev = input_plan.get("previous") or {}
-        if prev:
-            dynamic_parts.append(f"  prior_ai_to_reconcile: turn={prev.get('index')} summary={prev.get('summary')}")
-            dynamic_parts.append("  required_repair: identify which prior AI-derived facts become dream/preview/false branch/obsolete; update variables so future turns follow the player's latest framing. Repair can be a small edit or a full rewrite of prior derived story/settings/memory, while preserving raw player inputs.")
-    else:
-        dynamic_parts.append("  conflict_cues: (none detected heuristically; still check manually)")
+    dynamic_parts.append("- Do not infer semantic intent from fixed keywords in the preserved player text.")
+    dynamic_parts.append("- Durable routing, hidden facts, retcons, character promotion, and narrative directives must come from validated input_analysis.output.json applied by input_analysis_apply.py.")
+    dynamic_parts.append("- Before input analysis is applied, raw text is preserved for the input analyst and GM only; actor-facing packets must use explicit dual-channel or analysis-applied routing.")
 
     if hidden_setting_records:
         dynamic_parts.append("\n=== GM_ONLY_HIDDEN_SETTINGS ===")
@@ -718,9 +464,6 @@ def main():
                     dynamic_parts.append(f"    {line}")
     else:
         dynamic_parts.append("  (no matches)")
-
-    dynamic_parts.append("\n=== INPUT_MATCHES ===")
-    dynamic_parts.extend(_input_matches(wb_index, user_text, ref_sections))
 
     # Injections — each item is a dict with keyword/section/one_liner
     dynamic_parts.append("\n=== INJECTIONS ===")

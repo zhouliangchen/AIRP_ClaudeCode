@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -12,39 +11,6 @@ import agent_run
 import agent_prompts
 import agent_memory
 import input_analysis
-
-
-INSTRUCTION_PREFIXES = (
-    "系统指令",
-    "用户指令",
-    "上帝视角",
-    "设定：",
-    "设定:",
-    "重要角色",
-    "核心角色",
-    "system:",
-    "user instruction:",
-    "omniscient:",
-    "setting:",
-    "important character:",
-)
-
-_PAREN_INNER_RE = re.compile(r"^\(\s*(.*?)\s*\)$")
-_FULL_PAREN_INNER_RE = re.compile(r"^（\s*(.*?)\s*）$")
-_SEGMENTS_RE = re.compile(r"(\([^()]*\)|（[^（）]*）)")
-_INLINE_INSTRUCTION_RE = re.compile(
-    r"(?:^|(?<=[.!?。！？]))\s*("
-    + "|".join(re.escape(prefix) for prefix in sorted(INSTRUCTION_PREFIXES, key=len, reverse=True))
-    + r")",
-    re.IGNORECASE,
-)
-
-
-def _has_instruction_prefix(text: str) -> bool:
-    for cue in INSTRUCTION_PREFIXES:
-        if text.startswith(cue) or text.lower().startswith(cue.lower()):
-            return True
-    return False
 
 
 def _to_text(value: Any) -> str:
@@ -100,77 +66,25 @@ def compact_card_data(card_data: Any) -> Dict[str, Any]:
     }
 
 
-def _is_instruction(text: str) -> bool:
-    text = _to_text(text).strip()
-    if not text:
-        return False
-    match = _PAREN_INNER_RE.match(text) or _FULL_PAREN_INNER_RE.match(text)
-    if match:
-        text = match.group(1).strip()
-    return _has_instruction_prefix(text)
-
-
-def _split_inline_instruction(text: str) -> tuple[str, str] | None:
-    text = _to_text(text).strip()
-    if not text or _is_instruction(text):
-        return None
-    match = _INLINE_INSTRUCTION_RE.search(text)
-    if not match:
-        return None
-    prefix_start = match.start(1)
-    role_text = text[:prefix_start].rstrip()
-    instruction_text = text[prefix_start:].strip()
-    if not role_text or not instruction_text:
-        return None
-    return role_text, instruction_text
-
-
 def route_player_input(text: str) -> Dict[str, Any]:
-    """Split mixed player input into role and instruction channels."""
-    raw = _to_text(text)
-    if not raw.strip():
+    """Preserve a single-channel raw player input without semantic parsing."""
+    raw = _to_text(text).strip()
+    if not raw:
         return {
             "role_channel": "",
             "user_instruction_channel": "",
             "components": [],
         }
 
-    components = []
-    role_parts = []
-    instruction_parts = []
-
-    for part in re.split(_SEGMENTS_RE, raw):
-        part = _to_text(part).strip()
-        if not part:
-            continue
-        for line in part.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if _is_instruction(line):
-                instruction_parts.append(line)
-                components.append({"channel": "user_instruction", "text": line})
-                continue
-            inline_split = _split_inline_instruction(line)
-            if inline_split:
-                role_text, instruction_text = inline_split
-                role_parts.append(role_text)
-                components.append({"channel": "role", "text": role_text})
-                instruction_parts.append(instruction_text)
-                components.append({"channel": "user_instruction", "text": instruction_text})
-                continue
-            role_parts.append(line)
-            components.append({"channel": "role", "text": line})
-
     return {
-        "role_channel": "\n".join(role_parts),
-        "user_instruction_channel": "\n".join(instruction_parts),
-        "components": components,
+        "role_channel": raw,
+        "user_instruction_channel": "",
+        "components": [{"channel": "role", "text": raw}],
     }
 
 
 def route_input_payload(user_text: str, input_payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Route explicit dual-channel payloads before falling back to heuristics."""
+    """Route only explicit dual-channel payloads; otherwise preserve raw input."""
     payload = input_payload if isinstance(input_payload, dict) else {}
     if payload.get("input_schema") == "dual_channel_v1":
         role = _to_text(payload.get("role_text"))
@@ -188,8 +102,24 @@ def route_input_payload(user_text: str, input_payload: Dict[str, Any] | None = N
         }
 
     routed = route_player_input(user_text)
-    routed["input_schema"] = "heuristic_v1"
+    routed["input_schema"] = "raw_single_channel_v1"
     return routed
+
+
+def _actor_visible_role_channel(routed_input: Dict[str, Any]) -> str:
+    """Return actor-visible role text only after explicit or analysis-applied routing."""
+    schema = _to_text(routed_input.get("input_schema")).strip()
+    if schema in {"dual_channel_v1", "analysis_v1"}:
+        return _to_text(routed_input.get("role_channel")).strip()
+    return ""
+
+
+def _actor_visible_world_state(world_state: Dict[str, Any], routed_input: Dict[str, Any]) -> Dict[str, Any]:
+    if _actor_visible_role_channel(routed_input):
+        return world_state
+    world = dict(world_state)
+    world["role_channel"] = ""
+    return world
 
 
 def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]]:
@@ -383,7 +313,7 @@ def _projectable_player_state(card_folder, actor_state: Dict[str, Any] | None = 
 
 
 def _actor_prompt_from_role(routed_input: Dict[str, Any], *, for_character: bool = False) -> str:
-    role_channel = _to_text(routed_input.get("role_channel")).strip()
+    role_channel = _actor_visible_role_channel(routed_input)
     if not role_channel:
         return "Use only your projected first-person context for this turn."
     if for_character:
@@ -423,6 +353,7 @@ def build_player_packet(
 ):
     """Build first-person packet for player agent."""
     world = world_state or _build_world_state(routed_input, recent_chat)
+    world = _actor_visible_world_state(world, routed_input)
     actor = _projectable_player_state(card_folder, actor_state)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input)
     return agent_projection.project_actor_context("player", world, actor, prompt)
@@ -439,6 +370,7 @@ def build_character_packet(
     """Build first-person packet for a character subagent."""
     character_data = character or {}
     world = world_state or _build_world_state(routed_input, recent_chat)
+    world = _actor_visible_world_state(world, routed_input)
     actor_state = _projectable_character_state(character_data, card_folder)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input, for_character=True)
     return agent_projection.project_actor_context(

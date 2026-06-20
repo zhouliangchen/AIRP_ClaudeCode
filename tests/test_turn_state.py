@@ -585,9 +585,9 @@ class TurnStateTest(unittest.TestCase):
         source = (ROOT / "skills" / "round_prepare.py").read_text(encoding="utf-8")
 
         self.assertIn("PLAYER_INPUT_INTERPRETATION", source)
-        self.assertIn("ACTION", source)
-        self.assertIn("SYNOPSIS", source)
-        self.assertIn("OMNISCIENT_SETTING", source)
+        self.assertIn("Do not infer semantic intent from fixed keywords", source)
+        self.assertIn("input_analysis.output.json", source)
+        self.assertIn("actor-facing packets must use explicit dual-channel or analysis-applied routing", source)
         self.assertIn("PLAYER_INPUT_EDITS_PENDING", source)
 
     def test_server_does_not_trim_player_submitted_text(self):
