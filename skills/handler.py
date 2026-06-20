@@ -10,6 +10,7 @@ import html
 import os
 import re
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -32,6 +33,7 @@ except Exception:
 
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
+_PROGRESS_WRITE_LOCK = threading.RLock()
 
 
 # ═══ File I/O ═══
@@ -304,7 +306,7 @@ def write_progress(stage, label, percent=None, detail=None):
         except Exception:
             pass
         else:
-            _write_json_file(_progress_path(), data)
+            _write_progress_file(data)
             return data
     data = {
         "stage": stage,
@@ -315,8 +317,23 @@ def write_progress(stage, label, percent=None, detail=None):
     }
     if isinstance(percent, (int, float)):
         data["percent"] = max(0, min(100, int(percent)))
-    _write_json_file(_progress_path(), data)
+    _write_progress_file(data)
     return data
+
+
+def _write_progress_file(data):
+    path = _progress_path()
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    with _PROGRESS_WRITE_LOCK:
+        try:
+            _write_json_file(tmp_path, data)
+            tmp_path.replace(path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def read_progress():

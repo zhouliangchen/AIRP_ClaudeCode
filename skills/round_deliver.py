@@ -23,6 +23,13 @@ from handler import write_progress
 from io_utils import read_file, read_json
 
 
+def _write_progress_safe(stage, label, percent=None, detail=None):
+    try:
+        return write_progress(stage, label, percent=percent, detail=detail)
+    except Exception:
+        return None
+
+
 def _extract_tag(text, tag):
     m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
     return m.group(1).strip() if m else ""
@@ -58,19 +65,23 @@ def main():
     root = sys.argv[2]
     styles_dir = Path(root) / "skills" / "styles"
     response_path = styles_dir / "response.txt"
-    write_progress("delivering", "正在质检回复", percent=75)
+    _write_progress_safe("delivery.validating", "正在质检回复", percent=75)
 
     delivery_gate = agent_outputs.prepare_delivery(card_folder, styles_dir)
     if not delivery_gate.get("ok", False):
-        detail = str(delivery_gate.get("detail") or delivery_gate.get("message") or "")[:500]
         gate_action = str(delivery_gate.get("action") or "retry")
-        progress_status = "blocked" if gate_action == "blocked" else "retry"
+        progress_status = "blocked" if gate_action == "blocked" else "delivery.retrying"
         progress_message = "多代理产物已终止，等待人工处理" if progress_status == "blocked" else "多代理产物未就绪，等待修复"
-        write_progress(progress_status, progress_message, percent=65, detail=detail)
+        _write_progress_safe(
+            progress_status,
+            progress_message,
+            percent=65,
+            detail={"reason": str(delivery_gate.get("reason") or "agent_outputs"), "action": gate_action},
+        )
         print(json.dumps(delivery_gate, ensure_ascii=False))
         sys.exit(0)
     if delivery_gate.get("mode") == "already_delivered":
-        write_progress("done", "已交付，无需重复处理", percent=100)
+        _write_progress_safe("complete", "已交付，无需重复处理", percent=100)
         print(json.dumps({
             "action": "already_done",
             "agent_delivery": delivery_gate,
@@ -78,13 +89,13 @@ def main():
         sys.exit(0)
 
     if not response_path.exists():
-        write_progress("error", "未找到 response.txt", percent=0)
+        _write_progress_safe("error", "未找到 response.txt", percent=0)
         print(json.dumps({"ok": False, "error": "response.txt not found"}))
         sys.exit(1)
 
     response_text = read_file(response_path)
     if not response_text:
-        write_progress("error", "response.txt 为空", percent=0)
+        _write_progress_safe("error", "response.txt 为空", percent=0)
         print(json.dumps({"ok": False, "error": "response.txt is empty"}))
         sys.exit(1)
 
@@ -95,7 +106,12 @@ def main():
         if isinstance(raw_hard_failures, list):
             critic_hard_failures = raw_hard_failures
         if critic_report.get("passed") is False and critic_hard_failures:
-            write_progress("retry", "质检未通过，等待修复", percent=65, detail="; ".join(map(str, critic_hard_failures))[:500])
+            _write_progress_safe(
+                "delivery.retrying",
+                "质检未通过，等待修复",
+                percent=65,
+                detail={"reason": "critic_hard_failures", "failure_count": len(critic_hard_failures)},
+            )
             print(json.dumps({
                 "action": "retry",
                 "reason": "critic_hard_failures",
@@ -160,7 +176,7 @@ def main():
     processing_warnings = validate_player_processing(response_text, round_context)
 
     if processing_warnings:
-        write_progress("retry", "回复未按玩家输入权威规则修正，等待重写", percent=65)
+        _write_progress_safe("delivery.retrying", "回复未按玩家输入权威规则修正，等待重写", percent=65)
         print(json.dumps({
             "action": "retry",
             "reason": "player_input_processing",
@@ -173,7 +189,7 @@ def main():
 
     if not edit_only and chinese_count < threshold:
         # Word count failed — signal retry (do NOT save checkpoint)
-        write_progress("retry", "回复未达字数要求，等待重写", percent=65)
+        _write_progress_safe("delivery.retrying", "回复未达字数要求，等待重写", percent=65)
         print(json.dumps({
             "action": "retry",
             "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
@@ -190,7 +206,7 @@ def main():
             f.write("\n" + token_block)
 
     # ── 4. Deliver to Frontend ──
-    write_progress("delivering", "正在交付到前端", percent=85)
+    _write_progress_safe("delivery.delivering", "正在交付到前端", percent=85)
     handler_ok = False
     try:
         result = subprocess.run(
@@ -207,7 +223,7 @@ def main():
         handler_output = str(e)
 
     if not handler_ok:
-        write_progress("error", "前端交付失败", percent=0, detail=handler_output[:500])
+        _write_progress_safe("delivery.failed", "前端交付失败", percent=0, detail=handler_output[:500])
         print(json.dumps({
             "ok": False,
             "error": "handler.py failed",
@@ -223,7 +239,7 @@ def main():
             m = re.search(r"generatedCount:\s*(\d+)", state_js)
             if m:
                 generated_count = int(m.group(1))
-        write_progress("complete", "派生内容已重写", percent=100)
+        _write_progress_safe("complete", "派生内容已重写", percent=100)
         print(json.dumps({
             "action": "done",
             "edit_only": True,
@@ -240,7 +256,7 @@ def main():
     token_stats.save_checkpoint(card_folder, delta=delta, label="round")
 
     # ── 5. Memory Update ──
-    write_progress("finalizing", "正在更新记忆", percent=95)
+    _write_progress_safe("memory.finalizing", "正在更新记忆", percent=95)
     memory_ok = False
     try:
         result = subprocess.run(
@@ -296,6 +312,7 @@ def main():
         try:
             current_run = agent_run.current_run_dir(card_folder)
             if current_run is not None and (current_run / "story.input.json").exists():
+                _write_progress_safe("memory.post_round_scheduling", "正在安排回合后记忆", percent=96)
                 schedule_result = agent_memory.schedule_post_round_memory_jobs(card_folder, current_run)
                 ingest_result = agent_memory.ingest_post_round_memory_jobs(card_folder, current_run)
                 post_round_memory = {
@@ -322,7 +339,7 @@ def main():
     try:
         current_run = agent_run.current_run_dir(card_folder)
         if current_run is not None:
-            write_progress("agent_lifecycle.cleanup", "正在关闭本轮代理活动", percent=98)
+            _write_progress_safe("agent_lifecycle.cleanup", "正在关闭本轮代理活动", percent=98)
             lifecycle_cleanup = agent_lifecycle.cleanup_round_agents(
                 card_folder,
                 current_run,
@@ -330,7 +347,7 @@ def main():
             )
     except Exception as exc:
         lifecycle_cleanup = {"ok": False, "status": "error", "error": str(exc)}
-    write_progress("complete", "回复已完成", percent=100)
+    _write_progress_safe("complete", "回复已完成", percent=100)
 
     print(json.dumps({
         "action": "done",

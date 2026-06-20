@@ -431,6 +431,27 @@ class TurnStateTest(unittest.TestCase):
             self.handler.round_state = old_round_state
             self.handler._write_json_file = old_write_json_file
 
+    def test_progress_write_uses_temp_file_before_replace(self):
+        old_write_json_file = self.handler._write_json_file
+        write_paths = []
+
+        def recording_write(path, data):
+            write_paths.append(Path(path))
+            old_write_json_file(path, data)
+
+        try:
+            self.handler._write_json_file = recording_write
+
+            self.handler.write_progress("delivering", "正在交付到前端", percent=85)
+
+            self.assertTrue(write_paths)
+            self.assertNotEqual(write_paths[0].name, "progress.json")
+            self.assertEqual(write_paths[0].parent, self.styles)
+            self.assertFalse(write_paths[0].exists())
+            self.assertEqual(self.handler.read_progress()["state"], "delivery.delivering")
+        finally:
+            self.handler._write_json_file = old_write_json_file
+
     def test_blank_profile_derives_self_identity_from_authoritative_player_input(self):
         (self.card / "memory" / "characters" / "_self").mkdir(parents=True)
         (self.card / ".card_data.json").write_text(

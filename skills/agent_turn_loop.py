@@ -21,6 +21,19 @@ import character_promotions
 import subgm_threads
 import subgm_turn_loop
 
+try:
+    from handler import write_progress
+except Exception:
+    def write_progress(stage, label, percent=None, detail=None):
+        return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}
+
+
+def _write_progress_safe(stage, label, percent=None, detail=None):
+    try:
+        return write_progress(stage, label, percent=percent, detail=detail)
+    except Exception:
+        return None
+
 
 MAX_LOOP_STEPS = 8
 GENERATED_TRANSFERS_PER_STEP = 4
@@ -839,6 +852,15 @@ def _dispatch_actor_call(
         call,
     )
     packet = agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
+    _write_progress_safe(
+        "gm_loop.actor_dispatch",
+        "角色行动中",
+        percent=48,
+        detail={
+            "actor": actor_id,
+            "actor_call_id": str(call.get("call_id") or ""),
+        },
+    )
     raw_actor_payload = dispatch(_dispatch_actor_key(actor_id), packet)
     actor_output = _validate_actor(actor_id, raw_actor_payload)
     returned_version = _dict(raw_actor_payload.get("context_version")) if isinstance(raw_actor_payload, dict) else {}
@@ -1121,6 +1143,12 @@ def run_interactive_loop(
 
     for step_index in range(step_limit):
         _refresh_side_thread_state(root, world_state)
+        _write_progress_safe(
+            "gm_loop.gm_dispatch",
+            "GM 正在推进剧情",
+            percent=47,
+            detail={"run_id": root.name, "step": step_index + 1},
+        )
         raw_gm_payload = dispatch("gm", _gm_packet(root, world_state, step_index))
         raw_gm_output = _validate_gm(raw_gm_payload)
         _restore_actor_call_source_call_ids(raw_gm_output, raw_gm_payload)
@@ -1186,6 +1214,17 @@ def run_interactive_loop(
                     continue
                 _record_actor_batch_plan(root, step_index, batch_trace_index, batch)
                 batch_trace_index += 1
+                _write_progress_safe(
+                    "gm_loop.actor_batch",
+                    "角色行动批次中",
+                    percent=48,
+                    detail={
+                        "run_id": root.name,
+                        "batch_id": str(batch.get("batch_id") or f"step-{step_index + 1}-batch-{batch_index + 1}"),
+                        "kind": str(batch.get("kind") or "serial"),
+                        "actors": [str(call.get("actor_id") or "") for call in calls],
+                    },
+                )
 
                 results: list[tuple[dict, str, dict, dict | None]] = []
                 if str(batch.get("kind") or "") == "parallel" and len(calls) > 1:
@@ -1272,6 +1311,12 @@ def run_interactive_loop(
                         None,
                         actor_decision_reason or "Actor requested a real player decision.",
                     )
+                    _write_progress_safe(
+                        "gm_loop.waiting_player_decision",
+                        "等待玩家决策",
+                        percent=60,
+                        detail={"reason": "actor_requested_decision"},
+                    )
                     stop_reason = "player_decision"
                 if stop_reason in STOP_REASONS:
                     actor_queue.clear()
@@ -1300,6 +1345,12 @@ def run_interactive_loop(
                 gm_output.get("decision_point"),
                 "The player must make the next decision.",
             )
+            _write_progress_safe(
+                "gm_loop.waiting_player_decision",
+                "等待玩家决策",
+                percent=60,
+                detail={"reason": "gm_decision_point"},
+            )
             stop_reason = "player_decision"
             break
         if gm_terminal_stop:
@@ -1310,6 +1361,7 @@ def run_interactive_loop(
         stop_reason = "max_steps"
 
     _write_outputs(root, gm_outputs, actor_outputs)
+    _write_progress_safe("gm_loop.completed", "剧情推演完成", percent=62, detail={"stop_reason": stop_reason})
     return {
         "ok": True,
         "gm_steps": len(gm_outputs),

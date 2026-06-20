@@ -545,6 +545,91 @@ class RpGenerateCliTest(unittest.TestCase):
             [entry.get("stage") for entry in applied_manifest.get("status", [])],
         )
 
+    def test_run_round_reports_pipeline_progress_states(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        raw_text = "I follow the noise."
+        _write_json(self.card / ".card_data.json", {"character_orchestration": {"major": []}})
+        input_analysis = self.module.input_analysis_apply.input_analysis
+        _write_json(
+            self.run_dir / "input.raw.json",
+            {
+                "round_id": "round-000002",
+                "raw_text": raw_text,
+                "explicit_payload": {},
+                "role_text": raw_text,
+                "user_instruction_text": "",
+                "source_integrity": {
+                    "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                    "role_text_sha256": input_analysis.sha256_text(raw_text),
+                    "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                    "raw_preserved": True,
+                },
+            },
+        )
+        responses = _basic_responses()
+        responses["input_analyst"] = {
+            "schema_version": 1,
+            "round_id": "round-000002",
+            "analysis_mode": "fixture",
+            "source_integrity": {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(raw_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                "raw_preserved": True,
+            },
+            "semantic_units": [],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+                "must_stop_for_player_decision": False,
+            },
+            "routing": {
+                "role_channel": raw_text,
+                "user_instruction_channel": "",
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "risks": [],
+        }
+        progress_calls = []
+        self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [args[0] for args, _kwargs in progress_calls],
+            [
+                "input_analysis.running",
+                "input_analysis.applied",
+                "gm_loop.starting",
+                "story.running",
+                "critic.running",
+            ],
+        )
+        gm_start_details = [kwargs.get("detail") for args, kwargs in progress_calls if args and args[0] == "gm_loop.starting"]
+        self.assertEqual(gm_start_details, [{"run_id": "round-000002"}])
+
     def test_run_round_retries_invalid_input_analyst_output_before_gm(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1123,6 +1208,8 @@ class RpGenerateCliTest(unittest.TestCase):
 
     def test_run_round_rewrites_story_once_when_delivery_requests_retry(self):
         calls = []
+        progress_calls = []
+        self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         story_payloads = [
             {
                 "content": "<content>Too short.</content>",
@@ -1168,6 +1255,15 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("critic"), 2)
         final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
+        retry_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "delivery.retrying"
+        ]
+        self.assertEqual(
+            retry_details,
+            [{"attempt": 1, "max_attempts": 1, "reason": ""}],
+        )
 
     def test_run_round_rewrites_story_once_when_critic_requests_revision(self):
         calls = []
@@ -1306,6 +1402,8 @@ class RpGenerateCliTest(unittest.TestCase):
     def test_run_round_preflights_story_word_count_before_critic_when_settings_exist(self):
         _write_json(self.styles_dir / "settings.json", {"wordCount": 100})
         calls = []
+        progress_calls = []
+        self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         short_story = {
             "content": "<content>太短。</content><summary>s</summary><options>o</options>",
             "character_dialogues": [],
@@ -1345,6 +1443,15 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("critic"), 1)
         final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
+        repair_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "story.preflight_repair"
+        ]
+        self.assertEqual(len(repair_details), 1)
+        self.assertEqual(repair_details[0]["attempt"], 1)
+        self.assertEqual(repair_details[0]["max_attempts"], 1)
+        self.assertTrue(repair_details[0]["issues"])
 
     def test_run_round_resumes_from_existing_story_input_without_rerunning_loop(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))

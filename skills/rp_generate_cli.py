@@ -20,6 +20,19 @@ import agent_turn_loop
 import input_analysis_apply
 import self_repair
 
+try:
+    from handler import write_progress
+except Exception:
+    def write_progress(stage, label, percent=None, detail=None):
+        return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}
+
+
+def _write_progress_safe(stage, label, percent=None, detail=None):
+    try:
+        return write_progress(stage, label, percent=percent, detail=detail)
+    except Exception:
+        return None
+
 
 class AgentExecutionError(RuntimeError):
     """Raised when a Claude Code subagent run is missing, invalid, or unusable."""
@@ -1067,7 +1080,9 @@ def run_round(
     repair_policy = self_repair.load_policy(root / "skills" / "styles" / "settings.json")
     manifest = _load_manifest(run_dir)
     manifest = _reset_delivery_retry_budget(run_dir, manifest)
+    _write_progress_safe("input_analysis.running", "正在分析玩家输入", percent=38)
     _ensure_input_analysis(run_dir, manifest, card, root, run_claude)
+    _write_progress_safe("input_analysis.applied", "输入分析已应用", percent=45)
     manifest = _load_manifest(run_dir)
     expected = manifest.get("expected_outputs") or {}
     if not isinstance(expected, dict):
@@ -1077,6 +1092,7 @@ def run_round(
     critic_path = _relative_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
     story_input = _load_existing_story_input(run_dir)
     if story_input is None:
+        _write_progress_safe("gm_loop.starting", "正在启动 GM 回合", percent=46, detail={"run_id": run_dir.name})
         loop_result = _run_interactive_agent_loop(run_dir, manifest, root, run_claude)
         story_input = agent_outputs.build_story_input(run_dir)
     else:
@@ -1093,6 +1109,7 @@ def run_round(
         next_story = {}
         active_repair_context = repair_context
         for preflight_attempt in range(repair_policy.story_preflight_attempts + 1):
+            _write_progress_safe("story.running", "正在写作正文", percent=68, detail={"attempt": preflight_attempt + 1})
             next_story = _dispatch_and_write(
                 "story",
                 story_path,
@@ -1114,11 +1131,22 @@ def run_round(
                 active_repair_context,
                 repair_policy.story_preflight_attempts,
             )
+            _write_progress_safe(
+                "story.preflight_repair",
+                "正在修正文稿预检问题",
+                percent=70,
+                detail={
+                    "attempt": preflight_attempt + 1,
+                    "max_attempts": repair_policy.story_preflight_attempts,
+                    "issues": issues,
+                },
+            )
             story_extra = {
                 "story_input": story_input,
                 "delivery_requirements": requirements,
                 "repair_context": active_repair_context,
             }
+        _write_progress_safe("critic.running", "正在质检正文", percent=73)
         next_critic = _dispatch_and_write(
             "critic",
             critic_path,
@@ -1142,6 +1170,16 @@ def run_round(
         and repair_attempt < repair_policy.delivery_repair_attempts
     ):
         repair_attempt += 1
+        _write_progress_safe(
+            "delivery.retrying",
+            "交付前等待修复",
+            percent=65,
+            detail={
+                "attempt": repair_attempt,
+                "max_attempts": repair_policy.delivery_repair_attempts,
+                "reason": delivery_result.get("reason", ""),
+            },
+        )
         repair_context = _delivery_retry_context(delivery_result, story, critic, repair_attempt)
         repair_context["max_repair_attempts"] = repair_policy.delivery_repair_attempts
         repair_routing = self_repair.routing_from_delivery_result(delivery_result)

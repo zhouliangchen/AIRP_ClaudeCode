@@ -18,6 +18,19 @@ import agent_visibility
 import agent_visibility_guard
 import subgm_threads
 
+try:
+    from handler import write_progress
+except Exception:
+    def write_progress(stage, label, percent=None, detail=None):
+        return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}
+
+
+def _write_progress_safe(stage, label, percent=None, detail=None):
+    try:
+        return write_progress(stage, label, percent=percent, detail=detail)
+    except Exception:
+        return None
+
 
 MAX_SUBGM_STEPS = 4
 RUNNABLE_STATUSES = {"running", "merging", "needs_gm", "blocked"}
@@ -328,6 +341,16 @@ def _route_actor_calls(
             agent_visibility.actor_call_basis(call),
         )
         packet = agent_lifecycle.attach_actor_context_version(_card_folder_for_run(run_dir), actor_id, packet)
+        _write_progress_safe(
+            "gm_loop.actor_dispatch",
+            "支线角色行动中",
+            percent=48,
+            detail={
+                "agent": actor_id,
+                "subgm_thread_id": str(state.get("thread_id") or ""),
+                "actor_call_id": call_id,
+            },
+        )
         actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
         called_actors.append(actor_id)
         _persist_actor_output(side_dir, actor_id, actor_output)
@@ -411,6 +434,12 @@ def run_side_thread(
     for step_index in range(step_limit):
         with SIDE_THREAD_IO_LOCK:
             state_before = _load_state(side_dir)
+        _write_progress_safe(
+            "gm_loop.subgm_dispatch",
+            "支线 GM 正在推进",
+            percent=47,
+            detail={"subgm_thread_id": safe_id, "step": step_index + 1},
+        )
         raw_output = dispatch(
             f"subGM:{safe_id}",
             _subgm_packet(root, side_dir, safe_id, state_before, input_payload) | {"step": step_index},

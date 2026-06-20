@@ -302,7 +302,13 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["action"], "retry")
         self.assertEqual(payload["reason"], "critic_hard_failures")
         self.assertEqual(payload["critic_report"]["hard_failures"], ["missing continuity fix"])
-        self.assertTrue(any(args[:2] == ("retry", "质检未通过，等待修复") for args, _ in progress_calls))
+        self.assertTrue(any(args[:2] == ("delivery.retrying", "质检未通过，等待修复") for args, _ in progress_calls))
+        retry_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "delivery.retrying"
+        ]
+        self.assertEqual(retry_details, [{"reason": "critic_hard_failures", "failure_count": 1}])
 
     def test_round_deliver_ignores_malformed_critic_hard_failures(self):
         exit_code, payload, progress_calls = self._run_round_deliver(
@@ -315,7 +321,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
         self.assertNotIn("critic_report", payload)
         self.assertIn("word_count", payload)
-        self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
+        self.assertTrue(any(args[:2] == ("delivery.retrying", "回复未达字数要求，等待重写") for args, _ in progress_calls))
 
     def test_round_deliver_ignores_missing_critic_report(self):
         original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
@@ -330,7 +336,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertNotIn("critic_report", payload)
         self.assertIn("word_count", payload)
         self.assertIs(self.round_deliver.agent_run.read_current_critic_report, original_read_current_critic_report)
-        self.assertTrue(any(args[:2] == ("retry", "回复未达字数要求，等待重写") for args, _ in progress_calls))
+        self.assertTrue(any(args[:2] == ("delivery.retrying", "回复未达字数要求，等待重写") for args, _ in progress_calls))
 
     def test_round_deliver_returns_retry_when_agent_output_gate_blocks(self):
         progress_calls = []
@@ -367,7 +373,13 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["action"], "retry")
         self.assertEqual(payload["reason"], "agent_outputs")
         self.assertEqual(payload["detail"], "gm.output.json")
-        self.assertTrue(any(args[:2] == ("retry", "多代理产物未就绪，等待修复") for args, _ in progress_calls))
+        self.assertTrue(any(args[:2] == ("delivery.retrying", "多代理产物未就绪，等待修复") for args, _ in progress_calls))
+        retry_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "delivery.retrying"
+        ]
+        self.assertEqual(retry_details, [{"reason": "agent_outputs", "action": "retry"}])
 
     def test_round_deliver_propagates_terminal_agent_output_block(self):
         progress_calls = []
@@ -404,7 +416,13 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["action"], "blocked")
         self.assertEqual(payload["reason"], "critic_retry_limit")
         self.assertTrue(any(args and args[0] == "blocked" for args, _ in progress_calls))
-        self.assertFalse(any(args and args[0] == "retry" for args, _ in progress_calls))
+        self.assertFalse(any(args and args[0] == "delivery.retrying" for args, _ in progress_calls))
+        blocked_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "blocked"
+        ]
+        self.assertEqual(blocked_details, [{"reason": "critic_retry_limit", "action": "blocked"}])
 
     def test_round_deliver_noops_when_agent_run_already_delivered(self):
         progress_calls = []
@@ -521,7 +539,81 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["action"], "done")
         self.assertEqual(payload["post_round_memory"]["status"], "not_required")
         self.assertEqual(payload["agent_lifecycle_cleanup"]["status"], "complete")
-        self.assertTrue(any(args and args[0] == "complete" for args, _ in progress_calls))
+        progress_states = [args[0] for args, _ in progress_calls if args]
+        self.assertIn("delivery.validating", progress_states)
+        self.assertIn("delivery.delivering", progress_states)
+        self.assertIn("memory.finalizing", progress_states)
+        self.assertIn("memory.post_round_scheduling", progress_states)
+        self.assertIn("complete", progress_states)
+
+    def test_round_deliver_reports_delivery_failed_when_handler_fails(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        (self.styles_dir / "settings.json").write_text(json.dumps({"wordCount": 1}), encoding="utf-8")
+        (self.styles_dir / "response.txt").write_text("<content>足够长</content>", encoding="utf-8")
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+        original_subprocess_run = self.round_deliver.subprocess.run
+        token_stats = importlib.import_module("token_stats")
+        original_locate_transcript = token_stats.locate_transcript
+        original_load_checkpoint = token_stats.load_checkpoint
+        original_compute_delta = token_stats.compute_delta
+        original_read_usage_since = token_stats.read_usage_since
+        original_save_checkpoint = token_stats.save_checkpoint
+
+        self.round_deliver.agent_outputs.prepare_delivery = lambda card_folder, styles_dir: {
+            "ok": True,
+            "mode": "agent_run",
+            "run_dir": str(run_dir),
+        }
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="handler boom",
+            stderr="",
+        )
+        try:
+            token_stats.locate_transcript = lambda: None
+            token_stats.load_checkpoint = lambda card_folder: {}
+            token_stats.read_usage_since = lambda transcript_path, byte_offset=0: []
+            token_stats.compute_delta = lambda entries: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read": 0,
+                "cache_creation": 0,
+                "request_count": 0,
+                "cache_hit_pct": 0.0,
+            }
+            token_stats.save_checkpoint = lambda *args, **kwargs: None
+
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+                with self.assertRaises(SystemExit) as ctx:
+                    with contextlib.redirect_stdout(stdout):
+                        self.round_deliver.main()
+            finally:
+                sys.argv = old_argv
+        finally:
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+            self.round_deliver.subprocess.run = original_subprocess_run
+            token_stats.locate_transcript = original_locate_transcript
+            token_stats.load_checkpoint = original_load_checkpoint
+            token_stats.compute_delta = original_compute_delta
+            token_stats.read_usage_since = original_read_usage_since
+            token_stats.save_checkpoint = original_save_checkpoint
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "handler.py failed")
+        progress_states = [args[0] for args, _ in progress_calls if args]
+        self.assertIn("delivery.validating", progress_states)
+        self.assertIn("delivery.delivering", progress_states)
+        self.assertIn("delivery.failed", progress_states)
 
     def test_round_deliver_keeps_done_action_when_lifecycle_cleanup_fails(self):
         self.round_deliver.write_progress = lambda *args, **kwargs: None

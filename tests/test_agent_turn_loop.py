@@ -160,6 +160,88 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
 
+    def test_interactive_loop_reports_gm_actor_and_decision_progress(self):
+        self.register_character_states({"name": "Ada"})
+        progress_calls = []
+        self.agent_turn_loop.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada sees the player close his hand."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You see the player close his hand around something pink.",
+                        "reason": "Ada is in the classroom and can see the movement.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {
+                        "reason": "The player must choose whether to show the pendant.",
+                        "options": ["show", "hide"],
+                    },
+                    "stop_reason": "player_decision",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I stay alert."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(result["stop_reason"], "player_decision")
+        states = [args[0] for args, _kwargs in progress_calls]
+        self.assertEqual(
+            states,
+            [
+                "gm_loop.gm_dispatch",
+                "gm_loop.actor_batch",
+                "gm_loop.actor_dispatch",
+                "gm_loop.waiting_player_decision",
+                "gm_loop.completed",
+            ],
+        )
+        actor_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "gm_loop.actor_dispatch"
+        ]
+        self.assertEqual(actor_details, [{"actor": "character:Ada", "actor_call_id": "call-character-Ada-1"}])
+        completed_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "gm_loop.completed"
+        ]
+        self.assertEqual(completed_details, [{"stop_reason": "player_decision"}])
+
+    def test_interactive_loop_ignores_progress_write_failures(self):
+        self.agent_turn_loop.write_progress = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("progress down"))
+
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The room settles."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stop_reason"], "complete")
+
     def test_runtime_actor_dispatch_attaches_context_version_and_warns_on_stale_return(self):
         self.register_character_states({"name": "Ada"})
         self.agent_run.write_json(

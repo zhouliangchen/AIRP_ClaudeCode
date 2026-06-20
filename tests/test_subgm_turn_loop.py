@@ -186,6 +186,54 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertNotIn("Secret hidden phrase", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text)
 
+    def test_run_side_thread_reports_subgm_and_actor_progress(self):
+        progress_calls = []
+        self.subgm_turn_loop.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You notice chalk dust near the vent.",
+                            "reason": "SuLi is physically present in the side thread.",
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                return character_output()
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([args[0] for args, _kwargs in progress_calls], ["gm_loop.subgm_dispatch", "gm_loop.actor_dispatch"])
+        subgm_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "gm_loop.subgm_dispatch"
+        ]
+        self.assertEqual(subgm_details, [{"subgm_thread_id": "side_suli_rooftop", "step": 1}])
+        actor_details = [
+            kwargs.get("detail")
+            for args, kwargs in progress_calls
+            if args and args[0] == "gm_loop.actor_dispatch"
+        ]
+        self.assertEqual(
+            actor_details,
+            [{
+                "agent": "character:SuLi",
+                "subgm_thread_id": "side_suli_rooftop",
+                "actor_call_id": "call-character-SuLi-1",
+            }],
+        )
+
     def test_side_thread_actor_dispatch_attaches_context_version(self):
         actor_packets = []
 
