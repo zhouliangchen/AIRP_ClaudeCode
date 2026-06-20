@@ -83,14 +83,30 @@ body {
 #topbar .spacer { flex: 1; }
 #reply-progress {
   display: none;
-  align-items: center;
-  gap: 7px;
   min-width: 190px;
   max-width: 260px;
   color: var(--muted);
   font-size: 0.78em;
 }
-#reply-progress.show { display: flex; }
+#reply-progress.show { display: block; }
+#reply-progress summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  list-style: none;
+}
+#reply-progress summary::-webkit-details-marker { display: none; }
+#reply-progress-detail {
+  display: block;
+  margin-top: 3px;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 0.72em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 #reply-progress-bar {
   width: 92px;
   height: 5px;
@@ -1159,10 +1175,13 @@ body {
   <span class="dim" id="tb-time">—</span>
   <span class="sep">|</span>
   <span class="dim" id="tb-location">—</span>
-  <div id="reply-progress" aria-live="polite">
-    <span id="reply-progress-text">等待中</span>
-    <span id="reply-progress-bar"><span id="reply-progress-fill"></span></span>
-  </div>
+  <details id="reply-progress" aria-live="polite">
+    <summary>
+      <span id="reply-progress-text">等待中</span>
+      <span id="reply-progress-bar"><span id="reply-progress-fill"></span></span>
+    </summary>
+    <span id="reply-progress-detail"></span>
+  </details>
   <span class="spacer"></span>
   <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
@@ -1978,27 +1997,55 @@ async function checkBridge() {
   document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请运行 python skills/server.py';
 }
 
+function formatProgressDetail(progress) {
+  if (!progress || progress.schema_version !== 2) return '';
+  const parts = [];
+  if (progress.state) parts.push(progress.state);
+  const detail = progress.detail && typeof progress.detail === 'object' ? progress.detail : {};
+  if (detail.agent) parts.push('agent=' + detail.agent);
+  if (detail.subgm_thread_id) parts.push('subGM=' + detail.subgm_thread_id);
+  if (detail.actor_call_id) parts.push('call=' + detail.actor_call_id);
+  if (detail.batch_id) parts.push('batch=' + detail.batch_id);
+  if (detail.attempt) {
+    const max = detail.max_attempts ? '/' + detail.max_attempts : '';
+    parts.push('attempt=' + detail.attempt + max);
+  }
+  if (detail.reason) parts.push('reason=' + detail.reason);
+  return parts.join(' · ');
+}
+
 function setProgressVisible(progress) {
   const box = document.getElementById('reply-progress');
   const text = document.getElementById('reply-progress-text');
   const fill = document.getElementById('reply-progress-fill');
+  const detailBox = document.getElementById('reply-progress-detail');
   if (!box || !text || !fill) return;
 
-  const stage = progress && progress.stage;
+  const isV2 = progress && progress.schema_version === 2;
+  const stage = isV2 ? progress.state : progress && progress.stage;
+  const legacyTerminalStages = ['complete', 'done', 'blocked', 'error'];
+  const legacyCompletionStages = ['complete', 'done'];
+  const terminal = isV2 ? !!progress.terminal : legacyTerminalStages.indexOf(stage) >= 0;
   const activeStages = ['received', 'preparing', 'generating', 'delivering', 'finalizing', 'retry', 'error'];
-  const isActive = activeStages.indexOf(stage) >= 0;
-  const isComplete = stage === 'complete';
+  const isActive = isV2 ? !!stage && stage !== 'idle' : activeStages.indexOf(stage) >= 0;
+  const isComplete = isV2 ? stage === 'complete' : legacyCompletionStages.indexOf(stage) >= 0;
   if (progressHideTimer) {
     clearTimeout(progressHideTimer);
     progressHideTimer = null;
   }
 
-  if (!isActive && !isComplete) {
+  if (!isActive && !isComplete && !terminal) {
     box.classList.remove('show', 'indeterminate');
+    if (detailBox) detailBox.textContent = '';
     return;
   }
 
   text.textContent = progress.label || '处理中';
+  const detail = formatProgressDetail(progress);
+  if (detailBox) {
+    detailBox.textContent = detail;
+    detailBox.hidden = !detail;
+  }
   const pct = Number(progress.percent);
   if (Number.isFinite(pct)) {
     box.classList.remove('indeterminate');

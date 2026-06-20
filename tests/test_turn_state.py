@@ -664,6 +664,24 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("s.selfRepairMode || 'limited'", html)
         self.assertIn("selfRepairMode: document.getElementById('set-self-repair-mode').value", html)
 
+    def test_frontend_renders_schema_v2_progress_detail_panel(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="reply-progress-detail"', html)
+        self.assertIn("progress.schema_version === 2", html)
+        self.assertIn("formatProgressDetail", html)
+        self.assertIn("progress.state", html)
+        self.assertIn("progress.detail", html)
+
+    def test_frontend_keeps_legacy_terminal_progress_aliases_visible(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("legacyTerminalStages", html)
+        self.assertIn("'done'", html)
+        self.assertIn("'blocked'", html)
+        self.assertIn("legacyCompletionStages", html)
+        self.assertIn("legacyCompletionStages.indexOf(stage) >= 0", html)
+
     def test_frontend_dual_channel_submit_and_bridge_contract(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
