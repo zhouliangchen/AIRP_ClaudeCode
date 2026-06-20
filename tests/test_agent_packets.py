@@ -712,6 +712,12 @@ class AgentRunTest(unittest.TestCase):
         self.agent_run = _load_agent_run()
 
     def tearDown(self):
+        # Some round_prepare tests intentionally replace attributes on the
+        # normally imported agent_packets module.  Keep those stubs local to
+        # this test class so later integration-style tests import a fresh
+        # module instead of reusing patched process state.
+        sys.modules.pop("agent_packets", None)
+        sys.modules.pop("round_prepare", None)
         self.tmp.cleanup()
 
     def test_create_run_dir_uses_next_round_number(self):
