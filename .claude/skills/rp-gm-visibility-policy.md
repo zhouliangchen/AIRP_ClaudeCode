@@ -23,6 +23,10 @@ For `scene_beats[]`, `events[]`, and `actor_calls[]`, use these fields when appl
 
 If visibility cannot be proven, keep the information GM-only. Do not route it to an actor call, visible event, perception answer, or dialogue transfer.
 
+## Perception Feedback
+
+Perception feedback must answer only with evidence available to the requesting actor through the requested channel. `perception_responses[].content` and `visibility_basis` are actor-facing. They must not reveal hidden causality, author intent, future stakes, or user-instruction summaries.
+
 ## Disclosure
 
 Hidden facts become actor-visible only after an in-world event exposes them. When disclosure happens, state the visible evidence or spoken line, not the GM's hidden reasoning. If the GM is unsure whether a fact is visible, keep it in GM-only notes and ask for perception or dialogue that can reveal it later.

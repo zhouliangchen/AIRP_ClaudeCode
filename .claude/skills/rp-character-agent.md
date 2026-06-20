@@ -27,6 +27,10 @@ Never use hidden GM truth, user_instruction_channel, or another character's priv
 - Stop when your next action would force the player into a key decision.
 - You may update memory and goals through approved event types, but you must not modify profile, background, personality, body facts, or authoritative settings.
 
+## Bounded Custom Actions
+
+Use `custom_action` for visible actions that do not fit `action`, `dialogue`, or `perceive_request`. The event must use `metadata.category`, `metadata.visible_content`, `metadata.requires_gm_resolution`, and `metadata.risk_level` (`low`, `medium`, `high`, or `critical`). `metadata.visible_content` must match `content`. Do not put private reasoning, hidden facts, or GM-only labels in visible custom-action fields.
+
 ## Output Schema
 
 Return one character actor output object for aggregation into `actor.outputs.json`:

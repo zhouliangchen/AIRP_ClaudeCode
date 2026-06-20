@@ -83,7 +83,9 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 GM 输出进入 actor/story-facing 字段前会先执行可见性清理。来自 `user_instruction_channel`、隐藏设定和 GM-only 历史的隐藏短语不得保留在 `scene_beats`、`events.content/metadata/target/source_call_id`、`events.visibility_basis`、`decision_point.reason/options`、`actor_calls.source_call_id/prompt/reason/metadata`、`actor_calls.visibility_basis`、`character_promotions.reason/profile_seed` 中；`scene_beats` 与 `events` 可以携带可选的 `scene_id`、`location`、`time_window`、`visible_to`、`sensory_channels`、`source_actor`、`target_actor` 和 `visibility_basis`，`events` 还可以携带 `target` 与 `source_call_id`，这些事件字段同样必须保持 actor/story-facing，不得使用隐藏标记、复制隐藏短语，或用 `moon-base-archive`、`moon_base_archive`、`moon/base/archive`、`moon:base:archive`、`moon|base|archive`、`moon—base—archive` 这类非字母数字分隔符变体绕过短语检测；生成 `story.input.json` 前，主 `interaction_trace.visible_events` 与公开决策/停止原因也会做同样的 story-facing 校验或清理。`stop_reason` 只允许 `continue`、`player_decision`、`word_target`、`complete`、`max_steps` 枚举值；GM/subGM 的每个 `actor_calls[]` 必须携带带 `summary` 的 `visibility_basis`，用于说明该 actor 为什么能直接感知或被合法寻址；若可见性无法证明，信息必须保留在 GM-only 范围，不得投递给 actor call、可见事件、感知回答或对话转交。确定性 control-plane smoke 会保留 GM-only 隐藏来源，并验证落盘后的 loop output、actor packet 与 `story.input.json` 轨迹摘要只保留清理后的内容。
 
-当 actor 的 `dialogue` 事件直接指向已注册的重要角色时，运行时可以把这句话转交给目标角色。该事件的 `metadata` 只允许 `exact_visible_words`、`delivery_channel` 和 `visible_tone_or_action`：转交 prompt 只包含说话者、目标可听见的原话、公开通道和公开动作/语气；`interaction.trace.json` 中的 `dialogue_transfer` 也只记录这些安全字段与 `source_call_id`。任何隐藏意图、GM-only 标记或未列入白名单的对话转交 metadata 都会在 actor 输出校验或 `story.input.json` 生成前被拒绝。
+如果 actor 输出 `perceive_request`，下一次 GM 输出必须通过 `perception_responses[]` 对每个待处理请求作答或关闭；`answered` 的可见感官反馈会自动再次调用原请求 actor，让其基于反馈继续行动，`closed` 则只记录无需继续的可见理由。GM 不应在感知请求未处理时跳过到无关叙事或结束本轮。
+
+当 actor 的 `dialogue` 事件直接指向已注册的重要角色时，运行时可以把这句话转交给目标角色。该事件的 `metadata` 只允许并只保留 `exact_visible_words`、`delivery_channel` 和 `visible_tone_or_action`：转交 prompt 只包含说话者、目标可听见的原话、公开通道和公开动作/语气，不携带私下意图、隐藏动机或 GM 解释；`interaction.trace.json` 中的 `dialogue_transfer` 也只记录这些安全字段与 `source_call_id`。任何隐藏意图、GM-only 标记或未列入白名单的对话转交 metadata 都会在 actor 输出校验或 `story.input.json` 生成前被拒绝。
 
 actor 可以返回受控的 `custom_action` 事件来表达非标准但可见的角色行动，例如撬门、布置障碍或尝试高风险动作。该事件必须在 `metadata` 中提供 `category`、与事件正文完全一致的 `visible_content`、布尔型 `requires_gm_resolution` 和 `risk_level`（`low`、`medium`、`high` 或 `critical`）；未列入白名单的字段、隐藏标记、动态隐藏短语或与正文不一致的可见内容都会被拒绝。运行时只把这些公开字段写入 `interaction.trace.json` 的 `custom_action` 摘要；当玩家 agent 返回 `high` 或 `critical` 风险的 `custom_action` 时，本轮会强制停在真实玩家决策点，由玩家确认下一步。
 
@@ -95,9 +97,9 @@ subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。
 
 每 6 轮会为 player 和本轮相关 character 安排一次 `memory_summaries/*.summary.json` 自我记忆整理。摘要只允许写入角色自己视角可知的信息；校验会拒绝未排期文件和 `gm_only`、`world_truth`、`gm_notes`、`omniscient`、`hidden_note`、`out_of_character` 等显式隐藏标记。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
 
-交付成功后，`round_deliver.py` 会在 `manifest.post_round_memory_jobs` 下为本轮实际参与的 actor 记录回合后记忆任务，并生成 `post_round_memory_jobs/*.job.json` 与 `prompts/post_round_memory/*.prompt.md`。没有需要整理的 actor 时会标记 `not_required`；已完成的 `*.summary.json` 会按同一结构化 actor 记忆格式写入并标记 `complete`；缺失输出保持 `pending`，校验失败标记为 `degraded_memory_state`，且不会回滚或删除已交付的 `response.txt`。
+交付成功后，`round_deliver.py` 会在 `manifest.post_round_memory_jobs` 下为本轮实际参与的 player/character actor 记录回合后记忆任务，并生成 `post_round_memory_jobs/*.job.json` 与 `prompts/post_round_memory/*.prompt.md`。这些任务只包含该 actor 自己的输出、actor 可见交互、近期记忆和目标；没有需要整理的 actor 时会标记 `not_required`；已完成的 `*.summary.json` 会按同一结构化 actor 记忆格式写入并标记 `complete`；缺失输出保持 `pending`，校验失败标记为 `degraded_memory_state`，且不会回滚或删除已交付的 `response.txt`。下一轮会把降级记忆状态显式暴露给上下文准备流程，而不是静默忽略。
 
-结构化 actor 记忆摘要会写入 `memory/player/` 或 `memory/characters/<name>/` 下的 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json`。`recent.md` 是回合内增量的暂存来源，成功整理后会被消费；actor 记忆更新必须使用 `source: self` 与 `visibility: actor`，不得写入角色档案字段或隐藏标记。
+结构化 actor 记忆摘要只允许更新 `memory/player/` 或 `memory/characters/<name>/` 下的 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json`。`recent.md` 是回合内增量的暂存来源，成功整理后会被消费；actor 记忆更新必须使用 `source: self` 与 `visibility: actor`，不得写入角色档案字段或隐藏标记。
 
 ## 自我修复配置
 

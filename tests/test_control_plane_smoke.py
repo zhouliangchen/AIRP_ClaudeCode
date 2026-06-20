@@ -70,8 +70,10 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertEqual(payload["delivery"]["mode"], "agent_run")
         self.assertEqual(payload["story"]["character_dialogue_source_agents"], ["character:Ada"])
         self.assertTrue(payload["story"]["character_dialogues_source_backed"])
-        self.assertEqual(payload["trace"]["private_event_count"], 3)
-        self.assertEqual(len(payload["trace"]["visible_events"]), 2)
+        self.assertEqual(payload["trace"]["private_event_count"], 5)
+        self.assertEqual(len(payload["trace"]["visible_events"]), 6)
+        self.assertTrue(payload["perception_closure"]["continuation_called"])
+        self.assertGreaterEqual(payload["post_round_memory_jobs"]["scheduled_count"], 1)
         self.assertIn("player", payload["memory_summary"]["ingested"])
         self.assertEqual(payload["input_analysis"]["analysis_mode"], "fixture")
 

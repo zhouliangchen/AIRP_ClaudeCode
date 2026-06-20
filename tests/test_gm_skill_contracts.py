@@ -66,6 +66,52 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("visibility_basis", text)
         self.assertIn("per call", text)
 
+    def test_gm_routing_requires_perception_response_closure(self):
+        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        self.assertIn("pending_perception_requests[]", text)
+        self.assertIn("perception_responses[]", text)
+        self.assertIn('status: "answered"', text)
+        self.assertIn('status: "closed"', text)
+
+    def test_gm_routing_documents_structured_dialogue_transfer_fields(self):
+        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        self.assertIn("exact_visible_words", text)
+        self.assertIn("delivery_channel", text)
+        self.assertIn("visible_tone_or_action", text)
+        self.assertIn("Never transfer private intent", text)
+
+    def test_visibility_policy_documents_perception_feedback_boundary(self):
+        text = self.read(".claude/skills/rp-gm-visibility-policy.md")
+        self.assertIn("Perception Feedback", text)
+        self.assertIn("perception_responses[].content", text)
+        self.assertIn("visibility_basis", text)
+        self.assertIn("must not reveal hidden causality", text)
+
+    def test_story_skill_forbids_invented_important_character_replies(self):
+        text = self.read(".claude/skills/rp-story-agent.md")
+        self.assertIn("dialogue_transfer", text)
+        self.assertIn("must not invent", text)
+        self.assertTrue(
+            "important character" in text or "core character" in text,
+            "story skill must name important/core character reply constraints",
+        )
+
+    def test_actor_skills_define_bounded_custom_action(self):
+        combined = "\n".join([
+            self.read(".claude/skills/rp-player-agent.md"),
+            self.read(".claude/skills/rp-character-agent.md"),
+        ])
+        self.assertIn("custom_action", combined)
+        self.assertIn("metadata.visible_content", combined)
+        self.assertIn("risk_level", combined)
+        self.assertIn("high or critical", combined)
+
+    def test_delivery_skill_documents_post_round_memory_jobs(self):
+        text = self.read(".claude/skills/rp-delivery.md")
+        self.assertIn("post-round actor memory jobs", text)
+        self.assertIn("degraded_memory_state", text)
+        self.assertIn("must not remove already delivered prose", text)
+
     def test_gm_and_subgm_schema_examples_require_actor_call_visibility_basis(self):
         combined = "\n".join([
             self.read(".claude/skills/rp-gm-agent.md"),

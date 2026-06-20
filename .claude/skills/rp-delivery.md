@@ -27,4 +27,6 @@ python "{ROOT}/skills/round_deliver.py" "<card_folder>" "{ROOT}"
 4. If `round_deliver.py` returns `{"action":"retry"}`, pass the reason back to the orchestrator and do not fabricate success. If it returns `{"action":"blocked"}`, stop automatic delivery/repair and surface the terminal reason for manual intervention. Critic `revise` / `block` reports are recorded in `repair_history.jsonl`; on those recorded reports, non-empty `system_iteration_suggestion` entries are appended to `.agent_runs/improvement_queue.jsonl`.
 5. If delivery succeeds, optional `rp-assets-ui` work may continue asynchronously.
 
+After approved delivery, post-round actor memory jobs may be scheduled for participating actors. Missing or failed post-round jobs mark `post_round_memory_jobs.status` as `pending` or `degraded_memory_state`; they must not remove already delivered prose. The next round surfaces degraded memory state instead of silently ignoring it.
+
 Only the orchestrator/main agent performs these steps. Subagents never write `skills/styles/response.txt`.

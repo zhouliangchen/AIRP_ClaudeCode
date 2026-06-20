@@ -273,18 +273,48 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
                 allowed_character="character:GateKeeper",
             ),
         ],
-        "decision_point": {
-            "reason": "The player must choose whether to show Ada the pendant.",
-            "options": ["show the pendant", "hide the pendant"],
-        },
-        "stop_reason": "player_decision",
+        "decision_point": None,
+        "stop_reason": "continue",
     }
     _assert_actor_calls_have_visibility_basis(raw_gm_output, "raw_gm_output")
-    captured: Dict[str, Any] = {"raw_gm_output": raw_gm_output, "actor_packets": []}
+    captured: Dict[str, Any] = {"raw_gm_output": raw_gm_output, "actor_packets": [], "gm_packets": []}
 
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         if agent_key == "gm":
-            return raw_gm_output
+            captured["gm_packets"].append(packet)
+            if not packet.get("pending_perception_requests"):
+                return raw_gm_output
+            pending = packet["pending_perception_requests"][0]
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "Ada listens while the pendant remains still."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [{"scope": "pendant", "fact": "The pendant makes no audible sound."}],
+                "perception_responses": [
+                    {
+                        "request_id": pending["request_id"],
+                        "actor_id": "character:Ada",
+                        "source_call_id": pending["source_call_id"],
+                        "status": "answered",
+                        "channel": "auditory",
+                        "content": "You hear no hum from the pendant, only the classroom lights buzzing above it.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Ada receives an auditory answer to her own perception request.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["auditory"],
+                        },
+                    }
+                ],
+                "decision_point": {
+                    "reason": "The player must choose whether to show Ada the pendant.",
+                    "options": ["show the pendant", "hide the pendant"],
+                },
+                "stop_reason": "player_decision",
+            }
         if agent_key == "subGM:side_suli_rooftop":
             return {
                 "agent": "subGM",
@@ -319,6 +349,20 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
             }
         if agent_key == "character:Ada":
             captured["actor_packets"].append(packet)
+            if len(captured["actor_packets"]) > 1:
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {
+                            "type": "action",
+                            "target": "pendant",
+                            "content": "I hold still after hearing only the classroom lights.",
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
             return {
                 "agent": "character",
                 "agent_id": "character:Ada",
@@ -328,6 +372,23 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
                         "type": "dialogue",
                         "target": "",
                         "content": "That pendant is older than this school.",
+                    },
+                    {
+                        "type": "custom_action",
+                        "target": "pendant",
+                        "content": "I angle the pendant toward the classroom light.",
+                        "metadata": {
+                            "category": "physical",
+                            "visible_content": "I angle the pendant toward the classroom light.",
+                            "requires_gm_resolution": True,
+                            "risk_level": "medium",
+                        },
+                    },
+                    {
+                        "type": "perceive_request",
+                        "target": "pendant",
+                        "content": "I listen for a hum from the pendant.",
+                        "metadata": {"channel": "auditory"},
                     },
                     {
                         "type": "memory_delta",
@@ -349,7 +410,7 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
             }
         raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
 
-    captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=1)
+    captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=2)
     if not captured["actor_packets"]:
         raise RuntimeError("deterministic actor dispatch did not capture actor packets")
     actor_packet = captured["actor_packets"][0]
@@ -800,6 +861,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         scheduled_summaries = _write_scheduled_memory_summaries(run_dir)
         memory_summary = agent_memory.ingest_memory_summaries(card, run_dir)
         delivered = agent_outputs.mark_delivered(card)
+        post_round_jobs = agent_memory.schedule_post_round_memory_jobs(card, run_dir)
         manifest = _read_json(run_dir / "manifest.json")
         trace = agent_interactions.summarize_for_story_input(run_dir)
         story_input = _read_json(run_dir / "story.input.json")
@@ -808,6 +870,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if isinstance(story_input, dict)
             else {}
         )
+        gm_output = _read_json(run_dir / "gm.output.json")
+        perception_responses = [
+            response
+            for output in gm_output.get("outputs", [])
+            if isinstance(output, dict)
+            for response in output.get("perception_responses", [])
+            if isinstance(response, dict)
+        ]
+        post_round_manifest = manifest.get("post_round_memory_jobs", {})
+        if not isinstance(post_round_manifest, dict):
+            post_round_manifest = {}
 
         return {
             "ok": True,
@@ -833,6 +906,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "manifest_stage": manifest.get("stage") or delivered.get("stage"),
             "trace": trace,
             "loop": captured_loop.get("loop_result", {}),
+            "perception_closure": {
+                "answered_count": sum(
+                    1
+                    for response in perception_responses
+                    if response.get("status") == "answered"
+                ),
+                "continuation_called": captured_loop.get("loop_result", {})
+                .get("called_actors", [])
+                .count("character:Ada")
+                > 1,
+            },
             "memory_delta": {
                 "ok": bool(memory_delta.get("ok")),
                 "round_id": memory_delta.get("round_id"),
@@ -840,6 +924,11 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             },
             "memory_summary": memory_summary,
             "scheduled_memory_summaries": scheduled_summaries,
+            "post_round_memory_jobs": {
+                "status": post_round_manifest.get("status")
+                or ("pending" if post_round_jobs.get("scheduled") else "not_required"),
+                "scheduled_count": len(post_round_jobs.get("scheduled", [])),
+            },
         }
 
 
