@@ -850,6 +850,8 @@ class AgentPacketTest(unittest.TestCase):
 
         for actor_payload in (player_packet, character_packet):
             serialized = json.dumps(actor_payload, ensure_ascii=False)
+            self.assertEqual(actor_payload["context_version"]["algorithm"], "sha256")
+            self.assertTrue(actor_payload["context_version"]["hash"].startswith("sha256:"))
             self.assertEqual(sorted(actor_payload["memory"]), ["goals", "key_memories", "long_term", "short_term"])
             self.assertNotIn("user_instruction_text", serialized)
             self.assertNotIn("user_instruction_channel", serialized)
@@ -1209,6 +1211,12 @@ class AgentPacketTest(unittest.TestCase):
         char_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
         story_prompt = (run_dir / "prompts" / "story.prompt.md").read_text(encoding="utf-8")
         critic_prompt = (run_dir / "prompts" / "critic.prompt.md").read_text(encoding="utf-8")
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+
+        for actor_payload in (player_packet, character_packet):
+            self.assertEqual(actor_payload["context_version"]["algorithm"], "sha256")
+            self.assertTrue(actor_payload["context_version"]["hash"].startswith("sha256:"))
 
         self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
         self.assertIn("gm.output.json", gm_prompt)

@@ -11,6 +11,7 @@ from typing import Any, Callable, Deque, Iterable
 
 import agent_actor_batches
 import agent_interactions
+import agent_lifecycle
 import agent_projection
 import agent_run
 import agent_schemas
@@ -816,13 +817,14 @@ def _preserve_remaining_parallel_groups(
 
 def _dispatch_actor_call(
     *,
+    card_folder: Path,
     input_payload: dict,
     world_state: dict,
     actor_id: str,
     call: dict,
     hidden_phrases: Iterable[str],
     dispatch: DispatchFn,
-) -> dict:
+) -> tuple[dict, dict | None]:
     actor_state = _actor_state(actor_id, input_payload)
     if not agent_visibility.actor_call_visible_to_actor(call, actor_id, actor_state):
         raise AgentTurnLoopError(
@@ -836,7 +838,20 @@ def _dispatch_actor_call(
         hidden_phrases,
         call,
     )
-    return _validate_actor(actor_id, dispatch(_dispatch_actor_key(actor_id), packet))
+    packet = agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
+    raw_actor_payload = dispatch(_dispatch_actor_key(actor_id), packet)
+    actor_output = _validate_actor(actor_id, raw_actor_payload)
+    returned_version = _dict(raw_actor_payload.get("context_version")) if isinstance(raw_actor_payload, dict) else {}
+    returned_hash = str(returned_version.get("hash") or "").strip()
+    current_hash = str(_dict(packet.get("context_version")).get("hash") or "").strip()
+    warning = None
+    if returned_hash and current_hash and returned_hash != current_hash:
+        warning = {
+            "actor_id": actor_id,
+            "returned_hash": returned_hash,
+            "current_hash": current_hash,
+        }
+    return actor_output, warning
 
 
 def _process_actor_output(
@@ -1080,9 +1095,11 @@ def run_interactive_loop(
     dispatch: DispatchFn,
     *,
     max_steps: int = MAX_LOOP_STEPS,
+    card_folder: str | Path | None = None,
 ) -> dict:
     """Run a bounded deterministic GM/actor control loop through `dispatch`."""
     root = Path(run_dir)
+    card_for_versions = Path(card_folder) if card_folder is not None else _card_folder_for_run(root)
     input_payload = _read_input(root)
     _ensure_trace(root, input_payload)
 
@@ -1170,12 +1187,13 @@ def run_interactive_loop(
                 _record_actor_batch_plan(root, step_index, batch_trace_index, batch)
                 batch_trace_index += 1
 
-                results: list[tuple[dict, str, dict]] = []
+                results: list[tuple[dict, str, dict, dict | None]] = []
                 if str(batch.get("kind") or "") == "parallel" and len(calls) > 1:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls)) as executor:
                         future_results = [
                             executor.submit(
                                 _dispatch_actor_call,
+                                card_folder=card_for_versions,
                                 input_payload=input_payload,
                                 world_state=world_state,
                                 actor_id=str(call.get("actor_id") or ""),
@@ -1187,27 +1205,39 @@ def run_interactive_loop(
                         ]
                         for call, future in zip(calls, future_results):
                             actor_id = str(call.get("actor_id") or "")
-                            results.append((call, actor_id, future.result()))
+                            actor_output, warning = future.result()
+                            results.append((call, actor_id, actor_output, warning))
                 else:
                     for call in calls:
                         actor_id = str(call.get("actor_id") or "")
+                        actor_output, warning = _dispatch_actor_call(
+                            card_folder=card_for_versions,
+                            input_payload=input_payload,
+                            world_state=world_state,
+                            actor_id=actor_id,
+                            call=call,
+                            hidden_phrases=hidden_phrases,
+                            dispatch=dispatch,
+                        )
                         results.append((
                             call,
                             actor_id,
-                            _dispatch_actor_call(
-                                input_payload=input_payload,
-                                world_state=world_state,
-                                actor_id=actor_id,
-                                call=call,
-                                hidden_phrases=hidden_phrases,
-                                dispatch=dispatch,
-                            ),
+                            actor_output,
+                            warning,
                         ))
 
                 transfer_calls = []
                 actor_requested_decision = False
                 actor_decision_reason = ""
-                for call, actor_id, actor_output in results:
+                for _call, _actor_id, _actor_output, warning in results:
+                    if warning:
+                        agent_lifecycle.record_stale_actor_context_warning(
+                            root,
+                            str(warning.get("actor_id") or ""),
+                            str(warning.get("returned_hash") or ""),
+                            str(warning.get("current_hash") or ""),
+                        )
+                for call, actor_id, actor_output, _warning in results:
                     call_id = str(call.get("call_id") or "")
                     called_actors.append(actor_id)
                     actor_outputs.setdefault(actor_id, []).append(actor_output)

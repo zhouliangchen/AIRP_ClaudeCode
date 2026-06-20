@@ -186,6 +186,37 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertNotIn("Secret hidden phrase", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text)
 
+    def test_side_thread_actor_dispatch_attaches_context_version(self):
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You notice chalk dust near the vent.",
+                            "reason": "SuLi is physically present in the side thread.",
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                actor_packets.append(packet)
+                return character_output()
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(actor_packets), 1)
+        self.assertEqual(actor_packets[0]["context_version"]["algorithm"], "sha256")
+        self.assertTrue(actor_packets[0]["context_version"]["hash"].startswith("sha256:"))
+
     def test_actor_packet_receives_subgm_visibility_basis(self):
         actor_packets = []
 

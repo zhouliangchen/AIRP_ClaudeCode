@@ -160,6 +160,123 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:Ada")
 
+    def test_runtime_actor_dispatch_attaches_context_version_and_warns_on_stale_return(self):
+        self.register_character_states({"name": "Ada"})
+        self.agent_run.write_json(
+            self.run_dir / "manifest.json",
+            {"round_id": "round-000001", "stage": "awaiting_agent_outputs", "status": []},
+        )
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You see the corridor.",
+                        "reason": "Ada is present.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            actor_packets.append(json_copy(packet))
+            self.assertEqual(packet["context_version"]["algorithm"], "sha256")
+            self.assertTrue(packet["context_version"]["hash"].startswith("sha256:"))
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "context_version": {"algorithm": "sha256", "hash": "sha256:stale"},
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I wait."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(actor_packets), 1)
+        manifest = self.agent_run.read_json(self.run_dir / "manifest.json")
+        warnings = manifest.get("actor_context_warnings", [])
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["actor_id"], "character:Ada")
+        self.assertEqual(warnings[0]["returned_hash"], "sha256:stale")
+        self.assertEqual(warnings[0]["current_hash"], actor_packets[0]["context_version"]["hash"])
+
+    def test_parallel_stale_actor_context_warnings_are_recorded_serially(self):
+        self.register_characters("Ada", "Bea")
+        self.agent_run.write_json(
+            self.run_dir / "manifest.json",
+            {"round_id": "round-000001", "stage": "awaiting_agent_outputs", "status": []},
+        )
+        main_thread_id = threading.get_ident()
+        packets = []
+        original_record = self.agent_turn_loop.agent_lifecycle.record_stale_actor_context_warning
+
+        def record_on_main_thread_only(run_dir, actor_id, returned_hash, current_hash):
+            self.assertEqual(threading.get_ident(), main_thread_id)
+            return original_record(run_dir, actor_id, returned_hash, current_hash)
+
+        self.agent_turn_loop.agent_lifecycle.record_stale_actor_context_warning = record_on_main_thread_only
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "Ada sees the corridor.",
+                            "reason": "Ada is present.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "Bea sees the window.",
+                            "reason": "Bea is present.",
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-stale",
+                        "actors": ["character:Ada", "character:Bea"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            packets.append(json_copy(packet))
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "context_version": {"algorithm": "sha256", "hash": f"sha256:stale-{agent_key}"},
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I wait."}],
+                "stop_reason": "continue",
+            }
+
+        try:
+            result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+        finally:
+            self.agent_turn_loop.agent_lifecycle.record_stale_actor_context_warning = original_record
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(packets), 2)
+        manifest = self.agent_run.read_json(self.run_dir / "manifest.json")
+        warnings = manifest.get("actor_context_warnings", [])
+        self.assertCountEqual(
+            [warning["actor_id"] for warning in warnings],
+            ["character:Ada", "character:Bea"],
+        )
+
     def test_actor_packet_visibility_basis_preserves_top_level_call_metadata(self):
         self.register_character_states({
             "name": "Ada",

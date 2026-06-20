@@ -10,6 +10,7 @@ import agent_projection
 import agent_run
 import agent_prompts
 import agent_memory
+import agent_lifecycle
 import input_analysis
 
 
@@ -356,7 +357,8 @@ def build_player_packet(
     world = _actor_visible_world_state(world, routed_input)
     actor = _projectable_player_state(card_folder, actor_state)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input)
-    return agent_projection.project_actor_context("player", world, actor, prompt)
+    packet = agent_projection.project_actor_context("player", world, actor, prompt)
+    return agent_lifecycle.attach_actor_context_version(card_folder, "player", packet)
 
 
 def build_character_packet(
@@ -373,12 +375,14 @@ def build_character_packet(
     world = _actor_visible_world_state(world, routed_input)
     actor_state = _projectable_character_state(character_data, card_folder)
     prompt = gm_prompt if gm_prompt is not None else _actor_prompt_from_role(routed_input, for_character=True)
-    return agent_projection.project_actor_context(
-        _character_actor_id(actor_state),
+    actor_id = _character_actor_id(actor_state)
+    packet = agent_projection.project_actor_context(
+        actor_id,
         world,
         actor_state,
         prompt,
     )
+    return agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
 
 
 def _iter_characters(character_contexts: Any) -> Iterable[Dict[str, Any]]:

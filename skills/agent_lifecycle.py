@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,15 @@ ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked", "max
 TERMINAL_SIDE_THREAD_STATUSES = {"completed", "closed"}
 PAUSED_SIDE_THREAD_STATUS = "paused"
 DEFAULT_NEXT_RESUME_POINT = "resume when the main GM schedules this side thread in a later round"
+ACTOR_VERSION_FILES = (
+    "profile.md",
+    "profile.json",
+    "long_term.md",
+    "key_memories.md",
+    "short_term.md",
+    "recent.md",
+    "goals.json",
+)
 
 
 def _now() -> str:
@@ -34,6 +44,128 @@ def _read_json(path: Path, default: Any = None) -> Any:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _relative_source_path(card: Path, path: Path) -> str:
+    try:
+        rel = path.resolve().relative_to(card.resolve())
+    except ValueError:
+        rel = path
+    return rel.as_posix()
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_json_value(child)
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, list):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, set):
+        return [_canonical_json_value(item) for item in sorted(value, key=lambda item: str(item))]
+    return value
+
+
+def _canonical_source_file_content(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8")
+    if path.suffix.lower() != ".json":
+        return raw
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return json.dumps(
+            {"malformed_json_text": raw},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def actor_memory_dir(card_folder: str | Path, actor_id: str) -> Path:
+    """Return the current-format structured memory directory for an actor."""
+    card = Path(card_folder)
+    actor = str(actor_id or "").strip()
+    if actor == "player":
+        return card / "memory" / "player"
+    if actor.startswith("character:"):
+        name = actor.split(":", 1)[1] or "_unknown"
+        return card / "memory" / "characters" / agent_run.safe_name(name)
+    return card / "memory" / "characters" / "_unknown"
+
+
+def compute_actor_context_version(card_folder: str | Path, actor_id: str, packet: dict[str, Any]) -> dict[str, Any]:
+    """Hash the actor-facing packet projection and structured actor memory files."""
+    card = Path(card_folder)
+    packet = packet if isinstance(packet, dict) else {}
+    memory_dir = actor_memory_dir(card, actor_id)
+    memory_files: list[dict[str, Any]] = []
+    source_paths: list[str] = []
+    for filename in ACTOR_VERSION_FILES:
+        path = memory_dir / filename
+        if not path.exists() or not path.is_file():
+            continue
+        source_path = _relative_source_path(card, path)
+        memory_files.append(
+            {
+                "path": source_path,
+                "content": _canonical_source_file_content(path),
+            }
+        )
+        source_paths.append(source_path)
+
+    packet_without_top_level_version = dict(packet)
+    packet_without_top_level_version.pop("context_version", None)
+    normalized = {
+        "actor_id": str(actor_id or ""),
+        "packet": _canonical_json_value(packet_without_top_level_version),
+        "memory_files": memory_files,
+    }
+    payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return {
+        "algorithm": "sha256",
+        "hash": f"sha256:{digest}",
+        "source_paths": source_paths,
+        "computed_at": _now(),
+    }
+
+
+def attach_actor_context_version(card_folder: str | Path, actor_id: str, packet: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow packet copy with a freshly computed actor context version."""
+    versioned = dict(packet if isinstance(packet, dict) else {})
+    versioned["context_version"] = compute_actor_context_version(card_folder, actor_id, versioned)
+    return versioned
+
+
+def record_stale_actor_context_warning(
+    run_dir: str | Path,
+    actor_id: str,
+    returned_hash: str,
+    current_hash: str,
+) -> dict[str, Any]:
+    """Append a non-fatal stale actor context warning to the run manifest."""
+    root = Path(run_dir)
+    manifest_path = root / "manifest.json"
+    manifest = _read_json(manifest_path, {}) or {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    warnings = manifest.setdefault("actor_context_warnings", [])
+    if not isinstance(warnings, list):
+        warnings = []
+        manifest["actor_context_warnings"] = warnings
+    warning = {
+        "actor_id": str(actor_id or ""),
+        "returned_hash": str(returned_hash or ""),
+        "current_hash": str(current_hash or ""),
+        "recorded_at": _now(),
+    }
+    warnings.append(warning)
+    agent_run.write_json(manifest_path, manifest)
+    return warning
 
 
 def _read_jsonl_records(path: Path) -> list[dict[str, Any]]:
@@ -213,6 +345,11 @@ def cleanup_round_agents(card_folder: str | Path, run_dir: str | Path, *, reason
 
 __all__ = [
     "ACTIVE_SIDE_THREAD_STATUSES",
+    "ACTOR_VERSION_FILES",
     "TERMINAL_SIDE_THREAD_STATUSES",
+    "actor_memory_dir",
+    "attach_actor_context_version",
+    "compute_actor_context_version",
     "cleanup_round_agents",
+    "record_stale_actor_context_warning",
 ]

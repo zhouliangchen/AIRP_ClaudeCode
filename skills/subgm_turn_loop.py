@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import agent_interactions
+import agent_lifecycle
 import agent_projection
 import agent_run
 import agent_schemas
@@ -32,6 +33,10 @@ DispatchFn = Callable[[str, dict], dict]
 
 class SubgmTurnLoopError(RuntimeError):
     """Raised when a side-thread loop cannot validate or continue."""
+
+
+def _card_folder_for_run(run_dir: Path) -> Path:
+    return run_dir.parents[1] if run_dir.parent.name == ".agent_runs" else run_dir.parent
 
 
 def _dict(value: Any) -> dict:
@@ -322,6 +327,7 @@ def _route_actor_calls(
             prompt,
             agent_visibility.actor_call_basis(call),
         )
+        packet = agent_lifecycle.attach_actor_context_version(_card_folder_for_run(run_dir), actor_id, packet)
         actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
         called_actors.append(actor_id)
         _persist_actor_output(side_dir, actor_id, actor_output)

@@ -401,7 +401,7 @@ def _run_interactive_agent_loop(
         )
 
     try:
-        return agent_turn_loop.run_interactive_loop(run_dir, dispatch)
+        return agent_turn_loop.run_interactive_loop(run_dir, dispatch, card_folder=run_dir.parents[1])
     except agent_turn_loop.AgentTurnLoopError as exc:
         raise AgentExecutionError(str(exc)) from exc
 

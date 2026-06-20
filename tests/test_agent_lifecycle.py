@@ -136,3 +136,87 @@ class AgentLifecycleTest(unittest.TestCase):
         self.assertEqual(result["status"], "degraded")
         self.assertTrue(any(item.get("scope") == "manifest" for item in result["failed"]))
         self.assertEqual((self.run_dir / "manifest.json").read_text(encoding="utf-8"), original_manifest)
+
+    def test_compute_actor_context_version_changes_when_memory_changes(self):
+        memory = self.card / "memory" / "characters" / "Ada"
+        memory.mkdir(parents=True)
+        (memory / "long_term.md").write_text("Ada trusts the player.", encoding="utf-8")
+        packet = {
+            "agent_id": "character:Ada",
+            "actor": {"name": "Ada"},
+            "world": {"visible_events": []},
+            "prompt": "You see the corridor.",
+            "visibility_basis": {"mode": "direct", "summary": "Ada is present."},
+        }
+
+        first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+        (memory / "long_term.md").write_text("Ada distrusts the player.", encoding="utf-8")
+        second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+
+        self.assertNotEqual(first["hash"], second["hash"])
+        self.assertIn("memory/characters/Ada/long_term.md", first["source_paths"])
+
+    def test_compute_actor_context_version_changes_when_packet_memory_changes(self):
+        packet = {
+            "actor_id": "character:Ada",
+            "self_knowledge": {"name": "Ada"},
+            "memory": {"long_term": ["Ada trusts the player."], "goals": []},
+            "gm_prompt": "You see the corridor.",
+            "visible_events": [],
+            "gm_visibility_basis": {"mode": "direct", "summary": "Ada is present."},
+        }
+
+        first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+        packet["memory"] = {"long_term": ["Ada distrusts the player."], "goals": []}
+        second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+
+        self.assertNotEqual(first["hash"], second["hash"])
+
+    def test_compute_actor_context_version_normalizes_json_source_key_order(self):
+        memory = self.card / "memory" / "characters" / "Ada"
+        memory.mkdir(parents=True)
+        packet = {
+            "actor_id": "character:Ada",
+            "self_knowledge": {"name": "Ada"},
+            "memory": {"long_term": [], "goals": []},
+            "gm_prompt": "You see the corridor.",
+            "visible_events": [],
+        }
+        goals_path = memory / "goals.json"
+        goals_path.write_text(
+            '{"goals":{"active":["Protect the key"],"paused":[],"resolved":[]}}',
+            encoding="utf-8",
+        )
+
+        first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+        goals_path.write_text(
+            '{\n  "goals": {\n    "resolved": [],\n    "paused": [],\n    "active": ["Protect the key"]\n  }\n}',
+            encoding="utf-8",
+        )
+        second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+
+        self.assertEqual(first["hash"], second["hash"])
+
+    def test_compute_actor_context_version_includes_nested_context_version_fields(self):
+        packet = {
+            "actor_id": "character:Ada",
+            "self_knowledge": {"name": "Ada"},
+            "memory": {"long_term": [], "goals": []},
+            "gm_prompt": "You see the corridor.",
+            "world": {
+                "visible_events": [
+                    {
+                        "type": "scene",
+                        "content": "A door opens.",
+                        "metadata": {"context_version": "visible-event-v1"},
+                    }
+                ]
+            },
+            "context_version": {"algorithm": "sha256", "hash": "sha256:generated-top-level"},
+        }
+
+        first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+        packet["world"]["visible_events"][0]["metadata"]["context_version"] = "visible-event-v2"
+        second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
+
+        self.assertNotEqual(first["hash"], second["hash"])
