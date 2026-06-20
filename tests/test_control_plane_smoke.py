@@ -6,6 +6,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SKILLS = ROOT / "skills"
+if str(SKILLS) not in sys.path:
+    sys.path.insert(0, str(SKILLS))
+
+import agent_lifecycle
+import control_plane_smoke
 
 
 class ControlPlaneSmokeTest(unittest.TestCase):
@@ -20,6 +26,21 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         payload = json.loads(result.stdout)
 
         self.assertTrue(payload["ok"])
+        self.assertEqual(payload["progress"]["schema_version"], 2)
+        self.assertEqual(payload["progress"]["state"], "complete")
+        self.assertIn("complete", payload["progress"]["states"])
+        self.assertIn("agent_lifecycle.cleanup", payload["progress"]["states"])
+        self.assertIn("agent_lifecycle_cleanup", payload)
+        self.assertTrue(payload["agent_lifecycle_cleanup"]["ok"])
+        self.assertEqual(payload["agent_lifecycle_cleanup"]["status"], "complete")
+        self.assertEqual(
+            payload["agent_lifecycle_cleanup"]["already_paused"],
+            ["side_gate_noise"],
+        )
+        self.assertEqual(
+            payload["agent_lifecycle_cleanup"]["already_terminal"],
+            ["side_suli_rooftop"],
+        )
         self.assertIn("subgm", payload)
         self.assertEqual(payload["subgm"]["started_count"], 2)
         self.assertEqual(payload["subgm"]["completed_count"], 1)
@@ -76,6 +97,23 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(payload["post_round_memory_jobs"]["scheduled_count"], 1)
         self.assertIn("player", payload["memory_summary"]["ingested"])
         self.assertEqual(payload["input_analysis"]["analysis_mode"], "fixture")
+
+    def test_control_plane_smoke_rejects_lifecycle_cleanup_failure(self):
+        original_cleanup = agent_lifecycle.cleanup_round_agents
+
+        def fail_cleanup(*args, **kwargs):
+            return {
+                "ok": False,
+                "status": "degraded",
+                "failed": [{"scope": "smoke", "error": "forced cleanup failure"}],
+            }
+
+        agent_lifecycle.cleanup_round_agents = fail_cleanup
+        try:
+            with self.assertRaisesRegex(RuntimeError, "lifecycle cleanup failed"):
+                control_plane_smoke.run_smoke(ROOT)
+        finally:
+            agent_lifecycle.cleanup_round_agents = original_cleanup
 
 
 if __name__ == "__main__":

@@ -790,11 +790,13 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
     import agent_interactions
+    import agent_lifecycle
     import agent_memory
     import agent_outputs
     import agent_packets
     import agent_schemas
     import agent_turn_loop
+    import round_state
     import subgm_threads
 
     with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-") as tmp:
@@ -862,7 +864,42 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         memory_summary = agent_memory.ingest_memory_summaries(card, run_dir)
         delivered = agent_outputs.mark_delivered(card)
         post_round_jobs = agent_memory.schedule_post_round_memory_jobs(card, run_dir)
+        round_state.write_progress_state(
+            styles_dir,
+            "agent_lifecycle.cleanup",
+            run_id=run_dir.name,
+            run_dir=run_dir,
+            manifest_message="Control-plane smoke lifecycle cleanup started.",
+        )
+        cleanup_result = agent_lifecycle.cleanup_round_agents(card, run_dir, reason="delivered")
+        if not cleanup_result.get("ok"):
+            raise RuntimeError(f"lifecycle cleanup failed: {cleanup_result}")
+        cleanup_manifest = _read_json(run_dir / "manifest.json").get("agent_lifecycle_cleanup")
+        if not isinstance(cleanup_manifest, dict):
+            raise RuntimeError("lifecycle cleanup evidence missing from manifest")
+        if cleanup_manifest != cleanup_result:
+            raise RuntimeError(
+                "lifecycle cleanup manifest evidence does not match cleanup result"
+            )
+        round_state.write_progress_state(
+            styles_dir,
+            "complete",
+            run_id=run_dir.name,
+            run_dir=run_dir,
+            manifest_message="Control-plane smoke complete.",
+        )
+        progress_path = styles_dir / "progress.json"
+        progress = _read_json(progress_path) if progress_path.exists() else {}
         manifest = _read_json(run_dir / "manifest.json")
+        cleanup_evidence = manifest.get("agent_lifecycle_cleanup")
+        if cleanup_evidence != cleanup_result:
+            raise RuntimeError("final manifest cleanup evidence changed unexpectedly")
+        status = manifest.get("status") if isinstance(manifest.get("status"), list) else []
+        states = [
+            str(item.get("stage") or "")
+            for item in status
+            if isinstance(item, dict)
+        ]
         trace = agent_interactions.summarize_for_story_input(run_dir)
         story_input = _read_json(run_dir / "story.input.json")
         story_input_analysis = (
@@ -904,6 +941,12 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             },
             "story": _story_evidence(run_dir),
             "manifest_stage": manifest.get("stage") or delivered.get("stage"),
+            "progress": {
+                "schema_version": progress.get("schema_version"),
+                "state": progress.get("state") or progress.get("stage"),
+                "states": states,
+            },
+            "agent_lifecycle_cleanup": cleanup_evidence,
             "trace": trace,
             "loop": captured_loop.get("loop_result", {}),
             "perception_closure": {

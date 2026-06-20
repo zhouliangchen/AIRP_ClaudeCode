@@ -58,6 +58,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。
 - 用户输入分为 `role_channel` 和 `user_instruction_channel`。角色行动/第一人称剧情梗概进入角色通道；第三人称上帝视角设定和直接给 Claude Code 的指令进入用户指令通道，二者互不干扰。
 - 每轮使用 `.agent_runs/<round>/` 作为 agent 文件邮箱。critic 通过后，`round_deliver.py` 才把 `story.output.json` 的正文镜像到 `skills/styles/response.txt` 并交付。
+- Progress updates must use declared schema-v2 state IDs from `skills/round_state.py`; after successful delivery, run lifecycle cleanup so active subGM side threads are paused instead of left running.
 - 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再按 `selfRepairMode` 与 `critic.report.json.repair_routing` 分流：story/delivery 问题只重跑 story/critic；GM/actor/subGM 推进问题仅在 `full` 模式下回退本轮推演产物并重跑 GM loop；若问题来自 prompt、代码或系统流程，且源码自修复配置明确允许，才进入项目源码修复流程，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
 - 图片生成和存档 UI 演化属于可选沉浸增强任务，必须异步执行，不得阻塞正文交付。
 

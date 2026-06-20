@@ -38,6 +38,8 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 12. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` only when the configured self-repair mode allows the route, and returns `action: blocked` when the mode, route, or retry limit requires manual intervention.
 13. If `action: retry` is returned, follow `critic.report.json.repair_routing`: `story_composition` and `delivery_gate` rerun story/critic only; `gm_loop`, `actor_agent`, and `subgm` require `full` mode and roll the current round back to the GM-loop checkpoint before regenerating. If `action: blocked` is returned, stop the automatic repair loop, surface the terminal reason, and wait for manual intervention or explicit authorization before changing prompts/code/process. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
 
+Use state-machine progress updates for input analysis, GM loop, actor dispatch, subGM dispatch, Story, Critic, delivery, memory, and lifecycle cleanup. Do not invent new progress state IDs without adding them to `skills/round_state.py`. After delivery, ensure lifecycle cleanup has recorded paused side threads and actor context warnings when applicable.
+
 主 agent 不得直接撰写常规叙事正文 except as an explicitly marked fallback.
 
 ## Agent Run Artifacts

@@ -58,6 +58,8 @@ AIRP_ClaudeCode/
 
 玩家提交输入后，本轮输入会先作为“等待 Claude Code 回复”的 pending 回合显示在前端；AI 回复交付后，pending 回合会被正式回合替换。前端会轮询并重新加载 `content.js`，因此正文、状态 UI 和图片资产可以在不手动刷新的情况下更新。可用时，顶部会显示回复进度条，例如已接收、整理上下文、生成中、交付中和完成。
 
+进度条由 schema v2 状态机驱动：主界面显示稳定阶段标签和百分比，展开详情可查看当前 agent、subGM 支线、actor call、重试次数或阻塞原因。旧的 `stage` 字段仍作为兼容字段保留，但新增代码应写入 `skills/round_state.py` 中声明的状态 ID。
+
 每个已交付的玩家回合可点击“编辑输入”。“仅更新”只修改权威输入日志和当前显示，并把影响记录到 `.player_input_edits.jsonl`，等待后续回合评估；“更新并提交”会从该回合截断旧分支，将修订后的输入重新提交为 pending 回合。Claude Code 针对具体剧本生成的热更新 UI 不受移动端简化布局限制，可以按剧情需要插入到合适位置。
 
 默认服务会监听所有网卡，便于手机、平板等同一局域网设备访问。如果只想允许本机访问，可在启动前设置 `$env:AIRP_HOST="127.0.0.1"`。若局域网地址仍打不开，请确认设备在同一网络，并允许 Windows 防火墙中的 Python 入站连接；也可用管理员 PowerShell 执行 `New-NetFirewallRule -DisplayName "AIRP ClaudeCode Frontend 8765" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8765 -Profile Private,Domain`。
@@ -100,6 +102,8 @@ subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。
 交付成功后，`round_deliver.py` 会在 `manifest.post_round_memory_jobs` 下为本轮实际参与的 player/character actor 记录回合后记忆任务，并生成 `post_round_memory_jobs/*.job.json` 与 `prompts/post_round_memory/*.prompt.md`。这些任务只包含该 actor 自己的输出、actor 可见交互、近期记忆和目标；没有需要整理的 actor 时会标记 `not_required`；已完成的 `*.summary.json` 会按同一结构化 actor 记忆格式写入并标记 `complete`；缺失输出保持 `pending`，校验失败标记为 `degraded_memory_state`，且不会回滚或删除已交付的 `response.txt`。下一轮会把降级记忆状态显式暴露给上下文准备流程，而不是静默忽略。
 
 回合后记忆处理结束后，`round_deliver.py` 会执行 `agent_lifecycle.cleanup`。该步骤只做文件级清理：把仍处于 `running`、`merging`、`needs_gm`、`blocked` 或 `max_steps` 的 side thread 标记为 `paused`，写入恢复提示并释放角色占用；`completed` 与 `closed` 支线保持不变。清理结果记录在本轮 `manifest.agent_lifecycle_cleanup` 和最终交付 JSON 中，不会终止系统进程，也不会删除已有支线产物。
+
+成功交付到前端后，系统会执行回合级 agent lifecycle cleanup：仍处于 `running`、`merging`、`needs_gm`、`blocked` 或 `max_steps` 的 subGM 支线会被暂停并释放角色占用；未完成的支线不会被标记为 completed，而是保留 `next_resume_point` 供之后由主 GM 恢复。player/character actor 调度前会重新计算 `context_version`，因此人格、背景、记忆或目标文件被更新后，下一次调度会读取最新上下文；已经在运行的 actor 调用不会被强制中断。
 
 结构化 actor 记忆摘要只允许更新 `memory/player/` 或 `memory/characters/<name>/` 下的 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json`。`recent.md` 是回合内增量的暂存来源，成功整理后会被消费；actor 记忆更新必须使用 `source: self` 与 `visibility: actor`，不得写入角色档案字段或隐藏标记。
 
