@@ -172,6 +172,33 @@ def init_chat_log(card_folder: str) -> bool:
     return False
 
 
+def clear_card_scoped_settings_for_blank_bootstrap(styles_dir: Path, blank_bootstrap: bool) -> dict:
+    """Clear active-card identity settings when a brand-new blank card starts.
+
+    Style, word count, and repair policy are user preferences that can reasonably
+    persist across cards.  The player character name is card-scoped identity and
+    must not leak from a previous save into browser submissions for a new blank
+    story.
+    """
+    result = {"charName_cleared": False}
+    if not blank_bootstrap:
+        return result
+
+    settings_path = styles_dir / "settings.json"
+    settings = read_json(settings_path)
+    if not isinstance(settings, dict):
+        return result
+
+    if settings.get("charName"):
+        settings["charName"] = ""
+        settings_path.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["charName_cleared"] = True
+    return result
+
+
 # ─── Phase 3: Import Context File ────────────────────────────
 
 def build_import_context(card_folder: str, styles_dir: Path,
@@ -351,6 +378,7 @@ def main():
     card_path_abs = write_card_path(card_folder, styles_dir)
     init_state_js(styles_dir, card_name, world_name, card_folder)
     blank_bootstrap = import_result.get("status") == "blank_bootstrap"
+    settings_cleanup = clear_card_scoped_settings_for_blank_bootstrap(styles_dir, blank_bootstrap)
     placeholder = "等待你的开局输入..." if blank_bootstrap else "正在生成开场..."
     init_content_js(styles_dir, card_folder, placeholder)
     chat_log_created = init_chat_log(card_folder)
@@ -402,6 +430,7 @@ def main():
             "character_count": len(import_result.get("card_structure", {}).get("characters", {})),
         },
         "cleanup": cleanup_info,
+        "settings_cleanup": settings_cleanup,
     }
 
     # Carry forward optional detail keys from import_card

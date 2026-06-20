@@ -133,6 +133,18 @@ critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退
 
 如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须额外开启 `allowSourceCodeSelfRepair: true`，默认关闭；普通游玩中不会因为 critic 报告而自动修改关键项目源码。
 
+## 模型调用调试日志
+
+系统支持本地调试模式，配置键为 `modelDebugMode`，默认值是 `false`。可在浏览器侧栏“调试模式”开关中启用，也可直接写入 `skills/styles/settings.json`：
+
+```json
+{
+  "modelDebugMode": true
+}
+```
+
+开启后，每次大模型调用都会把实际发送给模型的完整原始 prompt，以及模型进程返回的完整 stdout、stderr、returncode 或异常信息写入当前存档目录的 `debug/model_calls/` 下。单次调用日志位于 `debug/model_calls/<round_id>/`，全局索引位于 `debug/model_calls/index.jsonl`。这些日志可能包含 GM-only 隐藏设定、角色私有记忆、用户指令和模型原始输出，只用于本地调试，不会进入 agent 上下文，也不应提交到仓库。
+
 ## 常用开发命令
 
 ```powershell

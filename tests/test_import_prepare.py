@@ -86,6 +86,24 @@ class ImportPrepareTest(unittest.TestCase):
         self.assertTrue((card_dir / ".card_data.json").exists())
         self.assertTrue((card_dir / "memory").is_dir())
 
+    def test_blank_bootstrap_clears_stale_character_name_setting(self):
+        settings_path = self.styles_dir / "settings.json"
+        settings_path.write_text(
+            '{"charName":"旧主角","wordCount":4000,"selfRepairMode":"full"}',
+            encoding="utf-8",
+        )
+
+        result = self.import_prepare.clear_card_scoped_settings_for_blank_bootstrap(
+            self.styles_dir,
+            blank_bootstrap=True,
+        )
+
+        self.assertTrue(result["charName_cleared"])
+        settings = self.import_prepare.read_json(settings_path)
+        self.assertEqual(settings["charName"], "")
+        self.assertEqual(settings["wordCount"], 4000)
+        self.assertEqual(settings["selfRepairMode"], "full")
+
 
 if __name__ == "__main__":
     unittest.main()

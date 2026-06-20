@@ -18,6 +18,7 @@ import agent_run
 import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
+import model_debug
 import self_repair
 
 try:
@@ -186,7 +187,13 @@ def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
         "--agent",
         "general-purpose",
     ]
-    result = subprocess.run(
+    result = _run_claude_process(command, prompt, cwd)
+    _raise_for_claude_failure(result)
+    return result.stdout
+
+
+def _run_claude_process(command: list[str], prompt: str, cwd: str | Path) -> Any:
+    return subprocess.run(
         command,
         input=prompt,
         cwd=str(cwd),
@@ -197,6 +204,9 @@ def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
         env=_claude_subprocess_env(),
         timeout=600,
     )
+
+
+def _raise_for_claude_failure(result: Any) -> None:
     if result.returncode != 0:
         stderr_tail = str(result.stderr or "").strip()[-500:]
         stdout_tail = str(result.stdout or "").strip()[-500:]
@@ -210,7 +220,62 @@ def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
             output_label = "output"
             output_tail = "no output"
         raise AgentExecutionError(f"claude exited with {result.returncode} ({output_label}): {output_tail}")
-    return result.stdout
+
+
+def _run_claude_with_debug(
+    logger: model_debug.ModelDebugLogger | None,
+    run_claude: Callable[[str, str, str | Path], str],
+    agent_key: str,
+    prompt: str,
+    cwd: str | Path,
+) -> str:
+    if logger is None:
+        return run_claude(agent_key, prompt, cwd)
+
+    started = model_debug.utc_now()
+    stdout = ""
+    stderr = ""
+    returncode: int | None = None
+    error = ""
+    exception_type = ""
+    try:
+        if run_claude is run_claude_agent:
+            command = [
+                "claude",
+                "--print",
+                "--dangerously-skip-permissions",
+                "--agent",
+                "general-purpose",
+            ]
+            result = _run_claude_process(command, prompt, cwd)
+            stdout = str(getattr(result, "stdout", "") or "")
+            stderr = str(getattr(result, "stderr", "") or "")
+            returncode = int(getattr(result, "returncode", 1))
+            _raise_for_claude_failure(result)
+            return stdout
+
+        stdout = str(run_claude(agent_key, prompt, cwd) or "")
+        returncode = 0
+        return stdout
+    except Exception as exc:
+        error = str(exc)
+        exception_type = exc.__class__.__name__
+        raise
+    finally:
+        ended = model_debug.utc_now()
+        logger.write_call(
+            agent_key=agent_key,
+            cwd=str(cwd),
+            prompt=prompt,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            started_at=model_debug.isoformat(started),
+            ended_at=model_debug.isoformat(ended),
+            duration_ms=model_debug.duration_ms(started, ended),
+            error=error,
+            exception_type=exception_type,
+        )
 
 
 def _extract_agent_or_direct_text(output: str) -> str:
@@ -1079,9 +1144,24 @@ def run_round(
 
     repair_policy = self_repair.load_policy(root / "skills" / "styles" / "settings.json")
     manifest = _load_manifest(run_dir)
+    settings = agent_run.read_json(root / "skills" / "styles" / "settings.json", {}) or {}
+    if not isinstance(settings, dict):
+        settings = {}
+    debug_logger = model_debug.logger_from_settings(
+        card,
+        str(manifest.get("round_id") or run_dir.name),
+        settings,
+    )
+    active_run_claude = lambda agent_key, prompt, cwd: _run_claude_with_debug(
+        debug_logger,
+        run_claude,
+        agent_key,
+        prompt,
+        cwd,
+    )
     manifest = _reset_delivery_retry_budget(run_dir, manifest)
     _write_progress_safe("input_analysis.running", "正在分析玩家输入", percent=38)
-    _ensure_input_analysis(run_dir, manifest, card, root, run_claude)
+    _ensure_input_analysis(run_dir, manifest, card, root, active_run_claude)
     _write_progress_safe("input_analysis.applied", "输入分析已应用", percent=45)
     manifest = _load_manifest(run_dir)
     expected = manifest.get("expected_outputs") or {}
@@ -1093,7 +1173,7 @@ def run_round(
     story_input = _load_existing_story_input(run_dir)
     if story_input is None:
         _write_progress_safe("gm_loop.starting", "正在启动 GM 回合", percent=46, detail={"run_id": run_dir.name})
-        loop_result = _run_interactive_agent_loop(run_dir, manifest, root, run_claude)
+        loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude)
         story_input = agent_outputs.build_story_input(run_dir)
     else:
         loop_result = _loop_result_from_story_input(story_input)
@@ -1115,7 +1195,7 @@ def run_round(
                 story_path,
                 story_prompt,
                 root,
-                run_claude,
+                active_run_claude,
                 story_extra,
             )
             next_story = _normalize_story_output(next_story, story_input)
@@ -1152,7 +1232,7 @@ def run_round(
             critic_path,
             critic_prompt,
             root,
-            run_claude,
+            active_run_claude,
             {"story_input": story_input, "story_output": next_story, "delivery_requirements": requirements},
         )
         next_critic = _normalize_critic_report_for_story(next_critic, next_story)
@@ -1189,7 +1269,7 @@ def run_round(
         if repair_routing.get("rollback") == "round_progression":
             _reset_round_progression_outputs(run_dir)
             manifest = _load_manifest(run_dir)
-            loop_result = _run_interactive_agent_loop(run_dir, manifest, root, run_claude, repair_context)
+            loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude, repair_context)
             story_input = agent_outputs.build_story_input(run_dir)
             requirements = _delivery_requirements(root)
             requirements["player_character_names"] = _player_character_names_from_story_input(story_input)

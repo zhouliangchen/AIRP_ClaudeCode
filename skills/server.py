@@ -41,6 +41,7 @@ DEFAULT_SETTINGS = {
     "wordCount": 600,
     "selfRepairMode": "limited",
     "allowSourceCodeSelfRepair": False,
+    "modelDebugMode": False,
 }
 
 os.chdir(str(ROOT))

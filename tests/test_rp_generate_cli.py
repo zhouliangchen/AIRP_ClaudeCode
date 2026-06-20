@@ -446,6 +446,41 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(trace["schema_version"], 2)
         self.assertTrue(any("round_deliver.py" in " ".join(command) for command in delivery_calls))
 
+    def test_run_round_model_debug_mode_records_every_model_call(self):
+        _write_json(self.styles_dir / "settings.json", {"modelDebugMode": True, "wordCount": 1})
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>I followed the noise toward the flickering alley light.</content>"),
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        def fake_run_command(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_run_command,
+        )
+
+        self.assertTrue(result["ok"])
+        debug_round = self.card / "debug" / "model_calls" / "round-000002"
+        self.assertTrue(debug_round.exists())
+        records = sorted(debug_round.glob("*.json"))
+        payloads = [json.loads(path.read_text(encoding="utf-8")) for path in records]
+        self.assertEqual([payload["agent_key"] for payload in payloads], ["gm", "player", "story", "critic"])
+        self.assertTrue(all(payload["raw_input"]["prompt"].startswith("You are the Claude Code general-purpose agent") for payload in payloads))
+        self.assertIn('"type": "system"', payloads[0]["raw_output"]["stdout"])
+        self.assertEqual(payloads[0]["raw_output"]["stderr"], "")
+        self.assertEqual(payloads[0]["raw_output"]["returncode"], 0)
+
+        index_path = self.card / "debug" / "model_calls" / "index.jsonl"
+        index_items = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([item["agent_key"] for item in index_items], ["gm", "player", "story", "critic"])
+
     def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))

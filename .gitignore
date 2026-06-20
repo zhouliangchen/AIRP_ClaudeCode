@@ -38,6 +38,8 @@ skills/styles/openings.json
 **/.player_inputs.jsonl
 **/.player_input_edits.jsonl
 **/.player_input_branches.jsonl
+debug/
+**/debug/
 
 # Lock files
 *.lock

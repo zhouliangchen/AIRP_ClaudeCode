@@ -4,8 +4,8 @@
   "person": "第二人称",
   "antiImpersonation": false,
   "bgNpc": true,
-  "charName": "良辰",
+  "charName": "",
   "wordCount": 4000,
-  "selfRepairMode": "limited",
+  "selfRepairMode": "full",
   "allowSourceCodeSelfRepair": false
 }

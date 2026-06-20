@@ -685,6 +685,13 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("s.selfRepairMode || 'limited'", html)
         self.assertIn("selfRepairMode: document.getElementById('set-self-repair-mode').value", html)
 
+    def test_frontend_exposes_model_debug_mode_setting(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="set-model-debug-mode"', html)
+        self.assertIn("s.modelDebugMode === true", html)
+        self.assertIn("modelDebugMode: document.getElementById('set-model-debug-mode').checked", html)
+
     def test_frontend_renders_schema_v2_progress_detail_panel(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
