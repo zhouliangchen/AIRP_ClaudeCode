@@ -33,6 +33,16 @@ def _load_response_parser():
     return module
 
 
+def _load_round_state():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("round_state", ROOT / "skills" / "round_state.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_server():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
@@ -331,6 +341,21 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(progress["stage"], "delivering")
         self.assertEqual(progress["label"], "正在交付到前端")
         self.assertEqual(progress["percent"], 85)
+
+    def test_progress_state_v2_round_trips_through_handler(self):
+        round_state = _load_round_state()
+        round_state.write_progress_state(
+            self.styles,
+            "delivery.delivering",
+            detail={"attempt": 1},
+        )
+
+        progress = self.handler.read_progress()
+
+        self.assertEqual(progress["schema_version"], 2)
+        self.assertEqual(progress["state"], "delivery.delivering")
+        self.assertEqual(progress["stage"], "delivery.delivering")
+        self.assertEqual(progress["detail"]["attempt"], 1)
 
     def test_blank_profile_derives_self_identity_from_authoritative_player_input(self):
         (self.card / "memory" / "characters" / "_self").mkdir(parents=True)
