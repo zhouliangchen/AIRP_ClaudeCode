@@ -262,6 +262,14 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(self.module._validate("gm", gm_payload)["agent"], "gm")
         self.assertEqual(self.module._validate("story", story_payload)["content"], "<content>ok</content>")
 
+    def test_progression_rollback_preserves_post_round_memory_jobs(self):
+        job_path = self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json"
+        _write_json(job_path, {"agent_id": "character:Ada"})
+
+        self.module._reset_round_progression_outputs(self.run_dir)
+
+        self.assertTrue(job_path.exists())
+
     def test_validate_accepts_subgm_wrapper_and_checks_thread_id(self):
         payload = {"subgm_output": _subgm_output("side_a")}
 

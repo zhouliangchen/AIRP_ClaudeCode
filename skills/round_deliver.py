@@ -361,6 +361,39 @@ def main():
         summary_text = re.sub(r"<[^>]+>", "", summary_match.group(1)).strip()[:200]
 
     agent_delivery = agent_outputs.mark_delivered(card_folder)
+    post_round_memory = {
+        "ok": True,
+        "status": "not_required",
+        "scheduled": [],
+        "ingested": [],
+        "missing": {},
+        "failed": {},
+    }
+    if agent_delivery.get("ok", False):
+        try:
+            current_run = agent_run.current_run_dir(card_folder)
+            if current_run is not None and (current_run / "story.input.json").exists():
+                schedule_result = agent_memory.schedule_post_round_memory_jobs(card_folder, current_run)
+                ingest_result = agent_memory.ingest_post_round_memory_jobs(card_folder, current_run)
+                post_round_memory = {
+                    "ok": bool(schedule_result.get("ok") and ingest_result.get("ok")),
+                    "status": ingest_result.get("status")
+                    or ("pending" if schedule_result.get("scheduled") else "not_required"),
+                    "scheduled": schedule_result.get("scheduled", []),
+                    "ingested": ingest_result.get("ingested", []),
+                    "missing": ingest_result.get("missing", {}),
+                    "failed": ingest_result.get("failed", {}),
+                }
+        except Exception as exc:
+            post_round_memory = {
+                "ok": False,
+                "status": "error",
+                "scheduled": [],
+                "ingested": [],
+                "missing": {},
+                "failed": {},
+                "error": str(exc),
+            }
     write_progress("complete", "回复已完成", percent=100)
 
     print(json.dumps({
@@ -373,6 +406,7 @@ def main():
         "agent_memory_updated": agent_memory_ok,
         "agent_memory_error": agent_memory_error,
         "agent_delivery": agent_delivery,
+        "post_round_memory": post_round_memory,
         "summary": summary_text
     }, ensure_ascii=False))
 

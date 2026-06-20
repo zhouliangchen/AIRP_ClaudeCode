@@ -660,6 +660,162 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(job_payload["actor_outputs"], actor_outputs["character:Ada"])
         self.assertNotIn("user_instruction_channel", json.dumps(job_payload, ensure_ascii=False))
 
+    def test_ingest_post_round_memory_jobs_marks_absent_jobs_not_required(self):
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "not_required")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["post_round_memory_jobs"]["status"], "not_required")
+
+    def test_ingest_post_round_memory_jobs_marks_empty_scheduled_not_required(self):
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": self.run_dir.name,
+                "post_round_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {},
+                    "failed": {},
+                },
+            },
+        )
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "not_required")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["post_round_memory_jobs"]["status"], "not_required")
+
+    def test_ingest_post_round_memory_jobs_writes_memory_and_marks_complete(self):
+        actor_outputs = {
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {
+                            "type": "memory_delta",
+                            "target": "self",
+                            "content": "I heard the archive shelf move.",
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+            ],
+        }
+        self._write_story_input(actor_outputs, [])
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+        _write_json(
+            self.run_dir / "post_round_memory_jobs" / "character_Ada.summary.json",
+            {
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "source": "self",
+                "visibility": "actor",
+                "long_term": {
+                    "self_understanding": ["I listen carefully when the archive changes."],
+                    "stable_beliefs": ["The archive shelves can reveal useful clues."],
+                    "relationship_models": ["The player notices when I react to small sounds."],
+                },
+                "key_memories": [
+                    {
+                        "content": "I heard the archive shelf move.",
+                        "importance": "high",
+                        "details": ["The movement came from inside the archive."],
+                    }
+                ],
+                "short_term": [
+                    {
+                        "content": "I am alert to sounds from the archive shelf.",
+                        "expires_after": "scene_end",
+                    }
+                ],
+                "goals": {
+                    "active": ["Find what moved on the archive shelf."],
+                    "paused": [],
+                    "resolved": [],
+                },
+            },
+        )
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["ingested"], ["character:Ada"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["post_round_memory_jobs"]["status"], "complete")
+        key_memories = (self.card / "memory" / "characters" / "Ada" / "key_memories.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("I heard the archive shelf move.", key_memories)
+
+    def test_ingest_post_round_memory_jobs_marks_degraded_on_hidden_marker_failure(self):
+        actor_outputs = {
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {
+                            "type": "memory_delta",
+                            "target": "self",
+                            "content": "I heard the archive shelf move.",
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+            ],
+        }
+        self._write_story_input(actor_outputs, [])
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+        summary = self._structured_memory_update(
+            "character:Ada",
+            character_name="Ada",
+            self_understanding="world_truth says I know too much.",
+            active_goal="Stay near the archive shelf.",
+        )
+        _write_json(self.run_dir / "post_round_memory_jobs" / "character_Ada.summary.json", summary)
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "degraded_memory_state")
+        self.assertIn("character:Ada", result["failed"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["post_round_memory_jobs"]["status"], "degraded_memory_state")
+        self.assertIn("character:Ada", manifest["post_round_memory_jobs"]["failed"])
+
+    def test_ingest_post_round_memory_jobs_reports_pending_status_for_missing_output(self):
+        actor_outputs = {
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "stop_reason": "continue",
+                }
+            ],
+        }
+        self._write_story_input(actor_outputs, [])
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(
+            result["missing"],
+            {"character:Ada": "post_round_memory_jobs/character_Ada.summary.json"},
+        )
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["post_round_memory_jobs"]["status"], "pending")
+
     def test_schedule_post_round_memory_jobs_filters_visible_events_per_actor(self):
         actor_outputs = {
             "player": [

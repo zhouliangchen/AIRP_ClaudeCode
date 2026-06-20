@@ -531,6 +531,142 @@ def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path
     return {"ok": True, "scheduled": scheduled_agents}
 
 
+def _update_post_round_job_status(root: str | Path, status: str, failed: Dict[str, str] | None = None) -> Dict[str, Any]:
+    """Update the post-round memory job manifest status without touching prose artifacts."""
+    run_dir = Path(root)
+    manifest_path = run_dir / "manifest.json"
+    manifest = _read_json(manifest_path, {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    jobs = manifest.get("post_round_memory_jobs", {})
+    if not isinstance(jobs, dict):
+        jobs = {}
+    jobs["status"] = status
+    if failed is not None:
+        jobs["failed"] = dict(failed)
+    else:
+        jobs.setdefault("failed", {})
+    manifest["post_round_memory_jobs"] = jobs
+    _write_json(manifest_path, manifest)
+    return jobs
+
+
+def _post_round_output_path(root: Path, relative_path: Any) -> Path:
+    path = Path(str(relative_path or ""))
+    return path if path.is_absolute() else root / path
+
+
+def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
+    """Persist completed `post_round_memory_jobs/*.summary.json` outputs into actor memory."""
+    card = Path(card_folder)
+    root = Path(run_dir)
+    manifest = _read_json(root / "manifest.json", {})
+    if not isinstance(manifest, dict):
+        _update_post_round_job_status(root, "not_required", failed={})
+        return {
+            "ok": True,
+            "status": "not_required",
+            "round_id": root.name,
+            "ingested": [],
+            "missing": {},
+            "failed": {},
+        }
+
+    jobs = manifest.get("post_round_memory_jobs")
+    if not isinstance(jobs, dict):
+        _update_post_round_job_status(root, "not_required", failed={})
+        return {
+            "ok": True,
+            "status": "not_required",
+            "round_id": root.name,
+            "ingested": [],
+            "missing": {},
+            "failed": {},
+        }
+
+    scheduled_raw = jobs.get("scheduled")
+    if not isinstance(scheduled_raw, dict) or not scheduled_raw:
+        _update_post_round_job_status(root, "not_required", failed={})
+        return {
+            "ok": True,
+            "status": "not_required",
+            "round_id": root.name,
+            "ingested": [],
+            "missing": {},
+            "failed": {},
+        }
+
+    scheduled: Dict[str, tuple[Path, str]] = {}
+    failed: Dict[str, str] = {}
+    for raw_agent_id, entry in scheduled_raw.items():
+        agent_id = str(raw_agent_id or "").strip()
+        if not agent_id:
+            continue
+        if not isinstance(entry, dict):
+            failed[agent_id] = "post_round_memory_jobs scheduled entry must be an object"
+            continue
+        output_rel = entry.get("output")
+        if not isinstance(output_rel, str) or not output_rel.strip():
+            failed[agent_id] = "post_round_memory_jobs scheduled output path is required"
+            continue
+        scheduled[agent_id] = (_post_round_output_path(root, output_rel), output_rel)
+
+    ingested: list[str] = []
+    missing: Dict[str, str] = {}
+    for expected_agent_id, (path, output_rel) in sorted(
+        scheduled.items(),
+        key=lambda item: _summary_sort_key((item[0], item[1][0])),
+    ):
+        if not path.exists():
+            missing[expected_agent_id] = output_rel
+            continue
+        try:
+            payload = _read_json(path, {})
+            if not isinstance(payload, dict):
+                raise MemoryIngestionError(f"{path.name}: summary payload must be an object")
+            update = _validate_memory_summary(payload, path)
+            agent_id = update["agent_id"]
+            if agent_id != expected_agent_id:
+                raise MemoryIngestionError(
+                    f"{path.name}: agent_id mismatch, expected {expected_agent_id}, got {agent_id}"
+                )
+            _validate_character_name_matches_agent_id(agent_id, update, path)
+            ingested.extend(_apply_memory_summary_updates(card, [update]))
+        except Exception as exc:
+            failed[expected_agent_id] = str(exc)
+
+    if failed:
+        _update_post_round_job_status(root, "degraded_memory_state", failed=failed)
+        return {
+            "ok": False,
+            "status": "degraded_memory_state",
+            "round_id": root.name,
+            "ingested": ingested,
+            "missing": missing,
+            "failed": failed,
+        }
+    if missing:
+        _update_post_round_job_status(root, "pending", failed={})
+        return {
+            "ok": False,
+            "status": "pending",
+            "round_id": root.name,
+            "ingested": ingested,
+            "missing": missing,
+            "failed": {},
+        }
+
+    _update_post_round_job_status(root, "complete", failed={})
+    return {
+        "ok": True,
+        "status": "complete",
+        "round_id": root.name,
+        "ingested": ingested,
+        "missing": {},
+        "failed": {},
+    }
+
+
 def previous_post_round_memory_state(card_folder: str | Path) -> Dict[str, Any]:
     """Return the latest pending/degraded post-round memory state from previous runs."""
     runs_root = Path(card_folder) / ".agent_runs"
@@ -753,6 +889,41 @@ def _summary_sort_key(item: tuple[str, Path]) -> tuple[int, str]:
     return (0 if agent_id == "player" else 1, agent_id)
 
 
+def _apply_memory_summary_updates(card: Path, records: list[Dict[str, Any]]) -> list[str]:
+    pending_writes: list[tuple[Path, str, Any]] = []
+    pending_deletes: list[Path] = []
+    ingested: list[str] = []
+    for update in records:
+        agent_id = update["agent_id"]
+        _actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
+        pending_writes.extend(
+            [
+                (memory_dir / "long_term.md", "text", agent_memory_model.render_long_term_markdown(update)),
+                (memory_dir / "key_memories.md", "text", agent_memory_model.render_key_memories_markdown(update)),
+                (memory_dir / "short_term.md", "text", agent_memory_model.render_short_term_markdown(update)),
+                (memory_dir / "goals.json", "json", agent_memory_model.render_goals_json(update)),
+            ]
+        )
+        pending_deletes.append(recent_path)
+        ingested.append(agent_id)
+
+    snapshot_paths = [path for path, _kind, _content in pending_writes]
+    snapshot_paths.extend(pending_deletes)
+    snapshots = _snapshot_files(snapshot_paths)
+    try:
+        for path, kind, content in pending_writes:
+            if kind == "json":
+                _write_json(path, content)
+            else:
+                _write_text(path, content)
+        for path in pending_deletes:
+            _delete_file(path)
+    except Exception:
+        _restore_files(snapshots)
+        raise
+    return ingested
+
+
 def ingest_memory_summaries(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
     """Persist actor self-summary artifacts from `memory_summaries/*.summary.json`."""
     card = Path(card_folder)
@@ -791,37 +962,7 @@ def ingest_memory_summaries(card_folder: str | Path, run_dir: str | Path) -> Dic
         _validate_character_name_matches_agent_id(agent_id, update, path)
         records.append(update)
 
-    pending_writes: list[tuple[Path, str, Any]] = []
-    pending_deletes: list[Path] = []
-    ingested: list[str] = []
-    for update in records:
-        agent_id = update["agent_id"]
-        _actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
-        pending_writes.extend(
-            [
-                (memory_dir / "long_term.md", "text", agent_memory_model.render_long_term_markdown(update)),
-                (memory_dir / "key_memories.md", "text", agent_memory_model.render_key_memories_markdown(update)),
-                (memory_dir / "short_term.md", "text", agent_memory_model.render_short_term_markdown(update)),
-                (memory_dir / "goals.json", "json", agent_memory_model.render_goals_json(update)),
-            ]
-        )
-        pending_deletes.append(recent_path)
-        ingested.append(agent_id)
-
-    snapshot_paths = [path for path, _kind, _content in pending_writes]
-    snapshot_paths.extend(pending_deletes)
-    snapshots = _snapshot_files(snapshot_paths)
-    try:
-        for path, kind, content in pending_writes:
-            if kind == "json":
-                _write_json(path, content)
-            else:
-                _write_text(path, content)
-        for path in pending_deletes:
-            _delete_file(path)
-    except Exception:
-        _restore_files(snapshots)
-        raise
+    ingested = _apply_memory_summary_updates(card, records)
 
     return {"ok": True, "round_id": root.name, "ingested": ingested}
 

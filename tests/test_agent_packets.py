@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -432,6 +433,88 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(payload["action"], "already_done")
         self.assertEqual(payload["agent_delivery"]["mode"], "already_delivered")
+
+    def test_round_deliver_reports_post_round_memory_status(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        (self.styles_dir / "settings.json").write_text(json.dumps({"wordCount": 1}), encoding="utf-8")
+        (self.styles_dir / "response.txt").write_text("<content>足够长</content>", encoding="utf-8")
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+        _write_json(
+            run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "critic_passed",
+                "expected_outputs": {},
+            },
+        )
+        _write_json(
+            run_dir / "story.input.json",
+            {
+                "round_id": "round-000001",
+                "loop_outputs": {"actors": {}, "gm": {"outputs": []}},
+                "side_threads": {"threads": []},
+                "memory_deltas": {"actors": {}, "world": []},
+                "interaction_trace": {"visible_events": []},
+            },
+        )
+
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+        original_subprocess_run = self.round_deliver.subprocess.run
+        token_stats = importlib.import_module("token_stats")
+        original_locate_transcript = token_stats.locate_transcript
+        original_load_checkpoint = token_stats.load_checkpoint
+        original_compute_delta = token_stats.compute_delta
+        original_read_usage_since = token_stats.read_usage_since
+        original_save_checkpoint = token_stats.save_checkpoint
+
+        self.round_deliver.agent_outputs.prepare_delivery = lambda card_folder, styles_dir: {
+            "ok": True,
+            "mode": "agent_run",
+            "run_dir": str(run_dir),
+        }
+        self.round_deliver.subprocess.run = lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        )
+        try:
+            token_stats.locate_transcript = lambda: None
+            token_stats.load_checkpoint = lambda card_folder: {}
+            token_stats.read_usage_since = lambda transcript_path, byte_offset=0: []
+            token_stats.compute_delta = lambda entries: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read": 0,
+                "cache_creation": 0,
+                "request_count": 0,
+                "cache_hit_pct": 0.0,
+            }
+            token_stats.save_checkpoint = lambda *args, **kwargs: None
+
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+            finally:
+                sys.argv = old_argv
+        finally:
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+            self.round_deliver.subprocess.run = original_subprocess_run
+            token_stats.locate_transcript = original_locate_transcript
+            token_stats.load_checkpoint = original_load_checkpoint
+            token_stats.compute_delta = original_compute_delta
+            token_stats.read_usage_since = original_read_usage_since
+            token_stats.save_checkpoint = original_save_checkpoint
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(payload["action"], "done")
+        self.assertEqual(payload["post_round_memory"]["status"], "not_required")
+        self.assertTrue(any(args and args[0] == "complete" for args, _ in progress_calls))
 
 
 class AgentRunTest(unittest.TestCase):

@@ -256,6 +256,40 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertIn("the archive is a disguised moon base", (self.card / "memory" / "world_delta.md").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
 
+    def test_post_round_memory_failure_does_not_delete_delivered_response(self):
+        delivered_response = self.card / "skills" / "styles" / "response.txt"
+        delivered_response.parent.mkdir(parents=True)
+        delivered_response.write_text("Delivered prose remains visible.", encoding="utf-8")
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        _write_json(
+            run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "delivered",
+                "post_round_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {
+                        "character:Ada": {
+                            "output": "post_round_memory_jobs/character_Ada.summary.json"
+                        }
+                    },
+                    "failed": {},
+                },
+            },
+        )
+        summary = _structured_memory_summary_payload(
+            "character:Ada",
+            character_name="Ada",
+            active_goal="Watch the archive shelf.",
+        )
+        summary["long_term"]["self_understanding"] = ["world_truth says I know too much."]
+        _write_json(run_dir / "post_round_memory_jobs" / "character_Ada.summary.json", summary)
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, run_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(delivered_response.read_text(encoding="utf-8"), "Delivered prose remains visible.")
+
     def test_control_plane_fixture_round_with_repair_trace_and_memory_summary(self):
         scenario = json.loads(FIXTURE.read_text(encoding="utf-8"))
         role_text = "I open the archive door."
