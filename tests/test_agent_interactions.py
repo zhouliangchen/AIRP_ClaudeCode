@@ -102,6 +102,43 @@ class AgentInteractionTraceTest(unittest.TestCase):
             "causal_links": ["event-0"],
         })
 
+    def test_summary_preserves_structured_dialogue_transfer_metadata(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada", "character:SuLi"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="gm",
+            visibility="world_visible",
+            event_type="dialogue_transfer",
+            content="Did you hear that?",
+            target="character:SuLi",
+            source_call_id="call-character-Ada-1",
+            public_metadata={
+                "speaker": "character:Ada",
+                "target": "character:SuLi",
+                "exact_visible_words": "Did you hear that?",
+                "delivery_channel": "whisper",
+                "visible_tone_or_action": "Ada leans toward SuLi.",
+                "source_call_id": "call-character-Ada-1",
+            },
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        self.assertEqual(
+            summary["visible_events"][0]["dialogue_transfer"],
+            {
+                "speaker": "character:Ada",
+                "target": "character:SuLi",
+                "exact_visible_words": "Did you hear that?",
+                "delivery_channel": "whisper",
+                "visible_tone_or_action": "Ada leans toward SuLi.",
+                "source_call_id": "call-character-Ada-1",
+            },
+        )
+
     def test_summary_preserves_visibility_metadata_for_world_visible_events(self):
         self.agent_interactions.init_trace(
             self.run_dir,

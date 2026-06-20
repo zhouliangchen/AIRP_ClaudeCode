@@ -322,15 +322,22 @@ def _dialogue_transfer_call(
     generated_call_counts: dict[str, int],
     used_call_ids: set[str],
 ) -> dict:
-    content = _event_content(event)
+    transfer = _dialogue_transfer_metadata(actor_id, target, event, call_id)
+    prompt = (
+        f'{actor_id} says to you by {transfer["delivery_channel"]}: '
+        f'"{transfer["exact_visible_words"]}".'
+    )
+    if transfer.get("visible_tone_or_action"):
+        prompt = f"{prompt} Visible action: {transfer['visible_tone_or_action']}"
     visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
     return {
         "call_id": _next_unique_actor_call_id(target, generated_call_counts, used_call_ids),
         "actor_id": target,
-        "prompt": f"{actor_id} says to you: {content}",
+        "prompt": prompt,
         "reason": "Visible dialogue transfer.",
         "source_call_id": call_id,
         "visibility_basis": visibility_basis,
+        "metadata": {"dialogue_transfer": transfer},
     }
 
 
@@ -368,20 +375,38 @@ def _dialogue_transfer_visibility_basis(actor_id: str, target: str) -> dict:
     }
 
 
+def _dialogue_transfer_metadata(actor_id: str, target: str, event: dict, source_call_id: str) -> dict:
+    metadata = _dict(event.get("metadata"))
+    exact_visible_words = str(metadata.get("exact_visible_words") or _event_content(event)).strip()
+    delivery_channel = str(metadata.get("delivery_channel") or "spoken").strip() or "spoken"
+    transfer = {
+        "speaker": actor_id,
+        "target": target,
+        "exact_visible_words": exact_visible_words,
+        "delivery_channel": delivery_channel,
+        "source_call_id": source_call_id,
+    }
+    visible_tone_or_action = str(metadata.get("visible_tone_or_action") or "").strip()
+    if visible_tone_or_action:
+        transfer["visible_tone_or_action"] = visible_tone_or_action
+    return transfer
+
+
 def _record_dialogue_transfer(
     run_dir: Path,
     actor_id: str,
     target: str,
-    content: str,
+    event: dict,
     source_call_id: str,
 ) -> None:
+    transfer = _dialogue_transfer_metadata(actor_id, target, event, source_call_id)
     visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
     agent_interactions.append_event(
         run_dir,
         actor="gm",
         visibility="world_visible",
         event_type="dialogue_transfer",
-        content=content,
+        content=transfer["exact_visible_words"],
         target=target,
         source_call_id=source_call_id,
         visibility_metadata={
@@ -391,6 +416,7 @@ def _record_dialogue_transfer(
             "sensory_channels": ["auditory"],
             "visibility_basis": visibility_basis,
         },
+        public_metadata=transfer,
     )
 
 
@@ -728,7 +754,7 @@ def _process_actor_output(
     actor_output: dict,
     call_id: str,
     registered_actor_targets: set[str],
-    seen_transfers: set[tuple[str, str, str]],
+    seen_transfers: set[tuple[str, str, str, str]],
     generated_transfer_limit: int,
     generated_transfers_used: int,
     generated_call_counts: dict[str, int],
@@ -749,8 +775,14 @@ def _process_actor_output(
             and target in registered_actor_targets
             and target != actor_id
         ):
-            _record_dialogue_transfer(run_dir, actor_id, target, content, call_id)
-            transfer_key = (actor_id, target, content)
+            transfer = _dialogue_transfer_metadata(actor_id, target, event, call_id)
+            _record_dialogue_transfer(run_dir, actor_id, target, event, call_id)
+            transfer_key = (
+                transfer["speaker"],
+                transfer["target"],
+                transfer["exact_visible_words"],
+                transfer["delivery_channel"],
+            )
             if transfer_key not in seen_transfers:
                 seen_transfers.add(transfer_key)
                 if generated_transfers_used < generated_transfer_limit:
@@ -951,7 +983,7 @@ def run_interactive_loop(
     called_actors: list[str] = []
     generated_call_counts: dict[str, int] = {}
     used_actor_call_ids: set[str] = set()
-    seen_transfers: set[tuple[str, str, str]] = set()
+    seen_transfers: set[tuple[str, str, str, str]] = set()
     stop_reason = "continue"
     decision_point: Any = None
     generated_transfers_used = 0

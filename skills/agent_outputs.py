@@ -21,6 +21,14 @@ MAX_CRITIC_RETRIES = 2
 ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
 FORBIDDEN_ACTOR_MARKERS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
+DIALOGUE_TRANSFER_TRACE_FIELDS = {
+    "speaker",
+    "target",
+    "exact_visible_words",
+    "delivery_channel",
+    "visible_tone_or_action",
+    "source_call_id",
+}
 
 
 class AgentOutputError(RuntimeError):
@@ -170,6 +178,31 @@ def _sanitize_trace_summary_for_story_input(
         if field in sanitized:
             sanitized[field] = _sanitize_side_summary_value(sanitized[field], hidden_phrases)
     return sanitized
+
+
+def _validate_dialogue_transfer_trace_metadata(
+    raw_trace: Dict[str, Any],
+    hidden_phrases: list[str],
+    context: str,
+) -> None:
+    events = raw_trace.get("events", [])
+    if not isinstance(events, list):
+        return
+    for event_index, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("type") != "dialogue_transfer":
+            continue
+        metadata = event.get("dialogue_transfer")
+        if metadata is None:
+            continue
+        metadata_context = f"{context}.events[{event_index}].dialogue_transfer"
+        if not isinstance(metadata, dict):
+            raise AgentOutputError(f"{metadata_context}: must be an object")
+        for key, value in metadata.items():
+            field = str(key)
+            field_context = f"{metadata_context}.{field}"
+            if field not in DIALOGUE_TRANSFER_TRACE_FIELDS:
+                raise AgentOutputError(f"{field_context}: unsupported dialogue_transfer metadata field")
+            _reject_actor_facing_gm_value(value, field_context, hidden_phrases)
 
 
 def _validate_subgm_output_visibility(
@@ -616,6 +649,11 @@ def _load_side_thread_outputs(root: Path, input_payload: dict) -> dict:
         _validate_actor_output_visibility(side_dir / "actor.outputs.json", actor_outputs, hidden_phrases)
 
         raw_trace, trace_summary = _validate_trace_artifacts(side_dir)
+        _validate_dialogue_transfer_trace_metadata(
+            raw_trace,
+            hidden_phrases,
+            f"{side_dir / 'interaction.trace.json'}",
+        )
         trace_summary = _sanitize_trace_summary_for_story_input(
             trace_summary,
             hidden_phrases,
@@ -723,6 +761,11 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     input_payload = _read_json_required(root / "input.json")
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     raw_trace, trace_summary = _validate_trace_artifacts(root)
+    _validate_dialogue_transfer_trace_metadata(
+        raw_trace,
+        hidden_phrases,
+        f"{root / 'interaction.trace.json'}",
+    )
     trace_summary = _sanitize_trace_summary_for_story_input(
         trace_summary,
         hidden_phrases,

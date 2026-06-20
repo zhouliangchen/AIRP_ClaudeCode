@@ -11,7 +11,7 @@ import agent_visibility
 
 
 ADDRESS_MODE = "second_person_gm_narration"
-SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?")
+SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?[\"'”’)\]）】》」』]*")
 
 PROJECTION_FORBIDDEN_WORLD_KEYS = {
     "gm_only_hidden_settings",

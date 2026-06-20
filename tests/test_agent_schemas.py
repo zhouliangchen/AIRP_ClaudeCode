@@ -879,6 +879,60 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["events"][1]["target"], "player")
         self.assertEqual(normalized["stop_reason"], "continue")
 
+    def test_validate_actor_output_normalizes_structured_dialogue_metadata(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "character:SuLi",
+                    "content": "Did you hear that?",
+                    "metadata": {
+                        "exact_visible_words": "Did you hear that?",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "Ada lowers her voice.",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(payload)
+
+        self.assertEqual(
+            normalized["events"][0]["metadata"],
+            {
+                "exact_visible_words": "Did you hear that?",
+                "delivery_channel": "spoken",
+                "visible_tone_or_action": "Ada lowers her voice.",
+            },
+        )
+
+    def test_validate_actor_output_rejects_hidden_dialogue_metadata(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "character:SuLi",
+                    "content": "Did you hear that?",
+                    "metadata": {
+                        "exact_visible_words": "Did you hear that?",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "world_truth says Ada is baiting SuLi.",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_tone_or_action"):
+            self.agent_schemas.validate_actor_output(payload)
+
     def test_validate_actor_output_rejects_character_agent_with_player_id(self):
         payload = {
             "agent": "character",

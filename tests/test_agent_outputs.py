@@ -439,6 +439,29 @@ class AgentOutputsTest(unittest.TestCase):
                     sentinel,
                 )
 
+    def test_build_story_input_rejects_dialogue_transfer_hidden_metadata(self):
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        trace["events"].append({
+            "actor": "gm",
+            "visibility": "world_visible",
+            "type": "dialogue_transfer",
+            "content": "Did you hear that?",
+            "target": "character:SuLi",
+            "source_call_id": "call-character-Ada-1",
+            "dialogue_transfer": {
+                "speaker": "character:Ada",
+                "target": "character:SuLi",
+                "exact_visible_words": "Did you hear that?",
+                "delivery_channel": "whisper",
+                "visible_tone_or_action": "world_truth hidden motive",
+                "source_call_id": "call-character-Ada-1",
+            },
+        })
+        _write_json(self.run_dir / "interaction.trace.json", trace)
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "dialogue_transfer"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
     def test_build_story_input_sanitizes_main_trace_decision_point_and_stop_reason_hidden_phrases(self):
         _write_json(
             self.run_dir / "input.json",

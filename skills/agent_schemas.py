@@ -44,6 +44,7 @@ ACTOR_EVENT_TYPES = {
 }
 
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
+DIALOGUE_METADATA_KEYS = {"exact_visible_words", "delivery_channel", "visible_tone_or_action"}
 
 GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
 PERCEPTION_RESPONSE_STATUSES = {"answered", "closed"}
@@ -228,6 +229,37 @@ def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
             raise ValidationError(f"{_path(path, key)} is a legacy actor output key")
 
 
+def _normalize_dialogue_metadata(metadata: Dict[str, Any], path: str) -> Dict[str, Any]:
+    for key in sorted(metadata):
+        if key not in DIALOGUE_METADATA_KEYS:
+            raise ValidationError(f"{_path(path, str(key))} is not an allowed dialogue metadata field")
+    _reject_forbidden_keys(metadata, path)
+
+    normalized: Dict[str, Any] = {}
+    if "exact_visible_words" in metadata:
+        value = metadata["exact_visible_words"]
+        if not isinstance(value, str):
+            raise ValidationError(f"{_path(path, 'exact_visible_words')} must be a string")
+        exact_visible_words = value.strip()
+        if exact_visible_words:
+            normalized["exact_visible_words"] = exact_visible_words
+
+    delivery_channel = metadata.get("delivery_channel", "spoken")
+    if not isinstance(delivery_channel, str):
+        raise ValidationError(f"{_path(path, 'delivery_channel')} must be a string")
+    normalized["delivery_channel"] = delivery_channel.strip() or "spoken"
+
+    if "visible_tone_or_action" in metadata:
+        value = metadata["visible_tone_or_action"]
+        if not isinstance(value, str):
+            raise ValidationError(f"{_path(path, 'visible_tone_or_action')} must be a string")
+        visible_tone_or_action = value.strip()
+        if visible_tone_or_action:
+            normalized["visible_tone_or_action"] = visible_tone_or_action
+
+    return normalized
+
+
 def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
     for key in sorted(data):
@@ -236,11 +268,14 @@ def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     event_type = _require_str(data, "type", path)
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
+    metadata = _optional_dict(data, "metadata", path)
+    if event_type == "dialogue":
+        metadata = _normalize_dialogue_metadata(metadata, _path(path, "metadata"))
     return {
         "type": event_type,
         "target": _optional_str(data, "target", "", path),
         "content": _require_str(data, "content", path),
-        "metadata": _optional_dict(data, "metadata", path),
+        "metadata": metadata,
     }
 
 

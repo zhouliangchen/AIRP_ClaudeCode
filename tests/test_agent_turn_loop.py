@@ -940,12 +940,113 @@ class AgentTurnLoopTest(unittest.TestCase):
             suli_packet = packets_by_actor["character:SuLi"][0]
             self.assertEqual(
                 suli_packet["gm_prompt"],
-                "character:Ada says to you: SuLi, check the window.",
+                'character:Ada says to you by spoken: "SuLi, check the window."',
             )
             packet_basis = suli_packet["gm_visibility_basis"]
             self.assertEqual(packet_basis.get("mode"), "private_dialogue")
             self.assertEqual(packet_basis.get("source_actor"), "character:Ada")
             self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
+
+    def test_structured_dialogue_transfer_preserves_visible_words_and_tone_only(self):
+        self.register_characters("Ada", "SuLi")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada leans close to SuLi."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You can warn SuLi about the sound.",
+                        "reason": "Ada can directly address SuLi.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{
+                    "type": "dialogue",
+                    "target": "character:SuLi",
+                    "content": "Did you hear that?",
+                    "metadata": {
+                        "exact_visible_words": "Did you hear that?",
+                        "delivery_channel": "whisper",
+                        "visible_tone_or_action": "Ada leans toward SuLi.",
+                        "private_intent": "world_truth bait",
+                    },
+                }],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "private_intent"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+    def test_structured_dialogue_transfer_reaches_target_packet(self):
+        self.register_characters("Ada", "SuLi")
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada leans close to SuLi."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You can warn SuLi about the sound.",
+                        "reason": "Ada can directly address SuLi.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            actor_packets.append((agent_key, json_copy(packet)))
+            if agent_key == "character:Ada":
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{
+                        "type": "dialogue",
+                        "target": "character:SuLi",
+                        "content": "Ada says something else internally.",
+                        "metadata": {
+                            "exact_visible_words": "Did you hear that?",
+                            "delivery_channel": "whisper",
+                            "visible_tone_or_action": "Ada leans toward SuLi.",
+                        },
+                    }],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I listen for the sound."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:SuLi"])
+        suli_packets = [packet for agent_key, packet in actor_packets if agent_key == "character:SuLi"]
+        self.assertEqual(len(suli_packets), 1)
+        self.assertIn(
+            'character:Ada says to you by whisper: "Did you hear that?"',
+            suli_packets[0]["gm_prompt"],
+        )
+        self.assertIn("Ada leans toward SuLi.", suli_packets[0]["gm_prompt"])
 
     def test_actor_call_prompt_redacts_hidden_phrase_without_marker_words(self):
         self.agent_run.write_json(self.run_dir / "input.json", {
