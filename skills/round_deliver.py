@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import agent_lifecycle
 import agent_memory
 import agent_outputs
 import agent_run
@@ -316,6 +317,19 @@ def main():
                 "failed": {},
                 "error": str(exc),
             }
+
+    lifecycle_cleanup = {"ok": True, "status": "not_required"}
+    try:
+        current_run = agent_run.current_run_dir(card_folder)
+        if current_run is not None:
+            write_progress("agent_lifecycle.cleanup", "正在关闭本轮代理活动", percent=98)
+            lifecycle_cleanup = agent_lifecycle.cleanup_round_agents(
+                card_folder,
+                current_run,
+                reason="delivered",
+            )
+    except Exception as exc:
+        lifecycle_cleanup = {"ok": False, "status": "error", "error": str(exc)}
     write_progress("complete", "回复已完成", percent=100)
 
     print(json.dumps({
@@ -329,6 +343,7 @@ def main():
         "agent_memory_error": agent_memory_error,
         "agent_delivery": agent_delivery,
         "post_round_memory": post_round_memory,
+        "agent_lifecycle_cleanup": lifecycle_cleanup,
         "summary": summary_text
     }, ensure_ascii=False))
 

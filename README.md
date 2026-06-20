@@ -99,6 +99,8 @@ subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。
 
 交付成功后，`round_deliver.py` 会在 `manifest.post_round_memory_jobs` 下为本轮实际参与的 player/character actor 记录回合后记忆任务，并生成 `post_round_memory_jobs/*.job.json` 与 `prompts/post_round_memory/*.prompt.md`。这些任务只包含该 actor 自己的输出、actor 可见交互、近期记忆和目标；没有需要整理的 actor 时会标记 `not_required`；已完成的 `*.summary.json` 会按同一结构化 actor 记忆格式写入并标记 `complete`；缺失输出保持 `pending`，校验失败标记为 `degraded_memory_state`，且不会回滚或删除已交付的 `response.txt`。下一轮会把降级记忆状态显式暴露给上下文准备流程，而不是静默忽略。
 
+回合后记忆处理结束后，`round_deliver.py` 会执行 `agent_lifecycle.cleanup`。该步骤只做文件级清理：把仍处于 `running`、`merging`、`needs_gm`、`blocked` 或 `max_steps` 的 side thread 标记为 `paused`，写入恢复提示并释放角色占用；`completed` 与 `closed` 支线保持不变。清理结果记录在本轮 `manifest.agent_lifecycle_cleanup` 和最终交付 JSON 中，不会终止系统进程，也不会删除已有支线产物。
+
 结构化 actor 记忆摘要只允许更新 `memory/player/` 或 `memory/characters/<name>/` 下的 `long_term.md`、`key_memories.md`、`short_term.md` 和 `goals.json`。`recent.md` 是回合内增量的暂存来源，成功整理后会被消费；actor 记忆更新必须使用 `source: self` 与 `visibility: actor`，不得写入角色档案字段或隐藏标记。
 
 ## 自我修复配置
