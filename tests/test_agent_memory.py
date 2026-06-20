@@ -35,7 +35,28 @@ class AgentMemoryTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _write_story_input(self):
+    def _write_story_input(self, actor_outputs=None, trace_visible_events=None):
+        if actor_outputs is not None:
+            _write_json(
+                self.run_dir / "manifest.json",
+                {
+                    "round_id": self.run_dir.name,
+                    "stage": "delivered",
+                    "expected_outputs": {},
+                },
+            )
+            _write_json(
+                self.run_dir / "story.input.json",
+                {
+                    "round_id": self.run_dir.name,
+                    "loop_outputs": {"actors": actor_outputs, "gm": {"outputs": []}},
+                    "side_threads": {"threads": []},
+                    "memory_deltas": {"actors": {}, "world": []},
+                    "interaction_trace": {"visible_events": trace_visible_events or []},
+                },
+            )
+            return
+
         _write_json(
             self.run_dir / "story.input.json",
             {
@@ -580,6 +601,336 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertFalse(self.agent_memory.memory_summary_due("round-000005"))
         self.assertTrue(self.agent_memory.memory_summary_due("round-000006"))
         self.assertFalse(self.agent_memory.memory_summary_due("opening"))
+
+    def test_schedule_post_round_memory_jobs_only_participating_actors(self):
+        actor_outputs = {
+            "player": [
+                {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [
+                        {
+                            "type": "memory_delta",
+                            "content": "I opened the archive door.",
+                            "target": "self",
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+            ],
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {
+                            "type": "dialogue",
+                            "target": "player",
+                            "content": "Stay close.",
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+            ],
+            "character:Unseen": [],
+        }
+        trace_visible_events = [
+            {
+                "type": "dialogue",
+                "source_actor": "character:Ada",
+                "target_actor": "player",
+                "content": "Stay close.",
+            }
+        ]
+        self._write_story_input(actor_outputs, trace_visible_events)
+
+        result = self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["scheduled"], ["character:Ada", "player"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        jobs = manifest["post_round_memory_jobs"]
+        self.assertEqual(jobs["status"], "pending")
+        self.assertIn("character:Ada", jobs["scheduled"])
+        job_path = self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json"
+        self.assertTrue(job_path.exists())
+        job_payload = json.loads(job_path.read_text(encoding="utf-8"))
+        self.assertEqual(job_payload["agent_id"], "character:Ada")
+        self.assertEqual(job_payload["actor_outputs"], actor_outputs["character:Ada"])
+        self.assertNotIn("user_instruction_channel", json.dumps(job_payload, ensure_ascii=False))
+
+    def test_schedule_post_round_memory_jobs_filters_visible_events_per_actor(self):
+        actor_outputs = {
+            "player": [
+                {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "action", "content": "I hold the door."}],
+                    "stop_reason": "continue",
+                }
+            ],
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "stop_reason": "continue",
+                }
+            ],
+            "character:SuLi": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:SuLi",
+                    "character_name": "SuLi",
+                    "events": [{"type": "action", "content": "I check the stairs."}],
+                    "stop_reason": "continue",
+                }
+            ],
+        }
+        trace_visible_events = [
+            {
+                "id": "ada-self",
+                "type": "action",
+                "actor": "character:Ada",
+                "content": "Ada lifts the lamp.",
+            },
+            {
+                "id": "target-ada",
+                "type": "dialogue",
+                "target": "character:Ada",
+                "content": "Ada, stay close.",
+            },
+            {
+                "id": "visible-to-ada",
+                "type": "perception",
+                "visible_to": ["character:Ada"],
+                "content": "The lamp flickers near Ada.",
+            },
+            {
+                "id": "metadata-visible-to-ada",
+                "type": "perception",
+                "visibility_metadata": {"visible_to": ["character:Ada"]},
+                "content": "Ada hears a click.",
+            },
+            {
+                "id": "dialogue-transfer-ada",
+                "type": "dialogue_transfer",
+                "speaker": "character:Ada",
+                "target": "player",
+                "content": "Stay close.",
+            },
+            {
+                "id": "custom-action-ada",
+                "type": "custom_action",
+                "actor_id": "character:Ada",
+                "target": "player",
+                "content": "Ada blocks the threshold.",
+            },
+            {
+                "id": "public-top-level-all",
+                "type": "scene",
+                "visible_to": ["all"],
+                "content": "Dust falls across the public hallway.",
+            },
+            {
+                "id": "public-basis-all",
+                "type": "scene",
+                "visibility_basis": {"mode": "public", "visible_to": ["all"]},
+                "content": "Everyone hears the archive bell.",
+            },
+            {
+                "id": "public-metadata-all",
+                "type": "scene",
+                "visibility_metadata": {"visible_to": ["all"]},
+                "content": "The public lamp flares.",
+            },
+            {
+                "id": "public-mode",
+                "type": "scene",
+                "visibility_basis": {"mode": "public"},
+                "content": "The corridor becomes visibly brighter.",
+            },
+            {
+                "id": "suli-only",
+                "type": "perception",
+                "actor": "character:SuLi",
+                "target": "character:SuLi",
+                "visible_to": ["character:SuLi"],
+                "content": "SuLi notices dust upstairs.",
+            },
+        ]
+        self._write_story_input(actor_outputs, trace_visible_events)
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        ada_job = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        event_ids = [event.get("id") for event in ada_job["visible_events"]]
+        self.assertEqual(
+            event_ids,
+            [
+                "ada-self",
+                "target-ada",
+                "visible-to-ada",
+                "metadata-visible-to-ada",
+                "dialogue-transfer-ada",
+                "custom-action-ada",
+                "public-top-level-all",
+                "public-basis-all",
+                "public-metadata-all",
+                "public-mode",
+            ],
+        )
+        self.assertNotIn("suli-only", event_ids)
+        player_job = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "player.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        player_event_ids = [event.get("id") for event in player_job["visible_events"]]
+        self.assertEqual(
+            player_event_ids,
+            [
+                "dialogue-transfer-ada",
+                "custom-action-ada",
+                "public-top-level-all",
+                "public-basis-all",
+                "public-metadata-all",
+                "public-mode",
+            ],
+        )
+        self.assertNotIn("suli-only", player_event_ids)
+
+    def test_schedule_post_round_memory_jobs_rejects_actor_unsafe_hidden_markers(self):
+        markers = ("user_instruction_channel", "hidden_fact", "hidden_text", "private_notes")
+        cases = (
+            ("actor_outputs", lambda marker: ({marker: "leaked hidden channel"}, {})),
+            ("visible_events", lambda marker: ({}, {marker: "leaked hidden channel"})),
+        )
+        for marker in markers:
+            for location, build_payloads in cases:
+                with self.subTest(marker=marker, location=location):
+                    run_dir = self.card / ".agent_runs" / f"round-hidden-{marker}-{location}"
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    actor_extra, visible_extra = build_payloads(marker)
+                    actor_outputs = {
+                        "player": [
+                            {
+                                "agent": "player",
+                                "agent_id": "player",
+                                "events": [
+                                    {
+                                        "type": "action",
+                                        "content": "I wait by the archive door.",
+                                    }
+                                ],
+                                "stop_reason": "continue",
+                                **actor_extra,
+                            }
+                        ],
+                    }
+                    visible_events = [
+                        {
+                            "type": "action",
+                            "source_actor": "player",
+                            "content": "I wait by the archive door.",
+                            **visible_extra,
+                        }
+                    ]
+                    _write_json(
+                        run_dir / "manifest.json",
+                        {
+                            "round_id": run_dir.name,
+                            "stage": "delivered",
+                            "expected_outputs": {},
+                        },
+                    )
+                    _write_json(
+                        run_dir / "story.input.json",
+                        {
+                            "round_id": run_dir.name,
+                            "loop_outputs": {"actors": actor_outputs, "gm": {"outputs": []}},
+                            "side_threads": {"threads": []},
+                            "memory_deltas": {"actors": {}, "world": []},
+                            "interaction_trace": {"visible_events": visible_events},
+                        },
+                    )
+
+                    with self.assertRaisesRegex(self.agent_memory.MemoryIngestionError, marker):
+                        self.agent_memory.schedule_post_round_memory_jobs(self.card, run_dir)
+
+                    self.assertFalse((run_dir / "post_round_memory_jobs" / "player.job.json").exists())
+
+    def test_schedule_post_round_memory_jobs_rolls_back_artifacts_when_prompt_write_fails(self):
+        actor_outputs = {
+            "character:Ada": [
+                {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "stop_reason": "continue",
+                }
+            ],
+            "player": [
+                {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "action", "content": "I hold the door."}],
+                    "stop_reason": "continue",
+                }
+            ],
+        }
+        self._write_story_input(actor_outputs, [])
+        original_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        original_write_text = self.agent_memory._write_text
+
+        def fail_prompt_write(path, text):
+            if "post_round_memory" in path.as_posix():
+                raise OSError("simulated prompt write failure")
+            return original_write_text(path, text)
+
+        self.agent_memory._write_text = fail_prompt_write
+        try:
+            with self.assertRaisesRegex(OSError, "simulated prompt write failure"):
+                self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+        finally:
+            self.agent_memory._write_text = original_write_text
+
+        self.assertFalse((self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").exists())
+        self.assertFalse((self.run_dir / "post_round_memory_jobs" / "player.job.json").exists())
+        self.assertFalse((self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md").exists())
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest, original_manifest)
+
+    def test_previous_post_round_memory_state_ignores_non_current_round_dirs(self):
+        stale_run = self.card / ".agent_runs" / "round-old"
+        _write_json(
+            stale_run / "manifest.json",
+            {
+                "round_id": "round-old",
+                "post_round_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {"player": {"output": "post_round_memory_jobs/player.summary.json"}},
+                    "failed": {},
+                },
+            },
+        )
+        delivered_run = self.card / ".agent_runs" / "round-000001"
+        _write_json(
+            delivered_run / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "delivered",
+            },
+        )
+
+        self.assertEqual(self.agent_memory.previous_post_round_memory_state(self.card), {})
 
     def test_write_memory_summary_prompts_records_manifest_outputs(self):
         manifest = {"prompts": {}, "expected_outputs": {}}

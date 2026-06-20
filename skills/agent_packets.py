@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable
 import agent_projection
 import agent_run
 import agent_prompts
+import agent_memory
 import input_analysis
 
 
@@ -593,6 +594,9 @@ def prepare_agent_run(
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
     input_json["visible_events"] = world_state["visible_events"]
+    degraded_memory_state = agent_memory.previous_post_round_memory_state(card_folder)
+    if degraded_memory_state:
+        input_json["degraded_memory_state"] = degraded_memory_state
     agent_run.write_json(run_dir / "input.json", input_json)
 
     gm_packet = build_gm_packet(

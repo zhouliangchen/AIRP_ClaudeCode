@@ -1135,6 +1135,52 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
         self.assertNotIn("interaction_trace", manifest.get("optional_inputs", {}))
 
+    def test_prepare_agent_run_surfaces_previous_degraded_post_round_memory_state(self):
+        previous_run = self.card / ".agent_runs" / "round-000001"
+        _write_json(
+            previous_run / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "delivered",
+                "post_round_memory_jobs": {
+                    "status": "degraded_memory_state",
+                    "scheduled": {
+                        "character:Ada": {
+                            "output": "post_round_memory_jobs/character_Ada.summary.json"
+                        }
+                    },
+                    "failed": {
+                        "character:Ada": "forbidden summary marker world_truth"
+                    },
+                },
+            },
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I wait by the archive door.",
+            chat_log=[],
+            card_data={"title": "Post-Round State Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload={
+                "raw_text": "I wait by the archive door.",
+                "display_text": "I wait by the archive door.",
+                "role_text": "I wait by the archive door.",
+                "user_instruction_text": "",
+            },
+        )
+
+        run_dir = Path(result["run_dir"])
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        degraded = input_json["degraded_memory_state"]
+        self.assertEqual(degraded["previous_round_id"], "round-000001")
+        self.assertEqual(degraded["status"], "degraded_memory_state")
+        self.assertEqual(
+            degraded["failed"]["character:Ada"],
+            "forbidden summary marker world_truth",
+        )
+
     def test_prepare_agent_run_writes_input_analysis_request_and_prompt(self):
         input_payload = {
             "input_schema": "dual_channel_v1",

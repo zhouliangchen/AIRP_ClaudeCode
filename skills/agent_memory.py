@@ -10,11 +10,13 @@ from typing import Any, Dict, Iterable
 
 import agent_memory_model
 import agent_run
+import agent_visibility
 
 
 CST = timezone(timedelta(hours=8))
 
 ACTOR_FORBIDDEN_MARKERS = agent_memory_model.ACTOR_FORBIDDEN_MARKERS
+POST_ROUND_FORBIDDEN_MARKERS = set(agent_visibility.HIDDEN_MARKERS) | set(ACTOR_FORBIDDEN_MARKERS)
 SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
 ACTOR_MEMORY_EVENT_TYPES = {"memory_delta", "goal_update"}
 ACTOR_MEMORY_EVENT_KEYS = {"type", "target", "content", "metadata"}
@@ -214,6 +216,18 @@ def _summary_prompt_path(agent_id: str) -> str:
     return f"prompts/memory/{_safe_name(agent_id)}.prompt.md"
 
 
+def _post_round_job_output_path(agent_id: str) -> str:
+    return f"post_round_memory_jobs/{_safe_name(agent_id)}.summary.json"
+
+
+def _post_round_job_input_path(agent_id: str) -> str:
+    return f"post_round_memory_jobs/{_safe_name(agent_id)}.job.json"
+
+
+def _post_round_job_prompt_path(agent_id: str) -> str:
+    return f"prompts/post_round_memory/{_safe_name(agent_id)}.prompt.md"
+
+
 def _actor_memory_paths(card: Path, agent_id: str) -> tuple[str, Path, Path]:
     if agent_id == "player":
         base = card / "memory" / "player"
@@ -235,6 +249,315 @@ def _read_optional_text(path: Path, limit: int = 12000) -> str:
         return path.read_text(encoding="utf-8")[:limit].strip()
     except Exception:
         return ""
+
+
+def _actor_outputs_from_mapping(actor_outputs: Any, agent_id: str) -> list[Any]:
+    if not isinstance(actor_outputs, dict):
+        return []
+    outputs = actor_outputs.get(agent_id, [])
+    if not isinstance(outputs, list):
+        return []
+    return list(outputs)
+
+
+def _participating_actors(story_input: Dict[str, Any]) -> list[str]:
+    actors: set[str] = set()
+
+    def collect(actor_outputs: Any) -> None:
+        if not isinstance(actor_outputs, dict):
+            return
+        for actor_id, outputs in actor_outputs.items():
+            actor_key = str(actor_id or "").strip()
+            if isinstance(outputs, list) and outputs:
+                actors.add(actor_key)
+
+    loop_outputs = story_input.get("loop_outputs", {})
+    if isinstance(loop_outputs, dict):
+        collect(loop_outputs.get("actors", {}))
+
+    side_threads = story_input.get("side_threads", {})
+    threads = side_threads.get("threads", []) if isinstance(side_threads, dict) else []
+    if isinstance(threads, list):
+        for thread in threads:
+            if isinstance(thread, dict):
+                collect(thread.get("actor_outputs", {}))
+
+    return sorted(actor for actor in actors if actor)
+
+
+def _post_round_actor_outputs(story_input: Dict[str, Any], agent_id: str) -> list[Any]:
+    outputs: list[Any] = []
+    loop_outputs = story_input.get("loop_outputs", {})
+    if isinstance(loop_outputs, dict):
+        outputs.extend(_actor_outputs_from_mapping(loop_outputs.get("actors", {}), agent_id))
+
+    side_threads = story_input.get("side_threads", {})
+    threads = side_threads.get("threads", []) if isinstance(side_threads, dict) else []
+    if isinstance(threads, list):
+        for thread in threads:
+            if isinstance(thread, dict):
+                outputs.extend(_actor_outputs_from_mapping(thread.get("actor_outputs", {}), agent_id))
+    return outputs
+
+
+def _visible_events(story_input: Dict[str, Any]) -> list[Any]:
+    trace = story_input.get("interaction_trace", {})
+    if not isinstance(trace, dict):
+        return []
+    visible_events = trace.get("visible_events", [])
+    if not isinstance(visible_events, list):
+        return []
+    return list(visible_events)
+
+
+def _actor_value_matches(value: Any, agent_id: str) -> bool:
+    return str(value or "").strip().casefold() == str(agent_id or "").strip().casefold()
+
+
+def _public_actor_marker(value: Any) -> bool:
+    marker = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return marker in agent_visibility.PUBLIC_MARKERS
+
+
+def _visibility_list_grants_actor(values: Any, agent_id: str) -> bool:
+    if isinstance(values, str):
+        candidates = [values]
+    elif isinstance(values, (list, tuple, set)):
+        candidates = list(values)
+    else:
+        candidates = []
+    return any(
+        _actor_value_matches(value, agent_id) or _public_actor_marker(value)
+        for value in candidates
+    )
+
+
+def _event_relevant_to_actor(event: Any, agent_id: str) -> bool:
+    if not isinstance(event, dict):
+        return False
+
+    fields = agent_visibility.visibility_fields_from_event(event)
+    for key in ("source_actor", "target_actor"):
+        if _actor_value_matches(fields.get(key), agent_id):
+            return True
+    if _visibility_list_grants_actor(fields.get("visible_to", []), agent_id):
+        return True
+
+    basis = fields.get("visibility_basis", {})
+    if isinstance(basis, dict):
+        if str(basis.get("mode") or "").strip() == "public":
+            return True
+        if _visibility_list_grants_actor(basis.get("visible_to", []), agent_id):
+            return True
+
+    raw_basis = event.get("visibility_basis")
+    if isinstance(raw_basis, dict):
+        if str(raw_basis.get("mode") or "").strip().lower() == "public":
+            return True
+        if _visibility_list_grants_actor(raw_basis.get("visible_to", []), agent_id):
+            return True
+
+    metadata = event.get("visibility_metadata")
+    if isinstance(metadata, dict) and _visibility_list_grants_actor(metadata.get("visible_to", []), agent_id):
+        return True
+
+    event_type = str(event.get("type") or "").strip()
+    if event_type == "dialogue_transfer":
+        if _actor_value_matches(event.get("speaker"), agent_id):
+            return True
+        if _actor_value_matches(event.get("target"), agent_id):
+            return True
+    if event_type == "custom_action":
+        if _actor_value_matches(event.get("actor_id"), agent_id):
+            return True
+        if _actor_value_matches(event.get("target"), agent_id):
+            return True
+    return False
+
+
+def _actor_visible_events(story_input: Dict[str, Any], agent_id: str) -> list[Any]:
+    return [
+        event
+        for event in _visible_events(story_input)
+        if _event_relevant_to_actor(event, agent_id)
+    ]
+
+
+def _validate_post_round_actor_safe_payload(value: Any, path: str) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_marker = agent_visibility.hidden_marker_name(key, markers=POST_ROUND_FORBIDDEN_MARKERS)
+            if key_marker:
+                raise MemoryIngestionError(f"{path}.{key}: forbidden post-round memory marker {key_marker}")
+            _validate_post_round_actor_safe_payload(item, f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_post_round_actor_safe_payload(item, f"{path}[{index}]")
+        return
+    if isinstance(value, str):
+        marker = agent_visibility.hidden_marker_name(value, markers=POST_ROUND_FORBIDDEN_MARKERS)
+        if marker:
+            raise MemoryIngestionError(f"{path}: forbidden post-round memory marker {marker}")
+
+
+def _post_round_job_payload(
+    card: Path,
+    run_dir: Path,
+    story_input: Dict[str, Any],
+    agent_id: str,
+) -> Dict[str, Any]:
+    character_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
+    payload = {
+        "agent_id": agent_id,
+        "character_name": character_name if agent_id.startswith("character:") else "",
+        "round_id": str(story_input.get("round_id") or run_dir.name),
+        "actor_outputs": _post_round_actor_outputs(story_input, agent_id),
+        "visible_events": _actor_visible_events(story_input, agent_id),
+        "recent_memory": _read_optional_text(recent_path),
+        "current_goals": _read_json(memory_dir / "goals.json", {}),
+        "allowed_outputs": {
+            "short_term": True,
+            "key_memories": True,
+            "long_term": True,
+            "goals": True,
+        },
+    }
+    _validate_post_round_actor_safe_payload(payload, "post_round_memory_job")
+    return payload
+
+
+def _post_round_memory_prompt(
+    run_dir: Path,
+    agent_id: str,
+    output_path: str,
+    job_payload: Dict[str, Any],
+) -> str:
+    contract = {
+        "agent_id": agent_id,
+        "character_name": job_payload.get("character_name", ""),
+        "source": "self",
+        "visibility": "actor",
+        "long_term": {
+            "self_understanding": [],
+            "stable_beliefs": [],
+            "relationship_models": [],
+        },
+        "key_memories": [
+            {"content": "specific remembered event", "importance": "high", "details": []}
+        ],
+        "short_term": [
+            {"content": "current-scene memory", "expires_after": "scene_end"}
+        ],
+        "goals": {"active": [], "paused": [], "resolved": []},
+    }
+    return f"""
+# Post-Round Actor Memory Job
+
+Agent id: `{agent_id}`
+Round id: `{run_dir.name}`
+Required output path: `{output_path}`
+
+Organize only this actor's first-person memory after the delivered turn.
+Do not edit profile, background, personality, body_facts, authoritative_setting,
+hidden facts, or another actor's memory. Do not add GM-only, omniscient,
+world-truth, hidden-note, or out-of-character knowledge.
+
+## Required JSON Contract
+
+```json
+{json.dumps(contract, ensure_ascii=False, indent=2)}
+```
+
+## Actor-Safe Job Input
+
+```json
+{json.dumps(job_payload, ensure_ascii=False, indent=2)}
+```
+"""
+
+
+def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
+    """Materialize actor-safe post-round memory jobs for actors used this round."""
+    card = Path(card_folder)
+    root = Path(run_dir)
+    story_input = agent_run.read_json(root / "story.input.json")
+    if not isinstance(story_input, dict):
+        return {"ok": True, "scheduled": []}
+
+    scheduled_agents = _participating_actors(story_input)
+    scheduled_entries: Dict[str, Dict[str, str]] = {}
+    payloads: Dict[str, Dict[str, Any]] = {}
+    prompt_texts: Dict[str, str] = {}
+    for agent_id in scheduled_agents:
+        job_rel = _post_round_job_input_path(agent_id)
+        prompt_rel = _post_round_job_prompt_path(agent_id)
+        output_rel = _post_round_job_output_path(agent_id)
+        payload = _post_round_job_payload(card, root, story_input, agent_id)
+        payloads[agent_id] = payload
+        prompt_texts[agent_id] = _post_round_memory_prompt(root, agent_id, output_rel, payload)
+        scheduled_entries[agent_id] = {
+            "job": job_rel,
+            "prompt": prompt_rel,
+            "output": output_rel,
+        }
+
+    manifest = _read_json(root / "manifest.json", {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    manifest.setdefault("round_id", str(story_input.get("round_id") or root.name))
+    manifest["post_round_memory_jobs"] = {
+        "status": "pending" if scheduled_entries else "not_required",
+        "scheduled": scheduled_entries,
+        "failed": {},
+    }
+
+    manifest_path = root / "manifest.json"
+    artifact_paths: list[Path] = [manifest_path]
+    for entry in scheduled_entries.values():
+        artifact_paths.append(root / entry["job"])
+        artifact_paths.append(root / entry["prompt"])
+    snapshots = _snapshot_files(artifact_paths)
+    try:
+        for agent_id in scheduled_agents:
+            job_rel = scheduled_entries[agent_id]["job"]
+            prompt_rel = scheduled_entries[agent_id]["prompt"]
+            _write_json(root / job_rel, payloads[agent_id])
+            _write_text(root / prompt_rel, prompt_texts[agent_id])
+        _write_json(manifest_path, manifest)
+    except Exception:
+        _restore_files(snapshots)
+        raise
+    return {"ok": True, "scheduled": scheduled_agents}
+
+
+def previous_post_round_memory_state(card_folder: str | Path) -> Dict[str, Any]:
+    """Return the latest pending/degraded post-round memory state from previous runs."""
+    runs_root = Path(card_folder) / ".agent_runs"
+    if not runs_root.exists():
+        return {}
+
+    for run_dir in sorted(runs_root.glob("round-*"), key=lambda path: path.name, reverse=True):
+        if not SUMMARY_ROUND_RE.match(run_dir.name):
+            continue
+        manifest = _read_json(run_dir / "manifest.json", {})
+        if not isinstance(manifest, dict):
+            continue
+        jobs = manifest.get("post_round_memory_jobs", {})
+        if not isinstance(jobs, dict):
+            continue
+        status = jobs.get("status")
+        if status not in {"pending", "degraded_memory_state"}:
+            continue
+        scheduled = jobs.get("scheduled", {})
+        failed = jobs.get("failed", {})
+        return {
+            "previous_round_id": str(manifest.get("round_id") or run_dir.name),
+            "status": status,
+            "scheduled": scheduled if isinstance(scheduled, dict) else {},
+            "failed": failed if isinstance(failed, dict) else {},
+        }
+    return {}
 
 
 def _memory_summary_prompt(card: Path, run_dir: Path, agent_id: str, output_path: str) -> str:
