@@ -307,9 +307,14 @@ def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
         metadata = _normalize_dialogue_metadata(metadata, _path(path, "metadata"))
     elif event_type == "custom_action":
         metadata = _normalize_custom_action_metadata(metadata, content, _path(path, "metadata"))
+    target = _optional_str(data, "target", "", path)
+    if event_type == "custom_action":
+        target = target.strip()
+        if not target:
+            raise ValidationError(f"custom_action {_path(path, 'target')} is required")
     normalized = {
         "type": event_type,
-        "target": _optional_str(data, "target", "", path),
+        "target": target,
         "content": content,
         "metadata": metadata,
     }

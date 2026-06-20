@@ -102,6 +102,7 @@ class GmSkillContractsTest(unittest.TestCase):
             self.read(".claude/skills/rp-character-agent.md"),
         ])
         self.assertIn("custom_action", combined)
+        self.assertIn('top-level `target`', combined)
         self.assertIn("metadata.visible_content", combined)
         self.assertIn("risk_level", combined)
         self.assertIn("high or critical", combined)

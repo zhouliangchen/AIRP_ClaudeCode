@@ -1235,6 +1235,87 @@ class AgentTurnLoopTest(unittest.TestCase):
         )
         self.assertIn("Ada leans toward SuLi.", suli_packets[0]["gm_prompt"])
 
+    def test_structured_dialogue_transfer_rejects_dynamic_hidden_phrase_before_target_packet(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I watch Ada and SuLi in the archive.",
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+            "character_contexts": {"characters": [{"name": "Ada"}, {"name": "SuLi"}]},
+        })
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada leans close to SuLi near the public archive desk."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You can quietly warn SuLi about the public archive desk.",
+                        "reason": "Ada can directly address SuLi.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Ada is close enough to speak to SuLi.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            actor_packets.append((agent_key, json_copy(packet)))
+            if agent_key == "character:Ada":
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{
+                        "type": "dialogue",
+                        "target": "character:SuLi",
+                        "content": "SuLi, listen carefully.",
+                        "metadata": {
+                            "exact_visible_words": "SuLi, check moon-base-archive.",
+                            "delivery_channel": "whisper",
+                            "visible_tone_or_action": "Ada keeps her voice low.",
+                        },
+                    }],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "character:SuLi")
+            return {
+                "agent": "character",
+                "agent_id": "character:SuLi",
+                "character_name": "SuLi",
+                "events": [{"type": "action", "target": "", "content": "I listen."}],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(
+            self.agent_turn_loop.AgentTurnLoopError,
+            r"dialogue|dialogue_transfer",
+        ):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual([agent_key for agent_key, _ in actor_packets], ["character:Ada"])
+        serialized_packets = json.dumps(actor_packets, ensure_ascii=False).lower()
+        self.assertNotIn("moon-base-archive", serialized_packets)
+        self.assertNotIn("moon base archive", serialized_packets)
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        serialized_trace = json.dumps(trace, ensure_ascii=False).lower()
+        self.assertNotIn("moon-base-archive", serialized_trace)
+        self.assertNotIn("moon base archive", serialized_trace)
+        transfer_events = [
+            event for event in trace.get("events", [])
+            if isinstance(event, dict) and event.get("type") == "dialogue_transfer"
+        ]
+        self.assertEqual(transfer_events, [])
+
     def test_actor_call_prompt_redacts_hidden_phrase_without_marker_words(self):
         self.agent_run.write_json(self.run_dir / "input.json", {
             "routed_input": {
@@ -1735,6 +1816,120 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(called_actors, ["character:Ada", "character:Ada"])
         self.assertEqual(result["called_actors"], ["character:Ada", "character:Ada"])
+
+    def test_perception_feedback_rejects_dynamic_hidden_phrase_before_continuation_packet(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I wait while Ada listens near the archive shelf.",
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+            "character_contexts": {
+                "characters": [{
+                    "name": "Ada",
+                    "location": "archive",
+                    "sensory_channels": ["auditory"],
+                }],
+            },
+        })
+        gm_packets = []
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_packets.append(json_copy(packet))
+                if len(gm_packets) == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "Listen near the public archive shelf.",
+                            "reason": "Ada is near the archive shelf.",
+                            "visibility_basis": {
+                                "mode": "location",
+                                "summary": "Ada is in the archive and can hear activity near the shelf.",
+                                "location": "archive",
+                                "sensory_channels": ["auditory"],
+                                "target_actor": "character:Ada",
+                                "visible_to": ["character:Ada"],
+                            },
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                self.assertEqual(len(packet["pending_perception_requests"]), 1)
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [{
+                        "request_id": "perception-Ada-call-character-Ada-1-1",
+                        "actor_id": "character:Ada",
+                        "source_call_id": "call-character-Ada-1",
+                        "status": "answered",
+                        "channel": "auditory",
+                        "content": "You hear the moon-base-archive hatch shift.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "Ada directly hears the moon-base-archive hatch.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["auditory"],
+                        },
+                    }],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            actor_packets.append(json_copy(packet))
+            if len(actor_packets) == 1:
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [{
+                        "type": "perceive_request",
+                        "target": "archive shelf",
+                        "content": "I listen for movement behind the shelf.",
+                        "metadata": {"channel": "auditory"},
+                    }],
+                    "stop_reason": "continue",
+                }
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "action", "target": "archive shelf", "content": "I hold still."}],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(
+            self.agent_turn_loop.AgentTurnLoopError,
+            r"perception_responses|perception feedback",
+        ):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(len(actor_packets), 1)
+        serialized_packets = json.dumps(actor_packets, ensure_ascii=False).lower()
+        self.assertNotIn("moon-base-archive", serialized_packets)
+        self.assertNotIn("moon base archive", serialized_packets)
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        serialized_trace = json.dumps(trace, ensure_ascii=False).lower()
+        self.assertNotIn("moon-base-archive", serialized_trace)
+        self.assertNotIn("moon base archive", serialized_trace)
+        feedback_events = [
+            event for event in trace.get("events", [])
+            if isinstance(event, dict) and event.get("type") == "perception_feedback"
+        ]
+        self.assertEqual(feedback_events, [])
 
     def test_gm_must_answer_or_close_pending_perception_request(self):
         self.register_character_states({

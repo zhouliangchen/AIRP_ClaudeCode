@@ -958,6 +958,10 @@ class AgentSchemaTest(unittest.TestCase):
 
         self.assertEqual(normalized["events"][0]["type"], "custom_action")
         self.assertEqual(
+            normalized["events"][0]["target"],
+            "archive door",
+        )
+        self.assertEqual(
             normalized["events"][0]["metadata"],
             {
                 "category": "physical",
@@ -966,6 +970,39 @@ class AgentSchemaTest(unittest.TestCase):
                 "risk_level": "medium",
             },
         )
+
+    def test_validate_actor_output_rejects_custom_action_missing_target(self):
+        cases = (
+            ("missing", {}),
+            ("blank", {"target": "   "}),
+        )
+        for case_name, target_fields in cases:
+            with self.subTest(case_name=case_name):
+                payload = {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "events": [
+                        {
+                            "type": "custom_action",
+                            "content": "I wedge the chair under the archive door handle.",
+                            "metadata": {
+                                "category": "physical",
+                                "visible_content": "I wedge the chair under the archive door handle.",
+                                "requires_gm_resolution": True,
+                                "risk_level": "medium",
+                            },
+                            **target_fields,
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+
+                with self.assertRaisesRegex(
+                    self.agent_schemas.ValidationError,
+                    r"custom_action.*target",
+                ):
+                    self.agent_schemas.validate_actor_output(payload)
 
     def test_validate_actor_output_rejects_custom_action_missing_visible_content(self):
         payload = {

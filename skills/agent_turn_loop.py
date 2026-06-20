@@ -277,6 +277,27 @@ def _contains_dynamic_hidden_phrase(text: str, hidden_phrases: Iterable[str]) ->
     return agent_visibility_guard.redact_text(original, hidden_phrases) != original
 
 
+def _dynamic_hidden_phrase_path(value: Any, hidden_phrases: Iterable[str], path: str) -> str:
+    if isinstance(value, dict):
+        for key in sorted(value):
+            child_path = f"{path}.{key}" if path else str(key)
+            found = _dynamic_hidden_phrase_path(value[key], hidden_phrases, child_path)
+            if found:
+                return found
+        return ""
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            found = _dynamic_hidden_phrase_path(item, hidden_phrases, f"{path}[{index}]")
+            if found:
+                return found
+        return ""
+    if value is None or isinstance(value, bool):
+        return ""
+    if _contains_dynamic_hidden_phrase(str(value), hidden_phrases):
+        return path
+    return ""
+
+
 def _custom_action_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]) -> str:
     metadata = _dict(event.get("metadata"))
     public_fields = [
@@ -295,6 +316,32 @@ def _custom_action_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]
         if _contains_dynamic_hidden_phrase(str(value or ""), hidden_phrases):
             return path
     return ""
+
+
+def _perception_response_hidden_phrase_path(response: dict, hidden_phrases: Iterable[str]) -> str:
+    public_fields = {
+        "request_id": response.get("request_id"),
+        "actor_id": response.get("actor_id"),
+        "source_call_id": response.get("source_call_id"),
+        "channel": response.get("channel"),
+        "content": response.get("content"),
+        "visibility_basis": response.get("visibility_basis"),
+    }
+    return _dynamic_hidden_phrase_path(public_fields, hidden_phrases, "")
+
+
+def _dialogue_transfer_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]) -> str:
+    metadata = _dict(event.get("metadata"))
+    public_fields = {
+        "content": _event_content(event),
+        "target": event.get("target"),
+        "metadata": {
+            "exact_visible_words": metadata.get("exact_visible_words"),
+            "delivery_channel": metadata.get("delivery_channel"),
+            "visible_tone_or_action": metadata.get("visible_tone_or_action"),
+        },
+    }
+    return _dynamic_hidden_phrase_path(public_fields, hidden_phrases, "")
 
 
 def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
@@ -513,6 +560,7 @@ def _resolve_perception_responses(
     world_state: dict,
     generated_call_counts: dict[str, int],
     used_call_ids: set[str],
+    hidden_phrases: Iterable[str],
 ) -> list[dict]:
     pending = [
         request
@@ -532,7 +580,7 @@ def _resolve_perception_responses(
     handled: set[str] = set()
     feedback_calls: list[dict] = []
 
-    for response in responses:
+    for response_index, response in enumerate(responses):
         request_id = str(response.get("request_id") or "")
         request = pending_by_id.get(request_id)
         if request is None:
@@ -559,6 +607,11 @@ def _resolve_perception_responses(
         handled.add(request_id)
         status = str(response.get("status") or "")
         if status == "answered":
+            leak_path = _perception_response_hidden_phrase_path(response, hidden_phrases)
+            if leak_path:
+                raise AgentTurnLoopError(
+                    f"perception_responses[{response_index}].{leak_path} contains hidden source phrase"
+                )
             agent_interactions.append_event(
                 run_dir,
                 actor="gm",
@@ -807,14 +860,22 @@ def _process_actor_output(
     stop_reason = ""
     for event in actor_output.get("events", []):
         event_type = str(event.get("type") or "")
+        target = str(event.get("target") or "")
+        content = _event_content(event)
         if event_type == "custom_action":
             leak_path = _custom_action_hidden_phrase_path(event, hidden_phrases)
             if leak_path:
                 raise AgentTurnLoopError(f"custom_action {leak_path} contains hidden source phrase")
+        if (
+            event_type == "dialogue"
+            and target in registered_actor_targets
+            and target != actor_id
+        ):
+            leak_path = _dialogue_transfer_hidden_phrase_path(event, hidden_phrases)
+            if leak_path:
+                raise AgentTurnLoopError(f"dialogue_transfer {leak_path} contains hidden source phrase")
 
         _record_actor_event(run_dir, actor_id, event, call_id)
-        target = str(event.get("target") or "")
-        content = _event_content(event)
 
         if (
             event_type == "dialogue"
@@ -1068,6 +1129,7 @@ def run_interactive_loop(
             world_state,
             generated_call_counts,
             used_actor_call_ids,
+            hidden_phrases,
         )
         _update_visible_events(root, world_state)
 
