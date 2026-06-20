@@ -241,12 +241,23 @@ def _record_actor_event(
     source_call_id: str,
 ) -> None:
     event_type = str(event.get("type") or "")
-    if event_type in {"dialogue", "action"}:
+    if event_type in {"dialogue", "action", "custom_action"}:
         visibility = "world_visible"
     elif event_type == "perceive_request":
         visibility = "gm_visible"
     else:
         visibility = "actor_visible"
+    public_metadata = None
+    if event_type == "custom_action":
+        metadata = _dict(event.get("metadata"))
+        public_metadata = {
+            "actor_id": actor_id,
+            "category": str(metadata.get("category") or ""),
+            "visible_content": str(metadata.get("visible_content") or ""),
+            "requires_gm_resolution": bool(metadata.get("requires_gm_resolution")),
+            "risk_level": str(metadata.get("risk_level") or ""),
+            "target": str(event.get("target") or ""),
+        }
     agent_interactions.append_event(
         run_dir,
         actor=actor_id,
@@ -255,7 +266,35 @@ def _record_actor_event(
         content=_event_content(event),
         target=str(event.get("target") or ""),
         source_call_id=source_call_id,
+        public_metadata=public_metadata,
     )
+
+
+def _contains_dynamic_hidden_phrase(text: str, hidden_phrases: Iterable[str]) -> bool:
+    original = str(text or "")
+    if not original:
+        return False
+    return agent_visibility_guard.redact_text(original, hidden_phrases) != original
+
+
+def _custom_action_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]) -> str:
+    metadata = _dict(event.get("metadata"))
+    public_fields = [
+        ("metadata.visible_content", metadata.get("visible_content")),
+        ("content", _event_content(event)),
+        ("target", event.get("target")),
+    ]
+    for key in sorted(metadata):
+        if key == "visible_content":
+            continue
+        value = metadata[key]
+        if isinstance(value, bool):
+            continue
+        public_fields.append((f"metadata.{key}", value))
+    for path, value in public_fields:
+        if _contains_dynamic_hidden_phrase(str(value or ""), hidden_phrases):
+            return path
+    return ""
 
 
 def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
@@ -760,13 +799,20 @@ def _process_actor_output(
     generated_call_counts: dict[str, int],
     used_actor_call_ids: set[str],
     world_state: dict,
+    hidden_phrases: Iterable[str],
 ) -> dict:
     transfer_calls = []
     actor_requested_decision = False
+    decision_reason = ""
     stop_reason = ""
     for event in actor_output.get("events", []):
-        _record_actor_event(run_dir, actor_id, event, call_id)
         event_type = str(event.get("type") or "")
+        if event_type == "custom_action":
+            leak_path = _custom_action_hidden_phrase_path(event, hidden_phrases)
+            if leak_path:
+                raise AgentTurnLoopError(f"custom_action {leak_path} contains hidden source phrase")
+
+        _record_actor_event(run_dir, actor_id, event, call_id)
         target = str(event.get("target") or "")
         content = _event_content(event)
 
@@ -803,10 +849,16 @@ def _process_actor_output(
             _record_perception_continuation(run_dir, actor_id, event, call_id, world_state)
         elif event_type == "stop_for_player_decision":
             actor_requested_decision = True
+        elif event_type == "custom_action":
+            metadata = _dict(event.get("metadata"))
+            if actor_id == "player" and str(metadata.get("risk_level") or "") in {"high", "critical"}:
+                actor_requested_decision = True
+                decision_reason = "Player-agent high-risk custom action requires a real player decision."
 
     return {
         "transfer_calls": transfer_calls,
         "actor_requested_decision": actor_requested_decision,
+        "decision_reason": decision_reason,
         "generated_transfers_used": generated_transfers_used,
         "stop_reason": stop_reason,
     }
@@ -1092,6 +1144,7 @@ def run_interactive_loop(
 
                 transfer_calls = []
                 actor_requested_decision = False
+                actor_decision_reason = ""
                 for call, actor_id, actor_output in results:
                     call_id = str(call.get("call_id") or "")
                     called_actors.append(actor_id)
@@ -1108,6 +1161,7 @@ def run_interactive_loop(
                         generated_call_counts=generated_call_counts,
                         used_actor_call_ids=used_actor_call_ids,
                         world_state=world_state,
+                        hidden_phrases=hidden_phrases,
                     )
                     generated_transfers_used = int(processed["generated_transfers_used"])
                     transfer_calls.extend(processed["transfer_calls"])
@@ -1116,10 +1170,16 @@ def run_interactive_loop(
                     actor_stop_reason = str(actor_output.get("stop_reason") or "")
                     if actor_stop_reason == "stop_for_player_decision" or processed["actor_requested_decision"]:
                         actor_requested_decision = True
+                    if processed.get("decision_reason"):
+                        actor_decision_reason = str(processed.get("decision_reason") or "")
 
                 _update_visible_events(root, world_state)
                 if actor_requested_decision:
-                    decision_point = _mark_decision(root, None, "Actor requested a real player decision.")
+                    decision_point = _mark_decision(
+                        root,
+                        None,
+                        actor_decision_reason or "Actor requested a real player decision.",
+                    )
                     stop_reason = "player_decision"
                 if stop_reason in STOP_REASONS:
                     actor_queue.clear()

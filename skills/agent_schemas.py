@@ -37,6 +37,7 @@ ACTOR_EVENT_TYPES = {
     "perceive_request",
     "dialogue",
     "action",
+    "custom_action",
     "memory_delta",
     "goal_update",
     "wait_for_gm",
@@ -45,6 +46,8 @@ ACTOR_EVENT_TYPES = {
 
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 DIALOGUE_METADATA_KEYS = {"exact_visible_words", "delivery_channel", "visible_tone_or_action"}
+CUSTOM_ACTION_RISK_LEVELS = {"low", "medium", "high", "critical"}
+CUSTOM_ACTION_METADATA_KEYS = {"category", "visible_content", "requires_gm_resolution", "risk_level"}
 
 GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
 PERCEPTION_RESPONSE_STATUSES = {"answered", "closed"}
@@ -260,6 +263,36 @@ def _normalize_dialogue_metadata(metadata: Dict[str, Any], path: str) -> Dict[st
     return normalized
 
 
+def _normalize_custom_action_metadata(metadata: Dict[str, Any], content: str, path: str) -> Dict[str, Any]:
+    for key in sorted(metadata):
+        if key not in CUSTOM_ACTION_METADATA_KEYS:
+            raise ValidationError(f"{_path(path, str(key))} is not an allowed custom_action metadata field")
+
+    category = _require_nonempty_str(metadata, "category", path)
+    visible_content = _require_nonempty_str(metadata, "visible_content", path)
+    if visible_content != str(content or "").strip():
+        raise ValidationError(f"{_path(path, 'visible_content')} must exactly match event content")
+
+    if "requires_gm_resolution" not in metadata:
+        raise ValidationError(f"{_path(path, 'requires_gm_resolution')} is required")
+    requires_gm_resolution = metadata["requires_gm_resolution"]
+    if not isinstance(requires_gm_resolution, bool):
+        raise ValidationError(f"{_path(path, 'requires_gm_resolution')} must be a boolean")
+
+    risk_level = _require_nonempty_str(metadata, "risk_level", path)
+    if risk_level not in CUSTOM_ACTION_RISK_LEVELS:
+        raise ValidationError(f"{_path(path, 'risk_level')} must be one of low, medium, high, critical")
+
+    normalized: Dict[str, Any] = {
+        "category": category,
+        "visible_content": visible_content,
+        "requires_gm_resolution": requires_gm_resolution,
+        "risk_level": risk_level,
+    }
+    _reject_forbidden_keys(normalized, path)
+    return normalized
+
+
 def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
     for key in sorted(data):
@@ -269,14 +302,19 @@ def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
     metadata = _optional_dict(data, "metadata", path)
+    content = _require_str(data, "content", path)
     if event_type == "dialogue":
         metadata = _normalize_dialogue_metadata(metadata, _path(path, "metadata"))
-    return {
+    elif event_type == "custom_action":
+        metadata = _normalize_custom_action_metadata(metadata, content, _path(path, "metadata"))
+    normalized = {
         "type": event_type,
         "target": _optional_str(data, "target", "", path),
-        "content": _require_str(data, "content", path),
+        "content": content,
         "metadata": metadata,
     }
+    _reject_forbidden_keys(normalized, path)
+    return normalized
 
 
 def _normalize_actor_events(items: list[Any], path: str) -> list[Dict[str, Any]]:
@@ -658,7 +696,9 @@ def validate_subgm_output(payload: Any) -> Dict[str, Any]:
 def validate_actor_output(payload: Any) -> Dict[str, Any]:
     """Validate and normalize player/character first-person output."""
     data = _require_dict(payload, "actor_output")
-    _reject_forbidden_keys(data, "actor_output")
+    envelope = dict(data)
+    envelope.pop("events", None)
+    _reject_forbidden_keys(envelope, "actor_output")
     _reject_legacy_actor_keys(data, "actor_output")
 
     agent = _require_str(data, "agent", "actor_output")

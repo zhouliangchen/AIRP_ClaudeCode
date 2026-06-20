@@ -933,6 +933,87 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_tone_or_action"):
             self.agent_schemas.validate_actor_output(payload)
 
+    def test_validate_actor_output_accepts_custom_action_contract(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "custom_action",
+                    "target": "archive door",
+                    "content": "I wedge the chair under the archive door handle.",
+                    "metadata": {
+                        "category": "physical",
+                        "visible_content": "I wedge the chair under the archive door handle.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(payload)
+
+        self.assertEqual(normalized["events"][0]["type"], "custom_action")
+        self.assertEqual(
+            normalized["events"][0]["metadata"],
+            {
+                "category": "physical",
+                "visible_content": "I wedge the chair under the archive door handle.",
+                "requires_gm_resolution": True,
+                "risk_level": "medium",
+            },
+        )
+
+    def test_validate_actor_output_rejects_custom_action_missing_visible_content(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "custom_action",
+                    "target": "archive door",
+                    "content": "I wedge the chair under the archive door handle.",
+                    "metadata": {
+                        "category": "physical",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_content"):
+            self.agent_schemas.validate_actor_output(payload)
+
+    def test_validate_actor_output_rejects_custom_action_hidden_visible_content(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "custom_action",
+                    "target": "archive door",
+                    "content": "world_truth says I seal the door.",
+                    "metadata": {
+                        "category": "physical",
+                        "visible_content": "world_truth says I seal the door.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_content"):
+            self.agent_schemas.validate_actor_output(payload)
+
     def test_validate_actor_output_rejects_character_agent_with_player_id(self):
         payload = {
             "agent": "character",

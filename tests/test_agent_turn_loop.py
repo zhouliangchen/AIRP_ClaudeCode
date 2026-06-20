@@ -869,6 +869,193 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertIn("player", actor_outputs)
         self.assertIn("character:SuLi", actor_outputs)
 
+    def test_player_high_risk_custom_action_stops_for_real_player_decision(self):
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The archive door hangs crooked in its frame."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "You stand before the old archive door.",
+                        "reason": "The player decides how to handle the locked door.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{
+                    "type": "custom_action",
+                    "target": "archive door",
+                    "content": "I smash the old lock with the iron lamp.",
+                    "metadata": {
+                        "category": "force",
+                        "visible_content": "I smash the old lock with the iron lamp.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "high",
+                    },
+                }],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertIn("high-risk", result["decision_point"]["reason"])
+
+    def test_custom_action_rejects_dynamic_hidden_phrase_before_trace_persistence(self):
+        self.agent_run.write_json(self.run_dir / "input.json", {
+            "routed_input": {
+                "role_channel": "I test the archive rumor.",
+                "user_instruction_channel": "Hidden truth: moon base archive.",
+            },
+            "hidden_facts": [{"fact": "moon base archive"}],
+            "character_contexts": {"characters": []},
+        })
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The player studies the public archive plaque."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "You can decide what to say about the archive plaque.",
+                        "reason": "The player is directly present.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{
+                    "type": "custom_action",
+                    "target": "everyone",
+                    "content": "I reveal moon-base-archive to everyone.",
+                    "metadata": {
+                        "category": "social",
+                        "visible_content": "I reveal moon-base-archive to everyone.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                }],
+                "stop_reason": "continue",
+            }
+
+        with self.assertRaisesRegex(
+            self.agent_turn_loop.AgentTurnLoopError,
+            r"custom_action.*visible_content",
+        ):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+        serialized_trace = json.dumps(trace, ensure_ascii=False).lower()
+        self.assertNotIn("moon-base-archive", serialized_trace)
+        self.assertNotIn("moon base archive", serialized_trace)
+        custom_action_events = [
+            event for event in trace.get("events", [])
+            if isinstance(event, dict) and event.get("type") == "custom_action"
+        ]
+        self.assertEqual(custom_action_events, [])
+
+    def test_custom_action_rejects_dynamic_hidden_phrase_in_public_target_and_category(self):
+        cases = (
+            (
+                "target",
+                {
+                    "target": "moon-base-archive",
+                    "metadata": {
+                        "category": "social",
+                        "visible_content": "I keep the archive rumor vague.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                },
+                r"custom_action.*target",
+            ),
+            (
+                "category",
+                {
+                    "target": "everyone",
+                    "metadata": {
+                        "category": "moon-base-archive",
+                        "visible_content": "I keep the archive rumor vague.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "medium",
+                    },
+                },
+                r"custom_action.*metadata\.category",
+            ),
+        )
+
+        for field_name, event_fields, expected_error in cases:
+            with self.subTest(field_name=field_name):
+                run_dir = Path(self.tmp.name) / f"round-custom-action-{field_name}"
+                run_dir.mkdir()
+                self.agent_run.write_json(run_dir / "input.json", {
+                    "routed_input": {
+                        "role_channel": "I test the archive rumor.",
+                        "user_instruction_channel": "Hidden truth: moon base archive.",
+                    },
+                    "hidden_facts": [{"fact": "moon base archive"}],
+                    "character_contexts": {"characters": []},
+                })
+
+                def dispatch(agent_key, packet):
+                    if agent_key == "gm":
+                        return {
+                            "agent": "gm",
+                            "scene_beats": [{"content": "The player studies the public archive plaque."}],
+                            "events": [],
+                            "actor_calls": [{
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "You can decide what to do about the archive plaque.",
+                                "reason": "The player is directly present.",
+                            }],
+                            "parallel_groups": [],
+                            "world_state_delta": [],
+                            "decision_point": None,
+                            "stop_reason": "continue",
+                        }
+                    self.assertEqual(agent_key, "player")
+                    return {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [{
+                            "type": "custom_action",
+                            "content": "I keep the archive rumor vague.",
+                            **event_fields,
+                        }],
+                        "stop_reason": "continue",
+                    }
+
+                with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, expected_error):
+                    self.agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=2)
+
+                trace = self.agent_run.read_json(run_dir / "interaction.trace.json")
+                serialized_trace = json.dumps(trace, ensure_ascii=False).lower()
+                self.assertNotIn("moon-base-archive", serialized_trace)
+                self.assertNotIn("moon base archive", serialized_trace)
+                custom_action_events = [
+                    event for event in trace.get("events", [])
+                    if isinstance(event, dict) and event.get("type") == "custom_action"
+                ]
+                self.assertEqual(custom_action_events, [])
+
     def test_generated_dialogue_transfer_carries_private_dialogue_visibility_basis(self):
         self.register_characters("Ada", "SuLi")
         generated_call = self.agent_turn_loop._dialogue_transfer_call(

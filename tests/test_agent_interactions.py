@@ -139,6 +139,36 @@ class AgentInteractionTraceTest(unittest.TestCase):
             },
         )
 
+    def test_summary_preserves_custom_action_metadata(self):
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="custom_action",
+            content="I wedge the chair under the archive door handle.",
+            target="archive door",
+            source_call_id="call-character-Ada-1",
+            public_metadata={
+                "actor_id": "character:Ada",
+                "category": "physical",
+                "visible_content": "I wedge the chair under the archive door handle.",
+                "requires_gm_resolution": True,
+                "risk_level": "medium",
+                "target": "archive door",
+            },
+        )
+
+        summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
+
+        visible_event = summary["visible_events"][0]
+        self.assertEqual(visible_event["type"], "custom_action")
+        self.assertEqual(visible_event["custom_action"]["category"], "physical")
+        self.assertIs(visible_event["custom_action"]["requires_gm_resolution"], True)
+
     def test_summary_preserves_visibility_metadata_for_world_visible_events(self):
         self.agent_interactions.init_trace(
             self.run_dir,
