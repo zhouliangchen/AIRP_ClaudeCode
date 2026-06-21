@@ -250,6 +250,21 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _artifact_path(root: Path, relative_path: str) -> Path:
+    legacy_path = root / relative_path
+    if legacy_path.exists():
+        return legacy_path
+    artifact_path = root / "artifacts" / relative_path
+    if artifact_path.exists():
+        return artifact_path
+    return legacy_path
+
+
+def _write_artifact_with_legacy_mirror(root: Path, relative_path: str, payload: Dict[str, Any]) -> None:
+    agent_run.write_json(root / "artifacts" / relative_path, payload)
+    agent_run.write_json(root / relative_path, payload)
+
+
 def _read_raw_trace(root: Path) -> Dict[str, Any]:
     path = root / "interaction.trace.json"
     if not path.exists():
@@ -441,9 +456,10 @@ def _validate_actor_output_provenance(
     raw_trace: Dict[str, Any],
     actor_outputs: Dict[str, list[Dict[str, Any]]],
     preferred_call_counts: Dict[str, Counter[str]] | None = None,
+    actor_path: Path | None = None,
 ) -> Dict[str, list[str]]:
     event_sources = _trace_event_sources(raw_trace)
-    actor_path = root / "actor.outputs.json"
+    actor_path = actor_path or root / "actor.outputs.json"
     output_source_call_ids_by_actor: Dict[str, list[str]] = {}
     remaining_preferred = {
         actor_id: Counter(counts)
@@ -495,8 +511,8 @@ def _validate_actor_output_provenance(
 
 
 def _load_loop_outputs(root: Path) -> Dict[str, Any]:
-    gm_path = root / "gm.output.json"
-    actor_path = root / "actor.outputs.json"
+    gm_path = _artifact_path(root, "gm.output.json")
+    actor_path = _artifact_path(root, "actor.outputs.json")
     gm_loop = _read_json_required(gm_path)
     actor_outputs = _read_json_required(actor_path)
 
@@ -772,15 +788,18 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         f"{root / 'interaction.trace.json'}",
     )
     loop_outputs = _load_loop_outputs(root)
-    _validate_gm_output_visibility(root / "gm.output.json", loop_outputs["gm"]["outputs"], input_payload)
+    gm_path = _artifact_path(root, "gm.output.json")
+    actor_path = _artifact_path(root, "actor.outputs.json")
+    _validate_gm_output_visibility(gm_path, loop_outputs["gm"]["outputs"], input_payload)
     output_source_call_ids_by_actor = _validate_actor_output_provenance(
         root,
         raw_trace,
         loop_outputs["actors"],
         _required_actor_call_counts(loop_outputs["gm"]["outputs"]),
+        actor_path,
     )
     _require_called_actor_outputs(
-        root / "gm.output.json",
+        gm_path,
         loop_outputs["gm"]["outputs"],
         output_source_call_ids_by_actor,
     )
@@ -803,7 +822,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "preserve_character_dialogue_metadata": True,
         },
     }
-    agent_run.write_json(root / "story.input.json", story_input)
+    _write_artifact_with_legacy_mirror(root, "story.input.json", story_input)
     agent_run.update_manifest_stage(root, "story_ready", "Validated agent outputs and assembled story.input.json.")
     return story_input
 
@@ -961,8 +980,8 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     manifest = _load_manifest(run_dir) or manifest
 
     expected = _expected_outputs(manifest)
-    story_path = run_dir / expected.get("story", "story.output.json")
-    critic_path = run_dir / expected.get("critic", "critic.report.json")
+    story_path = _artifact_path(run_dir, expected.get("story", "story.output.json"))
+    critic_path = _artifact_path(run_dir, expected.get("critic", "critic.report.json"))
 
     try:
         story_output = _load_required(story_path, agent_schemas.validate_story_output)

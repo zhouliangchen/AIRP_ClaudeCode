@@ -235,6 +235,24 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_build_story_input_reads_artifacts_directory_when_present(self):
+        artifacts_dir = self.run_dir / "artifacts"
+        artifacts_dir.mkdir()
+        (self.run_dir / "gm.output.json").replace(artifacts_dir / "gm.output.json")
+        (self.run_dir / "actor.outputs.json").replace(artifacts_dir / "actor.outputs.json")
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["round_id"], self.run_dir.name)
+        root_story_input_path = self.run_dir / "story.input.json"
+        artifact_story_input_path = artifacts_dir / "story.input.json"
+        self.assertTrue(root_story_input_path.exists())
+        self.assertTrue(artifact_story_input_path.exists())
+        self.assertEqual(
+            json.loads(root_story_input_path.read_text(encoding="utf-8")),
+            json.loads(artifact_story_input_path.read_text(encoding="utf-8")),
+        )
+
     def test_build_story_input_uses_loop_outputs_and_trace_v2(self):
         _write_json(
             self.run_dir / "gm.output.json",
@@ -2437,6 +2455,21 @@ class AgentOutputsTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "critic_passed")
         self.assertIn("critic_passed", [item["stage"] for item in manifest["status"]])
+
+    def test_prepare_delivery_reads_story_and_critic_from_artifacts_directory(self):
+        self._write_story_and_critic(decision="pass")
+        artifacts_dir = self.run_dir / "artifacts"
+        artifacts_dir.mkdir()
+        (self.run_dir / "story.output.json").replace(artifacts_dir / "story.output.json")
+        (self.run_dir / "critic.report.json").replace(artifacts_dir / "critic.report.json")
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["story_output"]["content"],
+            (self.styles_dir / "response.txt").read_text(encoding="utf-8"),
+        )
 
     def test_mark_delivered_updates_manifest_stage(self):
         self._write_story_and_critic(decision="pass")
