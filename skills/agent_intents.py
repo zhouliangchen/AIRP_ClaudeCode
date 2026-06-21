@@ -133,6 +133,29 @@ def block_intent(run_dir, intent_id, reason, outputs=None):
     return _transition_intent(run_dir, intent_id, "blocked", False, reason=reason, outputs=outputs)
 
 
+def attach_source_message(run_dir, intent_id, source_message_id):
+    run_dir = Path(run_dir)
+    if not _is_valid_intent_id(intent_id):
+        return {"ok": False, "reason": "invalid_intent_id"}
+    if not isinstance(source_message_id, str) or not source_message_id:
+        return {"ok": False, "reason": "invalid_source_message_id"}
+
+    with _locked_intents(run_dir):
+        current_path = _find_intent_path(run_dir, intent_id)
+        if current_path is None:
+            return {"ok": False, "reason": "intent_missing"}
+        if current_path.parent.name != "pending":
+            return {"ok": False, "reason": "intent_not_pending"}
+
+        intent = _read_json(current_path)
+        if intent.get("state") != "pending":
+            return {"ok": False, "reason": "intent_not_pending"}
+        intent["source_message_id"] = source_message_id
+        intent["updated_at"] = _now()
+        _write_json(current_path, intent)
+        return {"ok": True, "intent": intent}
+
+
 def list_intents(run_dir, state="pending"):
     if state not in VALID_STATES:
         raise AgentIntentError(f"invalid intent state: {state}")

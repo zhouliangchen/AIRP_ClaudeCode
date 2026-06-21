@@ -2642,6 +2642,29 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(self._repair_request_intents("pending"), [])
         self.assertEqual(self._repair_request_intents("blocked"), [])
 
+    def test_prepare_delivery_blocks_repair_intent_when_source_message_attach_fails(self):
+        self._write_story_and_critic(decision="revise")
+        original_attach = self.agent_outputs.agent_intents.attach_source_message
+
+        def reject_attach(run_dir, intent_id, source_message_id):
+            return {"ok": False, "reason": "intent_store_failed"}
+
+        self.agent_outputs.agent_intents.attach_source_message = reject_attach
+        try:
+            with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "repair_request source message attach failed"):
+                self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        finally:
+            self.agent_outputs.agent_intents.attach_source_message = original_attach
+
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "repair_request_link_failed")
+        self.assertNotIn("source_message_id", blocked_intents[0])
+        messages = _read_jsonl(self.run_dir / "messages.jsonl")
+        repair_messages = [message for message in messages if message.get("type") == "repair_request"]
+        self.assertEqual(len(repair_messages), 1)
+
     def test_prepare_delivery_repair_attempt_uses_repair_history_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["retry_count"] = 1

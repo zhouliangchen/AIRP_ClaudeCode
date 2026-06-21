@@ -149,6 +149,53 @@ class AgentIntentsTest(unittest.TestCase):
         self.assertEqual(blocked["result"]["reason"], "waiting_for_player")
         self.assertTrue((self.run_dir / "intents" / "blocked" / f"{created['id']}.json").exists())
 
+    def test_attach_source_message_updates_pending_intent(self):
+        created = self.mod.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "repair_request", "payload": {"target": "story"}},
+        )["intent"]
+
+        attached = self.mod.attach_source_message(self.run_dir, created["id"], "msg_000001")
+
+        self.assertTrue(attached["ok"])
+        self.assertEqual(attached["intent"]["source_message_id"], "msg_000001")
+        persisted = json.loads(
+            (self.run_dir / "intents" / "pending" / f"{created['id']}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["source_message_id"], "msg_000001")
+
+    def test_attach_source_message_rejects_empty_or_missing_intent(self):
+        created = self.mod.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "repair_request", "payload": {"target": "story"}},
+        )["intent"]
+
+        empty_result = self.mod.attach_source_message(self.run_dir, created["id"], "")
+        missing_result = self.mod.attach_source_message(self.run_dir, "intent_999999", "msg_000001")
+
+        self.assertFalse(empty_result["ok"])
+        self.assertEqual(empty_result["reason"], "invalid_source_message_id")
+        self.assertFalse(missing_result["ok"])
+        self.assertEqual(missing_result["reason"], "intent_missing")
+        persisted = json.loads(
+            (self.run_dir / "intents" / "pending" / f"{created['id']}.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("source_message_id", persisted)
+
+    def test_attach_source_message_rejects_non_pending_intent(self):
+        created = self.mod.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "repair_request", "payload": {"target": "story"}},
+        )["intent"]
+        self.mod.block_intent(self.run_dir, created["id"], "blocked_by_test")
+
+        result = self.mod.attach_source_message(self.run_dir, created["id"], "msg_000001")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "intent_not_pending")
+        blocked = self.mod.list_intents(self.run_dir, "blocked")[0]
+        self.assertNotIn("source_message_id", blocked)
+
     def test_list_intents_reads_state_in_id_order(self):
         first = self.mod.create_intent(
             self.run_dir,

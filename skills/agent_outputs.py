@@ -1026,10 +1026,25 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
     if not source_message_id:
         agent_intents.block_intent(run_dir, intent_id, "repair_request_message_failed", outputs={"message_result": message})
         raise AgentOutputError("repair_request source message id is missing")
-    intent["source_message_id"] = source_message_id
-    intent["updated_at"] = datetime.now(agent_run.CST).isoformat(timespec="seconds")
-    agent_run.write_json(run_dir / "intents" / "pending" / f"{intent_id}.json", intent)
-    return {"ok": True, "intent": intent}
+    try:
+        attached = agent_intents.attach_source_message(run_dir, intent_id, source_message_id)
+    except Exception as exc:
+        agent_intents.block_intent(
+            run_dir,
+            intent_id,
+            "repair_request_link_failed",
+            outputs={"source_message_id": source_message_id, "error": str(exc)},
+        )
+        raise AgentOutputError(f"repair_request source message attach failed: {exc}") from exc
+    if not isinstance(attached, dict) or not attached.get("ok"):
+        agent_intents.block_intent(
+            run_dir,
+            intent_id,
+            "repair_request_link_failed",
+            outputs={"source_message_id": source_message_id, "attach_result": attached},
+        )
+        raise AgentOutputError(f"repair_request source message attach failed: {attached!r}")
+    return attached
 
 
 def _record_terminal_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:
