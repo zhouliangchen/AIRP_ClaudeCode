@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -193,6 +194,65 @@ class AgentMessagesTest(unittest.TestCase):
         expected = [f"msg_{index:06d}" for index in range(1, 21)]
         self.assertEqual(sorted(ids), expected)
         self.assertEqual(len(set(ids)), 20)
+
+    def test_subprocess_appends_preserve_unique_monotonic_ids(self):
+        start_file = self.run_dir / "start.signal"
+        code = r"""
+import sys
+import time
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+skills_dir = sys.argv[2]
+index = sys.argv[3]
+sys.path.insert(0, skills_dir)
+import agent_messages
+
+start_file = run_dir / "start.signal"
+deadline = time.time() + 10
+while not start_file.exists():
+    if time.time() > deadline:
+        raise TimeoutError("start signal not found")
+    time.sleep(0.005)
+
+result = agent_messages.append_message(
+    run_dir,
+    {
+        "from": "gm",
+        "to": ["story"],
+        "type": "message",
+        "visibility": "story_facing",
+        "payload": {"text": f"Subprocess message {index}."},
+    },
+)
+if not result["ok"]:
+    raise RuntimeError(result)
+"""
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", code, str(self.run_dir), str(ROOT / "skills"), str(index)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for index in range(20)
+        ]
+        start_file.write_text("go", encoding="utf-8")
+
+        failures = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            if process.returncode != 0:
+                failures.append((process.returncode, stdout, stderr))
+        self.assertEqual(failures, [])
+
+        rows = self.mod.read_messages(self.run_dir)
+        ids = [row["id"] for row in rows]
+        expected = [f"msg_{index:06d}" for index in range(1, 21)]
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(len(set(ids)), 20)
+        self.assertEqual(sorted(ids), expected)
+        self.assertFalse((self.run_dir / ".messages.lock").exists())
 
 
 if __name__ == "__main__":

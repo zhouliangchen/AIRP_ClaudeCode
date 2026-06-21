@@ -4,19 +4,53 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 
 VALID_VISIBILITIES = {"gm_only", "story_facing", "actor_facing", "public"}
 MESSAGE_LOG = "messages.jsonl"
+LOCK_FILE = ".messages.lock"
 # Single-process critical section for deterministic IDs and matching log/inbox appends.
 _APPEND_LOCK = threading.RLock()
 
 
 class AgentMessageError(ValueError):
     """Raised when an agent message payload is malformed."""
+
+
+class _FileLock:
+    def __init__(self, path: Path, timeout: float = 10.0, poll_interval: float = 0.01):
+        self.path = path
+        self.timeout = timeout
+        self.poll_interval = poll_interval
+        self.fd: int | None = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                payload = f"pid={os.getpid()} timestamp={time.time():.6f}\n".encode("utf-8")
+                os.write(self.fd, payload)
+                return self
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise AgentMessageError(f"timed out waiting for message lock: {self.path}")
+                time.sleep(self.poll_interval)
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def safe_agent_filename(agent_id: str) -> str:
@@ -127,23 +161,24 @@ def append_message(run_dir: str | Path, payload: dict[str, Any]) -> dict[str, An
 
     root = Path(run_dir)
     with _APPEND_LOCK:
-        try:
-            message = normalize_message(root, payload)
-        except AgentMessageError as exc:
-            return {"ok": False, "reason": "schema_rejected", "error": str(exc)}
+        with _FileLock(root / LOCK_FILE):
+            try:
+                message = normalize_message(root, payload)
+            except AgentMessageError as exc:
+                return {"ok": False, "reason": "schema_rejected", "error": str(exc)}
 
-        reason = acl_reason(message["from"], message["to"], message["type"], message["visibility"])
-        if reason:
-            message["status"] = "rejected"
-            message["reject_reason"] = reason
+            reason = acl_reason(message["from"], message["to"], message["type"], message["visibility"])
+            if reason:
+                message["status"] = "rejected"
+                message["reject_reason"] = reason
+                _append_jsonl(root / MESSAGE_LOG, message)
+                return {"ok": False, "reason": reason, "message": message}
+
+            message["status"] = "delivered"
             _append_jsonl(root / MESSAGE_LOG, message)
-            return {"ok": False, "reason": reason, "message": message}
-
-        message["status"] = "delivered"
-        _append_jsonl(root / MESSAGE_LOG, message)
-        for target in message["to"]:
-            _append_jsonl(root / "inboxes" / safe_agent_filename(target), message)
-        return {"ok": True, "message": message}
+            for target in message["to"]:
+                _append_jsonl(root / "inboxes" / safe_agent_filename(target), message)
+            return {"ok": True, "message": message}
 
 
 def read_messages(run_dir: str | Path) -> list[dict[str, Any]]:
