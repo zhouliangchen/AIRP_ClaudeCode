@@ -911,10 +911,15 @@ def _critic_fingerprint(critic_report: Dict[str, Any]) -> str:
     return json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _normalized_critic_fingerprint(critic_report: Dict[str, Any]) -> str:
+    routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
+    return _critic_fingerprint({**critic_report, "repair_routing": routing})
+
+
 def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict[str, Any], critic_report: Dict[str, Any]) -> Dict[str, Any]:
     history_path = run_dir / "repair_history.jsonl"
     existing = _read_jsonl(history_path)
-    fingerprint = _critic_fingerprint(critic_report)
+    fingerprint = _normalized_critic_fingerprint(critic_report)
     for entry in existing:
         if entry.get("fingerprint") == fingerprint:
             entry["recorded"] = False
@@ -956,20 +961,21 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
     return entry
 
 
-def _pending_repair_request_intent(run_dir: Path, fingerprint: str) -> Dict[str, Any] | None:
-    for intent in agent_intents.list_intents(run_dir, "pending"):
-        if intent.get("requested_by") != "critic" or intent.get("type") != "repair_request":
-            continue
-        payload = intent.get("payload")
-        if isinstance(payload, dict) and payload.get("repair_fingerprint") == fingerprint:
-            return {"ok": True, "intent": intent, "deduped": True}
+def _existing_repair_request_intent(run_dir: Path, fingerprint: str) -> Dict[str, Any] | None:
+    for state in ("pending", "blocked"):
+        for intent in agent_intents.list_intents(run_dir, state):
+            if intent.get("requested_by") != "critic" or intent.get("type") != "repair_request":
+                continue
+            payload = intent.get("payload")
+            if isinstance(payload, dict) and payload.get("repair_fingerprint") == fingerprint:
+                return {"ok": True, "intent": intent, "deduped": True}
     return None
 
 
 def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:
     routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
-    fingerprint = _critic_fingerprint({**critic_report, "repair_routing": routing})
-    existing = _pending_repair_request_intent(run_dir, fingerprint)
+    fingerprint = _normalized_critic_fingerprint(critic_report)
+    existing = _existing_repair_request_intent(run_dir, fingerprint)
     if existing is not None:
         return existing
 
@@ -988,7 +994,11 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
             },
         },
     )
+    if not isinstance(message, dict) or not message.get("ok"):
+        raise AgentOutputError(f"repair_request message append failed: {message!r}")
     source_message_id = (message.get("message") or {}).get("id", "")
+    if not source_message_id:
+        raise AgentOutputError("repair_request source message id is missing")
     return agent_intents.create_intent(
         run_dir,
         {
@@ -1002,6 +1012,29 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
                 "repair_routing": routing,
                 "repair_fingerprint": fingerprint,
             },
+        },
+    )
+
+
+def _block_repair_request_intent(
+    run_dir: Path,
+    intent_result: Dict[str, Any],
+    reason: str,
+    critic_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    intent = intent_result.get("intent") if isinstance(intent_result, dict) else None
+    intent_id = intent.get("id", "") if isinstance(intent, dict) else ""
+    if not intent_id:
+        raise AgentOutputError("repair_request intent id is missing")
+    return agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={
+            "delivery_reason": reason,
+            "critic_decision": critic_report.get("decision", ""),
+            "critic_report_path": "critic.report.json",
+            "repair_routing": self_repair.normalize_repair_routing(critic_report.get("repair_routing")),
         },
     )
 
@@ -1045,24 +1078,28 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        _record_repair_request_intent(run_dir, critic_report)
+        intent_result = _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
+            _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        _record_repair_request_intent(run_dir, critic_report)
+        intent_result = _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
+            _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
         _increment_critic_retry(run_dir, manifest)

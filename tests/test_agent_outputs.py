@@ -231,6 +231,16 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertTrue(any(message["id"] == intent["source_message_id"] for message in messages))
         return intent
 
+    def _repair_request_intents(self, state):
+        state_dir = self.run_dir / "intents" / state
+        if not state_dir.exists():
+            return []
+        intents = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(state_dir.glob("intent_*.json"))
+        ]
+        return [intent for intent in intents if intent.get("type") == "repair_request"]
+
     def test_build_story_input_assembles_loop_outputs_and_memory_deltas(self):
         story_input = self.agent_outputs.build_story_input(self.run_dir)
 
@@ -2363,6 +2373,8 @@ class AgentOutputsTest(unittest.TestCase):
         }
         intent = self._assert_single_repair_request_intent(expected_routing)
         self.assertEqual(intent["payload"]["repair_instruction"], "Rewrite the stop point.")
+        history = _read_jsonl(self.run_dir / "repair_history.jsonl")
+        self.assertEqual(history[0]["fingerprint"], intent["payload"]["repair_fingerprint"])
 
     def test_prepare_delivery_writes_repair_request_intent_for_critic_block(self):
         routing = {
@@ -2433,6 +2445,12 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(result["reason"], "self_repair_mode_blocks_route")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest.get("critic_retry_count", 0), 0)
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "self_repair_mode_blocks_route")
+        self.assertEqual(blocked_intents[0]["result"]["outputs"]["delivery_reason"], "self_repair_mode_blocks_route")
+        self.assertEqual(blocked_intents[0]["result"]["outputs"]["critic_decision"], "revise")
 
     def test_prepare_delivery_full_mode_allows_progression_repair_route(self):
         (self.styles_dir / "settings.json").write_text(
@@ -2496,6 +2514,44 @@ class AgentOutputsTest(unittest.TestCase):
         final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(final_manifest["stage"], "blocked")
         self.assertEqual(final_manifest["critic_retry_count"], 2)
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "critic_retry_limit")
+        self.assertEqual(blocked_intents[0]["result"]["outputs"]["delivery_reason"], "critic_retry_limit")
+        self.assertEqual(blocked_intents[0]["result"]["outputs"]["critic_decision"], "block")
+
+    def test_prepare_delivery_fails_fast_when_repair_request_message_rejected(self):
+        self._write_story_and_critic(decision="revise")
+        original_append_message = self.agent_outputs.agent_messages.append_message
+
+        def reject_message(run_dir, message):
+            return {"ok": False, "reason": "schema_rejected", "error": "bad message"}
+
+        self.agent_outputs.agent_messages.append_message = reject_message
+        try:
+            with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "repair_request message"):
+                self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        finally:
+            self.agent_outputs.agent_messages.append_message = original_append_message
+
+        self.assertEqual(self._repair_request_intents("pending"), [])
+
+    def test_prepare_delivery_fails_fast_when_repair_request_message_has_no_id(self):
+        self._write_story_and_critic(decision="revise")
+        original_append_message = self.agent_outputs.agent_messages.append_message
+
+        def message_without_id(run_dir, message):
+            return {"ok": True, "message": {"type": "repair_request"}}
+
+        self.agent_outputs.agent_messages.append_message = message_without_id
+        try:
+            with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source message id"):
+                self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        finally:
+            self.agent_outputs.agent_messages.append_message = original_append_message
+
+        self.assertEqual(self._repair_request_intents("pending"), [])
 
     def test_prepare_delivery_repair_attempt_uses_repair_history_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
