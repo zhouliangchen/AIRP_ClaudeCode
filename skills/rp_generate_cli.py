@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+import agent_intents
 import agent_outputs
 import agent_prompts
 import agent_run
@@ -594,6 +595,27 @@ def _delivery_complete(delivery: Dict[str, Any]) -> bool:
     if delivery_result.get("ok") is False:
         complete = False
     return complete
+
+
+def _pending_repair_intents(run_dir: Path) -> list[dict[str, Any]]:
+    return [item for item in agent_intents.list_intents(run_dir, "pending") if item.get("type") == "repair_request"]
+
+
+def _complete_pending_repair_intents(run_dir: Path, outputs: Dict[str, Any]) -> None:
+    for intent in _pending_repair_intents(run_dir):
+        agent_intents.complete_intent(run_dir, intent.get("id", ""), outputs=outputs)
+
+
+def _block_pending_repair_intents(run_dir: Path, reason: str, outputs: Dict[str, Any]) -> None:
+    for intent in _pending_repair_intents(run_dir):
+        agent_intents.block_intent(run_dir, intent.get("id", ""), reason, outputs=outputs)
+
+
+def _repair_intent_delivery_output(delivery: Dict[str, Any]) -> Dict[str, Any]:
+    delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
+    output = dict(delivery_result)
+    output["ok"] = _delivery_complete(delivery)
+    return output
 
 
 def _load_existing_story_input(run_dir: Path) -> Dict[str, Any] | None:
@@ -1313,6 +1335,7 @@ def run_round(
     delivery = _run_delivery(card, root, run_command)
     delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
     repair_attempt = 0
+    repair_intents_blocked = False
     while (
         not _delivery_complete(delivery)
         and delivery_result.get("action") == "retry"
@@ -1334,6 +1357,12 @@ def run_round(
         repair_routing = self_repair.routing_from_delivery_result(delivery_result)
         repair_decision = _delivery_retry_decision(delivery_result)
         if not self_repair.policy_allows_route(repair_policy, repair_routing, repair_decision):
+            _block_pending_repair_intents(
+                run_dir,
+                "repair_not_completed",
+                {"delivery": _repair_intent_delivery_output(delivery)},
+            )
+            repair_intents_blocked = True
             break
         if repair_routing.get("rollback") == "round_progression":
             _reset_round_progression_outputs(run_dir)
@@ -1346,6 +1375,17 @@ def run_round(
         delivery = _run_delivery(card, root, run_command)
         delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
     delivery_complete = _delivery_complete(delivery)
+    if delivery_complete and repair_attempt > 0:
+        _complete_pending_repair_intents(
+            run_dir,
+            {"delivery": _repair_intent_delivery_output(delivery)},
+        )
+    elif delivery_result.get("action") == "retry" and not repair_intents_blocked:
+        _block_pending_repair_intents(
+            run_dir,
+            "repair_not_completed",
+            {"delivery": _repair_intent_delivery_output(delivery)},
+        )
     return {
         "ok": delivery_complete,
         "action": "generated",

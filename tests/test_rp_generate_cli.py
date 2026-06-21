@@ -214,6 +214,7 @@ class RpGenerateCliTest(unittest.TestCase):
             },
         )
         self.module = _load_rp_generate_cli()
+        self.agent_intents = importlib.import_module("agent_intents")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -1118,6 +1119,8 @@ class RpGenerateCliTest(unittest.TestCase):
     def test_limited_mode_does_not_auto_repair_progression_routing(self):
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "limited", "wordCount": 1})
         calls = []
+        repair_intent_id = None
+        non_repair_intent_id = None
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
             story=_story_output("<content>坏分支。</content>"),
@@ -1128,6 +1131,24 @@ class RpGenerateCliTest(unittest.TestCase):
             return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
+            nonlocal repair_intent_id, non_repair_intent_id
+            if repair_intent_id is None:
+                repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "repair_request",
+                        "payload": {"reason": "progression retry blocked by policy"},
+                    },
+                )["intent"]["id"]
+                non_repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "memory_update",
+                        "payload": {"note": "must remain pending"},
+                    },
+                )["intent"]["id"]
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
@@ -1152,6 +1173,16 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(calls.count("gm"), 1)
         self.assertEqual(calls.count("story"), 1)
+        blocked_intents = self.agent_intents.list_intents(self.run_dir, "blocked")
+        blocked_repair = [item for item in blocked_intents if item["id"] == repair_intent_id]
+        self.assertEqual(len(blocked_repair), 1)
+        self.assertEqual(blocked_repair[0]["type"], "repair_request")
+        self.assertEqual(blocked_repair[0]["result"]["reason"], "repair_not_completed")
+        blocked_delivery = blocked_repair[0]["result"]["outputs"]["delivery"]
+        self.assertEqual(blocked_delivery["action"], result["delivery"]["result"]["action"])
+        self.assertEqual(blocked_delivery["reason"], result["delivery"]["result"]["reason"])
+        pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
 
     def test_run_round_retries_once_when_agent_returns_invalid_schema(self):
         calls = []
@@ -1275,6 +1306,8 @@ class RpGenerateCliTest(unittest.TestCase):
         calls = []
         progress_calls = []
         self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        repair_intent_id = None
+        non_repair_intent_id = None
         story_payloads = [
             {
                 "content": "<content>Too short.</content>",
@@ -1303,8 +1336,25 @@ class RpGenerateCliTest(unittest.TestCase):
         delivery_attempts = []
 
         def fake_delivery(command, **kwargs):
+            nonlocal repair_intent_id, non_repair_intent_id
             delivery_attempts.append(command)
             if len(delivery_attempts) == 1:
+                repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "repair_request",
+                        "payload": {"reason": "story rewrite required"},
+                    },
+                )["intent"]["id"]
+                non_repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "memory_update",
+                        "payload": {"note": "must remain pending"},
+                    },
+                )["intent"]["id"]
                 return SimpleNamespace(returncode=0, stdout='{"action":"retry","word_count":{"current":10,"threshold":100}}\n', stderr="")
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
@@ -1329,6 +1379,15 @@ class RpGenerateCliTest(unittest.TestCase):
             retry_details,
             [{"attempt": 1, "max_attempts": 1, "reason": ""}],
         )
+        completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
+        completed_repair = [item for item in completed_intents if item["id"] == repair_intent_id]
+        self.assertEqual(len(completed_repair), 1)
+        self.assertEqual(completed_repair[0]["type"], "repair_request")
+        completed_delivery = completed_repair[0]["result"]["outputs"]["delivery"]
+        self.assertTrue(completed_delivery["ok"])
+        self.assertEqual(completed_delivery["action"], result["delivery"]["result"]["action"])
+        pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
 
     def test_run_round_rewrites_story_once_when_critic_requests_revision(self):
         calls = []
