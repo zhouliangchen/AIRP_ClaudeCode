@@ -790,11 +790,14 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
     import agent_interactions
+    import agent_intents
     import agent_lifecycle
     import agent_memory
+    import agent_messages
     import agent_outputs
     import agent_packets
     import agent_schemas
+    import agent_snapshots
     import agent_turn_loop
     import round_state
     import subgm_threads
@@ -816,6 +819,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             },
         }
         _write_json(card / ".card_data.json", card_data)
+        snapshot = agent_snapshots.create_snapshot(card, "round-smoke", reason="control_plane_smoke")
 
         input_payload = {
             "input_schema": "dual_channel_v1",
@@ -918,6 +922,14 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         post_round_manifest = manifest.get("post_round_memory_jobs", {})
         if not isinstance(post_round_manifest, dict):
             post_round_manifest = {}
+        messages = agent_messages.read_messages(run_dir)
+        intent_counts = {
+            "pending": len(agent_intents.list_intents(run_dir, "pending")),
+            "accepted": len(agent_intents.list_intents(run_dir, "accepted")),
+            "rejected": len(agent_intents.list_intents(run_dir, "rejected")),
+            "completed": len(agent_intents.list_intents(run_dir, "completed")),
+            "blocked": len(agent_intents.list_intents(run_dir, "blocked")),
+        }
 
         return {
             "ok": True,
@@ -972,6 +984,12 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 or ("pending" if post_round_jobs.get("scheduled") else "not_required"),
                 "scheduled_count": len(post_round_jobs.get("scheduled", [])),
             },
+            "messages": {
+                "total": len(messages),
+                "types": sorted({str(item.get("type") or "") for item in messages}),
+            },
+            "intents": intent_counts,
+            "snapshot": snapshot,
         }
 
 
