@@ -32,16 +32,20 @@ def _clean_text_list(value: Any) -> list[str]:
     return result
 
 
-def _sync_message_inbox_alias(run_dir: Path, agent_id: str, filename: str) -> None:
-    rows = agent_messages.read_inbox(run_dir, agent_id)
-    if not rows:
-        return
-    path = run_dir / "inboxes" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
-            handle.write("\n")
+def _append_required_message(run_dir: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = agent_messages.append_message(run_dir, payload)
+    if isinstance(result, dict) and result.get("ok") is True:
+        message = result.get("message")
+        return message if isinstance(message, dict) else {}
+
+    message_type = _to_text(payload.get("type")).strip() or "<unknown>"
+    reason = "invalid_result"
+    error = ""
+    if isinstance(result, dict):
+        reason = _to_text(result.get("reason")).strip() or reason
+        error = _to_text(result.get("error")).strip()
+    detail = f": {error}" if error else ""
+    raise RuntimeError(f"required message append failed for {message_type}: {reason}{detail}")
 
 
 def _clip_text(value: Any, limit: int) -> str:
@@ -614,7 +618,7 @@ def prepare_agent_run(
     }
     if raw_text_hash:
         input_received_payload["raw_text_hash"] = raw_text_hash
-    agent_messages.append_message(
+    _append_required_message(
         run_dir,
         {
             "from": "main_agent",
@@ -624,7 +628,7 @@ def prepare_agent_run(
             "payload": input_received_payload,
         },
     )
-    agent_messages.append_message(
+    _append_required_message(
         run_dir,
         {
             "from": "main_agent",
@@ -637,7 +641,6 @@ def prepare_agent_run(
             },
         },
     )
-    _sync_message_inbox_alias(run_dir, "input_analyst", "input_analyst.jsonl")
 
     gm_packet = build_gm_packet(
         card_folder,
@@ -730,7 +733,7 @@ def rebuild_agent_run_from_analysis(
         "visible_events": world_state["visible_events"],
     }
     agent_run.write_json(root / "input.json", input_json)
-    agent_messages.append_message(
+    _append_required_message(
         root,
         {
             "from": "input_analyst",

@@ -14,6 +14,7 @@ from typing import Any
 VALID_VISIBILITIES = {"gm_only", "story_facing", "actor_facing", "public"}
 MESSAGE_LOG = "messages.jsonl"
 LOCK_FILE = ".messages.lock"
+SIMPLE_CURRENT_RUNTIME_AGENT_IDS = {"input_analyst"}
 # Single-process critical section for deterministic IDs and matching log/inbox appends.
 _APPEND_LOCK = threading.RLock()
 
@@ -72,6 +73,8 @@ def safe_agent_filename(agent_id: str) -> str:
 
     if not isinstance(agent_id, str) or not agent_id:
         raise AgentMessageError("agent_id must be a non-empty string")
+    if agent_id in SIMPLE_CURRENT_RUNTIME_AGENT_IDS:
+        return f"{agent_id}.jsonl"
     safe = "".join(_safe_filename_char(char) for char in agent_id)
     if _is_simple_agent_id(agent_id):
         return f"{safe}.jsonl"

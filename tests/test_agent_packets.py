@@ -1678,6 +1678,32 @@ class AgentPacketTest(unittest.TestCase):
             },
         )
 
+    def test_prepare_agent_run_fails_when_message_runtime_initialization_fails(self):
+        original_append_message = self.agent_packets.agent_messages.append_message
+
+        def fail_append(_run_dir, _payload):
+            return {"ok": False, "reason": "schema_rejected", "error": "bad payload"}
+
+        self.agent_packets.agent_messages.append_message = fail_append
+        try:
+            with self.assertRaisesRegex(RuntimeError, "input_received.*schema_rejected.*bad payload"):
+                self.agent_packets.prepare_agent_run(
+                    self.card,
+                    user_text="fallback should not win",
+                    chat_log=[],
+                    card_data={"title": "Message Runtime Failure Test"},
+                    character_contexts={"characters": []},
+                    turn_index=1,
+                    input_payload={
+                        "input_schema": "dual_channel_v1",
+                        "raw_text": "I step inside.",
+                        "role_text": "I step inside.",
+                        "user_instruction_text": "",
+                    },
+                )
+        finally:
+            self.agent_packets.agent_messages.append_message = original_append_message
+
     def test_rebuild_agent_run_from_analysis_records_message_runtime_event(self):
         input_payload = {
             "input_schema": "dual_channel_v1",
@@ -1747,6 +1773,51 @@ class AgentPacketTest(unittest.TestCase):
             if line.strip()
         ]
         self.assertEqual(gm_messages[-1], analysis_applied)
+
+    def test_rebuild_agent_run_from_analysis_fails_when_message_runtime_event_fails(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I check whether Ada notices the seal.",
+            "role_text": "I check whether Ada notices the seal.",
+            "user_instruction_text": "",
+        }
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=[],
+            card_data={"title": "Analysis Applied Message Failure Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+        run_dir = Path(result["run_dir"])
+        raw_request = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        original_append_message = self.agent_packets.agent_messages.append_message
+
+        def fail_append(_run_dir, _payload):
+            return {"ok": False, "reason": "acl_rejected"}
+
+        self.agent_packets.agent_messages.append_message = fail_append
+        try:
+            with self.assertRaisesRegex(RuntimeError, "analysis_applied.*acl_rejected"):
+                self.agent_packets.rebuild_agent_run_from_analysis(
+                    self.card,
+                    run_dir,
+                    {"analysis_mode": "fixture", "source_integrity": raw_request["source_integrity"]},
+                    {
+                        "input_schema": "analysis_v1",
+                        "role_channel": input_payload["role_text"],
+                        "user_instruction_channel": "",
+                        "components": [{"channel": "role", "text": input_payload["role_text"]}],
+                        "characters": [],
+                    },
+                    raw_request,
+                    chat_log=[],
+                    card_data={"title": "Analysis Applied Message Failure Test"},
+                    character_contexts={"characters": []},
+                )
+        finally:
+            self.agent_packets.agent_messages.append_message = original_append_message
 
     def test_input_analyst_prompt_and_skill_define_world_update_record_contract(self):
         result = self.agent_packets.prepare_agent_run(

@@ -116,12 +116,29 @@ class AgentMessagesTest(unittest.TestCase):
 
     def test_safe_agent_filename_preserves_unicode_uniqueness(self):
         self.assertEqual(self.mod.safe_agent_filename("gm"), "gm.jsonl")
+        self.assertEqual(self.mod.safe_agent_filename("input_analyst"), "input_analyst.jsonl")
         self.assertEqual(self.mod.safe_agent_filename("character:Ada"), "character_Ada.jsonl")
         su_li = self.mod.safe_agent_filename("character:苏黎")
         lin_yu = self.mod.safe_agent_filename("character:林雨")
         self.assertNotEqual(su_li, lin_yu)
         self.assertTrue(su_li.endswith(".jsonl"))
         self.assertTrue(lin_yu.endswith(".jsonl"))
+
+    def test_append_message_writes_input_analyst_canonical_inbox(self):
+        result = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "main_agent",
+                "to": ["input_analyst"],
+                "type": "analysis_requested",
+                "visibility": "gm_only",
+                "payload": {"request_path": "input_analysis.request.md"},
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue((self.run_dir / "inboxes" / "input_analyst.jsonl").exists())
+        self.assertEqual(self.mod.read_inbox(self.run_dir, "input_analyst")[0]["id"], "msg_000001")
 
     def test_safe_agent_filename_avoids_escape_shaped_collision(self):
         accented = self.mod.safe_agent_filename("character:é")
