@@ -57,6 +57,10 @@ class _FileLock:
                 if time.monotonic() >= deadline:
                     raise AgentMessageError(f"timed out waiting for message lock: {self.path}")
                 time.sleep(self.poll_interval)
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise AgentMessageError(f"timed out waiting for message lock: {self.path}")
+                time.sleep(self.poll_interval)
 
     def __exit__(self, exc_type, exc, tb):
         if self.fd is not None:

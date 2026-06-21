@@ -52,8 +52,6 @@ class _FileLock:
                     raise AgentIntentError(f"timed out waiting for intent lock: {self.path}")
                 time.sleep(self.poll_interval)
             except PermissionError:
-                if not self.path.exists():
-                    raise
                 if time.monotonic() >= deadline:
                     raise AgentIntentError(f"timed out waiting for intent lock: {self.path}")
                 time.sleep(self.poll_interval)

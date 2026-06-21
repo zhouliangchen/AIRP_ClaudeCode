@@ -307,6 +307,38 @@ if not result["ok"]:
         self.assertTrue(result["ok"])
         self.assertEqual(result["message"]["id"], "msg_000001")
 
+    def test_file_lock_retries_permission_error_when_lock_path_disappeared(self):
+        lock_path = self.run_dir / ".messages.lock"
+        original_open = self.mod.os.open
+        calls = {"count": 0}
+
+        def flaky_open(path, flags, *args):
+            if Path(path) == lock_path and calls["count"] == 0:
+                calls["count"] += 1
+                self.assertFalse(lock_path.exists())
+                raise PermissionError("transient lock access after release")
+            return original_open(path, flags, *args)
+
+        self.mod.os.open = flaky_open
+        try:
+            result = self.mod.append_message(
+                self.run_dir,
+                {
+                    "from": "gm",
+                    "to": ["story"],
+                    "type": "message",
+                    "visibility": "story_facing",
+                    "payload": {"text": "Lock retry allowed this append."},
+                },
+            )
+        finally:
+            self.mod.os.open = original_open
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["message"]["id"], "msg_000001")
+        self.assertEqual(calls["count"], 1)
+        self.assertFalse(lock_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
