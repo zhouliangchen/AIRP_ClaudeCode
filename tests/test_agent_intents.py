@@ -1,7 +1,10 @@
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -115,6 +118,24 @@ class AgentIntentsTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["result"]["reason"], "intent_missing")
 
+    def test_malformed_transition_id_returns_invalid_intent_id_without_writing_files(self):
+        transition_calls = [
+            ("accept", lambda intent_id: self.mod.accept_intent(self.run_dir, intent_id)),
+            ("reject", lambda intent_id: self.mod.reject_intent(self.run_dir, intent_id, "bad")),
+            ("complete", lambda intent_id: self.mod.complete_intent(self.run_dir, intent_id)),
+            ("block", lambda intent_id: self.mod.block_intent(self.run_dir, intent_id, "bad")),
+        ]
+        for name, call in transition_calls:
+            for intent_id in ["../intent_000001", "custom"]:
+                with self.subTest(name=name, intent_id=intent_id):
+                    result = call(intent_id)
+
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["reason"], "invalid_intent_id")
+                    self.assertEqual(result["result"]["reason"], "invalid_intent_id")
+
+        self.assertFalse((self.run_dir / "intents").exists())
+
     def test_block_intent_records_reason_and_returns_false(self):
         created = self.mod.create_intent(
             self.run_dir,
@@ -153,6 +174,137 @@ class AgentIntentsTest(unittest.TestCase):
         self.assertIn(text.encode("utf-8"), raw)
         loaded = json.loads(raw.decode("utf-8"))
         self.assertEqual(loaded["payload"]["text"], text)
+
+    def test_same_process_concurrent_create_intent_allocates_unique_monotonic_ids(self):
+        original_write_json = self.mod._write_json
+
+        def delayed_write_json(path, data):
+            time.sleep(0.05)
+            original_write_json(path, data)
+
+        results = []
+        failures = []
+        results_lock = threading.Lock()
+        self.mod._write_json = delayed_write_json
+        try:
+            def worker(index):
+                try:
+                    result = self.mod.create_intent(
+                        self.run_dir,
+                        {"requested_by": "gm", "type": "project_message", "payload": {"index": index}},
+                    )
+                    with results_lock:
+                        results.append(result["intent"]["id"])
+                except Exception as exc:
+                    with results_lock:
+                        failures.append(repr(exc))
+
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+        finally:
+            self.mod._write_json = original_write_json
+
+        expected = [f"intent_{index:06d}" for index in range(1, 21)]
+        self.assertEqual(failures, [])
+        self.assertEqual(sorted(results), expected)
+        self.assertEqual([item["id"] for item in self.mod.list_intents(self.run_dir)], expected)
+        self.assertFalse((self.run_dir / "intents" / ".intents.lock").exists())
+
+    def test_subprocess_concurrent_create_intent_allocates_unique_monotonic_ids(self):
+        start_file = self.run_dir / "start.txt"
+        code = r"""
+import importlib.util
+import sys
+import time
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+skills_dir = Path(sys.argv[2])
+index = int(sys.argv[3])
+start_file = run_dir / "start.txt"
+sys.path.insert(0, str(skills_dir))
+spec = importlib.util.spec_from_file_location("agent_intents", skills_dir / "agent_intents.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+original_write_json = module._write_json
+
+def delayed_write_json(path, data):
+    time.sleep(0.2)
+    original_write_json(path, data)
+
+module._write_json = delayed_write_json
+while not start_file.exists():
+    time.sleep(0.01)
+result = module.create_intent(
+    run_dir,
+    {"requested_by": "gm", "type": "project_message", "payload": {"index": index}},
+)
+if not result["ok"]:
+    raise RuntimeError(result)
+"""
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", code, str(self.run_dir), str(ROOT / "skills"), str(index)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for index in range(20)
+        ]
+        start_file.write_text("go", encoding="utf-8")
+
+        failures = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=20)
+            if process.returncode != 0:
+                failures.append((process.returncode, stdout, stderr))
+
+        expected = [f"intent_{index:06d}" for index in range(1, 21)]
+        listed = self.mod.list_intents(self.run_dir)
+        self.assertEqual(failures, [])
+        self.assertEqual([item["id"] for item in listed], expected)
+        self.assertFalse((self.run_dir / "intents" / ".intents.lock").exists())
+
+    def test_complete_intent_leaves_file_only_in_completed_state(self):
+        created = self.mod.create_intent(
+            self.run_dir,
+            {"requested_by": "gm", "type": "project_message", "payload": {}},
+        )["intent"]
+
+        self.mod.accept_intent(self.run_dir, created["id"])
+        result = self.mod.complete_intent(self.run_dir, created["id"])
+
+        self.assertTrue(result["ok"])
+        self.assertFalse((self.run_dir / "intents" / "pending" / f"{created['id']}.json").exists())
+        self.assertFalse((self.run_dir / "intents" / "accepted" / f"{created['id']}.json").exists())
+        self.assertTrue((self.run_dir / "intents" / "completed" / f"{created['id']}.json").exists())
+
+    def test_file_lock_cleans_up_when_metadata_write_fails(self):
+        original_write = self.mod.os.write
+
+        def failing_write(fd, data):
+            raise OSError("simulated lock metadata write failure")
+
+        self.mod.os.write = failing_write
+        try:
+            with self.assertRaises(OSError):
+                self.mod.create_intent(
+                    self.run_dir,
+                    {"requested_by": "gm", "type": "project_message", "payload": {}},
+                )
+        finally:
+            self.mod.os.write = original_write
+
+        self.assertFalse((self.run_dir / "intents" / ".intents.lock").exists())
+        result = self.mod.create_intent(
+            self.run_dir,
+            {"requested_by": "gm", "type": "project_message", "payload": {}},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent"]["id"], "intent_000001")
 
 
 if __name__ == "__main__":
