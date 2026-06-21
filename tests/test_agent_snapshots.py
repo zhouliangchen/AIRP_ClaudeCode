@@ -51,12 +51,14 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         snapshot_dir = Path(result["snapshot_dir"])
         self.assertTrue((snapshot_dir / "chat_log.json").exists())
+        self.assertTrue((snapshot_dir / ".card_data.json").exists())
         self.assertTrue((snapshot_dir / "memory" / "project.md").exists())
         metadata = json.loads((snapshot_dir / "snapshot.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["snapshot_id"], result["snapshot_id"])
         self.assertEqual(metadata["round_id"], "round-000001")
         self.assertEqual(metadata["reason"], "before_input")
         self.assertIn("chat_log.json", metadata["copied"])
+        self.assertIn(".card_data.json", metadata["copied"])
         self.assertIn("memory", metadata["copied"])
 
     def test_restore_snapshot_restores_files(self):
