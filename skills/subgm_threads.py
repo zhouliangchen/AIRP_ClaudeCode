@@ -411,6 +411,40 @@ def _append_state_history(
     history.append(_state_history_entry(action, message, metadata))
 
 
+def _gm_message_record(
+    thread_id: str,
+    action: str,
+    content: str,
+    metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    return {
+        "from": "gm",
+        "to": f"subGM:{thread_id}",
+        "thread_id": thread_id,
+        "action": action,
+        "content": str(content or ""),
+        "created_at": _now(),
+        "metadata": dict(metadata or {}),
+    }
+
+
+def _gm_common_message_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+    thread_id = str(record.get("thread_id") or "")
+    return {
+        "from": "gm",
+        "to": [f"subGM:{thread_id}"],
+        "type": "message",
+        "visibility": "gm_only",
+        "thread_id": thread_id,
+        "payload": {
+            "thread_id": thread_id,
+            "action": str(record.get("action") or ""),
+            "content": str(record.get("content") or ""),
+            "metadata": dict(record.get("metadata") or {}),
+        },
+    }
+
+
 def _append_gm_message(
     run_dir: str | Path,
     thread_id: str,
@@ -418,37 +452,9 @@ def _append_gm_message(
     content: str,
     metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    text = str(content or "")
-    meta = dict(metadata or {})
-    record = _append_jsonl(
-        _messages_path(run_dir, thread_id),
-        {
-            "from": "gm",
-            "to": f"subGM:{thread_id}",
-            "thread_id": thread_id,
-            "action": action,
-            "content": text,
-            "created_at": _now(),
-            "metadata": meta,
-        },
-    )
-    _append_common_message(
-        run_dir,
-        {
-            "from": "gm",
-            "to": [f"subGM:{thread_id}"],
-            "type": "message",
-            "visibility": "gm_only",
-            "thread_id": thread_id,
-            "payload": {
-                "thread_id": thread_id,
-                "action": action,
-                "content": text,
-                "metadata": meta,
-            },
-        },
-    )
-    return record
+    record = _gm_message_record(thread_id, action, content, metadata)
+    _append_common_message(run_dir, _gm_common_message_payload(record))
+    return _append_jsonl(_messages_path(run_dir, thread_id), record)
 
 
 def _message_text(command: Dict[str, Any]) -> str:
@@ -487,12 +493,22 @@ def _create_thread(run_dir: str | Path, command: Dict[str, Any]) -> str:
         "updated_at": now,
     }
 
+    start_record = None
+    if _message_text(command):
+        start_record = _gm_message_record(
+            thread_id,
+            "start",
+            _message_text(command),
+            command["metadata"],
+        )
+        _append_common_message(run_dir, _gm_common_message_payload(start_record))
+
     side_dir.mkdir(parents=True, exist_ok=True)
     _write_json(side_dir / "state.json", state)
     (side_dir / "messages.jsonl").write_text("", encoding="utf-8")
     agent_interactions.init_trace(side_dir, participants=[f"subGM:{thread_id}"])
-    if _message_text(command):
-        _append_gm_message(run_dir, thread_id, "start", _message_text(command), command["metadata"])
+    if start_record is not None:
+        _append_jsonl(_messages_path(run_dir, thread_id), start_record)
     return thread_id
 
 
@@ -619,9 +635,6 @@ def append_subgm_message(run_dir: str | Path, thread_id: Any, message: Dict[str,
     if isinstance(message.get("next_resume_point"), str):
         state["next_resume_point"] = message["next_resume_point"]
         state["next_resume_point_updated_at"] = _now()
-    _save_state(run_dir, safe_id, state)
-
-    written = _append_jsonl(_messages_path(run_dir, safe_id), record)
     _append_common_message(
         run_dir,
         {
@@ -634,11 +647,13 @@ def append_subgm_message(run_dir: str | Path, thread_id: Any, message: Dict[str,
                 "thread_id": safe_id,
                 "action": action,
                 "content": content,
-                "status": written.get("status"),
+                "status": record.get("status"),
                 "metadata": dict(metadata),
             },
         },
     )
+    _save_state(run_dir, safe_id, state)
+    written = _append_jsonl(_messages_path(run_dir, safe_id), record)
     return written
 
 

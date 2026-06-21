@@ -358,6 +358,59 @@ class SubgmThreadsTest(unittest.TestCase):
         finally:
             self.subgm_threads.agent_messages.append_message = original_append
 
+    def test_common_message_bus_rejection_during_start_leaves_no_side_thread(self):
+        original_append = self.subgm_threads.agent_messages.append_message
+
+        def reject_append(*_args, **_kwargs):
+            return {"ok": False, "reason": "message bus unavailable"}
+
+        self.subgm_threads.agent_messages.append_message = reject_append
+        try:
+            with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "message bus unavailable"):
+                self.subgm_threads.apply_gm_commands(
+                    self.run_dir,
+                    [start_command(thread_id="side_a", character="character:Ada")],
+                )
+        finally:
+            self.subgm_threads.agent_messages.append_message = original_append
+
+        self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
+        self.assertFalse((self.run_dir / "side_threads").exists())
+
+    def test_common_message_bus_rejection_during_subgm_append_leaves_state_and_log_unchanged(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_a", character="character:Ada")],
+        )
+        state_path = self.run_dir / "side_threads" / "side_a" / "state.json"
+        messages_path = self.run_dir / "side_threads" / "side_a" / "messages.jsonl"
+        state_before = json.loads(state_path.read_text(encoding="utf-8"))
+        messages_before = messages_path.read_text(encoding="utf-8")
+        original_append = self.subgm_threads.agent_messages.append_message
+
+        def reject_append(*_args, **_kwargs):
+            return {"ok": False, "reason": "message bus unavailable"}
+
+        self.subgm_threads.agent_messages.append_message = reject_append
+        try:
+            with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "message bus unavailable"):
+                self.subgm_threads.append_subgm_message(
+                    self.run_dir,
+                    "side_a",
+                    {
+                        "content": "The clue is ready.",
+                        "status": "needs_gm",
+                        "last_scene_beats": ["Ada finds the clue."],
+                        "next_resume_point": "resume near the clue",
+                        "metadata": {"tone": "urgent"},
+                    },
+                )
+        finally:
+            self.subgm_threads.agent_messages.append_message = original_append
+
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), state_before)
+        self.assertEqual(messages_path.read_text(encoding="utf-8"), messages_before)
+
     def test_append_subgm_message_and_load_summaries_for_gm(self):
         self.subgm_threads.apply_gm_commands(self.run_dir, [start_command()])
         self.subgm_threads.append_subgm_message(
