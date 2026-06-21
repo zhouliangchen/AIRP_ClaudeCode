@@ -135,23 +135,29 @@ def _read_character_file(card_folder, name, fname):
 def _initialize_dispatcher_runtime(run_dir):
     """Create the first message and intent for dispatcher-first execution."""
 
-    message_result = agent_messages.append_message(
-        run_dir,
-        {
-            "from": "main_agent",
-            "to": ["input_analyst", "gm"],
-            "type": "input_received",
-            "visibility": "gm_only",
-            "payload": {
-                "input_path": "input.json",
-                "input_raw_path": "input.raw.json",
+    message = _find_input_received_message(run_dir)
+    if message is None:
+        message_result = agent_messages.append_message(
+            run_dir,
+            {
+                "from": "main_agent",
+                "to": ["gm", "input_analyst"],
+                "type": "input_received",
+                "visibility": "gm_only",
+                "payload": _fallback_input_received_payload(run_dir),
             },
-        },
-    )
-    if not message_result.get("ok"):
-        raise RuntimeError(f"failed to append input_received message: {message_result}")
+        )
+        if not message_result.get("ok"):
+            raise RuntimeError(f"failed to append input_received message: {message_result}")
+        message = message_result.get("message", {})
 
-    message_id = (message_result.get("message") or {}).get("id", "")
+    message_id = (message or {}).get("id", "")
+    existing_intent = _find_existing_analyze_input_intent(run_dir, message_id)
+    if existing_intent is not None:
+        return {
+            "message": message,
+            "intent": existing_intent,
+        }
     intent_result = agent_intents.create_intent(
         run_dir,
         {
@@ -168,9 +174,47 @@ def _initialize_dispatcher_runtime(run_dir):
     if not intent_result.get("ok"):
         raise RuntimeError(f"failed to create analyze_input intent: {intent_result}")
     return {
-        "message": message_result.get("message", {}),
+        "message": message,
         "intent": intent_result.get("intent", {}),
     }
+
+
+def _find_input_received_message(run_dir):
+    messages = agent_messages.read_messages(run_dir)
+    input_messages = [
+        item
+        for item in messages
+        if isinstance(item, dict) and item.get("type") == "input_received"
+    ]
+    for item in input_messages:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if payload.get("input_path") == "input.json" and payload.get("raw_path") == "input.raw.json":
+            return item
+    return input_messages[0] if input_messages else None
+
+
+def _fallback_input_received_payload(run_dir):
+    payload = {
+        "input_path": "input.json",
+        "raw_path": "input.raw.json",
+    }
+    raw_record = read_json(Path(run_dir) / "input.raw.json") or {}
+    source_integrity = raw_record.get("source_integrity") if isinstance(raw_record, dict) else {}
+    raw_text_hash = source_integrity.get("raw_text_sha256") if isinstance(source_integrity, dict) else None
+    if raw_text_hash:
+        payload["raw_text_hash"] = raw_text_hash
+    return payload
+
+
+def _find_existing_analyze_input_intent(run_dir, source_message_id):
+    for state in agent_intents.VALID_STATES:
+        for intent in agent_intents.list_intents(run_dir, state):
+            if not isinstance(intent, dict) or intent.get("type") != "analyze_input":
+                continue
+            policy = intent.get("policy") if isinstance(intent.get("policy"), dict) else {}
+            if policy.get("source") == "round_prepare" or intent.get("source_message_id") == source_message_id:
+                return intent
+    return None
 
 
 def build_character_contexts(card_folder, card_data, card_structure, chat_log, user_text):
