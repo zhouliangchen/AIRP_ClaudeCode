@@ -253,18 +253,23 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
 
 
 def _artifact_path(root: Path, relative_path: str) -> Path:
-    legacy_path = root / relative_path
-    if legacy_path.exists():
-        return legacy_path
-    artifact_path = root / "artifacts" / relative_path
-    if artifact_path.exists():
-        return artifact_path
-    return legacy_path
+    return root / "artifacts" / relative_path
 
 
-def _write_artifact_with_legacy_mirror(root: Path, relative_path: str, payload: Dict[str, Any]) -> None:
+def _write_artifact(root: Path, relative_path: str, payload: Dict[str, Any]) -> None:
     agent_run.write_json(root / "artifacts" / relative_path, payload)
-    agent_run.write_json(root / relative_path, payload)
+
+
+def export_delivery_artifact(root: str | Path, relative_path: str) -> Path:
+    """Export an authoritative artifact to the run root for delivery-boundary consumers."""
+    run_dir = Path(root)
+    source = _artifact_path(run_dir, relative_path)
+    if not source.exists():
+        raise AgentOutputError(f"{source.as_posix()}: required artifact is missing")
+    data = _read_json_required(source)
+    destination = run_dir / relative_path
+    agent_run.write_json(destination, data)
+    return destination
 
 
 def _read_raw_trace(root: Path) -> Dict[str, Any]:
@@ -775,7 +780,6 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     if manifest is None:
         raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
 
-    _expected_outputs(manifest)
     input_payload = _read_json_required(root / "input.json")
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     raw_trace, trace_summary = _validate_trace_artifacts(root)
@@ -824,7 +828,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "preserve_character_dialogue_metadata": True,
         },
     }
-    _write_artifact_with_legacy_mirror(root, "story.input.json", story_input)
+    _write_artifact(root, "story.input.json", story_input)
     agent_run.update_manifest_stage(root, "story_ready", "Validated agent outputs and assembled story.input.json.")
     return story_input
 
@@ -936,7 +940,7 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
         "system_iteration_suggestion": critic_report.get("system_iteration_suggestion", ""),
         "repair_routing": self_repair.normalize_repair_routing(critic_report.get("repair_routing")),
         "fingerprint": fingerprint,
-        "source": "critic.report.json",
+        "source": "artifacts/critic.report.json",
         "timestamp": datetime.now(agent_run.CST).isoformat(timespec="seconds"),
     }
     _append_jsonl(history_path, entry)
@@ -953,7 +957,7 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
                 "hard_failures": entry["hard_failures"],
                 "soft_issues": entry["soft_issues"],
                 "repair_routing": entry["repair_routing"],
-                "source": str((run_dir / "critic.report.json").resolve()),
+                "source": str(_artifact_path(run_dir, "critic.report.json").resolve()),
                 "timestamp": entry["timestamp"],
             },
         )
@@ -989,7 +993,7 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
             "requested_by": "critic",
             "type": "repair_request",
             "payload": {
-                "critic_report_path": "critic.report.json",
+                "critic_report_path": "artifacts/critic.report.json",
                 "decision": critic_report.get("decision", ""),
                 "repair_instruction": critic_report.get("repair_instruction", ""),
                 "repair_routing": routing,
@@ -1016,7 +1020,7 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
                     "repair_routing": routing,
                     "repair_fingerprint": fingerprint,
                     "intent_id": intent_id,
-                    "critic_report_path": "critic.report.json",
+                    "critic_report_path": "artifacts/critic.report.json",
                 },
             },
         )
@@ -1081,7 +1085,7 @@ def _block_repair_request_intent(
         outputs={
             "delivery_reason": reason,
             "critic_decision": critic_report.get("decision", ""),
-            "critic_report_path": "critic.report.json",
+            "critic_report_path": "artifacts/critic.report.json",
             "repair_routing": self_repair.normalize_repair_routing(critic_report.get("repair_routing")),
         },
     )
@@ -1112,9 +1116,8 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         return _retry_result("agent_outputs", "Required agent outputs are missing or invalid.", str(exc))
     manifest = _load_manifest(run_dir) or manifest
 
-    expected = _expected_outputs(manifest)
-    story_path = _artifact_path(run_dir, expected.get("story", "story.output.json"))
-    critic_path = _artifact_path(run_dir, expected.get("critic", "critic.report.json"))
+    story_path = _artifact_path(run_dir, "story.output.json")
+    critic_path = _artifact_path(run_dir, "critic.report.json")
 
     try:
         story_output = _load_required(story_path, agent_schemas.validate_story_output)
@@ -1158,6 +1161,8 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 
     response_path = Path(styles_dir) / "response.txt"
+    export_delivery_artifact(run_dir, "story.output.json")
+    export_delivery_artifact(run_dir, "critic.report.json")
     agent_run.write_text(response_path, story_output["content"])
     agent_run.append_manifest_stage(manifest, "critic_passed", "Critic passed and story output was mirrored to response.txt.")
     _write_manifest(run_dir, manifest)

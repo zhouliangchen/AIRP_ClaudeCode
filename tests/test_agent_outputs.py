@@ -18,7 +18,32 @@ def _load_module(name):
     return module
 
 
+ROUND_ARTIFACT_NAMES = {
+    "actor.outputs.json",
+    "critic.report.json",
+    "gm.output.json",
+    "story.input.json",
+    "story.output.json",
+}
+
+
+def _authoritative_test_path(path):
+    if (
+        path.name in ROUND_ARTIFACT_NAMES
+        and path.parent.name.startswith("round-")
+        and path.parent.parent.name == ".agent_runs"
+    ):
+        return path.parent / "artifacts" / path.name
+    return path
+
+
 def _write_json(path, data):
+    path = _authoritative_test_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_root_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -81,7 +106,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -99,7 +124,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -189,7 +214,7 @@ class AgentOutputsTest(unittest.TestCase):
         repair_instruction=None,
     ):
         _write_json(
-            self.run_dir / "story.output.json",
+            self.run_dir / "artifacts" / "story.output.json",
             {
                 "content": "<content>Ada lifted the lamp. \"Stay close,\" she said.</content>",
                 "character_dialogues": [
@@ -199,7 +224,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "critic.report.json",
+            self.run_dir / "artifacts" / "critic.report.json",
             {
                 "decision": decision,
                 "hard_failures": ["logic gap"] if decision == "block" else [],
@@ -220,7 +245,7 @@ class AgentOutputsTest(unittest.TestCase):
         intent = json.loads(pending[0].read_text(encoding="utf-8"))
         self.assertEqual(intent["type"], "repair_request")
         self.assertEqual(intent["requested_by"], "critic")
-        self.assertEqual(intent["payload"]["critic_report_path"], "critic.report.json")
+        self.assertEqual(intent["payload"]["critic_report_path"], "artifacts/critic.report.json")
         self.assertEqual(intent["payload"]["repair_routing"], expected_routing)
 
         messages = _read_jsonl(self.run_dir / "messages.jsonl")
@@ -268,32 +293,36 @@ class AgentOutputsTest(unittest.TestCase):
             story_input["memory_deltas"]["world"],
             [{"scope": "room", "fact": "the door is open"}],
         )
-        self.assertTrue((self.run_dir / "story.input.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "story.input.json").exists())
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
     def test_build_story_input_reads_artifacts_directory_when_present(self):
         artifacts_dir = self.run_dir / "artifacts"
-        artifacts_dir.mkdir()
-        (self.run_dir / "gm.output.json").replace(artifacts_dir / "gm.output.json")
-        (self.run_dir / "actor.outputs.json").replace(artifacts_dir / "actor.outputs.json")
 
         story_input = self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(story_input["round_id"], self.run_dir.name)
-        root_story_input_path = self.run_dir / "story.input.json"
         artifact_story_input_path = artifacts_dir / "story.input.json"
-        self.assertTrue(root_story_input_path.exists())
         self.assertTrue(artifact_story_input_path.exists())
-        self.assertEqual(
-            json.loads(root_story_input_path.read_text(encoding="utf-8")),
-            json.loads(artifact_story_input_path.read_text(encoding="utf-8")),
-        )
+        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertEqual(story_input, json.loads(artifact_story_input_path.read_text(encoding="utf-8")))
+
+    def test_build_story_input_uses_artifacts_when_root_artifacts_conflict(self):
+        artifacts_dir = self.run_dir / "artifacts"
+        _write_root_json(self.run_dir / "gm.output.json", {"agent": "wrong", "outputs": []})
+        _write_root_json(self.run_dir / "actor.outputs.json", {"actor_outputs": {"player": []}})
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["loop_outputs"]["gm"]["agent"], "gm_loop")
+        self.assertTrue((artifacts_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "story.input.json").exists())
 
     def test_build_story_input_uses_loop_outputs_and_trace_v2(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -311,7 +340,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -454,16 +483,16 @@ class AgentOutputsTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 self._write_base_round()
                 sentinel = {"existing": "do not replace"}
-                _write_json(self.run_dir / "story.input.json", sentinel)
+                _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
                 _write_json(
                     self.run_dir / "input.json",
                     {
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
-                            "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                            "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
-                        "hidden_facts": [{"fact": "moon—base—archive"}],
+                        "hidden_facts": [{"fact": "moon base archive"}],
                     },
                 )
                 trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
@@ -491,7 +520,7 @@ class AgentOutputsTest(unittest.TestCase):
                     self.agent_outputs.build_story_input(self.run_dir)
 
                 self.assertEqual(
-                    json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+                    json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
                     sentinel,
                 )
 
@@ -525,9 +554,9 @@ class AgentOutputsTest(unittest.TestCase):
                 "raw_text": "I inspect the signal.",
                 "routed_input": {
                     "role_channel": "I inspect the signal.",
-                    "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                    "user_instruction_channel": "Hidden truth: moon base archive.",
                 },
-                "hidden_facts": [{"fact": "moon—base—archive"}],
+                "hidden_facts": [{"fact": "moon base archive"}],
             },
         )
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
@@ -557,7 +586,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_unknown_raw_trace_status_without_writing_story_input(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         trace["status"] = "definitely_not_a_trace_status"
         _write_json(self.run_dir / "interaction.trace.json", trace)
@@ -566,13 +595,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_rejects_non_exact_raw_trace_status_without_writing_story_input(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         trace["status"] = " INTERACTING "
         _write_json(self.run_dir / "interaction.trace.json", trace)
@@ -581,36 +610,36 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_rejects_missing_interaction_trace_without_writing_story_input(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         (self.run_dir / "interaction.trace.json").unlink()
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_rejects_malformed_interaction_trace(self):
-        if (self.run_dir / "story.input.json").exists():
-            (self.run_dir / "story.input.json").unlink()
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
         (self.run_dir / "interaction.trace.json").write_text("{bad json", encoding="utf-8")
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_legacy_interaction_trace_schema(self):
-        if (self.run_dir / "story.input.json").exists():
-            (self.run_dir / "story.input.json").unlink()
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
         _write_json(
             self.run_dir / "interaction.trace.json",
             {
@@ -628,11 +657,11 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_raw_trace_missing_schema_version_without_writing_story_input(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         trace.pop("schema_version")
         _write_json(self.run_dir / "interaction.trace.json", trace)
@@ -641,15 +670,15 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_rejects_raw_trace_string_or_bool_schema_version(self):
         for schema_version in ("2", True):
             with self.subTest(schema_version=schema_version):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
                 trace["schema_version"] = schema_version
                 _write_json(self.run_dir / "interaction.trace.json", trace)
@@ -657,13 +686,13 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "schema_version"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
                 trace["schema_version"] = 2
                 _write_json(self.run_dir / "interaction.trace.json", trace)
 
     def test_build_story_input_rejects_raw_trace_events_that_are_not_a_list(self):
-        if (self.run_dir / "story.input.json").exists():
-            (self.run_dir / "story.input.json").unlink()
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         trace["events"] = {"actor": "player", "source_call_id": "call-player-1"}
         _write_json(self.run_dir / "interaction.trace.json", trace)
@@ -671,10 +700,10 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "events"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_blocks_missing_required_actor_outputs(self):
-        (self.run_dir / "actor.outputs.json").unlink()
+        (self.run_dir / "artifacts" / "actor.outputs.json").unlink()
         _write_json(
             self.run_dir / "player.output.json",
             {
@@ -690,7 +719,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_legacy_gm_output(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm",
                 "scene_beats": [{"content": "legacy direct gm output"}],
@@ -708,7 +737,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_empty_gm_loop_outputs(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [],
@@ -720,7 +749,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_actor_outputs_value_that_is_not_a_list(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": {
                     "agent": "player",
@@ -736,7 +765,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_actor_map_key_agent_id_mismatch(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
                     {
@@ -757,7 +786,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_invalid_empty_actor_map_key(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "gm_only": [],
             },
@@ -766,7 +795,7 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm_only"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_hidden_marker_actor_map_keys_even_when_empty(self):
         for actor_key, expected in (
@@ -775,10 +804,10 @@ class AgentOutputsTest(unittest.TestCase):
             ("gm_only", "gm_only"),
         ):
             with self.subTest(actor_key=actor_key):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
-                    self.run_dir / "actor.outputs.json",
+                    self.run_dir / "artifacts" / "actor.outputs.json",
                     {
                         actor_key: [],
                     },
@@ -787,11 +816,11 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, expected):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_without_actor_output(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -817,7 +846,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -835,12 +864,12 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "character:Ada"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_extra_actor_output_branch_without_trace_source_event(self):
-        if (self.run_dir / "story.input.json").exists():
-            (self.run_dir / "story.input.json").unlink()
-        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
+        actor_outputs = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
         actor_outputs["character:Eve"] = [
             {
                 "agent": "character",
@@ -852,18 +881,18 @@ class AgentOutputsTest(unittest.TestCase):
                 "stop_reason": "continue",
             }
         ]
-        _write_json(self.run_dir / "actor.outputs.json", actor_outputs)
+        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
 
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "character:Eve"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_untraced_actor_event_without_writing_story_input(self):
-        if (self.run_dir / "story.input.json").exists():
-            (self.run_dir / "story.input.json").unlink()
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -899,13 +928,13 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "memory_delta"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_actor_output_mixing_trace_source_call_ids(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -923,7 +952,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -965,15 +994,15 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_rejects_trace_backed_event_with_changed_safe_target(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -991,7 +1020,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -1024,13 +1053,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_accepts_trace_backed_actor_output_without_persisted_gm_call(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1048,7 +1077,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:SuLi": [
                     {
@@ -1091,7 +1120,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_requires_actor_output_count_for_each_gm_call(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1127,13 +1156,13 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "character:Ada"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_backed_by_different_trace_source_call_id(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1159,7 +1188,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
                     {
@@ -1202,7 +1231,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
@@ -1219,7 +1248,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1248,7 +1277,7 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "hidden phrase"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_visibility_basis_copied_hidden_phrase(self):
         _write_json(
@@ -1263,7 +1292,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1296,7 +1325,7 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "visibility_basis"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_perception_response_hidden_phrase_fields(self):
         cases = (
@@ -1305,8 +1334,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, content, basis_summary in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1319,7 +1348,7 @@ class AgentOutputsTest(unittest.TestCase):
                     },
                 )
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1357,7 +1386,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"perception_responses\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_visibility_basis_hidden_markers(self):
         cases = (
@@ -1370,10 +1399,10 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for visibility_basis in cases:
             with self.subTest(visibility_basis=visibility_basis):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1402,11 +1431,11 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "visibility_basis"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_hidden_fact_visibility_field(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1436,15 +1465,15 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "visible_to"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_guard_extra_visibility_field_markers(self):
         for marker in ("private_notes", "hidden_text", "gm_only_text"):
             with self.subTest(marker=marker):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1474,7 +1503,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source_actor"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_compact_hidden_markers(self):
         valid_visibility_basis = _visibility_basis("player")
@@ -1497,8 +1526,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, overrides in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 call = {
                     "call_id": "call-player-1",
                     "actor_id": "player",
@@ -1509,7 +1538,7 @@ class AgentOutputsTest(unittest.TestCase):
                 }
                 call.update(overrides)
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1530,7 +1559,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, field):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_hidden_markers_in_prompt_reason_and_metadata(self):
         valid_visibility_basis = {
@@ -1561,10 +1590,10 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, prompt, reason, metadata, visibility_basis in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1594,7 +1623,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, field):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_scene_beat_hidden_phrase_and_marker_fields(self):
         cases = (
@@ -1616,8 +1645,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, content, metadata, visibility_fields in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1630,7 +1659,7 @@ class AgentOutputsTest(unittest.TestCase):
                     },
                 )
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1651,7 +1680,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"scene_beats\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_event_hidden_phrase_and_marker_fields(self):
         cases = (
@@ -1673,8 +1702,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, content, metadata, visibility_fields in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1687,7 +1716,7 @@ class AgentOutputsTest(unittest.TestCase):
                     },
                 )
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1713,7 +1742,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_event_source_call_id_and_target_hidden_values(self):
         cases = (
@@ -1738,8 +1767,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, value, hidden_text, hidden_facts in cases:
             with self.subTest(field=field, value=value):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1757,7 +1786,7 @@ class AgentOutputsTest(unittest.TestCase):
                 }
                 event[field] = value
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1778,7 +1807,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_event_source_call_id_and_target_separator_hidden_phrases(self):
         cases = (
@@ -1787,12 +1816,12 @@ class AgentOutputsTest(unittest.TestCase):
             ("source_call_id", "moon/base/archive"),
             ("target", "moon:base:archive"),
             ("source_call_id", "moon|base|archive"),
-            ("target", "moon—base—archive"),
+            ("target", "moon base archive"),
         )
         for field, value in cases:
             with self.subTest(field=field, value=value):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1810,7 +1839,7 @@ class AgentOutputsTest(unittest.TestCase):
                 }
                 event[field] = value
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1831,7 +1860,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_event_separator_hidden_phrases_from_unicode_source_phrase(self):
         cases = (
@@ -1841,17 +1870,17 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, value in cases:
             with self.subTest(field=field, value=value):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
-                            "user_instruction_channel": "Hidden truth: moon—base—archive.",
+                            "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
-                        "hidden_facts": [{"fact": "moon—base—archive"}],
+                        "hidden_facts": [{"fact": "moon base archive"}],
                     },
                 )
                 event = {
@@ -1860,7 +1889,7 @@ class AgentOutputsTest(unittest.TestCase):
                 }
                 event[field] = value
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1881,7 +1910,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"events\[0\].{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_decision_point_hidden_phrase_fields(self):
         cases = (
@@ -1890,8 +1919,8 @@ class AgentOutputsTest(unittest.TestCase):
         )
         for field, decision_point in cases:
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    (self.run_dir / "story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    (self.run_dir / "artifacts" / "story.input.json").unlink()
                 _write_json(
                     self.run_dir / "input.json",
                     {
@@ -1904,7 +1933,7 @@ class AgentOutputsTest(unittest.TestCase):
                     },
                 )
                 _write_json(
-                    self.run_dir / "gm.output.json",
+                    self.run_dir / "artifacts" / "gm.output.json",
                     {
                         "agent": "gm_loop",
                         "outputs": [
@@ -1925,7 +1954,7 @@ class AgentOutputsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"decision_point.*{field}"):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_invalid_gm_stop_reason_without_writing_story_input(self):
         _write_json(
@@ -1940,7 +1969,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -1961,7 +1990,7 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "stop_reason"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_allows_enum_stop_reason_matching_hidden_phrase_tokens(self):
         _write_json(
@@ -1976,7 +2005,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -2003,9 +2032,9 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}
-        _write_json(self.run_dir / "story.input.json", sentinel)
+        _write_json(self.run_dir / "artifacts" / "story.input.json", sentinel)
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -2031,7 +2060,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
                     {
@@ -2083,13 +2112,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
             sentinel,
         )
 
     def test_build_story_input_allows_one_actor_output_for_one_gm_call(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -2121,7 +2150,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_allows_multiple_actor_outputs_for_exact_gm_call_ids(self):
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -2154,7 +2183,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
                     {
@@ -2208,7 +2237,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_memory_delta_event_source_field(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -2233,7 +2262,7 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_build_story_input_rejects_actor_event_metadata_hidden_marker(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -2256,11 +2285,11 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm_only"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_legacy_actor_output_item(self):
         _write_json(
-            self.run_dir / "actor.outputs.json",
+            self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
                     {
@@ -2351,7 +2380,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(history[0]["repair_instruction"], "Revise sensory continuity.")
         self.assertEqual(history[0]["repair_routing"]["stage"], "story_composition")
         self.assertEqual(history[0]["repair_routing"]["rollback"], "story_only")
-        self.assertEqual(history[0]["source"], "critic.report.json")
+        self.assertEqual(history[0]["source"], "artifacts/critic.report.json")
 
     def test_prepare_delivery_writes_repair_request_intent_for_critic_revise(self):
         routing = {"stage": "story_composition", "rollback": "story_only", "risk": "low"}
@@ -2541,7 +2570,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(queue[0]["round_id"], "round-000001")
         self.assertEqual(queue[0]["decision"], "block")
         self.assertEqual(queue[0]["suggestion"], "Add a context-isolation regression test.")
-        self.assertEqual(queue[0]["source"], str((self.run_dir / "critic.report.json").resolve()))
+        self.assertEqual(queue[0]["source"], str((self.run_dir / "artifacts" / "critic.report.json").resolve()))
 
     def test_prepare_delivery_returns_terminal_block_after_retry_limit(self):
         (self.styles_dir / "settings.json").write_text(
@@ -2742,9 +2771,6 @@ class AgentOutputsTest(unittest.TestCase):
     def test_prepare_delivery_reads_story_and_critic_from_artifacts_directory(self):
         self._write_story_and_critic(decision="pass")
         artifacts_dir = self.run_dir / "artifacts"
-        artifacts_dir.mkdir()
-        (self.run_dir / "story.output.json").replace(artifacts_dir / "story.output.json")
-        (self.run_dir / "critic.report.json").replace(artifacts_dir / "critic.report.json")
 
         result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
@@ -2753,6 +2779,35 @@ class AgentOutputsTest(unittest.TestCase):
             result["story_output"]["content"],
             (self.styles_dir / "response.txt").read_text(encoding="utf-8"),
         )
+
+    def test_prepare_delivery_ignores_conflicting_root_story_and_critic(self):
+        self._write_story_and_critic(decision="pass")
+        artifacts_dir = self.run_dir / "artifacts"
+        self.assertTrue((artifacts_dir / "story.output.json").exists())
+        self.assertTrue((artifacts_dir / "critic.report.json").exists())
+        _write_root_json(
+            self.run_dir / "story.output.json",
+            {
+                "content": "<content>Wrong root story.</content>",
+                "character_dialogues": [],
+                "metadata": {"round_id": "round-000001"},
+            },
+        )
+        _write_root_json(
+            self.run_dir / "critic.report.json",
+            {
+                "decision": "block",
+                "hard_failures": ["root conflict"],
+                "soft_issues": [],
+                "repair_instruction": "Do not use root critic.",
+                "system_iteration_suggestion": "",
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertIn("Ada lifted the lamp", (self.styles_dir / "response.txt").read_text(encoding="utf-8"))
 
     def test_mark_delivered_updates_manifest_stage(self):
         self._write_story_and_critic(decision="pass")
