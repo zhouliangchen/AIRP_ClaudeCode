@@ -181,16 +181,17 @@ def _initialize_dispatcher_runtime(run_dir):
 
 def _find_input_received_message(run_dir):
     messages = agent_messages.read_messages(run_dir)
-    input_messages = [
-        item
-        for item in messages
-        if isinstance(item, dict) and item.get("type") == "input_received"
-    ]
-    for item in input_messages:
+    for item in messages:
+        if not isinstance(item, dict) or item.get("type") != "input_received":
+            continue
+        if not isinstance(item.get("id"), str) or not item.get("id"):
+            continue
+        if item.get("status") != "delivered":
+            continue
         payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
         if payload.get("input_path") == "input.json" and payload.get("raw_path") == "input.raw.json":
             return item
-    return input_messages[0] if input_messages else None
+    return None
 
 
 def _fallback_input_received_payload(run_dir):
@@ -207,12 +208,13 @@ def _fallback_input_received_payload(run_dir):
 
 
 def _find_existing_analyze_input_intent(run_dir, source_message_id):
+    if not isinstance(source_message_id, str) or not source_message_id:
+        return None
     for state in agent_intents.VALID_STATES:
         for intent in agent_intents.list_intents(run_dir, state):
             if not isinstance(intent, dict) or intent.get("type") != "analyze_input":
                 continue
-            policy = intent.get("policy") if isinstance(intent.get("policy"), dict) else {}
-            if policy.get("source") == "round_prepare" or intent.get("source_message_id") == source_message_id:
+            if intent.get("source_message_id") == source_message_id:
                 return intent
     return None
 

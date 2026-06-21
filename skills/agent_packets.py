@@ -33,6 +33,10 @@ def _clean_text_list(value: Any) -> list[str]:
 
 
 def _append_required_message(run_dir: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    for message in agent_messages.read_messages(run_dir):
+        if _is_equivalent_delivered_message(message, payload):
+            return message
+
     result = agent_messages.append_message(run_dir, payload)
     if isinstance(result, dict) and result.get("ok") is True:
         message = result.get("message")
@@ -46,6 +50,17 @@ def _append_required_message(run_dir: Path, payload: Dict[str, Any]) -> Dict[str
         error = _to_text(result.get("error")).strip()
     detail = f": {error}" if error else ""
     raise RuntimeError(f"required message append failed for {message_type}: {reason}{detail}")
+
+
+def _is_equivalent_delivered_message(message: Any, payload: Dict[str, Any]) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if message.get("status") != "delivered":
+        return False
+    for key in ("from", "to", "type", "visibility", "payload"):
+        if message.get(key) != payload.get(key):
+            return False
+    return True
 
 
 def _clip_text(value: Any, limit: int) -> str:

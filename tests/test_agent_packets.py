@@ -1624,15 +1624,20 @@ class AgentPacketTest(unittest.TestCase):
             "user_instruction_text": "Keep the sealed door hidden.",
         }
 
+        kwargs = {
+            "user_text": "fallback should not win",
+            "chat_log": [],
+            "card_data": {"title": "Message Runtime Test"},
+            "character_contexts": {"characters": []},
+            "turn_index": 1,
+            "input_payload": input_payload,
+        }
         result = self.agent_packets.prepare_agent_run(
             self.card,
-            user_text="fallback should not win",
-            chat_log=[],
-            card_data={"title": "Message Runtime Test"},
-            character_contexts={"characters": []},
-            turn_index=1,
-            input_payload=input_payload,
+            **kwargs,
         )
+        repeated = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+        self.assertEqual(repeated["run_dir"], result["run_dir"])
 
         run_dir = Path(result["run_dir"])
         messages_path = run_dir / "messages.jsonl"
@@ -1650,6 +1655,8 @@ class AgentPacketTest(unittest.TestCase):
             if line.strip()
         ]
         self.assertEqual([message["type"] for message in messages[:2]], ["input_received", "analysis_requested"])
+        self.assertEqual(len([item for item in messages if item["type"] == "input_received"]), 1)
+        self.assertEqual(len([item for item in messages if item["type"] == "analysis_requested"]), 1)
         self.assertTrue(all(message["status"] == "delivered" for message in messages))
 
         input_received = messages[0]
@@ -1701,6 +1708,30 @@ class AgentPacketTest(unittest.TestCase):
                         "user_instruction_text": "",
                     },
                 )
+        finally:
+            self.agent_packets.agent_messages.append_message = original_append_message
+
+    def test_required_message_append_does_not_reuse_rejected_messages(self):
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        rejected_payload = {
+            "from": "player",
+            "to": ["story"],
+            "type": "input_received",
+            "visibility": "gm_only",
+            "payload": {"input_path": "input.json", "raw_path": "input.raw.json"},
+        }
+        rejected = self.agent_packets.agent_messages.append_message(run_dir, rejected_payload)
+        self.assertFalse(rejected["ok"])
+        original_append_message = self.agent_packets.agent_messages.append_message
+
+        def fail_append(_run_dir, _payload):
+            return {"ok": False, "reason": "schema_rejected", "error": "still rejected"}
+
+        self.agent_packets.agent_messages.append_message = fail_append
+        try:
+            with self.assertRaisesRegex(RuntimeError, "schema_rejected.*still rejected"):
+                self.agent_packets._append_required_message(run_dir, rejected_payload)
         finally:
             self.agent_packets.agent_messages.append_message = original_append_message
 
@@ -2158,16 +2189,20 @@ class AgentPacketTest(unittest.TestCase):
         round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
         round_prepare.mvu_check.generate_checklist = lambda card_folder: None
 
-        old_argv = sys.argv
-        stdout = io.StringIO()
-        try:
-            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
-            with contextlib.redirect_stdout(stdout):
-                round_prepare.main()
-        finally:
-            sys.argv = old_argv
+        def run_main():
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+                with contextlib.redirect_stdout(stdout):
+                    round_prepare.main()
+            finally:
+                sys.argv = old_argv
+            return json.loads(stdout.getvalue())
 
-        payload = json.loads(stdout.getvalue())
+        payload = run_main()
+        repeated_payload = run_main()
+        self.assertEqual(repeated_payload["agent_run"], payload["agent_run"])
         run_dir = Path(payload["agent_run"])
         messages_after_prepare = [
             json.loads(line)
@@ -2176,6 +2211,10 @@ class AgentPacketTest(unittest.TestCase):
         ]
         self.assertEqual(
             len([item for item in messages_after_prepare if item["type"] == "input_received"]),
+            1,
+        )
+        self.assertEqual(
+            len([item for item in messages_after_prepare if item["type"] == "analysis_requested"]),
             1,
         )
         round_prepare._initialize_dispatcher_runtime(run_dir)
@@ -2204,10 +2243,7 @@ class AgentPacketTest(unittest.TestCase):
             item
             for item in intent_payloads
             if item["type"] == "analyze_input"
-            and (
-                item.get("source_message_id") == input_received["id"]
-                or item.get("policy", {}).get("source") == "round_prepare"
-            )
+            and item.get("source_message_id") == input_received["id"]
         ]
         self.assertEqual(len(analyze), 1)
         self.assertEqual(analyze[0]["source_message_id"], input_received["id"])
@@ -2227,6 +2263,53 @@ class AgentPacketTest(unittest.TestCase):
                 if item.get("type") == "analyze_input":
                     all_analyze_after_completion.append(item)
         self.assertEqual(len(all_analyze_after_completion), 1)
+
+    def test_round_prepare_ignores_malformed_input_message_and_stale_analyze_intent(self):
+        round_prepare = _load_round_prepare()
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        _write_json(
+            run_dir / "input.raw.json",
+            {"source_integrity": {"raw_text_sha256": "hash-1"}},
+        )
+        malformed_message = round_prepare.agent_messages.append_message(
+            run_dir,
+            {
+                "from": "main_agent",
+                "to": ["gm", "input_analyst"],
+                "type": "input_received",
+                "visibility": "gm_only",
+                "payload": {"input_path": "input.json", "input_raw_path": "input.raw.json"},
+            },
+        )
+        self.assertTrue(malformed_message["ok"])
+        stale_intent = round_prepare.agent_intents.create_intent(
+            run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "source_message_id": "msg_stale",
+                "payload": {"input_path": "input.json"},
+                "policy": {"source": "round_prepare"},
+            },
+        )
+        self.assertTrue(stale_intent["ok"])
+
+        runtime = round_prepare._initialize_dispatcher_runtime(run_dir)
+
+        self.assertNotEqual(runtime["message"]["id"], malformed_message["message"]["id"])
+        self.assertEqual(runtime["message"]["payload"]["input_path"], "input.json")
+        self.assertEqual(runtime["message"]["payload"]["raw_path"], "input.raw.json")
+        self.assertEqual(runtime["message"]["payload"]["raw_text_hash"], "hash-1")
+        self.assertEqual(runtime["intent"]["source_message_id"], runtime["message"]["id"])
+        self.assertNotEqual(runtime["intent"]["id"], stale_intent["intent"]["id"])
+        all_analyze = []
+        for state in ("pending", "accepted", "completed", "blocked", "rejected"):
+            for path in (run_dir / "intents" / state).glob("intent_*.json"):
+                item = json.loads(path.read_text(encoding="utf-8"))
+                if item.get("type") == "analyze_input":
+                    all_analyze.append(item)
+        self.assertEqual(len(all_analyze), 2)
 
     def test_round_prepare_passes_latest_dual_channel_payload_to_agent_run(self):
         temp_root, _styles_dir = self._make_round_prepare_fixture()
