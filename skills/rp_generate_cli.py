@@ -1380,7 +1380,7 @@ def run_round(
             run_dir,
             {"delivery": _repair_intent_delivery_output(delivery)},
         )
-    elif delivery_result.get("action") == "retry" and not repair_intents_blocked:
+    elif delivery_result.get("action") in {"retry", "blocked"} and not repair_intents_blocked:
         _block_pending_repair_intents(
             run_dir,
             "repair_not_completed",

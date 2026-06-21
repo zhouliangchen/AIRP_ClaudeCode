@@ -995,6 +995,59 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["delivery"]["result"]["action"], "retry")
 
+    def test_run_round_blocks_repair_intent_when_delivery_returns_terminal_blocked(self):
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>Blocked by terminal delivery.</content>"),
+        )
+        repair_intent_id = None
+        non_repair_intent_id = None
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        def fake_blocked_delivery(command, **kwargs):
+            nonlocal repair_intent_id, non_repair_intent_id
+            if repair_intent_id is None:
+                repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "repair_request",
+                        "payload": {"reason": "retry limit reached"},
+                    },
+                )["intent"]["id"]
+                non_repair_intent_id = self.agent_intents.create_intent(
+                    self.run_dir,
+                    {
+                        "requested_by": "critic",
+                        "type": "memory_update",
+                        "payload": {"note": "must remain pending"},
+                    },
+                )["intent"]["id"]
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"action":"blocked","reason":"critic_retry_limit"}\n',
+                stderr="",
+            )
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=fake_blocked_delivery,
+        )
+
+        self.assertFalse(result["ok"])
+        blocked_intents = self.agent_intents.list_intents(self.run_dir, "blocked")
+        blocked_repair = [item for item in blocked_intents if item["id"] == repair_intent_id]
+        self.assertEqual(len(blocked_repair), 1)
+        self.assertEqual(blocked_repair[0]["type"], "repair_request")
+        self.assertEqual(blocked_repair[0]["result"]["reason"], "repair_not_completed")
+        self.assertEqual(blocked_repair[0]["result"]["outputs"]["delivery"]["reason"], "critic_retry_limit")
+        pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
+
     def test_analysis_only_mode_does_not_auto_repair_delivery_retry(self):
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "analysis_only", "wordCount": 1})
         responses = _basic_responses(
