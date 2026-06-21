@@ -18,9 +18,10 @@ import sys
 from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
+import agent_intents
+import agent_messages
 import agent_packets
 import agent_snapshots
-import agent_workflow
 import hidden_settings
 import match_worldbook
 import mvu_check
@@ -129,6 +130,47 @@ def _read_character_file(card_folder, name, fname):
         except Exception:
             pass
     return ""
+
+
+def _initialize_dispatcher_runtime(run_dir):
+    """Create the first message and intent for dispatcher-first execution."""
+
+    message_result = agent_messages.append_message(
+        run_dir,
+        {
+            "from": "main_agent",
+            "to": ["input_analyst", "gm"],
+            "type": "input_received",
+            "visibility": "gm_only",
+            "payload": {
+                "input_path": "input.json",
+                "input_raw_path": "input.raw.json",
+            },
+        },
+    )
+    if not message_result.get("ok"):
+        raise RuntimeError(f"failed to append input_received message: {message_result}")
+
+    message_id = (message_result.get("message") or {}).get("id", "")
+    intent_result = agent_intents.create_intent(
+        run_dir,
+        {
+            "requested_by": "main_agent",
+            "type": "analyze_input",
+            "source_message_id": message_id,
+            "payload": {
+                "input_path": "input.json",
+                "input_analysis_request_path": "input_analysis.request.md",
+            },
+            "policy": {"source": "round_prepare"},
+        },
+    )
+    if not intent_result.get("ok"):
+        raise RuntimeError(f"failed to create analyze_input intent: {intent_result}")
+    return {
+        "message": message_result.get("message", {}),
+        "intent": intent_result.get("intent", {}),
+    }
 
 
 def build_character_contexts(card_folder, card_data, card_structure, chat_log, user_text):
@@ -337,8 +379,8 @@ def main():
     )
     agent_run_info = None
     agent_run_error = None
+    dispatcher_runtime = None
     snapshot_result = None
-    agent_workflow_advice = None
     turn_index = len(chat_log)
     round_id = f"round-{turn_index + 1:06d}" if isinstance(turn_index, int) else "round-current"
     snapshot_result = agent_snapshots.create_snapshot(
@@ -357,11 +399,13 @@ def main():
             input_payload=explicit_input_payload or None,
             hidden_setting_records=hidden_setting_records,
         )
-        run_dir = agent_run_info.get("run_dir") if isinstance(agent_run_info, dict) else None
-        if run_dir:
-            agent_workflow_advice = agent_workflow.advise_next_actions(run_dir)
     except Exception as exc:
         agent_run_error = str(exc)
+        agent_run_info = None
+        dispatcher_runtime = None
+    run_dir = agent_run_info.get("run_dir") if isinstance(agent_run_info, dict) else None
+    if run_dir:
+        dispatcher_runtime = _initialize_dispatcher_runtime(run_dir)
 
     # ═══════════════════════════════════════════════
     # BUILD OUTPUT — static prefix first (cached),
@@ -532,9 +576,6 @@ def main():
         dynamic_parts.append("  role_channel: " + (routed.get("role_channel") or "(empty)")[:500])
         dynamic_parts.append("  user_instruction_channel: " + (routed.get("user_instruction_channel") or "(empty)")[:500])
         dynamic_parts.append("  packet_contract: GM/player/character context packets are written under this run_dir.")
-        if agent_workflow_advice is not None:
-            dynamic_parts.append("\n=== AGENT_WORKFLOW ===")
-            dynamic_parts.append(json.dumps(agent_workflow_advice, ensure_ascii=False, indent=2))
     elif agent_run_error:
         dynamic_parts.append("\n=== AGENT_RUN ===")
         dynamic_parts.append("  agent_run_error: " + agent_run_error[:200])
@@ -572,6 +613,7 @@ def main():
         "output": str(output_path),
         "character_contexts": str(character_contexts_path),
         "agent_run": agent_run_info.get("run_dir") if agent_run_info else None,
+        "dispatcher_runtime": dispatcher_runtime,
         "snapshot": snapshot_result,
         "character_count": len(character_contexts.get("characters", [])),
         "size": len(output_text),

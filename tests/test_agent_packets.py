@@ -2089,8 +2089,34 @@ class AgentPacketTest(unittest.TestCase):
         self.assertTrue(round_context_path.exists())
         round_context = round_context_path.read_text(encoding="utf-8")
         self.assertIn("=== AGENT_RUN ===", round_context)
-        self.assertIn("=== AGENT_WORKFLOW ===", round_context)
-        self.assertIn("dispatch_agent_outputs", round_context)
+        run_dir = Path(expected_run_dir)
+        self.assertTrue((run_dir / "messages.jsonl").exists())
+        messages = [
+            json.loads(line)
+            for line in (run_dir / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(any(item["type"] == "input_received" for item in messages))
+        input_messages = [item for item in messages if item["type"] == "input_received"]
+        self.assertEqual(input_messages[0]["from"], "main_agent")
+        self.assertIn("input_analyst", input_messages[0]["to"])
+        self.assertIn("gm", input_messages[0]["to"])
+
+        pending_intents_dir = run_dir / "intents" / "pending"
+        self.assertTrue(pending_intents_dir.exists())
+        pending_intents = list(pending_intents_dir.glob("intent_*.json"))
+        self.assertTrue(pending_intents)
+        intent_payloads = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in pending_intents
+        ]
+        analyze = [item for item in intent_payloads if item["type"] == "analyze_input"]
+        self.assertEqual(len(analyze), 1)
+        self.assertEqual(analyze[0]["requested_by"], "main_agent")
+        self.assertEqual(analyze[0]["payload"]["input_path"], "input.json")
+        self.assertNotIn("=== AGENT_WORKFLOW ===", round_context)
+        self.assertNotIn("AGENT_WORKFLOW_ADVICE", round_context)
+        self.assertNotIn("dispatch_agent_outputs", round_context)
         self.assertNotIn("PLAYER_INPUT_HEURISTIC_FALLBACK", round_context)
         self.assertNotIn("=== INPUT_MATCHES ===", round_context)
 
@@ -2099,6 +2125,8 @@ class AgentPacketTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
+        self.assertEqual(payload["dispatcher_runtime"]["intent"]["type"], "analyze_input")
+        self.assertEqual(payload["dispatcher_runtime"]["intent"]["requested_by"], "main_agent")
         snapshots = list((self.card / ".agent_runs" / "snapshots").glob("*"))
         self.assertTrue(snapshots)
         metadata = json.loads((snapshots[0] / "snapshot.json").read_text(encoding="utf-8"))
