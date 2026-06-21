@@ -2037,6 +2037,7 @@ class AgentPacketTest(unittest.TestCase):
 
         def stub_prepare_agent_run(**kwargs):
             called.update(kwargs)
+            called["snapshots_before_prepare"] = list((self.card / ".agent_runs" / "snapshots").glob("*"))
             run_dir = Path(expected_run_dir)
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "manifest.json").write_text(
@@ -2082,6 +2083,7 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(called["turn_index"], 0)
         self.assertIsInstance(called["character_contexts"], dict)
+        self.assertTrue(called["snapshots_before_prepare"])
 
         round_context_path = styles_dir / "round_context.txt"
         self.assertTrue(round_context_path.exists())
@@ -2097,6 +2099,12 @@ class AgentPacketTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
+        snapshots = list((self.card / ".agent_runs" / "snapshots").glob("*"))
+        self.assertTrue(snapshots)
+        metadata = json.loads((snapshots[0] / "snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["reason"], "before_round_prepare")
+        self.assertIn("snapshot", payload)
+        self.assertEqual(payload["snapshot"]["reason"], "before_round_prepare")
         self.assertTrue(any(args and args[0] == "round.preparing" for args, _ in progress_calls))
         self.assertTrue(any(args and args[0] == "input_analysis.awaiting" for args, _ in progress_calls))
 

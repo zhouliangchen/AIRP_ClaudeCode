@@ -19,6 +19,7 @@ from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
 import agent_packets
+import agent_snapshots
 import agent_workflow
 import hidden_settings
 import match_worldbook
@@ -336,7 +337,14 @@ def main():
     )
     agent_run_info = None
     agent_run_error = None
+    snapshot_result = None
     agent_workflow_advice = None
+    turn_index = len(chat_log)
+    snapshot_result = agent_snapshots.create_snapshot(
+        card_folder,
+        f"round-{turn_index:06d}" if isinstance(turn_index, int) else "round-current",
+        reason="before_round_prepare",
+    )
     try:
         agent_run_info = agent_packets.prepare_agent_run(
             card_folder=card_folder,
@@ -344,7 +352,7 @@ def main():
             chat_log=chat_log,
             card_data=card_data,
             character_contexts=character_contexts,
-            turn_index=len(chat_log),
+            turn_index=turn_index,
             input_payload=explicit_input_payload or None,
             hidden_setting_records=hidden_setting_records,
         )
@@ -563,6 +571,7 @@ def main():
         "output": str(output_path),
         "character_contexts": str(character_contexts_path),
         "agent_run": agent_run_info.get("run_dir") if agent_run_info else None,
+        "snapshot": snapshot_result,
         "character_count": len(character_contexts.get("characters", [])),
         "size": len(output_text),
         "matches": len(match_result or []),
