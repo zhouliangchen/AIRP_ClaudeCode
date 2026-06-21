@@ -89,6 +89,39 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["reason"], "")
         self.assertEqual(self.intents.list_intents(self.run_dir, "blocked"), [])
 
+    def test_artifact_path_rejects_absolute_relative_path(self):
+        absolute = self.run_dir / "escape.json"
+
+        with self.assertRaises(self.dispatcher.AgentDispatcherError):
+            self.dispatcher.artifact_path(self.run_dir, str(absolute))
+
+    def test_artifact_path_rejects_parent_escape(self):
+        with self.assertRaises(self.dispatcher.AgentDispatcherError):
+            self.dispatcher.artifact_path(self.run_dir, "../escape.json")
+
+    def test_dispatch_next_preserves_existing_blocked_manifest_reason(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "story", "type": "assets_task", "payload": {"target": "scene"}},
+        )["intent"]
+
+        first_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        manifest_after_first = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        first_history = list(manifest_after_first.get("stage_history", []))
+        second_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        manifest_after_second = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(first_result["ok"])
+        self.assertEqual(first_result["reason"], "unsupported_intent_type")
+        self.assertFalse(second_result["ok"])
+        self.assertEqual(second_result["status"], "blocked")
+        self.assertEqual(second_result["intent_id"], "")
+        self.assertEqual(second_result["reason"], "unsupported_intent_type")
+        self.assertEqual(manifest_after_second["dispatcher"]["reason"], "unsupported_intent_type")
+        self.assertEqual(manifest_after_second.get("stage_history", []), first_history)
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,8 @@ def dispatch_next(
     manifest = _load_manifest(root)
     if manifest.get("stage") == "delivered":
         return _result(True, "delivered", reason="", artifacts=[], created_intents=[], created_messages=[])
+    if manifest.get("stage") == "blocked":
+        return _blocked_terminal_result(manifest)
 
     pending = agent_intents.list_intents(root, "pending")
     if not pending:
@@ -75,7 +77,15 @@ def dispatch_next(
 def artifact_path(run_dir: str | Path, relative_path: str) -> Path:
     """Return the authoritative artifact path for a run-relative artifact."""
 
-    return Path(run_dir) / "artifacts" / relative_path
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        raise AgentDispatcherError(f"artifact path must be relative: {relative_path}")
+
+    artifacts_root = (Path(run_dir) / "artifacts").resolve()
+    candidate = (artifacts_root / relative).resolve()
+    if candidate != artifacts_root and artifacts_root not in candidate.parents:
+        raise AgentDispatcherError(f"artifact path escapes artifacts directory: {relative_path}")
+    return candidate
 
 
 def write_artifact(run_dir: str | Path, relative_path: str, payload: dict[str, Any]) -> Path:
@@ -126,6 +136,22 @@ def _execute_supported_intent(
 def _block_stalled(run_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     _mark_blocked(run_dir, "dispatcher_stalled", {"pending_intents": 0})
     return _result(False, "stalled", reason="dispatcher_stalled", artifacts=[], created_intents=[], created_messages=[])
+
+
+def _blocked_terminal_result(manifest: dict[str, Any]) -> dict[str, Any]:
+    dispatcher = manifest.get("dispatcher")
+    if not isinstance(dispatcher, dict):
+        dispatcher = {}
+    reason = str(dispatcher.get("reason") or "dispatcher_blocked")
+    return _result(
+        False,
+        "blocked",
+        reason=reason,
+        artifacts=[],
+        created_intents=[],
+        created_messages=[],
+        detail=dispatcher,
+    )
 
 
 def _mark_blocked(run_dir: Path, reason: str, detail: dict[str, Any]) -> None:
