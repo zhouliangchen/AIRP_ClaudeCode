@@ -41,6 +41,7 @@ class SubgmThreadsTest(unittest.TestCase):
         self.run_dir = Path(self.tmp.name) / "round-000001"
         self.run_dir.mkdir()
         self.subgm_threads = load_module("subgm_threads")
+        self.agent_messages = load_module("agent_messages")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -263,6 +264,99 @@ class SubgmThreadsTest(unittest.TestCase):
         self.assertEqual(messages[-1]["content"], "Check the rooftop door before advancing.")
         self.assertEqual(messages[-1]["metadata"], {"tone": "urgent"})
         self.assertEqual(self.read_state()["history"][-1]["action"], "message")
+
+    def test_gm_message_command_mirrors_to_common_message_bus(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_a", character="character:Ada")],
+        )
+
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [{
+                "action": "message",
+                "thread_id": "side_a",
+                "message": "Check the clue before advancing.",
+                "metadata": {"tone": "urgent"},
+            }],
+        )
+
+        messages = self.agent_messages.read_messages(self.run_dir)
+        mirrored = [
+            message
+            for message in messages
+            if message.get("from") == "gm"
+            and message.get("to") == ["subGM:side_a"]
+            and message.get("payload", {}).get("content") == "Check the clue before advancing."
+        ]
+        self.assertEqual(len(mirrored), 1)
+        message = mirrored[0]
+        self.assertEqual(message["type"], "message")
+        self.assertEqual(message["visibility"], "gm_only")
+        self.assertEqual(
+            message["payload"],
+            {
+                "thread_id": "side_a",
+                "action": "message",
+                "content": "Check the clue before advancing.",
+                "metadata": {"tone": "urgent"},
+            },
+        )
+
+    def test_append_subgm_message_mirrors_to_common_message_bus(self):
+        command = start_command(thread_id="side_a", character="character:Ada")
+        command["message"] = "Start"
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [command],
+        )
+
+        self.subgm_threads.append_subgm_message(
+            self.run_dir,
+            "side_a",
+            {"content": "The clue is ready.", "status": "needs_gm", "metadata": {}},
+        )
+
+        messages = self.agent_messages.read_messages(self.run_dir)
+        mirrored = [
+            message
+            for message in messages
+            if message.get("from") == "subGM:side_a"
+            and message.get("to") == ["gm"]
+            and message.get("payload", {}).get("content") == "The clue is ready."
+        ]
+        self.assertEqual(len(mirrored), 1)
+        message = mirrored[0]
+        self.assertEqual(message["type"], "message")
+        self.assertEqual(message["visibility"], "gm_only")
+        self.assertEqual(
+            message["payload"],
+            {
+                "thread_id": "side_a",
+                "action": "message",
+                "content": "The clue is ready.",
+                "status": "needs_gm",
+                "metadata": {},
+            },
+        )
+
+    def test_common_message_bus_rejection_raises_subgm_thread_error(self):
+        if not hasattr(self.subgm_threads, "agent_messages"):
+            self.fail("subgm_threads must load agent_messages")
+        original_append = self.subgm_threads.agent_messages.append_message
+
+        def reject_append(*_args, **_kwargs):
+            return {"ok": False, "reason": "message bus unavailable"}
+
+        self.subgm_threads.agent_messages.append_message = reject_append
+        try:
+            with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "message bus unavailable"):
+                self.subgm_threads.apply_gm_commands(
+                    self.run_dir,
+                    [start_command(thread_id="side_a", character="character:Ada")],
+                )
+        finally:
+            self.subgm_threads.agent_messages.append_message = original_append
 
     def test_append_subgm_message_and_load_summaries_for_gm(self):
         self.subgm_threads.apply_gm_commands(self.run_dir, [start_command()])

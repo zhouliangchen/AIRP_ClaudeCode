@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+import agent_messages
 import agent_interactions
 
 
@@ -86,6 +87,18 @@ def _append_jsonl(path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return payload
+
+
+def _append_common_message(run_dir: str | Path, payload: Dict[str, Any]) -> None:
+    try:
+        result = agent_messages.append_message(run_dir, payload)
+    except Exception as exc:
+        raise SubgmThreadError(f"common message bus append failed: {exc}") from exc
+    if not isinstance(result, dict) or not result.get("ok"):
+        reason = result.get("reason") if isinstance(result, dict) else "invalid result"
+        error = result.get("error") if isinstance(result, dict) else ""
+        detail = f"{reason}: {error}" if error else str(reason)
+        raise SubgmThreadError(f"common message bus append failed: {detail}")
 
 
 def _sequence_number(value: Any) -> int:
@@ -405,18 +418,37 @@ def _append_gm_message(
     content: str,
     metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    return _append_jsonl(
+    text = str(content or "")
+    meta = dict(metadata or {})
+    record = _append_jsonl(
         _messages_path(run_dir, thread_id),
         {
             "from": "gm",
             "to": f"subGM:{thread_id}",
             "thread_id": thread_id,
             "action": action,
-            "content": str(content or ""),
+            "content": text,
             "created_at": _now(),
-            "metadata": dict(metadata or {}),
+            "metadata": meta,
         },
     )
+    _append_common_message(
+        run_dir,
+        {
+            "from": "gm",
+            "to": [f"subGM:{thread_id}"],
+            "type": "message",
+            "visibility": "gm_only",
+            "thread_id": thread_id,
+            "payload": {
+                "thread_id": thread_id,
+                "action": action,
+                "content": text,
+                "metadata": meta,
+            },
+        },
+    )
+    return record
 
 
 def _message_text(command: Dict[str, Any]) -> str:
@@ -589,7 +621,25 @@ def append_subgm_message(run_dir: str | Path, thread_id: Any, message: Dict[str,
         state["next_resume_point_updated_at"] = _now()
     _save_state(run_dir, safe_id, state)
 
-    return _append_jsonl(_messages_path(run_dir, safe_id), record)
+    written = _append_jsonl(_messages_path(run_dir, safe_id), record)
+    _append_common_message(
+        run_dir,
+        {
+            "from": f"subGM:{safe_id}",
+            "to": ["gm"],
+            "type": "message",
+            "visibility": "gm_only",
+            "thread_id": safe_id,
+            "payload": {
+                "thread_id": safe_id,
+                "action": action,
+                "content": content,
+                "status": written.get("status"),
+                "metadata": dict(metadata),
+            },
+        },
+    )
+    return written
 
 
 def _last_message(run_dir: str | Path, thread_id: str) -> Dict[str, Any] | None:
