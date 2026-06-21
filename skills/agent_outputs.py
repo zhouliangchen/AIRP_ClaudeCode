@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 import agent_run
+import agent_intents
 import agent_interactions
+import agent_messages
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
@@ -954,6 +956,56 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
     return entry
 
 
+def _pending_repair_request_intent(run_dir: Path, fingerprint: str) -> Dict[str, Any] | None:
+    for intent in agent_intents.list_intents(run_dir, "pending"):
+        if intent.get("requested_by") != "critic" or intent.get("type") != "repair_request":
+            continue
+        payload = intent.get("payload")
+        if isinstance(payload, dict) and payload.get("repair_fingerprint") == fingerprint:
+            return {"ok": True, "intent": intent, "deduped": True}
+    return None
+
+
+def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:
+    routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
+    fingerprint = _critic_fingerprint({**critic_report, "repair_routing": routing})
+    existing = _pending_repair_request_intent(run_dir, fingerprint)
+    if existing is not None:
+        return existing
+
+    message = agent_messages.append_message(
+        run_dir,
+        {
+            "from": "critic",
+            "to": ["story", "gm", "main_agent"],
+            "type": "repair_request",
+            "visibility": "gm_only",
+            "payload": {
+                "decision": critic_report.get("decision", ""),
+                "repair_instruction": critic_report.get("repair_instruction", ""),
+                "repair_routing": routing,
+                "critic_report_path": "critic.report.json",
+            },
+        },
+    )
+    source_message_id = (message.get("message") or {}).get("id", "")
+    return agent_intents.create_intent(
+        run_dir,
+        {
+            "requested_by": "critic",
+            "type": "repair_request",
+            "source_message_id": source_message_id,
+            "payload": {
+                "critic_report_path": "critic.report.json",
+                "decision": critic_report.get("decision", ""),
+                "repair_instruction": critic_report.get("repair_instruction", ""),
+                "repair_routing": routing,
+                "repair_fingerprint": fingerprint,
+            },
+        },
+    )
+
+
 def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[str, Any]:
     """Gate delivery for the current run and mirror story output to response.txt."""
     run_dir = agent_run.current_run_dir(card_folder)
@@ -993,6 +1045,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
             _mark_blocked_without_retry(run_dir, manifest)
@@ -1004,6 +1057,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
+        _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
             _mark_blocked_without_retry(run_dir, manifest)

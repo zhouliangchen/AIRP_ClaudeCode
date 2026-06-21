@@ -181,7 +181,13 @@ class AgentOutputsTest(unittest.TestCase):
             source_call_id="call-character-Ada-1",
         )
 
-    def _write_story_and_critic(self, decision="pass", system_iteration_suggestion="", repair_routing=None):
+    def _write_story_and_critic(
+        self,
+        decision="pass",
+        system_iteration_suggestion="",
+        repair_routing=None,
+        repair_instruction=None,
+    ):
         _write_json(
             self.run_dir / "story.output.json",
             {
@@ -198,11 +204,32 @@ class AgentOutputsTest(unittest.TestCase):
                 "decision": decision,
                 "hard_failures": ["logic gap"] if decision == "block" else [],
                 "soft_issues": ["needs sharper sensory detail"] if decision == "revise" else [],
-                "repair_instruction": "Revise sensory continuity." if decision == "revise" else "",
+                "repair_instruction": (
+                    repair_instruction
+                    if repair_instruction is not None
+                    else ("Revise sensory continuity." if decision == "revise" else "")
+                ),
                 "system_iteration_suggestion": system_iteration_suggestion,
                 **({"repair_routing": repair_routing} if repair_routing is not None else {}),
             },
         )
+
+    def _assert_single_repair_request_intent(self, expected_routing):
+        pending = list((self.run_dir / "intents" / "pending").glob("intent_*.json"))
+        self.assertEqual(len(pending), 1)
+        intent = json.loads(pending[0].read_text(encoding="utf-8"))
+        self.assertEqual(intent["type"], "repair_request")
+        self.assertEqual(intent["requested_by"], "critic")
+        self.assertEqual(intent["payload"]["critic_report_path"], "critic.report.json")
+        self.assertEqual(intent["payload"]["repair_routing"], expected_routing)
+
+        messages = _read_jsonl(self.run_dir / "messages.jsonl")
+        repair_messages = [message for message in messages if message.get("type") == "repair_request"]
+        self.assertEqual(len(repair_messages), 1)
+        self.assertEqual(intent["source_message_id"], repair_messages[0]["id"])
+        self.assertEqual(repair_messages[0]["payload"]["repair_routing"], expected_routing)
+        self.assertTrue(any(message["id"] == intent["source_message_id"] for message in messages))
+        return intent
 
     def test_build_story_input_assembles_loop_outputs_and_memory_deltas(self):
         story_input = self.agent_outputs.build_story_input(self.run_dir)
@@ -2314,6 +2341,74 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(history[0]["repair_routing"]["stage"], "story_composition")
         self.assertEqual(history[0]["repair_routing"]["rollback"], "story_only")
         self.assertEqual(history[0]["source"], "critic.report.json")
+
+    def test_prepare_delivery_writes_repair_request_intent_for_critic_revise(self):
+        routing = {"stage": "story_composition", "rollback": "story_only", "risk": "low"}
+        self._write_story_and_critic(
+            decision="revise",
+            repair_instruction="Rewrite the stop point.",
+            repair_routing=routing,
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        expected_routing = {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": True,
+            "risk": "low",
+        }
+        intent = self._assert_single_repair_request_intent(expected_routing)
+        self.assertEqual(intent["payload"]["repair_instruction"], "Rewrite the stop point.")
+
+    def test_prepare_delivery_writes_repair_request_intent_for_critic_block(self):
+        routing = {
+            "stage": "gm_loop",
+            "target_agents": ["gm"],
+            "rollback": "round_progression",
+            "can_auto_repair": True,
+            "risk": "high",
+        }
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._write_story_and_critic(
+            decision="block",
+            repair_instruction="Rerun the GM loop.",
+            repair_routing=routing,
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        intent = self._assert_single_repair_request_intent(routing)
+        self.assertEqual(intent["payload"]["repair_instruction"], "Rerun the GM loop.")
+
+    def test_prepare_delivery_does_not_duplicate_pending_repair_request_intent(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        routing = {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": True,
+            "risk": "low",
+        }
+        self._write_story_and_critic(decision="revise", repair_routing=routing)
+
+        first = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        second = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(first["ok"])
+        self.assertFalse(second["ok"])
+        self._assert_single_repair_request_intent(routing)
 
     def test_prepare_delivery_limited_mode_blocks_progression_repair_route(self):
         (self.styles_dir / "settings.json").write_text(
