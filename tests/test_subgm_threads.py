@@ -377,6 +377,38 @@ class SubgmThreadsTest(unittest.TestCase):
         self.assertFalse((self.run_dir / "side_threads" / "side_a").exists())
         self.assertFalse((self.run_dir / "side_threads").exists())
 
+    def test_common_message_bus_rejection_during_gm_message_leaves_state_and_log_unchanged(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_a", character="character:Ada")],
+        )
+        state_path = self.run_dir / "side_threads" / "side_a" / "state.json"
+        messages_path = self.run_dir / "side_threads" / "side_a" / "messages.jsonl"
+        state_before = json.loads(state_path.read_text(encoding="utf-8"))
+        messages_before = messages_path.read_text(encoding="utf-8")
+        original_append = self.subgm_threads.agent_messages.append_message
+
+        def reject_append(*_args, **_kwargs):
+            return {"ok": False, "reason": "message bus unavailable"}
+
+        self.subgm_threads.agent_messages.append_message = reject_append
+        try:
+            with self.assertRaisesRegex(self.subgm_threads.SubgmThreadError, "message bus unavailable"):
+                self.subgm_threads.apply_gm_commands(
+                    self.run_dir,
+                    [{
+                        "action": "message",
+                        "thread_id": "side_a",
+                        "message": "Check the clue before advancing.",
+                        "metadata": {"tone": "urgent"},
+                    }],
+                )
+        finally:
+            self.subgm_threads.agent_messages.append_message = original_append
+
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), state_before)
+        self.assertEqual(messages_path.read_text(encoding="utf-8"), messages_before)
+
     def test_common_message_bus_rejection_during_subgm_append_leaves_state_and_log_unchanged(self):
         self.subgm_threads.apply_gm_commands(
             self.run_dir,
@@ -410,6 +442,88 @@ class SubgmThreadsTest(unittest.TestCase):
 
         self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), state_before)
         self.assertEqual(messages_path.read_text(encoding="utf-8"), messages_before)
+
+    def test_legacy_start_write_failure_does_not_append_common_bus_message(self):
+        original_write_json = self.subgm_threads._write_json
+
+        def fail_state_write(path, payload):
+            if Path(path).name == "state.json":
+                raise RuntimeError("legacy state unavailable")
+            return original_write_json(path, payload)
+
+        self.subgm_threads._write_json = fail_state_write
+        try:
+            with self.assertRaisesRegex(RuntimeError, "legacy state unavailable"):
+                self.subgm_threads.apply_gm_commands(
+                    self.run_dir,
+                    [start_command(thread_id="side_a", character="character:Ada")],
+                )
+        finally:
+            self.subgm_threads._write_json = original_write_json
+
+        self.assertEqual(self.agent_messages.read_messages(self.run_dir), [])
+
+    def test_legacy_gm_message_log_failure_does_not_append_common_bus_message(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_a", character="character:Ada")],
+        )
+        messages_before = self.agent_messages.read_messages(self.run_dir)
+        original_append_jsonl = self.subgm_threads._append_jsonl
+
+        def fail_legacy_message_append(path, payload):
+            if Path(path).name == "messages.jsonl":
+                raise RuntimeError("legacy log unavailable")
+            return original_append_jsonl(path, payload)
+
+        self.subgm_threads._append_jsonl = fail_legacy_message_append
+        try:
+            with self.assertRaisesRegex(RuntimeError, "legacy log unavailable"):
+                self.subgm_threads.apply_gm_commands(
+                    self.run_dir,
+                    [{
+                        "action": "message",
+                        "thread_id": "side_a",
+                        "message": "Check the clue before advancing.",
+                        "metadata": {},
+                    }],
+                )
+        finally:
+            self.subgm_threads._append_jsonl = original_append_jsonl
+
+        self.assertEqual(self.agent_messages.read_messages(self.run_dir), messages_before)
+
+    def test_legacy_subgm_message_log_failure_restores_state_and_does_not_append_common_bus_message(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_a", character="character:Ada")],
+        )
+        state_path = self.run_dir / "side_threads" / "side_a" / "state.json"
+        messages_path = self.run_dir / "side_threads" / "side_a" / "messages.jsonl"
+        state_before = json.loads(state_path.read_text(encoding="utf-8"))
+        messages_before = messages_path.read_text(encoding="utf-8")
+        common_before = self.agent_messages.read_messages(self.run_dir)
+        original_append_jsonl = self.subgm_threads._append_jsonl
+
+        def fail_legacy_message_append(path, payload):
+            if Path(path).name == "messages.jsonl":
+                raise RuntimeError("legacy log unavailable")
+            return original_append_jsonl(path, payload)
+
+        self.subgm_threads._append_jsonl = fail_legacy_message_append
+        try:
+            with self.assertRaisesRegex(RuntimeError, "legacy log unavailable"):
+                self.subgm_threads.append_subgm_message(
+                    self.run_dir,
+                    "side_a",
+                    {"content": "The clue is ready.", "status": "needs_gm", "metadata": {}},
+                )
+        finally:
+            self.subgm_threads._append_jsonl = original_append_jsonl
+
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), state_before)
+        self.assertEqual(messages_path.read_text(encoding="utf-8"), messages_before)
+        self.assertEqual(self.agent_messages.read_messages(self.run_dir), common_before)
 
     def test_append_subgm_message_and_load_summaries_for_gm(self):
         self.subgm_threads.apply_gm_commands(self.run_dir, [start_command()])

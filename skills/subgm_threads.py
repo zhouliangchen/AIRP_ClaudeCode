@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -99,6 +100,42 @@ def _append_common_message(run_dir: str | Path, payload: Dict[str, Any]) -> None
         error = result.get("error") if isinstance(result, dict) else ""
         detail = f"{reason}: {error}" if error else str(reason)
         raise SubgmThreadError(f"common message bus append failed: {detail}")
+
+
+def _read_text_if_exists(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def _restore_text_snapshot(path: Path, snapshot: str | None) -> None:
+    if snapshot is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(snapshot, encoding="utf-8")
+
+
+def _rollback_side_thread_files(
+    state_path: Path,
+    state_snapshot: str | None,
+    messages_path: Path,
+    messages_snapshot: str | None,
+) -> None:
+    _restore_text_snapshot(state_path, state_snapshot)
+    _restore_text_snapshot(messages_path, messages_snapshot)
+
+
+def _remove_empty_side_threads_root(run_dir: str | Path) -> None:
+    root = side_threads_root(run_dir)
+    try:
+        if root.exists() and root.is_dir() and not any(root.iterdir()):
+            root.rmdir()
+    except OSError:
+        pass
 
 
 def _sequence_number(value: Any) -> int:
@@ -445,18 +482,6 @@ def _gm_common_message_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _append_gm_message(
-    run_dir: str | Path,
-    thread_id: str,
-    action: str,
-    content: str,
-    metadata: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    record = _gm_message_record(thread_id, action, content, metadata)
-    _append_common_message(run_dir, _gm_common_message_payload(record))
-    return _append_jsonl(_messages_path(run_dir, thread_id), record)
-
-
 def _message_text(command: Dict[str, Any]) -> str:
     return str(command.get("message", "") or "")
 
@@ -501,56 +526,67 @@ def _create_thread(run_dir: str | Path, command: Dict[str, Any]) -> str:
             _message_text(command),
             command["metadata"],
         )
-        _append_common_message(run_dir, _gm_common_message_payload(start_record))
 
-    side_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(side_dir / "state.json", state)
-    (side_dir / "messages.jsonl").write_text("", encoding="utf-8")
-    agent_interactions.init_trace(side_dir, participants=[f"subGM:{thread_id}"])
-    if start_record is not None:
-        _append_jsonl(_messages_path(run_dir, thread_id), start_record)
+    try:
+        side_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(side_dir / "state.json", state)
+        (side_dir / "messages.jsonl").write_text("", encoding="utf-8")
+        agent_interactions.init_trace(side_dir, participants=[f"subGM:{thread_id}"])
+        if start_record is not None:
+            _append_jsonl(_messages_path(run_dir, thread_id), start_record)
+            _append_common_message(run_dir, _gm_common_message_payload(start_record))
+    except Exception:
+        if side_dir.exists():
+            shutil.rmtree(side_dir, ignore_errors=True)
+        _remove_empty_side_threads_root(run_dir)
+        raise
     return thread_id
 
 
 def _apply_existing_thread_command(run_dir: str | Path, command: Dict[str, Any]) -> str:
     action = command["action"]
     thread_id = command["thread_id"]
+    state_path = _state_path(run_dir, thread_id)
+    messages_path = _messages_path(run_dir, thread_id)
+    state_snapshot = _read_text_if_exists(state_path)
+    messages_snapshot = _read_text_if_exists(messages_path)
     state = _load_state(run_dir, thread_id)
     message = _message_text(command)
     metadata = command["metadata"]
 
     if action == "message":
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     elif action == "accelerate":
         state["urgency"] = "accelerate"
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     elif action == "pause":
         state["status"] = "paused"
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     elif action == "resume":
         allowed = _validate_allowed_characters(state.get("allowed_characters", []))
         _assert_no_reservation_conflict(run_dir, thread_id, allowed)
         state["status"] = "running"
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     elif action == "merge":
         if not _is_active_status(state.get("status")):
             allowed = _validate_allowed_characters(state.get("allowed_characters", []))
             _assert_no_reservation_conflict(run_dir, thread_id, allowed)
         state["status"] = "merging"
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     elif action == "close":
         state["status"] = "completed"
         _append_state_history(state, action, message, metadata)
-        _append_gm_message(run_dir, thread_id, action, message, metadata)
     else:
         raise SubgmThreadError(f"unsupported subGM command action: {action!r}")
 
-    _save_state(run_dir, thread_id, state)
+    record = _gm_message_record(thread_id, action, message, metadata)
+    try:
+        _append_jsonl(messages_path, record)
+        _save_state(run_dir, thread_id, state)
+        _append_common_message(run_dir, _gm_common_message_payload(record))
+    except Exception:
+        _rollback_side_thread_files(state_path, state_snapshot, messages_path, messages_snapshot)
+        raise
     return thread_id
 
 
@@ -614,6 +650,10 @@ def append_subgm_message(run_dir: str | Path, thread_id: Any, message: Dict[str,
         if key not in record and key != "metadata":
             record[key] = value
 
+    state_path = _state_path(run_dir, safe_id)
+    messages_path = _messages_path(run_dir, safe_id)
+    state_snapshot = _read_text_if_exists(state_path)
+    messages_snapshot = _read_text_if_exists(messages_path)
     state = _load_state(run_dir, safe_id)
     status = message.get("status")
     if status is not None:
@@ -635,25 +675,30 @@ def append_subgm_message(run_dir: str | Path, thread_id: Any, message: Dict[str,
     if isinstance(message.get("next_resume_point"), str):
         state["next_resume_point"] = message["next_resume_point"]
         state["next_resume_point_updated_at"] = _now()
-    _append_common_message(
-        run_dir,
-        {
-            "from": f"subGM:{safe_id}",
-            "to": ["gm"],
-            "type": "message",
-            "visibility": "gm_only",
-            "thread_id": safe_id,
-            "payload": {
+
+    try:
+        _save_state(run_dir, safe_id, state)
+        written = _append_jsonl(messages_path, record)
+        _append_common_message(
+            run_dir,
+            {
+                "from": f"subGM:{safe_id}",
+                "to": ["gm"],
+                "type": "message",
+                "visibility": "gm_only",
                 "thread_id": safe_id,
-                "action": action,
-                "content": content,
-                "status": record.get("status"),
-                "metadata": dict(metadata),
+                "payload": {
+                    "thread_id": safe_id,
+                    "action": action,
+                    "content": content,
+                    "status": record.get("status"),
+                    "metadata": dict(metadata),
+                },
             },
-        },
-    )
-    _save_state(run_dir, safe_id, state)
-    written = _append_jsonl(_messages_path(run_dir, safe_id), record)
+        )
+    except Exception:
+        _rollback_side_thread_files(state_path, state_snapshot, messages_path, messages_snapshot)
+        raise
     return written
 
 
