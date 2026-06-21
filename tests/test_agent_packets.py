@@ -2103,8 +2103,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertTrue(snapshots)
         metadata = json.loads((snapshots[0] / "snapshot.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["reason"], "before_round_prepare")
+        self.assertEqual(metadata["round_id"], "round-000001")
         self.assertIn("snapshot", payload)
         self.assertEqual(payload["snapshot"]["reason"], "before_round_prepare")
+        self.assertEqual(payload["snapshot"]["round_id"], "round-000001")
         self.assertTrue(any(args and args[0] == "round.preparing" for args, _ in progress_calls))
         self.assertTrue(any(args and args[0] == "input_analysis.awaiting" for args, _ in progress_calls))
 

@@ -340,9 +340,10 @@ def main():
     snapshot_result = None
     agent_workflow_advice = None
     turn_index = len(chat_log)
+    round_id = f"round-{turn_index + 1:06d}" if isinstance(turn_index, int) else "round-current"
     snapshot_result = agent_snapshots.create_snapshot(
         card_folder,
-        f"round-{turn_index:06d}" if isinstance(turn_index, int) else "round-current",
+        round_id,
         reason="before_round_prepare",
     )
     try:
