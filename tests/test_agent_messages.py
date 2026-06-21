@@ -79,6 +79,23 @@ class AgentMessagesTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "projection_required")
 
+    def test_any_message_to_character_requires_projection_marker(self):
+        result = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["character:Ada"],
+                "type": "message",
+                "visibility": "gm_only",
+                "payload": {"text": "Hidden direction."},
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "projection_required")
+        self.assertEqual(self.mod.read_inbox(self.run_dir, "character:Ada"), [])
+        self.assertEqual(self.mod.read_messages(self.run_dir)[0]["status"], "rejected")
+
     def test_projected_message_can_reach_actor_inbox(self):
         result = self.mod.append_message(
             self.run_dir,
@@ -94,6 +111,52 @@ class AgentMessagesTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(self.mod.read_inbox(self.run_dir, "character:Ada")[0]["type"], "projected_message")
+
+    def test_safe_agent_filename_preserves_unicode_uniqueness(self):
+        self.assertEqual(self.mod.safe_agent_filename("gm"), "gm.jsonl")
+        self.assertEqual(self.mod.safe_agent_filename("character:Ada"), "character_Ada.jsonl")
+        su_li = self.mod.safe_agent_filename("character:苏黎")
+        lin_yu = self.mod.safe_agent_filename("character:林雨")
+        self.assertNotEqual(su_li, lin_yu)
+        self.assertTrue(su_li.endswith(".jsonl"))
+        self.assertTrue(lin_yu.endswith(".jsonl"))
+
+    def test_repeated_messages_preserve_monotonic_ids(self):
+        first = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["story"],
+                "type": "message",
+                "visibility": "story_facing",
+                "payload": {"text": "One."},
+            },
+        )
+        second = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["character:Ada"],
+                "type": "message",
+                "visibility": "gm_only",
+                "payload": {"text": "Two."},
+            },
+        )
+        third = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": ["character:Ada"],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "payload": {"text": "Three."},
+            },
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertTrue(third["ok"])
+        self.assertEqual([row["id"] for row in self.mod.read_messages(self.run_dir)], ["msg_000001", "msg_000002", "msg_000003"])
 
 
 if __name__ == "__main__":

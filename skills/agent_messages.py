@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-import re
+import threading
 from pathlib import Path
 from typing import Any
 
 
 VALID_VISIBILITIES = {"gm_only", "story_facing", "actor_facing", "public"}
 MESSAGE_LOG = "messages.jsonl"
+# Single-process critical section for deterministic IDs and matching log/inbox appends.
+_APPEND_LOCK = threading.RLock()
 
 
 class AgentMessageError(ValueError):
@@ -21,8 +23,16 @@ def safe_agent_filename(agent_id: str) -> str:
 
     if not isinstance(agent_id, str) or not agent_id:
         raise AgentMessageError("agent_id must be a non-empty string")
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", agent_id).strip("._")
+    safe = "".join(_safe_filename_char(char) for char in agent_id).strip("._")
     return f"{safe or 'agent'}.jsonl"
+
+
+def _safe_filename_char(char: str) -> str:
+    if char.isascii() and (char.isalnum() or char in "._-"):
+        return char
+    if char == ":":
+        return "_"
+    return f"_u{ord(char):06x}"
 
 
 def _is_player_or_character(agent_id: str) -> bool:
@@ -40,14 +50,14 @@ def acl_reason(sender: str, targets: list[str], message_type: str, visibility: s
         if any(not _is_gm_or_subgm(target) for target in targets):
             return "acl_rejected"
 
+    if any(_is_player_or_character(target) for target in targets):
+        if sender != "projection" or message_type != "projected_message":
+            return "projection_required"
+
     if sender.startswith("subGM:"):
         allowed = {"gm", "projection", "story"}
         if any(target not in allowed and not target.startswith("character:") for target in targets):
             return "acl_rejected"
-
-    if visibility == "actor_facing" and any(_is_player_or_character(target) for target in targets):
-        if sender != "projection" or message_type != "projected_message":
-            return "projection_required"
 
     return None
 
@@ -100,23 +110,24 @@ def append_message(run_dir: str | Path, payload: dict[str, Any]) -> dict[str, An
     """Append an accepted or rejected message, indexing accepted messages by inbox."""
 
     root = Path(run_dir)
-    try:
-        message = normalize_message(root, payload)
-    except AgentMessageError as exc:
-        return {"ok": False, "reason": "schema_rejected", "error": str(exc)}
+    with _APPEND_LOCK:
+        try:
+            message = normalize_message(root, payload)
+        except AgentMessageError as exc:
+            return {"ok": False, "reason": "schema_rejected", "error": str(exc)}
 
-    reason = acl_reason(message["from"], message["to"], message["type"], message["visibility"])
-    if reason:
-        message["status"] = "rejected"
-        message["reject_reason"] = reason
+        reason = acl_reason(message["from"], message["to"], message["type"], message["visibility"])
+        if reason:
+            message["status"] = "rejected"
+            message["reject_reason"] = reason
+            _append_jsonl(root / MESSAGE_LOG, message)
+            return {"ok": False, "reason": reason, "message": message}
+
+        message["status"] = "delivered"
         _append_jsonl(root / MESSAGE_LOG, message)
-        return {"ok": False, "reason": reason, "message": message}
-
-    message["status"] = "delivered"
-    _append_jsonl(root / MESSAGE_LOG, message)
-    for target in message["to"]:
-        _append_jsonl(root / "inboxes" / safe_agent_filename(target), message)
-    return {"ok": True, "message": message}
+        for target in message["to"]:
+            _append_jsonl(root / "inboxes" / safe_agent_filename(target), message)
+        return {"ok": True, "message": message}
 
 
 def read_messages(run_dir: str | Path) -> list[dict[str, Any]]:
