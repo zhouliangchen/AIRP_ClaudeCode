@@ -961,8 +961,12 @@ def _record_critic_repair(card_folder: str | Path, run_dir: Path, manifest: Dict
     return entry
 
 
-def _existing_repair_request_intent(run_dir: Path, fingerprint: str) -> Dict[str, Any] | None:
-    for state in ("pending", "blocked"):
+def _existing_repair_request_intent(
+    run_dir: Path,
+    fingerprint: str,
+    states: tuple[str, ...] = ("pending",),
+) -> Dict[str, Any] | None:
+    for state in states:
         for intent in agent_intents.list_intents(run_dir, state):
             if intent.get("requested_by") != "critic" or intent.get("type") != "repair_request":
                 continue
@@ -1014,6 +1018,14 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
             },
         },
     )
+
+
+def _record_terminal_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:
+    fingerprint = _normalized_critic_fingerprint(critic_report)
+    existing = _existing_repair_request_intent(run_dir, fingerprint, states=("pending", "blocked"))
+    if existing is not None:
+        return existing
+    return _record_repair_request_intent(run_dir, critic_report)
 
 
 def _block_repair_request_intent(
@@ -1078,30 +1090,34 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     decision = critic_report["decision"]
     if decision == "block":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        intent_result = _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
+            intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
+        _record_repair_request_intent(run_dir, critic_report)
         _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_block", "Critic blocked delivery.", critic_report)
     if decision == "revise":
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
-        intent_result = _record_repair_request_intent(run_dir, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
+            intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
             return _blocked_result("critic_retry_limit", "Critic retry limit reached.", critic_report)
+        _record_repair_request_intent(run_dir, critic_report)
         _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 

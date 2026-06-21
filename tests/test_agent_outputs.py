@@ -2452,6 +2452,56 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(blocked_intents[0]["result"]["outputs"]["delivery_reason"], "self_repair_mode_blocks_route")
         self.assertEqual(blocked_intents[0]["result"]["outputs"]["critic_decision"], "revise")
 
+    def test_prepare_delivery_full_mode_recreates_pending_after_limited_blocked_intent(self):
+        settings_path = self.styles_dir / "settings.json"
+        settings_path.write_text(
+            json.dumps({"selfRepairMode": "limited"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        routing = {
+            "stage": "gm_loop",
+            "target_agents": ["gm"],
+            "rollback": "round_progression",
+            "can_auto_repair": True,
+            "risk": "medium",
+        }
+        self._write_story_and_critic(decision="revise", repair_routing=routing)
+
+        blocked_result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(blocked_result["ok"])
+        self.assertEqual(blocked_result["action"], "blocked")
+        self.assertEqual(blocked_result["reason"], "self_repair_mode_blocks_route")
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+
+        settings_path.write_text(
+            json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        retry_result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(retry_result["ok"])
+        self.assertEqual(retry_result["action"], "retry")
+        self.assertEqual(retry_result["reason"], "critic_revise")
+        pending_intents = self._repair_request_intents("pending")
+        self.assertEqual(len(pending_intents), 1)
+        self.assertEqual(pending_intents[0]["payload"]["repair_routing"], routing)
+        messages = _read_jsonl(self.run_dir / "messages.jsonl")
+        pending_message_ids = {
+            intent["source_message_id"]
+            for intent in pending_intents
+        }
+        pending_messages = [
+            message
+            for message in messages
+            if message.get("id") in pending_message_ids and message.get("type") == "repair_request"
+        ]
+        self.assertEqual(len(pending_messages), 1)
+        self.assertEqual(pending_messages[0]["payload"]["repair_routing"], routing)
+
     def test_prepare_delivery_full_mode_allows_progression_repair_route(self):
         (self.styles_dir / "settings.json").write_text(
             json.dumps({"selfRepairMode": "full"}, ensure_ascii=False),
