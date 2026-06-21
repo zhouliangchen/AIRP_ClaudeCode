@@ -160,6 +160,147 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.agent_run.read_json(self.run_dir / "gm.output.json")
         self.agent_run.read_json(self.run_dir / "actor.outputs.json")
 
+    def test_actor_dispatch_wraps_runtime_write_exceptions_as_loop_errors(self):
+        self.register_characters("Ada")
+        original_create_intent = self.agent_turn_loop.agent_intents.create_intent
+        root_cause = RuntimeError("intent store unavailable")
+
+        def raise_create_intent(*_args, **_kwargs):
+            raise root_cause
+
+        self.agent_turn_loop.agent_intents.create_intent = raise_create_intent
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear a bell.",
+                        "reason": "Ada can hear it.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "The bell is audible nearby.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["auditory"],
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{"type": "wait_for_gm", "target": "", "content": "I wait."}],
+                "stop_reason": "continue",
+            }
+
+        try:
+            with self.assertRaisesRegex(
+                self.agent_turn_loop.AgentTurnLoopError,
+                "record request_actor intent failed: intent store unavailable",
+            ) as raised:
+                self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+        finally:
+            self.agent_turn_loop.agent_intents.create_intent = original_create_intent
+
+        self.assertIs(raised.exception.__cause__, root_cause)
+
+    def test_parallel_actor_calls_create_projected_and_response_messages(self):
+        self.register_characters("Ada", "Bea")
+        barrier = threading.Barrier(2)
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada and Bea hear separate bells."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You hear the north bell.",
+                            "reason": "Ada can hear the north bell.",
+                            "visibility_basis": {
+                                "mode": "direct",
+                                "summary": "The north bell is audible to Ada.",
+                                "target_actor": "character:Ada",
+                                "visible_to": ["character:Ada"],
+                                "sensory_channels": ["auditory"],
+                            },
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You hear the south bell.",
+                            "reason": "Bea can hear the south bell.",
+                            "visibility_basis": {
+                                "mode": "direct",
+                                "summary": "The south bell is audible to Bea.",
+                                "target_actor": "character:Bea",
+                                "visible_to": ["character:Bea"],
+                                "sensory_channels": ["auditory"],
+                            },
+                        },
+                    ],
+                    "parallel_groups": [{
+                        "group_id": "group-bells",
+                        "actors": ["character:Ada", "character:Bea"],
+                    }],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            self.assertIn(agent_key, {"character:Ada", "character:Bea"})
+            barrier.wait(timeout=2)
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": [{"type": "wait_for_gm", "target": "", "content": f"{agent_key} listens."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        messages = self.agent_messages.read_messages(self.run_dir)
+        projected = [message for message in messages if message.get("type") == "projected_message"]
+        responses = [message for message in messages if message.get("type") == "actor_response"]
+        self.assertEqual(len(projected), 2)
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(len({message["id"] for message in projected}), 2)
+        self.assertEqual(len({message["id"] for message in responses}), 2)
+        self.assertCountEqual(
+            [message.get("source_call_id") for message in projected],
+            ["call-character-Ada-1", "call-character-Bea-1"],
+        )
+        self.assertCountEqual(
+            [message.get("source_call_id") for message in responses],
+            ["call-character-Ada-1", "call-character-Bea-1"],
+        )
+        completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
+        self.assertEqual(
+            len([intent for intent in completed_intents if intent.get("type") == "project_message"]),
+            2,
+        )
+        ada_inbox = self.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        bea_inbox = self.agent_messages.read_inbox(self.run_dir, "character:Bea")
+        self.assertEqual([message.get("type") for message in ada_inbox], ["projected_message"])
+        self.assertEqual([message.get("type") for message in bea_inbox], ["projected_message"])
+        self.assertTrue((self.run_dir / "gm.output.json").exists())
+        self.assertTrue((self.run_dir / "actor.outputs.json").exists())
+        self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+
     def test_actor_packet_receives_gm_visibility_basis(self):
         self.register_character_states({
             "name": "Ada",
