@@ -99,17 +99,15 @@ class AgentIntentsTest(unittest.TestCase):
         self.assertEqual(second["id"], "intent_000002")
         self.assertTrue((self.run_dir / "intents" / "pending" / "intent_000002.json").exists())
 
-    def test_normalize_intent_rejects_duplicate_id(self):
-        created = self.mod.create_intent(
-            self.run_dir,
-            {"requested_by": "gm", "type": "project_message", "payload": {}},
-        )["intent"]
-
-        with self.assertRaises(self.mod.AgentIntentError):
-            self.mod.normalize_intent(
+    def test_create_intent_rejects_caller_supplied_id_without_writing_file(self):
+        with self.assertRaisesRegex(self.mod.AgentIntentError, "id is assigned by create_intent"):
+            self.mod.create_intent(
                 self.run_dir,
-                {"id": created["id"], "requested_by": "gm", "type": "project_message", "payload": {}},
+                {"id": "custom", "requested_by": "gm", "type": "project_message", "payload": {}},
             )
+
+        self.assertFalse((self.run_dir / "intents" / "pending" / "custom.json").exists())
+        self.assertEqual(self.mod.list_intents(self.run_dir), [])
 
     def test_missing_intent_transition_returns_intent_missing(self):
         result = self.mod.accept_intent(self.run_dir, "intent_999999", outputs={"message_id": "msg_000002"})

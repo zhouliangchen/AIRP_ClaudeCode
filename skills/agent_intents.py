@@ -30,10 +30,10 @@ def normalize_intent(run_dir, payload):
         raise AgentIntentError("source_message_id must be a string")
     if policy is not None and not isinstance(policy, dict):
         raise AgentIntentError("policy must be an object")
+    if "id" in payload:
+        raise AgentIntentError("id is assigned by create_intent")
 
-    intent_id = payload.get("id") or _next_intent_id(Path(run_dir))
-    if not isinstance(intent_id, str) or not intent_id:
-        raise AgentIntentError("id must be a string")
+    intent_id = _next_intent_id(Path(run_dir))
     if _find_intent_path(Path(run_dir), intent_id) is not None:
         raise AgentIntentError(f"duplicate intent id: {intent_id}")
 
