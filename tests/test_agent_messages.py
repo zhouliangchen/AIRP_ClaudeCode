@@ -129,6 +129,10 @@ class AgentMessagesTest(unittest.TestCase):
         self.assertTrue(accented.endswith(".jsonl"))
         self.assertTrue(escaped_literal.endswith(".jsonl"))
 
+    def test_safe_agent_filename_preserves_boundary_characters(self):
+        self.assertNotEqual(self.mod.safe_agent_filename("story"), self.mod.safe_agent_filename(".story"))
+        self.assertNotEqual(self.mod.safe_agent_filename("u0000e9"), self.mod.safe_agent_filename("_u0000e9"))
+
     def test_repeated_messages_preserve_monotonic_ids(self):
         first = self.mod.append_message(
             self.run_dir,

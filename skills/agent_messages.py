@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -25,10 +24,16 @@ def safe_agent_filename(agent_id: str) -> str:
 
     if not isinstance(agent_id, str) or not agent_id:
         raise AgentMessageError("agent_id must be a non-empty string")
-    safe = "".join(_safe_filename_char(char) for char in agent_id).strip("._")
-    if _needs_hash_suffix(agent_id, safe):
-        digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()[:12]
-        safe = f"{safe}_h{digest}"
+    safe = "".join(_safe_filename_char(char) for char in agent_id)
+    if _is_simple_agent_id(agent_id):
+        return f"{safe}.jsonl"
+
+    if safe.startswith((".", "-")):
+        safe = f"agent_{safe}"
+    if not safe:
+        safe = "agent"
+    digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()[:12]
+    safe = f"{safe}_h{digest}"
     return f"{safe or 'agent'}.jsonl"
 
 
@@ -40,10 +45,10 @@ def _safe_filename_char(char: str) -> str:
     return f"_u{ord(char):06x}"
 
 
-def _needs_hash_suffix(agent_id: str, safe: str) -> bool:
-    has_encoded_char = any(not (char.isascii() and (char.isalnum() or char in "._-:")) for char in agent_id)
-    has_escape_shaped_text = re.search(r"_u[0-9a-fA-F]{6}", safe) is not None
-    return has_encoded_char or has_escape_shaped_text
+def _is_simple_agent_id(agent_id: str) -> bool:
+    if agent_id.startswith((".", "-")) or "_" in agent_id:
+        return False
+    return all(char.isascii() and (char.isalnum() or char in ".-:") for char in agent_id)
 
 
 def _is_player_or_character(agent_id: str) -> bool:
