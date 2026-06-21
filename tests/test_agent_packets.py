@@ -2101,6 +2101,9 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(input_messages[0]["from"], "main_agent")
         self.assertIn("input_analyst", input_messages[0]["to"])
         self.assertIn("gm", input_messages[0]["to"])
+        self.assertEqual(input_messages[0]["visibility"], "gm_only")
+        self.assertEqual(input_messages[0]["payload"]["input_path"], "input.json")
+        self.assertEqual(input_messages[0]["payload"]["input_raw_path"], "input.raw.json")
 
         pending_intents_dir = run_dir / "intents" / "pending"
         self.assertTrue(pending_intents_dir.exists())
@@ -2113,7 +2116,12 @@ class AgentPacketTest(unittest.TestCase):
         analyze = [item for item in intent_payloads if item["type"] == "analyze_input"]
         self.assertEqual(len(analyze), 1)
         self.assertEqual(analyze[0]["requested_by"], "main_agent")
+        self.assertEqual(analyze[0]["source_message_id"], input_messages[0]["id"])
         self.assertEqual(analyze[0]["payload"]["input_path"], "input.json")
+        self.assertEqual(
+            analyze[0]["payload"]["input_analysis_request_path"],
+            "input_analysis.request.md",
+        )
         self.assertNotIn("=== AGENT_WORKFLOW ===", round_context)
         self.assertNotIn("AGENT_WORKFLOW_ADVICE", round_context)
         self.assertNotIn("dispatch_agent_outputs", round_context)
