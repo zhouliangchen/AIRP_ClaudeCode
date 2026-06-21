@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ SNAPSHOT_ITEMS = [
     ".agent_runs/current",
 ]
 
+SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -31,7 +34,13 @@ def _snapshot_root(card_folder: str | Path) -> Path:
 
 
 def _safe_component(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value).strip("-") or "snapshot"
+    safe = []
+    for ch in value:
+        if ("A" <= ch <= "Z") or ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch in {"-", "_", "."}:
+            safe.append(ch)
+        else:
+            safe.append("-")
+    return "".join(safe).strip("-") or "snapshot"
 
 
 def _new_snapshot_id(root: Path, round_id: str) -> str:
@@ -69,8 +78,7 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 
 def _is_direct_snapshot_id(snapshot_id: str) -> bool:
-    path = Path(snapshot_id)
-    return path.name == snapshot_id and not path.is_absolute()
+    return bool(SNAPSHOT_ID_RE.fullmatch(snapshot_id))
 
 
 def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> Dict[str, Any]:
@@ -113,7 +121,12 @@ def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) ->
     if not _is_direct_snapshot_id(str(snapshot_id)):
         return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}
 
-    snapshot_dir = _snapshot_root(card) / str(snapshot_id)
+    snapshot_root = _snapshot_root(card).resolve()
+    snapshot_dir = snapshot_root / str(snapshot_id)
+    resolved_snapshot_dir = snapshot_dir.resolve()
+    if resolved_snapshot_dir == snapshot_root or snapshot_root not in resolved_snapshot_dir.parents:
+        return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}
+
     metadata_path = snapshot_dir / "snapshot.json"
     if not snapshot_dir.is_dir() or not metadata_path.is_file():
         return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}

@@ -102,6 +102,88 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "snapshot_missing")
 
+    def test_restore_snapshot_rejects_parent_id_without_mutating_card(self):
+        self._write_card_state()
+        (self.card / "memory" / "project.md").write_text("safe memory", encoding="utf-8")
+        agent_runs = self.card / ".agent_runs"
+        (agent_runs / "snapshots").mkdir(parents=True)
+        write_json(
+            agent_runs / "snapshot.json",
+            {
+                "snapshot_id": "..",
+                "round_id": "round-000001",
+                "reason": "malicious",
+                "copied": ["memory"],
+            },
+        )
+        (agent_runs / "memory").mkdir()
+        (agent_runs / "memory" / "project.md").write_text("escaped memory", encoding="utf-8")
+
+        result = self.snapshots.restore_snapshot(
+            self.card,
+            "..",
+            mode="round_progression",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "snapshot_missing")
+        self.assertEqual((self.card / "memory" / "project.md").read_text(encoding="utf-8"), "safe memory")
+
+    def test_restore_snapshot_rejects_path_shaped_ids(self):
+        ids = [
+            "round-000001-20260621T123456123456Z-abcdef123456/child",
+            "round-000001-20260621T123456123456Z-abcdef123456\\child",
+            "C:\\temp\\round-000001-20260621T123456123456Z-abcdef123456",
+            "/tmp/round-000001-20260621T123456123456Z-abcdef123456",
+            ".",
+            "..",
+        ]
+
+        for snapshot_id in ids:
+            with self.subTest(snapshot_id=snapshot_id):
+                result = self.snapshots.restore_snapshot(
+                    self.card,
+                    snapshot_id,
+                    mode="round_progression",
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["reason"], "snapshot_missing")
+
+    def test_restore_snapshot_ignores_traversal_entries_in_metadata(self):
+        self._write_card_state()
+        (self.card / "memory" / "project.md").write_text("current memory", encoding="utf-8")
+        snapshot_id = "round-000001-20260621T123456123456Z-abcdef123456"
+        snapshot_dir = self.card / ".agent_runs" / "snapshots" / snapshot_id
+        write_json(
+            snapshot_dir / "snapshot.json",
+            {
+                "snapshot_id": snapshot_id,
+                "round_id": "round-000001",
+                "reason": "test",
+                "copied": ["../memory", ".agent_runs/snapshots/evil", "memory"],
+            },
+        )
+        (snapshot_dir / "memory").mkdir()
+        (snapshot_dir / "memory" / "project.md").write_text("restored memory", encoding="utf-8")
+        (snapshot_dir.parent / "memory").mkdir()
+        (snapshot_dir.parent / "memory" / "project.md").write_text("traversal memory", encoding="utf-8")
+        (snapshot_dir / ".agent_runs" / "snapshots" / "evil").mkdir(parents=True)
+        (snapshot_dir / ".agent_runs" / "snapshots" / "evil" / "project.md").write_text(
+            "nested snapshot memory",
+            encoding="utf-8",
+        )
+
+        result = self.snapshots.restore_snapshot(
+            self.card,
+            snapshot_id,
+            mode="round_progression",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["restored"], ["memory"])
+        self.assertEqual((self.card / "memory" / "project.md").read_text(encoding="utf-8"), "restored memory")
+
     def test_restore_snapshot_replaces_changed_target_shapes(self):
         self._write_card_state()
         created = self.snapshots.create_snapshot(
