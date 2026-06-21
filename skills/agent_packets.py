@@ -11,11 +11,37 @@ import agent_run
 import agent_prompts
 import agent_memory
 import agent_lifecycle
+import agent_messages
 import input_analysis
 
 
 def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _clean_text_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _sync_message_inbox_alias(run_dir: Path, agent_id: str, filename: str) -> None:
+    rows = agent_messages.read_inbox(run_dir, agent_id)
+    if not rows:
+        return
+    path = run_dir / "inboxes" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
 
 
 def _clip_text(value: Any, limit: int) -> str:
@@ -580,6 +606,38 @@ def prepare_agent_run(
     if degraded_memory_state:
         input_json["degraded_memory_state"] = degraded_memory_state
     agent_run.write_json(run_dir / "input.json", input_json)
+    source_integrity = input_request.get("source_integrity") if isinstance(input_request, dict) else {}
+    raw_text_hash = source_integrity.get("raw_text_sha256") if isinstance(source_integrity, dict) else None
+    input_received_payload = {
+        "input_path": "input.json",
+        "raw_path": "input.raw.json",
+    }
+    if raw_text_hash:
+        input_received_payload["raw_text_hash"] = raw_text_hash
+    agent_messages.append_message(
+        run_dir,
+        {
+            "from": "main_agent",
+            "to": ["gm", "input_analyst"],
+            "type": "input_received",
+            "visibility": "gm_only",
+            "payload": input_received_payload,
+        },
+    )
+    agent_messages.append_message(
+        run_dir,
+        {
+            "from": "main_agent",
+            "to": ["input_analyst"],
+            "type": "analysis_requested",
+            "visibility": "gm_only",
+            "payload": {
+                "request_path": "input_analysis.request.md",
+                "output_path": "input_analysis.output.json",
+            },
+        },
+    )
+    _sync_message_inbox_alias(run_dir, "input_analyst", "input_analyst.jsonl")
 
     gm_packet = build_gm_packet(
         card_folder,
@@ -672,6 +730,20 @@ def rebuild_agent_run_from_analysis(
         "visible_events": world_state["visible_events"],
     }
     agent_run.write_json(root / "input.json", input_json)
+    agent_messages.append_message(
+        root,
+        {
+            "from": "input_analyst",
+            "to": ["gm"],
+            "type": "analysis_applied",
+            "visibility": "gm_only",
+            "payload": {
+                "input_path": "input.json",
+                "analysis_path": "input_analysis.output.json",
+                "routed_characters": _clean_text_list(routed_input.get("characters", [])),
+            },
+        },
+    )
 
     gm_packet = build_gm_packet(
         card_folder,

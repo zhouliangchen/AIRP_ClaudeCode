@@ -1616,6 +1616,138 @@ class AgentPacketTest(unittest.TestCase):
         player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
         self.assertNotIn(input_payload["user_instruction_text"], json.dumps(player_packet, ensure_ascii=False))
 
+    def test_prepare_agent_run_initializes_message_runtime(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nKeep the sealed door hidden.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "Keep the sealed door hidden.",
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=[],
+            card_data={"title": "Message Runtime Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+
+        run_dir = Path(result["run_dir"])
+        messages_path = run_dir / "messages.jsonl"
+        gm_inbox_path = run_dir / "inboxes" / "gm.jsonl"
+        input_analyst_inbox_path = run_dir / "inboxes" / "input_analyst.jsonl"
+        self.assertTrue(messages_path.exists())
+        self.assertTrue(gm_inbox_path.exists())
+        self.assertTrue(input_analyst_inbox_path.exists())
+        self.assertFalse((run_dir / "inboxes" / "player.jsonl").exists())
+        self.assertEqual(list((run_dir / "inboxes").glob("character*.jsonl")), [])
+
+        messages = [
+            json.loads(line)
+            for line in messages_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual([message["type"] for message in messages[:2]], ["input_received", "analysis_requested"])
+        self.assertTrue(all(message["status"] == "delivered" for message in messages))
+
+        input_received = messages[0]
+        raw_record = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        self.assertEqual(input_received["from"], "main_agent")
+        self.assertEqual(input_received["to"], ["gm", "input_analyst"])
+        self.assertEqual(input_received["visibility"], "gm_only")
+        self.assertEqual(
+            input_received["payload"],
+            {
+                "input_path": "input.json",
+                "raw_path": "input.raw.json",
+                "raw_text_hash": raw_record["source_integrity"]["raw_text_sha256"],
+            },
+        )
+
+        analysis_requested = messages[1]
+        self.assertEqual(analysis_requested["from"], "main_agent")
+        self.assertEqual(analysis_requested["to"], ["input_analyst"])
+        self.assertEqual(analysis_requested["visibility"], "gm_only")
+        self.assertEqual(
+            analysis_requested["payload"],
+            {
+                "request_path": "input_analysis.request.md",
+                "output_path": "input_analysis.output.json",
+            },
+        )
+
+    def test_rebuild_agent_run_from_analysis_records_message_runtime_event(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I check whether Ada notices the seal.",
+            "role_text": "I check whether Ada notices the seal.",
+            "user_instruction_text": "",
+        }
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=[],
+            card_data={"title": "Analysis Applied Message Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+        run_dir = Path(result["run_dir"])
+        raw_request = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        analysis = {
+            "analysis_mode": "fixture",
+            "source_integrity": raw_request["source_integrity"],
+        }
+        routed_input = {
+            "input_schema": "analysis_v1",
+            "role_channel": input_payload["role_text"],
+            "user_instruction_channel": "",
+            "components": [{"channel": "role", "text": input_payload["role_text"]}],
+            "characters": [" Ada ", "", 42, "Bert"],
+        }
+
+        self.agent_packets.rebuild_agent_run_from_analysis(
+            self.card,
+            run_dir,
+            analysis,
+            routed_input,
+            raw_request,
+            chat_log=[],
+            card_data={"title": "Analysis Applied Message Test"},
+            character_contexts={"characters": []},
+        )
+
+        messages_path = run_dir / "messages.jsonl"
+        self.assertTrue(messages_path.exists())
+        messages = [
+            json.loads(line)
+            for line in messages_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        analysis_applied = messages[-1]
+        self.assertEqual(analysis_applied["from"], "input_analyst")
+        self.assertEqual(analysis_applied["to"], ["gm"])
+        self.assertEqual(analysis_applied["type"], "analysis_applied")
+        self.assertEqual(analysis_applied["visibility"], "gm_only")
+        self.assertEqual(analysis_applied["status"], "delivered")
+        self.assertEqual(
+            analysis_applied["payload"],
+            {
+                "input_path": "input.json",
+                "analysis_path": "input_analysis.output.json",
+                "routed_characters": ["Ada", "Bert"],
+            },
+        )
+
+        gm_messages = [
+            json.loads(line)
+            for line in (run_dir / "inboxes" / "gm.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(gm_messages[-1], analysis_applied)
+
     def test_input_analyst_prompt_and_skill_define_world_update_record_contract(self):
         result = self.agent_packets.prepare_agent_run(
             self.card,
