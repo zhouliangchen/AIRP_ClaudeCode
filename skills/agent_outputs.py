@@ -983,6 +983,25 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
     if existing is not None:
         return existing
 
+    intent_result = agent_intents.create_intent(
+        run_dir,
+        {
+            "requested_by": "critic",
+            "type": "repair_request",
+            "payload": {
+                "critic_report_path": "critic.report.json",
+                "decision": critic_report.get("decision", ""),
+                "repair_instruction": critic_report.get("repair_instruction", ""),
+                "repair_routing": routing,
+                "repair_fingerprint": fingerprint,
+            },
+        },
+    )
+    intent = intent_result.get("intent") if isinstance(intent_result, dict) else None
+    intent_id = intent.get("id", "") if isinstance(intent, dict) else ""
+    if not intent_id:
+        raise AgentOutputError(f"repair_request intent creation failed: {intent_result!r}")
+
     message = agent_messages.append_message(
         run_dir,
         {
@@ -994,30 +1013,23 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
                 "decision": critic_report.get("decision", ""),
                 "repair_instruction": critic_report.get("repair_instruction", ""),
                 "repair_routing": routing,
+                "repair_fingerprint": fingerprint,
+                "intent_id": intent_id,
                 "critic_report_path": "critic.report.json",
             },
         },
     )
     if not isinstance(message, dict) or not message.get("ok"):
+        agent_intents.block_intent(run_dir, intent_id, "repair_request_message_failed", outputs={"message_result": message})
         raise AgentOutputError(f"repair_request message append failed: {message!r}")
     source_message_id = (message.get("message") or {}).get("id", "")
     if not source_message_id:
+        agent_intents.block_intent(run_dir, intent_id, "repair_request_message_failed", outputs={"message_result": message})
         raise AgentOutputError("repair_request source message id is missing")
-    return agent_intents.create_intent(
-        run_dir,
-        {
-            "requested_by": "critic",
-            "type": "repair_request",
-            "source_message_id": source_message_id,
-            "payload": {
-                "critic_report_path": "critic.report.json",
-                "decision": critic_report.get("decision", ""),
-                "repair_instruction": critic_report.get("repair_instruction", ""),
-                "repair_routing": routing,
-                "repair_fingerprint": fingerprint,
-            },
-        },
-    )
+    intent["source_message_id"] = source_message_id
+    intent["updated_at"] = datetime.now(agent_run.CST).isoformat(timespec="seconds")
+    agent_run.write_json(run_dir / "intents" / "pending" / f"{intent_id}.json", intent)
+    return {"ok": True, "intent": intent}
 
 
 def _record_terminal_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:

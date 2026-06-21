@@ -227,6 +227,7 @@ class AgentOutputsTest(unittest.TestCase):
         repair_messages = [message for message in messages if message.get("type") == "repair_request"]
         self.assertEqual(len(repair_messages), 1)
         self.assertEqual(intent["source_message_id"], repair_messages[0]["id"])
+        self.assertEqual(repair_messages[0]["payload"]["intent_id"], intent["id"])
         self.assertEqual(repair_messages[0]["payload"]["repair_routing"], expected_routing)
         self.assertTrue(any(message["id"] == intent["source_message_id"] for message in messages))
         return intent
@@ -2586,6 +2587,9 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.agent_messages.append_message = original_append_message
 
         self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "repair_request_message_failed")
 
     def test_prepare_delivery_fails_fast_when_repair_request_message_has_no_id(self):
         self._write_story_and_critic(decision="revise")
@@ -2602,6 +2606,41 @@ class AgentOutputsTest(unittest.TestCase):
             self.agent_outputs.agent_messages.append_message = original_append_message
 
         self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "repair_request_message_failed")
+
+    def test_prepare_delivery_does_not_append_repair_message_when_repair_intent_creation_fails(self):
+        self._write_story_and_critic(decision="revise")
+        original_create_intent = self.agent_outputs.agent_intents.create_intent
+
+        def reject_intent(run_dir, payload):
+            raise self.agent_outputs.agent_intents.AgentIntentError("intent store failed")
+
+        self.agent_outputs.agent_intents.create_intent = reject_intent
+        try:
+            with self.assertRaisesRegex(
+                self.agent_outputs.agent_intents.AgentIntentError,
+                "intent store failed",
+            ):
+                self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        finally:
+            self.agent_outputs.agent_intents.create_intent = original_create_intent
+
+        messages_path = self.run_dir / "messages.jsonl"
+        messages = _read_jsonl(messages_path) if messages_path.exists() else []
+        repair_messages = [message for message in messages if message.get("type") == "repair_request"]
+        self.assertEqual(repair_messages, [])
+        for target in ("story", "gm", "main_agent"):
+            inbox_messages = self.agent_outputs.agent_messages.read_inbox(self.run_dir, target)
+            inbox_repair_messages = [
+                message
+                for message in inbox_messages
+                if message.get("type") == "repair_request"
+            ]
+            self.assertEqual(inbox_repair_messages, [])
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        self.assertEqual(self._repair_request_intents("blocked"), [])
 
     def test_prepare_delivery_repair_attempt_uses_repair_history_count(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
