@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -121,6 +122,13 @@ class AgentMessagesTest(unittest.TestCase):
         self.assertTrue(su_li.endswith(".jsonl"))
         self.assertTrue(lin_yu.endswith(".jsonl"))
 
+    def test_safe_agent_filename_avoids_escape_shaped_collision(self):
+        accented = self.mod.safe_agent_filename("character:é")
+        escaped_literal = self.mod.safe_agent_filename("character:_u0000e9")
+        self.assertNotEqual(accented, escaped_literal)
+        self.assertTrue(accented.endswith(".jsonl"))
+        self.assertTrue(escaped_literal.endswith(".jsonl"))
+
     def test_repeated_messages_preserve_monotonic_ids(self):
         first = self.mod.append_message(
             self.run_dir,
@@ -157,6 +165,30 @@ class AgentMessagesTest(unittest.TestCase):
         self.assertFalse(second["ok"])
         self.assertTrue(third["ok"])
         self.assertEqual([row["id"] for row in self.mod.read_messages(self.run_dir)], ["msg_000001", "msg_000002", "msg_000003"])
+
+    def test_concurrent_appends_preserve_unique_monotonic_ids(self):
+        def append(index):
+            self.mod.append_message(
+                self.run_dir,
+                {
+                    "from": "gm",
+                    "to": ["story"],
+                    "type": "message",
+                    "visibility": "story_facing",
+                    "payload": {"text": f"Message {index}."},
+                },
+            )
+
+        threads = [threading.Thread(target=append, args=(index,)) for index in range(20)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        ids = [row["id"] for row in self.mod.read_messages(self.run_dir)]
+        expected = [f"msg_{index:06d}" for index in range(1, 21)]
+        self.assertEqual(sorted(ids), expected)
+        self.assertEqual(len(set(ids)), 20)
 
 
 if __name__ == "__main__":
