@@ -36,7 +36,21 @@ class _FileLock:
             try:
                 self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 payload = f"pid={os.getpid()} timestamp={time.time():.6f}\n".encode("utf-8")
-                os.write(self.fd, payload)
+                try:
+                    os.write(self.fd, payload)
+                except Exception:
+                    fd = self.fd
+                    self.fd = None
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                    try:
+                        self.path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise
                 return self
             except FileExistsError:
                 if time.monotonic() >= deadline:

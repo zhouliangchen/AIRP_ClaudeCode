@@ -254,6 +254,42 @@ if not result["ok"]:
         self.assertEqual(sorted(ids), expected)
         self.assertFalse((self.run_dir / ".messages.lock").exists())
 
+    def test_file_lock_cleans_up_when_metadata_write_fails(self):
+        original_write = self.mod.os.write
+
+        def failing_write(fd, data):
+            raise OSError("simulated lock metadata write failure")
+
+        self.mod.os.write = failing_write
+        try:
+            with self.assertRaises(OSError):
+                self.mod.append_message(
+                    self.run_dir,
+                    {
+                        "from": "gm",
+                        "to": ["story"],
+                        "type": "message",
+                        "visibility": "story_facing",
+                        "payload": {"text": "This append cannot acquire a usable lock."},
+                    },
+                )
+        finally:
+            self.mod.os.write = original_write
+
+        self.assertFalse((self.run_dir / ".messages.lock").exists())
+        result = self.mod.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["story"],
+                "type": "message",
+                "visibility": "story_facing",
+                "payload": {"text": "Lock cleanup allowed this append."},
+            },
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["message"]["id"], "msg_000001")
+
 
 if __name__ == "__main__":
     unittest.main()
