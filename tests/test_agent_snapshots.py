@@ -208,6 +208,76 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertTrue((self.card / "memory" / "project.md").is_file())
         self.assertEqual((self.card / "memory" / "project.md").read_text(encoding="utf-8"), "old memory")
 
+    def test_restore_snapshot_removes_failed_round_artifacts(self):
+        self._write_card_state()
+        agent_runs = self.card / ".agent_runs"
+        previous_round = agent_runs / "round-000001"
+        previous_round.mkdir(parents=True)
+        (agent_runs / "current").write_text(str(previous_round.resolve()), encoding="utf-8")
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000002",
+            reason="before_round_prepare",
+        )
+        failed_round = agent_runs / "round-000002"
+        write_json(failed_round / "story.input.json", {"stale": True})
+        write_json(failed_round / "artifacts" / "story.input.json", {"stale": True})
+        write_json(failed_round / "side_threads" / "side_gate" / "state.json", {"status": "running"})
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_progression",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertIn(".agent_runs/round-000002", restored["removed"])
+        self.assertFalse(failed_round.exists())
+        self.assertTrue(previous_round.exists())
+        self.assertEqual((agent_runs / "current").read_text(encoding="utf-8"), str(previous_round.resolve()))
+
+    def test_restore_snapshot_does_not_remove_nonstandard_round_id(self):
+        self._write_card_state()
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-smoke",
+            reason="control_plane_smoke",
+        )
+        smoke_dir = self.card / ".agent_runs" / "round-smoke"
+        write_json(smoke_dir / "story.input.json", {"keep": True})
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_progression",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertEqual(restored["removed"], [])
+        self.assertTrue(smoke_dir.exists())
+
+    def test_restore_snapshot_preserves_round_dir_that_was_current_at_snapshot_time(self):
+        self._write_card_state()
+        agent_runs = self.card / ".agent_runs"
+        current_round = agent_runs / "round-000001"
+        write_json(current_round / "manifest.json", {"stage": "delivered"})
+        (agent_runs / "current").write_text(str(current_round.resolve()), encoding="utf-8")
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="debug_current_round",
+        )
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="debug",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertEqual(restored["removed"], [])
+        self.assertTrue((current_round / "manifest.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

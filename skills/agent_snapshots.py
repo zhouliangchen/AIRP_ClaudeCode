@@ -23,6 +23,7 @@ SNAPSHOT_ITEMS = [
 ]
 
 SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
+ROUND_DIR_RE = re.compile(r"^round-[0-9]{6}$")
 
 
 def _utc_now() -> str:
@@ -81,6 +82,39 @@ def _is_direct_snapshot_id(snapshot_id: str) -> bool:
     return bool(SNAPSHOT_ID_RE.fullmatch(snapshot_id))
 
 
+def _snapshot_current_points_to(snapshot_dir: Path, target: Path) -> bool:
+    current_file = snapshot_dir / ".agent_runs" / "current"
+    if not current_file.is_file():
+        return False
+    raw = current_file.read_text(encoding="utf-8").strip()
+    if not raw:
+        return False
+    current_path = Path(raw)
+    if not current_path.is_absolute():
+        current_path = (snapshot_dir / ".agent_runs" / current_path).resolve()
+    else:
+        current_path = current_path.resolve()
+    return current_path == target
+
+
+def _remove_failed_round_dir(card: Path, snapshot_dir: Path, metadata: Dict[str, Any]) -> list[str]:
+    round_id = metadata.get("round_id")
+    if not isinstance(round_id, str) or not ROUND_DIR_RE.fullmatch(round_id):
+        return []
+
+    run_root = (card / ".agent_runs").resolve()
+    target = (card / ".agent_runs" / round_id).resolve()
+    if target == run_root or run_root not in target.parents:
+        return []
+    if _snapshot_current_points_to(snapshot_dir, target):
+        return []
+    if not target.exists():
+        return []
+
+    _remove_existing(target)
+    return [f".agent_runs/{round_id}"]
+
+
 def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> Dict[str, Any]:
     card = Path(card_folder)
     root = _snapshot_root(card)
@@ -136,6 +170,7 @@ def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) ->
     if not isinstance(copied, list):
         copied = []
 
+    removed = _remove_failed_round_dir(card, snapshot_dir, metadata)
     restored = []
     for rel in copied:
         if rel not in SNAPSHOT_ITEMS:
@@ -155,4 +190,5 @@ def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) ->
         "round_id": metadata.get("round_id"),
         "reason": metadata.get("reason"),
         "restored": restored,
+        "removed": removed,
     }
