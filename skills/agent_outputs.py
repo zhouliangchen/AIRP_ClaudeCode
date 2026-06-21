@@ -1002,23 +1002,32 @@ def _record_repair_request_intent(run_dir: Path, critic_report: Dict[str, Any]) 
     if not intent_id:
         raise AgentOutputError(f"repair_request intent creation failed: {intent_result!r}")
 
-    message = agent_messages.append_message(
-        run_dir,
-        {
-            "from": "critic",
-            "to": ["story", "gm", "main_agent"],
-            "type": "repair_request",
-            "visibility": "gm_only",
-            "payload": {
-                "decision": critic_report.get("decision", ""),
-                "repair_instruction": critic_report.get("repair_instruction", ""),
-                "repair_routing": routing,
-                "repair_fingerprint": fingerprint,
-                "intent_id": intent_id,
-                "critic_report_path": "critic.report.json",
+    try:
+        message = agent_messages.append_message(
+            run_dir,
+            {
+                "from": "critic",
+                "to": ["story", "gm", "main_agent"],
+                "type": "repair_request",
+                "visibility": "gm_only",
+                "payload": {
+                    "decision": critic_report.get("decision", ""),
+                    "repair_instruction": critic_report.get("repair_instruction", ""),
+                    "repair_routing": routing,
+                    "repair_fingerprint": fingerprint,
+                    "intent_id": intent_id,
+                    "critic_report_path": "critic.report.json",
+                },
             },
-        },
-    )
+        )
+    except Exception as exc:
+        agent_intents.block_intent(
+            run_dir,
+            intent_id,
+            "repair_request_message_failed",
+            outputs={"error": str(exc), "error_type": type(exc).__name__},
+        )
+        raise AgentOutputError(f"repair_request message append failed: {exc}") from exc
     if not isinstance(message, dict) or not message.get("ok"):
         agent_intents.block_intent(run_dir, intent_id, "repair_request_message_failed", outputs={"message_result": message})
         raise AgentOutputError(f"repair_request message append failed: {message!r}")

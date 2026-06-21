@@ -353,6 +353,36 @@ if not result["ok"]:
         self.assertTrue(result["ok"])
         self.assertEqual(result["intent"]["id"], "intent_000001")
 
+    def test_file_lock_retries_permission_error_when_lock_path_exists(self):
+        lock_path = self.run_dir / "intents" / ".intents.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("held by another process", encoding="utf-8")
+        original_open = self.mod.os.open
+        calls = {"count": 0}
+
+        def flaky_open(path, flags, *args):
+            if Path(path) == lock_path and calls["count"] == 0:
+                calls["count"] += 1
+                self.assertTrue(lock_path.exists())
+                raise PermissionError("transient lock access")
+            if Path(path) == lock_path and calls["count"] == 1 and lock_path.exists():
+                lock_path.unlink()
+            return original_open(path, flags, *args)
+
+        self.mod.os.open = flaky_open
+        try:
+            result = self.mod.create_intent(
+                self.run_dir,
+                {"requested_by": "gm", "type": "project_message", "payload": {}},
+            )
+        finally:
+            self.mod.os.open = original_open
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent"]["id"], "intent_000001")
+        self.assertEqual(calls["count"], 1)
+        self.assertFalse(lock_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2591,6 +2591,26 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(len(blocked_intents), 1)
         self.assertEqual(blocked_intents[0]["result"]["reason"], "repair_request_message_failed")
 
+    def test_prepare_delivery_blocks_repair_intent_when_repair_message_append_raises(self):
+        self._write_story_and_critic(decision="revise")
+        original_append_message = self.agent_outputs.agent_messages.append_message
+
+        def raise_append_error(run_dir, message):
+            raise OSError("message log unavailable")
+
+        self.agent_outputs.agent_messages.append_message = raise_append_error
+        try:
+            with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "repair_request message append failed"):
+                self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        finally:
+            self.agent_outputs.agent_messages.append_message = original_append_message
+
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "repair_request_message_failed")
+        self.assertIn("message log unavailable", blocked_intents[0]["result"]["outputs"]["error"])
+
     def test_prepare_delivery_fails_fast_when_repair_request_message_has_no_id(self):
         self._write_story_and_critic(decision="revise")
         original_append_message = self.agent_outputs.agent_messages.append_message
