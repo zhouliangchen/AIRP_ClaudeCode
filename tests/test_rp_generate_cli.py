@@ -245,6 +245,8 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("TOOL_NOT_AVAILABLE", outer)
         self.assertIn("<subagent_prompt>", outer)
         self.assertIn("</subagent_prompt>", outer)
+        self.assertEqual(outer.count("<subagent_prompt>"), 1)
+        self.assertEqual(outer.count("</subagent_prompt>"), 1)
         self.assertIn("embedded-context mode", outer)
         self.assertIn("Do not block because run_dir", outer)
         self.assertIn('{"role_channel":"I ask."}', outer)
@@ -480,6 +482,34 @@ class RpGenerateCliTest(unittest.TestCase):
         index_path = self.card / "debug" / "model_calls" / "index.jsonl"
         index_items = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([item["agent_key"] for item in index_items], ["gm", "player", "story", "critic"])
+
+    def test_run_round_model_debug_mode_accepts_utf8_bom_settings(self):
+        settings = json.dumps({"modelDebugMode": True, "wordCount": 1}, ensure_ascii=False)
+        (self.styles_dir / "settings.json").write_bytes(settings.encode("utf-8-sig"))
+        responses = _basic_responses(
+            player=_player_output("I follow the noise."),
+            story=_story_output("<content>I followed the noise toward the flickering alley light.</content>"),
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
+
+        result = self.module.run_round(
+            self.card,
+            self.root,
+            run_claude=fake_run_claude,
+            run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue((self.card / "debug" / "model_calls" / "index.jsonl").exists())
+
+    def test_delivery_requirements_normalizes_invalid_person_to_second_person(self):
+        _write_json(self.styles_dir / "settings.json", {"person": "绗簩浜虹О", "wordCount": 4000})
+
+        requirements = self.module._delivery_requirements(self.root)
+
+        self.assertEqual(requirements["required_person"], "第二人称")
 
     def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
@@ -1898,6 +1928,91 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(any("second_person" in issue for issue in issues), issues)
 
+    def test_story_preflight_rejects_third_person_when_readable_chinese_second_person_required(self):
+        story = {
+            "content": "<content>雨蒙醒过来的时候，首先闻到教室里的粉笔味。他抬头看向窗外。</content>",
+        }
+        requirements = {
+            "required_person": "第二人称",
+            "player_character_names": ["雨蒙"],
+        }
+
+        issues = self.module._story_preflight_issues(story, requirements)
+
+        self.assertTrue(any("second_person" in issue for issue in issues), issues)
+
+    def test_story_preflight_requires_actionable_edits_when_input_requests_rewrite(self):
+        story = {
+            "content": (
+                "<content>你在上学路上醒来，并把吊坠扔了出去。</content>"
+                "<character_dialogues>[]</character_dialogues>"
+                "<summary>你发现吊坠回到脚边。</summary>"
+            ),
+        }
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "world_updates": {
+                        "retcon_requests": [
+                            {"id": "rr-001", "text": "上一轮课堂段落改定为梦境。"}
+                        ],
+                    },
+                    "narrative_directives": {
+                        "rewrite_previous_output": True,
+                    },
+                },
+            },
+        }
+
+        issues = self.module._story_preflight_issues(story, {}, story_input)
+
+        self.assertIn("rewrite_previous_output_requires_actionable_derived_content_edits", issues)
+
+    def test_story_preflight_accepts_actionable_edits_when_input_requests_rewrite(self):
+        story = {
+            "content": (
+                "<content>你在上学路上醒来，并把吊坠扔了出去。</content>"
+                "<derived_content_edits>"
+                "[{\"turn_index\":0,\"summary\":\"上一轮课堂段落改定为梦境预示\","
+                "\"first_paragraph\":\"你在梦里站在熟悉教室中，所有人都一如往常。\","
+                "\"reason\":\"玩家梦醒回拨\"}]"
+                "</derived_content_edits>"
+                "<character_dialogues>[]</character_dialogues>"
+                "<summary>你发现吊坠回到脚边。</summary>"
+            ),
+        }
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "world_updates": {"retcon_requests": [{"id": "rr-001", "text": "梦醒修正。"}]},
+                    "narrative_directives": {"rewrite_previous_output": True},
+                },
+            },
+        }
+
+        issues = self.module._story_preflight_issues(story, {}, story_input)
+
+        self.assertNotIn("rewrite_previous_output_requires_actionable_derived_content_edits", issues)
+
+    def test_player_character_names_come_from_input_analysis_not_raw_keyword_matching(self):
+        story_input = {
+            "player_inputs": {
+                "raw_text": "我叫雨蒙。",
+                "input_analysis": {
+                    "world_updates": {
+                        "important_characters": [
+                            {"name": "雨蒙", "status": "active"},
+                        ],
+                    },
+                },
+            },
+        }
+
+        self.assertEqual(self.module._player_character_names_from_story_input(story_input), ["雨蒙"])
+
+        story_input["player_inputs"].pop("input_analysis")
+        self.assertEqual(self.module._player_character_names_from_story_input(story_input), [])
+
     def test_story_preflight_repair_context_uses_current_loop_sources(self):
         context = self.module._story_preflight_repair_context(
             {"content": "<content>bad draft</content>"},
@@ -1951,6 +2066,12 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertIn("Do not emit `<tokens>`", skill)
         self.assertIn("delivery/handler appends the real token block", skill)
+
+    def test_story_skill_forbids_update_variable_analysis_blocks(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+
+        self.assertIn("Do not emit `<Analysis>` inside `<UpdateVariable>`", skill)
+        self.assertIn("<UpdateVariable><JSONPatch>", skill)
 
     def test_run_delivery_forces_utf8_python_stdio(self):
         captured = {}

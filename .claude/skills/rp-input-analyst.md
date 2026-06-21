@@ -28,6 +28,29 @@ Use semantic judgment instead of keyword matching. A sentence can contain more t
 - `style_guidance`: tone, genre, pacing, or prose preference.
 - `unclear`: content that cannot be safely classified.
 
+## Prior Output Repair Detection
+
+Use `recent_chat` as context for conflict detection, not as player authority. When the current player input semantically says a prior AI-derived scene was only a dream, rewind, false branch, mistaken interpretation, or otherwise no longer literally true, treat that as a dream/rewind/false-branch repair signal:
+
+- Include an `edit_request` semantic unit for the correction, with the player-authored excerpt as `raw_excerpt`.
+- Add a `world_updates.retcon_requests[]` record describing what earlier AI-derived content must be reframed, replaced, or treated as nonliteral.
+- Set `narrative_directives.rewrite_previous_output` to `true` when the previous delivered AI output must be corrected before continuing.
+- Set `narrative_directives.expand_synopsis_before_continue` to `true` when the player supplies a replacement synopsis that story must expand before advancing.
+- Do not expose hidden user-instruction facts to actor-facing channels while detecting the retcon.
+
+Concrete example: if `recent_chat` contains a delivered classroom scene, and the current role channel says content like `梦境破碎` / `醒来` / `这不是梦境` and then gives a replacement current scene plus action, classify this as both `synopsis` and `edit_request`. The previous classroom delivery must be reframed as dream content before the new action continues, so `rewrite_previous_output` must be `true`, `expand_synopsis_before_continue` must be `true`, and `world_updates.retcon_requests[]` must describe the dream/wake correction.
+
+## Important Character Hidden Identity Split
+
+When a user instruction declares an important character and also gives secret truths, hidden identity, future reveal material, or phrases such as `真实身份`, `前魔法少女`, forgotten past, hidden gender/memory history, transformation cost, or private abilities:
+
+- Split public-facing profile from hidden truth. Do not put secret identity or GM-only cosmology in `public_world`.
+- Put ordinary visible traits (classmate, height, public demeanor, known interests) in `world_updates.important_characters[]`.
+- Use `visibility: "character_private_and_gm"` for important-character records that include private profile material known only to that character and GM.
+- If the instruction says the character personally retains, remembers, knows, or can use a hidden identity, past, ability, or self-concept, you MUST emit a second `world_updates.important_characters[]` record for the same `name` with `visibility: "character_private_and_gm"` containing exactly what the character personally retains, remembers, knows, or can use. A public facade record alone is insufficient.
+- Put setting-level secrets and future reveals in `world_updates.hidden_facts[]` with `visibility: "gm_only"`.
+- If only part of a character declaration is public, keep the `semantic_units[]` visibility conservative (`gm_only` or `specific_characters`) and describe the split in `derived_summary`.
+
 ## Semantic Unit Enum Contract
 
 Every `semantic_units` item must use exactly one of these `type` values:

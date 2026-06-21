@@ -16,7 +16,7 @@ def read_json(path, default=None):
     try:
         p = Path(path)
         if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
+            return json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         pass
     return default

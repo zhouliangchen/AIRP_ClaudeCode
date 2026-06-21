@@ -573,6 +573,45 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn("role_text", pending)
         self.assertNotIn("user_instruction_text", pending)
 
+    def test_content_js_exposes_only_visible_player_input_text(self):
+        self.handler.record_player_input(
+            str(self.card),
+            "Visible role.\n\n[USER_INSTRUCTION]\nHidden magic truth.",
+            "Visible role.",
+            role_text="Visible role.",
+            user_instruction_text="Hidden magic truth.",
+            input_schema="dual_channel_v1",
+        )
+        self.handler.write_chat_log(str(self.card), [
+            {"index": 0, "user": "Visible role.", "ai": "<p>ok</p>", "summary": "ok"}
+        ])
+
+        self.handler.write_content_js(str(self.card))
+
+        content_js = (self.styles / "content.js").read_text(encoding="utf-8")
+        self.assertIn("Visible role.", content_js)
+        self.assertNotIn("Hidden magic truth.", content_js)
+        self.assertNotIn("user_instruction_text", content_js)
+        self.assertNotIn("[USER_INSTRUCTION]", content_js)
+
+    def test_frontend_player_inputs_excludes_unreferenced_stale_inputs(self):
+        stale = self.handler.record_player_input(str(self.card), "stale", "stale")
+        active = self.handler.record_player_input(str(self.card), "active", "active")
+        self.handler.write_chat_log(str(self.card), [
+            {"index": 0, "user": "active", "player_input_id": active["id"], "ai": "<p>ok</p>"}
+        ])
+
+        visible = self.handler.frontend_player_inputs(str(self.card))
+
+        self.assertEqual([item["id"] for item in visible], [active["id"]])
+        self.assertNotIn(stale["id"], [item["id"] for item in visible])
+
+    def test_server_player_inputs_api_uses_frontend_filtered_inputs(self):
+        server_py = (ROOT / "skills" / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("handler.frontend_player_inputs(card)", server_py)
+        self.assertNotIn('handler.read_player_inputs(card)})', server_py)
+
     def test_derived_content_edits_only_record_when_actionable(self):
         log = [{"index": 0, "user": "player", "ai": "<p>old</p>", "summary": "old"}]
 
@@ -628,6 +667,37 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("You wake on the road", log[1]["ai"])
         self.assertEqual(log[1]["derived_content_edits_applied"][0]["turn_index"], 0)
         self.assertEqual(log[1]["derived_content_edits_applied"][0]["original_turn_index"], 1)
+
+    def test_append_turn_retargers_future_index_derived_edit_to_prior_ai_when_reframing_previous_scene(self):
+        self.handler.write_chat_log(str(self.card), [
+            {
+                "index": 0,
+                "user": "first input",
+                "ai": "<p>Old classroom happened as reality.</p><summary>old</summary>",
+                "summary": "old",
+            }
+        ])
+
+        self.handler.append_turn(
+            str(self.card),
+            content="<p>You wake on the road and hold the pendant.</p>",
+            summary="woke",
+            derived_content_edits=[
+                {
+                    "turn_index": 2,
+                    "first_paragraph": "The previous classroom scene is now a dream preview.",
+                    "summary": "Previous classroom scene is now a dream preview.",
+                    "reason": "previous AI turn reframed as dream by player input",
+                }
+            ],
+        )
+
+        log = self.handler.read_chat_log(str(self.card))
+        self.assertIn("dream preview", log[0]["ai"])
+        self.assertEqual(log[0]["summary"], "Previous classroom scene is now a dream preview.")
+        self.assertNotIn("Old classroom happened", log[0]["ai"])
+        self.assertEqual(log[1]["derived_content_edits_applied"][0]["turn_index"], 0)
+        self.assertEqual(log[1]["derived_content_edits_applied"][0]["original_turn_index"], 2)
 
     def test_branch_submit_player_input_edit_truncates_and_pends_revised_turn(self):
         first = self.handler.record_player_input(str(self.card), "first input", "first input")
@@ -842,6 +912,28 @@ class TurnStateTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+    def test_server_settings_api_accepts_utf8_bom_settings_file(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.SETTINGS_FILE = self.styles / "settings.json"
+        payload = json.dumps({"modelDebugMode": True, "selfRepairMode": "full"}, ensure_ascii=False)
+        server.SETTINGS_FILE.write_bytes(payload.encode("utf-8-sig"))
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/settings", timeout=5) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(result["modelDebugMode"])
+        self.assertEqual(result["selfRepairMode"], "full")
 
     def test_response_parser_extracts_character_dialogues(self):
         parser = _load_response_parser()

@@ -3463,6 +3463,34 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertFalse((self.run_dir / "side_threads" / "side_suli" / "subgm.output.json").exists())
         self.assertFalse((self.run_dir / "gm.output.json").exists())
 
+    def test_gm_loop_normalizes_chinese_allowed_character_names_for_subgm_commands(self):
+        input_payload = {"character_contexts": {"characters": [{"name": "苏黎"}]}}
+        gm_output = {
+            "subgm_commands": [{
+                "action": "start",
+                "thread_id": "side_suli",
+                "title": "苏黎检查校门",
+                "outline": "苏黎在场外确认异常来源。",
+                "time_window": "same minute",
+                "location": "校门",
+                "objective": "确认吊坠异常是否外泄。",
+                "allowed_characters": ["character:苏黎"],
+                "forbidden_characters": ["player"],
+                "message": "Start Su Li side thread.",
+                "metadata": {},
+            }],
+        }
+
+        self.agent_turn_loop._normalize_subgm_command_actor_ids(gm_output, input_payload)
+        normalized_actor = gm_output["subgm_commands"][0]["allowed_characters"][0]
+        self.assertRegex(normalized_actor, r"^character:C_[0-9a-f]{8}$")
+        self.agent_turn_loop._prevalidate_subgm_commands(self.run_dir, gm_output, input_payload)
+        self.agent_turn_loop._apply_subgm_commands(self.run_dir, gm_output, input_payload)
+
+        state = self.agent_run.read_json(self.run_dir / "side_threads" / "side_suli" / "state.json")
+        self.assertEqual(state["allowed_characters"], [normalized_actor])
+        self.assertEqual(gm_output["subgm_commands"][0]["allowed_characters"], [normalized_actor])
+
     def test_gm_loop_rejects_same_output_start_reservation_collision_before_writes(self):
         self.register_characters("SuLi")
         calls = []

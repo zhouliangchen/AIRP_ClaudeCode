@@ -66,6 +66,15 @@ class LanAccessConfigTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["encoding"], "utf-8")
         self.assertEqual(calls[0][1]["errors"], "replace")
 
+    def test_start_server_stale_python_filter_only_targets_bridge_server(self):
+        start_server = _load_start_server()
+
+        command = start_server._stale_python_process_query(12345)
+
+        self.assertIn("server\\.py", command)
+        self.assertNotIn("*skills*", command)
+        self.assertNotIn("start_server", command)
+
 
 if __name__ == "__main__":
     unittest.main()

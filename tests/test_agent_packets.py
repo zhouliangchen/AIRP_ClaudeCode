@@ -1535,7 +1535,14 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(raw_record["raw_text"], input_payload["raw_text"])
         self.assertEqual(raw_record["role_text"], input_payload["role_text"])
         self.assertEqual(raw_record["user_instruction_text"], input_payload["user_instruction_text"])
-        self.assertEqual(raw_record["explicit_payload"], input_payload)
+        self.assertEqual(
+            raw_record["explicit_payload"],
+            {
+                "input_schema": "dual_channel_v1",
+                "role_text": input_payload["role_text"],
+                "user_instruction_text": input_payload["user_instruction_text"],
+            },
+        )
         self.assertEqual(
             raw_record["source_integrity"]["raw_text_sha256"],
             self.agent_packets.input_analysis.sha256_text(input_payload["raw_text"]),
@@ -1550,14 +1557,20 @@ class AgentPacketTest(unittest.TestCase):
         )
 
         request = (run_dir / "input_analysis.request.md").read_text(encoding="utf-8")
-        self.assertIn("raw_text", request)
+        self.assertNotIn(json.dumps(input_payload["raw_text"], ensure_ascii=False)[1:-1], request)
+        self.assertNotIn('"raw_text"', request)
+        self.assertIn("raw_text_sha256", request)
         self.assertIn("设定：今天是梦境。", request)
         prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
         self.assertIn(".claude/skills/rp-input-analyst.md", prompt)
         self.assertIn("input_analysis.output.json", prompt)
-        self.assertIn(json.dumps(input_payload["raw_text"], ensure_ascii=False)[1:-1], prompt)
+        self.assertNotIn(json.dumps(input_payload["raw_text"], ensure_ascii=False)[1:-1], prompt)
+        self.assertNotIn('"raw_text"', prompt)
         self.assertIn(input_payload["role_text"], prompt)
         self.assertIn(input_payload["user_instruction_text"], prompt)
+        self.assertNotIn('"display_text"', prompt)
+        self.assertLessEqual(prompt.count(input_payload["role_text"]), 2)
+        self.assertLessEqual(prompt.count(input_payload["user_instruction_text"]), 2)
         self.assertTrue("source_integrity" in prompt or "raw_text_sha256" in prompt)
         self.assertIn("semantic_units", prompt)
         for visibility in (
@@ -1628,6 +1641,27 @@ class AgentPacketTest(unittest.TestCase):
             for fragment in required_fragments:
                 with self.subTest(fragment=fragment):
                     self.assertIn(fragment, text)
+
+    def test_input_analyst_skill_requires_dream_rewind_retcon_detection(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+
+        self.assertIn("dream/rewind/false-branch", skill)
+        self.assertIn("rewrite_previous_output", skill)
+        self.assertIn("retcon_requests", skill)
+        self.assertIn("recent_chat", skill)
+        self.assertIn("梦境破碎", skill)
+        self.assertIn("醒来", skill)
+
+    def test_input_analyst_skill_keeps_important_character_hidden_identity_private(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+
+        self.assertIn("Important Character Hidden Identity Split", skill)
+        self.assertIn("真实身份", skill)
+        self.assertIn("前魔法少女", skill)
+        self.assertIn("character_private_and_gm", skill)
+        self.assertIn("hidden_facts", skill)
+        self.assertIn("MUST emit a second", skill)
+        self.assertIn("the character personally retains, remembers, knows, or can use", skill)
 
     def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(

@@ -182,6 +182,44 @@ def _hidden_phrases_from_text(value: str) -> set[str]:
     return kept
 
 
+def _name_phrase_key(value: Any) -> str:
+    return "".join(
+        char
+        for char in str(value or "")
+        if char.isalnum() or _is_cjk_char(char)
+    ).casefold()
+
+
+def _structured_character_name_keys(input_payload: dict) -> set[str]:
+    keys = set()
+    payload = _dict(input_payload)
+
+    routed = _dict(payload.get("routed_input"))
+    for name in _list(routed.get("characters")):
+        key = _name_phrase_key(name)
+        if key:
+            keys.add(key)
+
+    analysis = _dict(payload.get("input_analysis"))
+    world_updates = _dict(analysis.get("world_updates"))
+    for item in _list(world_updates.get("important_characters")):
+        if not isinstance(item, dict):
+            continue
+        key = _name_phrase_key(item.get("name"))
+        if key:
+            keys.add(key)
+
+    character_contexts = _dict(payload.get("character_contexts"))
+    for item in _list(character_contexts.get("characters")):
+        if not isinstance(item, dict):
+            continue
+        key = _name_phrase_key(item.get("name"))
+        if key:
+            keys.add(key)
+
+    return keys
+
+
 def _looks_like_hidden_recent_chat_text(value: Any) -> bool:
     text = str(value or "")
     lower = text.lower()
@@ -231,6 +269,13 @@ def hidden_phrases(input_payload: dict) -> list[str]:
     phrases = set()
     for text in hidden_sources:
         phrases.update(_hidden_phrases_from_text(text))
+    character_name_keys = _structured_character_name_keys(input_payload)
+    if character_name_keys:
+        phrases = {
+            phrase
+            for phrase in phrases
+            if _name_phrase_key(phrase) not in character_name_keys
+        }
     return sorted(phrases, key=lambda phrase: (-len(phrase), phrase))
 
 

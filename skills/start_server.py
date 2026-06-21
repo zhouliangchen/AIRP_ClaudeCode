@@ -136,6 +136,16 @@ def _kill_loopback_duplicates():
     _kill_port_listeners({"127.0.0.1", "::1"})
 
 
+def _stale_python_process_query(current_pid):
+    """PowerShell query for stale bridge server Python processes only."""
+    return (
+        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | "
+        f"Where-Object {{ $_.ProcessId -ne {current_pid} -and "
+        "$_.CommandLine -match 'skills[\\\\/]server\\.py' }} | "
+        "Select-Object -ExpandProperty ProcessId"
+    )
+
+
 def _server_responding():
     """Quick check: is the bridge server already serving JSON?"""
     try:
@@ -156,11 +166,7 @@ def _kill_stale():
     """Kill any leftover Python server and Node mvu_server processes."""
     current_pid = os.getpid()
     # Python skills processes
-    cmd_py = (
-        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | "
-        f"Where-Object {{ $_.ProcessId -ne {current_pid} -and $_.CommandLine -like '*skills*' }} | "
-        "Select-Object -ExpandProperty ProcessId"
-    )
+    cmd_py = _stale_python_process_query(current_pid)
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", cmd_py],

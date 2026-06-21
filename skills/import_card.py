@@ -1189,6 +1189,19 @@ def _merge_json_worldbooks(card_data, json_files, card_dir, skip_file=None):
     return file_count, entry_count
 
 
+RUNTIME_JSON_FILES = {
+    "chat_log.json",
+    "ui_manifest.json",
+    "progress.json",
+    "openings.json",
+}
+
+
+def _is_runtime_json_file(name):
+    lower = str(name or "").lower()
+    return lower in RUNTIME_JSON_FILES or lower.startswith("repair_history")
+
+
 def run_import(card_dir, root_dir):
     """Core import logic. Returns result dict. No side effects on stdout.
 
@@ -1218,20 +1231,33 @@ def run_import(card_dir, root_dir):
     files = os.listdir(card_dir) if os.path.isdir(card_dir) else []
     files = [f for f in files if not f.startswith(".")]
     png_files = [f for f in files if f.lower().endswith(".png")]
-    json_files = [f for f in files if f.lower().endswith(".json")]
+    json_files = [f for f in files if f.lower().endswith(".json") and not _is_runtime_json_file(f)]
     txt_files = [f for f in files if f.lower().endswith(".txt")]
 
     card_data = None
     primary_json_file = None
 
+    existing_card_data_path = os.path.join(card_dir, ".card_data.json")
+    if os.path.exists(existing_card_data_path):
+        try:
+            with open(existing_card_data_path, "r", encoding="utf-8-sig") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                card_data = loaded
+                result["source_type"] = "existing_card_data"
+                result["source_file"] = ".card_data.json"
+        except Exception:
+            card_data = None
+
     # 2. PNG 优先解析
-    for png_file in png_files:
-        png_path = os.path.join(card_dir, png_file)
-        card_data = parse_png_chunks(png_path)
-        if card_data:
-            result["source_type"] = "png"
-            result["source_file"] = png_file
-            break
+    if card_data is None:
+        for png_file in png_files:
+            png_path = os.path.join(card_dir, png_file)
+            card_data = parse_png_chunks(png_path)
+            if card_data:
+                result["source_type"] = "png"
+                result["source_file"] = png_file
+                break
 
     # 3. JSON 备选
     if card_data is None and json_files:

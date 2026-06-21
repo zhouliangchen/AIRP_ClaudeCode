@@ -28,6 +28,8 @@ During the turn, respond to subagent outputs:
 3. After player/character outputs, update non-core NPC reactions and consequence notes if needed.
 4. Stop when the next unresolved issue is a real player decision or when the chapter word/scene target is met.
 
+Do not repeatedly call the same actor for passive observation of the same visible stimulus. After one actor response to a visible cue, either introduce a new visible stimulus, resolve the consequence in `scene_beats` / `events`, transfer exact visible dialogue, or set an appropriate `stop_reason`. Re-calling the same actor is only justified when the world state has materially changed or a concrete reply/action is needed.
+
 ## Optional GM Sub-Skills
 
 - Use `rp-gm-visibility-policy` when preparing `actor_calls`, generated perception feedback, dialogue transfers, or deciding whether hidden facts have become visible.
@@ -103,5 +105,7 @@ Return one GM output object:
 Use only these top-level keys. Put visible scene pressure in `scene_beats` or `events`, durable world facts in `world_state_delta`, required player/character work in `actor_calls`, important-character promotions in `character_promotions`, and side-thread control in `subgm_commands`. Allowed `subgm_commands.action` values are `start`, `message`, `accelerate`, `pause`, `resume`, `merge`, and `close`. Use `decision_point` and `stop_reason` to stop at real player choices.
 
 Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`. The proof must target the same actor and explain visible in-world access; do not route hidden facts or GM-only causes through actor prompts.
+
+If an actor prompt depends on facts the target character privately knows about themself, write that explicitly in `visibility_basis.summary` as character private self-knowledge / 角色私有自知, and state that it is not public world knowledge. Example: "苏黎 can identify this sensation through character private self-knowledge from her own past; this is not public world knowledge and is only routed to character:苏黎." Do not use this label for facts the character has not personally experienced, remembered, perceived, or been told in-world.
 
 Do not write `skills/styles/response.txt`. Do not impersonate player or core character inner voice.

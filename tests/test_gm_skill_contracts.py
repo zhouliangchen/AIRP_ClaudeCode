@@ -125,6 +125,21 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn('"summary": "why this actor can perceive or receive this side prompt"', combined)
         self.assertIn('"target_actor": "character:Ada"', combined)
 
+    def test_gm_actor_call_visibility_can_use_character_private_self_knowledge(self):
+        text = self.read(".claude/skills/rp-gm-agent.md")
+
+        self.assertIn("character private self-knowledge", text)
+        self.assertIn("角色私有自知", text)
+        self.assertIn("not public world knowledge", text)
+
+    def test_gm_agent_forbids_repeated_passive_observation_calls(self):
+        text = self.read(".claude/skills/rp-gm-agent.md")
+
+        self.assertIn("Do not repeatedly call the same actor", text)
+        self.assertIn("passive observation", text)
+        self.assertIn("new visible stimulus", text)
+        self.assertIn("stop_reason", text)
+
     def test_actor_routing_stop_reasons_match_schema(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
         for reason in (

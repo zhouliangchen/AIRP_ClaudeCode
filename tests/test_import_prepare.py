@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -85,6 +86,27 @@ class ImportPrepareTest(unittest.TestCase):
         self.assertTrue(card_dir.is_dir())
         self.assertTrue((card_dir / ".card_data.json").exists())
         self.assertTrue((card_dir / "memory").is_dir())
+
+    def test_run_import_continues_existing_save_without_treating_runtime_json_as_card(self):
+        import_card = _load_import_card()
+        card_dir = Path(self.tmp.name) / "existing_save"
+        card_dir.mkdir()
+        (card_dir / ".card_data.json").write_text(
+            json.dumps({"name": "Existing Save", "data": {"name": "Existing Save"}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (card_dir / "chat_log.json").write_text(
+            json.dumps([{"index": 0, "ai": "<p>old</p>"}], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (card_dir / "ui_manifest.json").write_text("{}", encoding="utf-8")
+
+        result = import_card.run_import(str(card_dir), self.tmp.name)
+
+        self.assertEqual(result["source_type"], "existing_card_data")
+        self.assertEqual(result["card_name"], "Existing Save")
+        saved = json.loads((card_dir / ".card_data.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["name"], "Existing Save")
 
     def test_blank_bootstrap_clears_stale_character_name_setting(self):
         settings_path = self.styles_dir / "settings.json"

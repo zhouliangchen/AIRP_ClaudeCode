@@ -64,6 +64,8 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
 - `<content>` for main prose.
 - `<character_dialogues>` for independent subagent dialogue boxes.
 - `<UpdateVariable>` when variables must change.
+  - Do not emit `<Analysis>` inside `<UpdateVariable>`; it is not display prose and repeatedly triggers critic meta-exposure repairs.
+  - Use `<UpdateVariable><JSONPatch>[...]</JSONPatch></UpdateVariable>` only, with valid JSON Patch-style operations for machine parsing. Put any assembly rationale in top-level `metadata`, not in response tags.
 - `<derived_content_edits>` when player authority requires correcting, reframing, or rewriting earlier AI-derived content.
   - Must be a JSON array of actionable handler edits, for example:
     `[{"turn_index":0,"summary":"上一轮课堂段落改定为梦境预示","first_paragraph":"你在梦里站在熟悉教室中，所有人都一如往常。","reason":"玩家梦醒回拨"}]`

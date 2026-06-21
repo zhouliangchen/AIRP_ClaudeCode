@@ -95,7 +95,7 @@ def _read_settings(path: str | Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}

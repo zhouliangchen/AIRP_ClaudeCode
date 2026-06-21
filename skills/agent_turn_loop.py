@@ -64,6 +64,15 @@ def _read_input(run_dir: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _safe_character_actor_suffix(name: str) -> str:
+    raw = str(name or "")
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", agent_run.safe_name(raw))
+    if not re.match(r"^[A-Za-z]", safe):
+        digest = hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:8]
+        safe = f"C_{digest}"
+    return safe
+
+
 def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
     contexts = _dict(input_payload.get("character_contexts"))
     result: dict[str, dict] = {}
@@ -78,7 +87,7 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
         if not name:
             continue
         result[f"character:{name}"] = item
-        result[f"character:{agent_run.safe_name(name)}"] = item
+        result[f"character:{_safe_character_actor_suffix(name)}"] = item
 
     for key, value in contexts.items():
         if key == "characters" or not isinstance(value, dict):
@@ -1017,21 +1026,63 @@ def _refresh_side_thread_state(root: Path, world_state: dict) -> None:
         raise AgentTurnLoopError(f"invalid subGM side-thread state: {exc}") from exc
 
 
-def _apply_subgm_commands(root: Path, gm_output: dict) -> dict:
+def _normalize_character_actor_id(actor_id: Any, input_payload: dict) -> str:
+    text = str(actor_id or "").strip()
+    if text == "player" or not text.startswith("character:"):
+        return text
+    registered = _characters_by_actor_id(input_payload)
+    if text in registered:
+        name = text.split(":", 1)[1]
+        return f"character:{_safe_character_actor_suffix(name)}"
+    name = text.split(":", 1)[1]
+    for key in registered:
+        if key.split(":", 1)[1] == name:
+            return f"character:{_safe_character_actor_suffix(name)}"
+    if not re.match(r"^character:[A-Za-z][A-Za-z0-9_]*$", text):
+        return f"character:{_safe_character_actor_suffix(name)}"
+    return text
+
+
+def _normalize_subgm_command_actor_ids(gm_output: dict, input_payload: dict) -> dict:
+    commands = gm_output.get("subgm_commands")
+    if not isinstance(commands, list):
+        return gm_output
+    normalized_commands = []
+    for command in commands:
+        if not isinstance(command, dict):
+            normalized_commands.append(command)
+            continue
+        item = dict(command)
+        for field in ("allowed_characters", "forbidden_characters"):
+            values = item.get(field)
+            if isinstance(values, list):
+                item[field] = [_normalize_character_actor_id(value, input_payload) for value in values]
+        normalized_commands.append(item)
+    gm_output["subgm_commands"] = normalized_commands
+    return gm_output
+
+
+def _apply_subgm_commands(root: Path, gm_output: dict, input_payload: dict | None = None) -> dict:
+    if input_payload is not None:
+        gm_output = _normalize_subgm_command_actor_ids(gm_output, input_payload)
     try:
         return subgm_threads.apply_gm_commands(root, gm_output.get("subgm_commands", []))
     except subgm_threads.SubgmThreadError as exc:
         raise AgentTurnLoopError(f"invalid subGM command: {exc}") from exc
 
 
-def _prevalidate_subgm_commands(root: Path, gm_output: dict) -> None:
+def _prevalidate_subgm_commands(root: Path, gm_output: dict, input_payload: dict | None = None) -> None:
+    if input_payload is not None:
+        gm_output = _normalize_subgm_command_actor_ids(gm_output, input_payload)
     try:
         subgm_threads.prevalidate_gm_commands(root, gm_output.get("subgm_commands", []))
     except subgm_threads.SubgmThreadError as exc:
         raise AgentTurnLoopError(f"invalid subGM command: {exc}") from exc
 
 
-def _preflight_subgm_actor_conflicts(root: Path, gm_output: dict) -> None:
+def _preflight_subgm_actor_conflicts(root: Path, gm_output: dict, input_payload: dict | None = None) -> None:
+    if input_payload is not None:
+        gm_output = _normalize_subgm_command_actor_ids(gm_output, input_payload)
     try:
         summaries = subgm_threads.load_thread_summaries(root)
     except subgm_threads.SubgmThreadError as exc:
@@ -1153,14 +1204,15 @@ def run_interactive_loop(
         raw_gm_output = _validate_gm(raw_gm_payload)
         _restore_actor_call_source_call_ids(raw_gm_output, raw_gm_payload)
         gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
-        _prevalidate_subgm_commands(root, gm_output)
-        _preflight_subgm_actor_conflicts(root, gm_output)
+        gm_output = _normalize_subgm_command_actor_ids(gm_output, input_payload)
+        _prevalidate_subgm_commands(root, gm_output, input_payload)
+        _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_character_promotions(root, input_payload, gm_output)
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
-        _preflight_subgm_actor_conflicts(root, gm_output)
-        _apply_subgm_commands(root, gm_output)
+        _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
+        _apply_subgm_commands(root, gm_output, input_payload)
         _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
         side_thread_results.extend(_run_ready_side_threads(root, dispatch))
         _refresh_side_thread_state(root, world_state)

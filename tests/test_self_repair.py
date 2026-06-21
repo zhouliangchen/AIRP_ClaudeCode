@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -52,6 +54,21 @@ class SelfRepairPolicyTest(unittest.TestCase):
         self.assertEqual(policy.story_preflight_attempts, 3)
         self.assertEqual(policy.delivery_repair_attempts, 3)
         self.assertTrue(policy.repair_critic_block)
+        self.assertTrue(policy.repair_round_progression)
+        self.assertTrue(policy.allow_source_code_self_repair)
+
+    def test_policy_settings_file_accepts_utf8_bom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "settings.json"
+            payload = json.dumps(
+                {"selfRepairMode": "full", "allowSourceCodeSelfRepair": True},
+                ensure_ascii=False,
+            )
+            settings_path.write_bytes(payload.encode("utf-8-sig"))
+
+            policy = self.self_repair.load_policy(settings_path, environ={})
+
+        self.assertEqual(policy.mode, "full")
         self.assertTrue(policy.repair_round_progression)
         self.assertTrue(policy.allow_source_code_self_repair)
 

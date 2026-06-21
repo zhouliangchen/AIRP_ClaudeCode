@@ -107,6 +107,26 @@ def route_input_payload(user_text: str, input_payload: Dict[str, Any] | None = N
     return routed
 
 
+def _input_analysis_explicit_payload(input_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only explicit channel metadata needed by the input analyst.
+
+    The top-level request already carries raw_text, role_text, and
+    user_instruction_text with hashes.  Repeating raw/display text inside the
+    explicit payload bloats the model prompt and expands the injection surface.
+    """
+    if input_payload.get("input_schema") != "dual_channel_v1":
+        return {}
+    payload = {
+        "input_schema": "dual_channel_v1",
+        "role_text": _to_text(input_payload.get("role_text")),
+        "user_instruction_text": _to_text(input_payload.get("user_instruction_text")),
+    }
+    for key in ("id", "created_at", "source"):
+        if key in input_payload:
+            payload[key] = _to_text(input_payload.get(key))
+    return payload
+
+
 def _actor_visible_role_channel(routed_input: Dict[str, Any]) -> str:
     """Return actor-visible role text only after explicit or analysis-applied routing."""
     schema = _to_text(routed_input.get("input_schema")).strip()
@@ -437,16 +457,18 @@ DEFAULT_CRITIC_REPORT = {
 
 def build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data):
     """Build the immutable raw-input request for the input analyst subagent."""
-    explicit_payload = dict(input_payload) if isinstance(input_payload, dict) else {}
-    if explicit_payload.get("input_schema") == "dual_channel_v1":
-        raw_text = _to_text(explicit_payload.get("raw_text"))
-        role_text = _to_text(explicit_payload.get("role_text"))
-        user_instruction_text = _to_text(explicit_payload.get("user_instruction_text"))
+    source_payload = dict(input_payload) if isinstance(input_payload, dict) else {}
+    if source_payload.get("input_schema") == "dual_channel_v1":
+        raw_text = _to_text(source_payload.get("raw_text"))
+        role_text = _to_text(source_payload.get("role_text"))
+        user_instruction_text = _to_text(source_payload.get("user_instruction_text"))
+        explicit_payload = _input_analysis_explicit_payload(source_payload)
     else:
         routed = route_input_payload(user_text, None)
         raw_text = _to_text(user_text)
         role_text = _to_text(routed.get("role_channel"))
         user_instruction_text = _to_text(routed.get("user_instruction_channel"))
+        explicit_payload = {}
 
     return {
         "round_id": Path(run_dir).name,
@@ -474,6 +496,29 @@ def _input_raw_record(input_request: Dict[str, Any]) -> Dict[str, Any]:
         "user_instruction_text": input_request.get("user_instruction_text", ""),
         "source_integrity": input_request.get("source_integrity", {}),
     }
+
+
+def _input_analysis_model_request(input_request: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the model-facing input request without duplicating raw channels.
+
+    The complete player payload is preserved in input.raw.json. The input
+    analyst prompt only needs the separated role/instruction channels plus
+    integrity hashes, which avoids re-injecting the same user text through
+    raw_text and explicit_payload copies.
+    """
+    explicit_payload = input_request.get("explicit_payload")
+    if not isinstance(explicit_payload, dict):
+        explicit_payload = {}
+    request = {
+        "round_id": input_request.get("round_id", ""),
+        "input_schema": explicit_payload.get("input_schema", ""),
+        "role_text": input_request.get("role_text", ""),
+        "user_instruction_text": input_request.get("user_instruction_text", ""),
+        "source_integrity": input_request.get("source_integrity", {}),
+        "recent_chat": input_request.get("recent_chat", []),
+        "card_projection": input_request.get("card_projection", {}),
+    }
+    return {key: value for key, value in request.items() if value not in ("", None)}
 
 
 def _input_analysis_request_markdown(input_request: Dict[str, Any]) -> str:
@@ -518,8 +563,9 @@ def prepare_agent_run(
         card_data=card_data,
         character_contexts=character_contexts,
     )
+    model_input_request = _input_analysis_model_request(input_request)
     agent_run.write_json(run_dir / "input.raw.json", _input_raw_record(input_request))
-    agent_run.write_text(run_dir / "input_analysis.request.md", _input_analysis_request_markdown(input_request))
+    agent_run.write_text(run_dir / "input_analysis.request.md", _input_analysis_request_markdown(model_input_request))
 
     input_json = input_payload if isinstance(input_payload, dict) else {"raw_text": _to_text(user_text)}
     input_json = dict(input_json)
@@ -563,7 +609,7 @@ def prepare_agent_run(
         player_packet,
         character_packets,
         card_folder=card_folder,
-        input_analysis_request=input_request,
+        input_analysis_request=model_input_request,
     )
     return {
         "run_dir": str(run_dir.resolve()),
@@ -654,7 +700,7 @@ def rebuild_agent_run_from_analysis(
         player_packet,
         character_packets,
         card_folder=card_folder,
-        input_analysis_request=raw_request,
+        input_analysis_request=_input_analysis_model_request(raw_request),
     )
     agent_run.append_manifest_stage(
         manifest,

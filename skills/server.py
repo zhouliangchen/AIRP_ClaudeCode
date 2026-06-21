@@ -255,7 +255,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 current = DEFAULT_SETTINGS.copy()
                 if SETTINGS_FILE.exists():
                     try:
-                        current.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+                        current.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig")))
                     except Exception:
                         pass
                 current.update(data)
@@ -529,7 +529,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             settings = DEFAULT_SETTINGS.copy()
             if SETTINGS_FILE.exists():
                 try:
-                    saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                    saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
                     settings.update(saved)
                 except Exception:
                     pass
@@ -547,7 +547,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not card:
                 self._json({"ok": False, "error": "no card path configured"}, 400)
                 return
-            self._json({"ok": True, "inputs": handler.read_player_inputs(card)})
+            self._json({"ok": True, "inputs": handler.frontend_player_inputs(card)})
             return
 
         # API: serve generated/card-local assets safely from the active card folder

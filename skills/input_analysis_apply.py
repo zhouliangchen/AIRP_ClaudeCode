@@ -136,6 +136,116 @@ def _clean_routed_character_names(routed_input: Dict[str, Any]) -> list[str]:
     return names
 
 
+def _semantic_unit_source_channel(unit: Dict[str, Any], raw_request: Dict[str, Any]) -> str:
+    existing = unit.get("source_channel")
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+
+    role_text = str(raw_request.get("role_text") or "")
+    instruction_text = str(raw_request.get("user_instruction_text") or "")
+    unit_type = str(unit.get("type") or "")
+    visibility = str(unit.get("visibility") or "")
+    instruction_first_types = {
+        "character_declaration",
+        "hidden_setting",
+        "omniscient_setting",
+        "style_guidance",
+        "system_command",
+    }
+    if (visibility == "gm_only" or unit_type in instruction_first_types) and instruction_text:
+        return "user_instruction"
+    if role_text:
+        return "role_input"
+    if instruction_text:
+        return "user_instruction"
+    return "raw_input"
+
+
+def _semantic_unit_raw_excerpt(source_channel: str, raw_request: Dict[str, Any]) -> str:
+    if source_channel == "role_input":
+        text = str(raw_request.get("role_text") or "")
+        if text.strip():
+            return text
+    if source_channel == "user_instruction":
+        text = str(raw_request.get("user_instruction_text") or "")
+        if text.strip():
+            return text
+    return str(raw_request.get("raw_text") or "")
+
+
+def _normalize_legacy_semantic_units(
+    analysis: Dict[str, Any], raw_request: Dict[str, Any]
+) -> tuple[Dict[str, Any], bool]:
+    semantic_units = analysis.get("semantic_units")
+    if not isinstance(semantic_units, list):
+        return analysis, False
+
+    changed = False
+    normalized_units = []
+    used_ids = {
+        str(unit.get("id")).strip()
+        for unit in semantic_units
+        if isinstance(unit, dict) and str(unit.get("id") or "").strip()
+    }
+    next_index = 1
+    for unit in semantic_units:
+        if not isinstance(unit, dict):
+            normalized_units.append(unit)
+            continue
+
+        normalized = dict(unit)
+        if not isinstance(normalized.get("id"), str) or not normalized["id"].strip():
+            while True:
+                candidate = f"unit-{next_index:03d}"
+                next_index += 1
+                if candidate not in used_ids:
+                    break
+            normalized["id"] = candidate
+            used_ids.add(candidate)
+            changed = True
+
+        if not isinstance(normalized.get("source_channel"), str) or not normalized["source_channel"].strip():
+            normalized["source_channel"] = _semantic_unit_source_channel(
+                normalized,
+                raw_request,
+            )
+            changed = True
+
+        if not isinstance(normalized.get("raw_excerpt"), str) or not normalized["raw_excerpt"].strip():
+            normalized["raw_excerpt"] = _semantic_unit_raw_excerpt(
+                normalized["source_channel"],
+                raw_request,
+            )
+            changed = True
+
+        if not isinstance(normalized.get("derived_summary"), str):
+            content = normalized.get("content")
+            normalized["derived_summary"] = (
+                str(content) if content not in (None, "") else normalized["raw_excerpt"]
+            )
+            changed = True
+
+        confidence = normalized.get("confidence")
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+        ):
+            normalized["confidence"] = 0.5
+            changed = True
+
+        if not isinstance(normalized.get("persist"), bool):
+            normalized["persist"] = False
+            changed = True
+
+        normalized_units.append(normalized)
+
+    if not changed:
+        return analysis, False
+    normalized_analysis = dict(analysis)
+    normalized_analysis["semantic_units"] = normalized_units
+    return normalized_analysis, True
+
+
 def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
     names: set[str] = set()
     if not isinstance(card_data, dict):
@@ -295,6 +405,12 @@ def apply_current_run(card_folder, root_dir=None):
     _assert_manifest_stage_allows_apply(run_dir)
     raw_request = _read_json_required(run_dir / "input.raw.json")
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
+    analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
+    if normalized:
+        (run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     input_analysis.validate_input_analysis(
         analysis,
         raw_text=str(raw_request.get("raw_text") or ""),

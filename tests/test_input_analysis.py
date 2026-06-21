@@ -776,6 +776,44 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
 
+    def test_apply_current_run_normalizes_legacy_semantic_units_before_validation(self):
+        analysis = self._analysis()
+        analysis["semantic_units"] = [
+            {
+                "type": "action",
+                "visibility": "player_pov",
+                "content": "The player grips the pendant.",
+            },
+            {
+                "type": "hidden_setting",
+                "visibility": "gm_only",
+                "content": "The pendant has a secret destruction condition.",
+            },
+        ]
+        self._write_analysis(analysis)
+
+        self.apply_mod.apply_current_run(self.card)
+
+        normalized = json.loads(
+            (self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(normalized["semantic_units"][0]["id"], "unit-001")
+        self.assertEqual(normalized["semantic_units"][0]["source_channel"], "role_input")
+        self.assertEqual(normalized["semantic_units"][0]["raw_excerpt"], self.role_text)
+        self.assertEqual(
+            normalized["semantic_units"][0]["derived_summary"],
+            "The player grips the pendant.",
+        )
+        self.assertFalse(normalized["semantic_units"][0]["persist"])
+        self.assertEqual(
+            normalized["semantic_units"][1]["source_channel"],
+            "user_instruction",
+        )
+        self.assertEqual(
+            normalized["semantic_units"][1]["raw_excerpt"],
+            self.input_payload["user_instruction_text"],
+        )
+
     def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
         card_data = {
             "mode": "story",

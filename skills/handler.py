@@ -148,6 +148,46 @@ def read_player_inputs(card_folder):
     return _read_jsonl(_player_input_log_path(card_folder))
 
 
+def frontend_player_inputs(card_folder):
+    """Return only browser-visible player input metadata."""
+    referenced_ids = []
+    try:
+        for turn in read_chat_log(card_folder):
+            input_id = turn.get("player_input_id") if isinstance(turn, dict) else ""
+            if input_id:
+                referenced_ids.append(str(input_id))
+        pending = read_pending_user_turn(card_folder)
+        if isinstance(pending, dict) and pending.get("id"):
+            referenced_ids.append(str(pending.get("id")))
+    except Exception:
+        referenced_ids = []
+    referenced = set(referenced_ids)
+
+    visible = []
+    for item in read_player_inputs(card_folder):
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", ""))
+        if referenced and item_id not in referenced:
+            continue
+        display_text = (
+            item.get("display_text")
+            if "display_text" in item
+            else item.get("raw_text")
+        ) or ""
+        entry = {
+            "id": item_id,
+            "created_at": item.get("created_at", ""),
+            "source": item.get("source", ""),
+            "raw_text": display_text,
+            "display_text": display_text,
+        }
+        if item.get("input_schema"):
+            entry["input_schema"] = item.get("input_schema")
+        visible.append(entry)
+    return visible
+
+
 def _write_player_inputs(card_folder, items):
     _write_jsonl(_player_input_log_path(card_folder), items)
 
@@ -868,6 +908,7 @@ def write_content_js(card_folder):
     log = read_chat_log(card_folder)
     pending_turn = read_pending_user_turn(card_folder)
     player_inputs = read_player_inputs(card_folder)
+    frontend_inputs = frontend_player_inputs(card_folder)
 
     html_parts = []
     turn_tokens = {}  # { "N": {"in": X, "out": Y, "total": Z}, ... }
@@ -1031,7 +1072,7 @@ def write_content_js(card_folder):
         "window.TURN_OPTIONS = " + json.dumps(options, ensure_ascii=False) + ";\n"
         "window.TURN_TOKENS = " + json.dumps(turn_tokens, ensure_ascii=False) + ";\n"
         "window.STARTUP_COST = " + json.dumps(startup_cost, ensure_ascii=False) + ";\n"
-        "window.PLAYER_INPUTS = " + json.dumps(player_inputs, ensure_ascii=False) + ";\n"
+        "window.PLAYER_INPUTS = " + json.dumps(frontend_inputs, ensure_ascii=False) + ";\n"
         "window.MVU_VARIABLES = " + json.dumps(_get_latest_variables(log), ensure_ascii=False) + ";\n"
         "window.MVU_DELTA = " + json.dumps(_get_latest_delta(log), ensure_ascii=False) + ";\n"
         "window.TURN_VARIABLES = " + json.dumps(_get_turn_variables(log), ensure_ascii=False) + ";\n"
@@ -1460,7 +1501,7 @@ def apply_derived_content_edits(log, edits, existing_turn_count=None):
             continue
         original_turn_index = turn_index
         if existing_turn_count is not None and turn_index >= existing_turn_count:
-            if existing_turn_count > 0 and turn_index == existing_turn_count and _looks_like_prior_reframe(edit):
+            if existing_turn_count > 0 and _looks_like_prior_reframe(edit):
                 turn_index = existing_turn_count - 1
             else:
                 continue

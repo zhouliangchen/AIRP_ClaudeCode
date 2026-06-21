@@ -2,10 +2,11 @@
   "style": "轻松活泼",
   "nsfw": "舒缓",
   "person": "第二人称",
-  "antiImpersonation": false,
+  "antiImpersonation": true,
   "bgNpc": true,
   "charName": "",
   "wordCount": 4000,
   "selfRepairMode": "full",
-  "allowSourceCodeSelfRepair": false
+  "allowSourceCodeSelfRepair": false,
+  "modelDebugMode": true
 }
