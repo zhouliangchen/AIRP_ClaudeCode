@@ -27,6 +27,9 @@ AIRP_ClaudeCode/
 │  ├─ round_prepare.py      # 每轮控制面上下文与 agent 邮箱准备
 │  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
 │  ├─ agent_workflow.py     # 根据 manifest 给出下一步控制面动作
+│  ├─ agent_messages.py     # 每轮 append-only 消息总线与 inbox 投影
+│  ├─ agent_intents.py      # 可执行控制面 intent 生命周期
+│  ├─ agent_snapshots.py    # .agent_runs 快照与回滚辅助
 │  ├─ agent_prompts.py      # 生成 GM/player/character/story/critic prompt
 │  ├─ agent_outputs.py      # 校验 agent 产物、生成 story.input.json、修复记录
 │  ├─ agent_memory.py       # 写入 subagent 记忆 delta 与周期摘要
@@ -79,7 +82,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 ## 核心角色 subagent
 
-`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 文件邮箱。它保留原始输入、创建 input analyst 请求、生成初始 GM/actor/story/critic prompt 与 manifest，但不负责从玩家文本中推断语义。该目录包含 `input.json`、`input.raw.json`、`input_analysis.request.md`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`。运行中还会按需写入 `input_analysis.output.json`、`gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_input_analysis`、`analysis_applied`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
+`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 消息驱动运行时。它保留原始输入、创建 input analyst 请求、生成初始 GM/actor/story/critic prompt 与 manifest，但不负责从玩家文本中推断语义。该目录包含 `input.json`、`input.raw.json`、`input_analysis.request.md`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`；运行时还会维护 append-only 通信日志 `messages.jsonl`、每个 agent 的投递索引 `inboxes/`、可执行控制面请求 `intents/`，以及物化交付文件 `artifacts/`。Agents 可以通过消息和 intent 请求协作，Python 仍对 ACL、投影、trace、snapshot、schema 和交付门禁保持权威控制。运行中还会按需写入 `input_analysis.output.json`、`gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_input_analysis`、`analysis_applied`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
 `input_analysis_apply.py` 只接受通过校验的结构化输入分析；若 live model 返回旧式 `semantic_units[].content` 形态，会在严格校验前只补齐结构字段（如 `id`、`source_channel`、`raw_excerpt`、`derived_summary`、`confidence`、`persist`），不会从玩家原文额外推断语义。重要角色设定必须区分公开档案、角色本人私有自知和 GM-only 隐藏事实：例如角色明确保留记忆、真实身份或能力时，input analyst 应同时写入该角色的 `character_private_and_gm` 记录，而不是只写公开 facade 或全局 hidden fact。
 
@@ -95,9 +98,9 @@ actor 可以返回受控的 `custom_action` 事件来表达非标准但可见的
 
 重要角色可由输入分析 preprocess 或主 GM 通过 `character_promotions` 提升为 major。preprocess 写入玩家权威档案；GM 输出中的 `character_promotions` 必须使用 `source_agent: "gm"`，主 GM 只能写入非玩家权威的 promotion seed，且不会覆盖已有 preprocess/player profile。`gm_assistant` 已收敛为 `subGM` 支线模型：subGM 可读取支线所需的全知信息，但只能在主 GM 分配的边界内行动。支线状态持久化在 `.agent_runs/<round>/side_threads/<thread_id>/`，每条支线拥有自己的 `state.json`、`messages.jsonl`、`interaction.trace.json` 和可选 agent 产物。subGM 可以向 GM 发送消息；GM 可以对支线执行 `accelerate`、`pause`、`resume`、`merge` 或 `close`。subGM 不能创建或提升重要角色，不能再派生 subGM，不能包含玩家角色，也不能直接修改边界；相关诉求只能作为 `promotion_requests` 或 `boundary_requests` 留给主 GM 仲裁。
 
-subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM 交互循环产物写入 `gm.output.json`（`gm_loop` 包装，内部为一个或多个 GM 输出），player/character 产物聚合写入 `actor.outputs.json`。`agent_outputs.py` 会校验 `gm.output.json`、`actor.outputs.json` 和 trace v2 的 `source_call_id` 对应关系后生成 `story.input.json`，并把 `loop_outputs`、`memory_deltas`、可见交互轨迹、私有事件计数和关键决策点整理给 story/critic 使用；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若 critic 要求 `revise` 或 `block`，本轮会记录到 `repair_history.jsonl`；若该 revise/block 报告提供 `system_iteration_suggestion`，会追加到卡片文件夹的 `.agent_runs/improvement_queue.jsonl`。
+subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM 交互循环产物写入根目录 `gm.output.json`（`gm_loop` 包装，内部为一个或多个 GM 输出），player/character 产物聚合写入根目录 `actor.outputs.json`；`agent_outputs.py` 同时支持从 `artifacts/` 读取等价物化文件，并会把组装后的 `story.input.json` 写入根目录和 `artifacts/` 镜像。`agent_outputs.py` 会校验 `gm.output.json`、`actor.outputs.json` 和 trace v2 的 `source_call_id` 对应关系后生成 `story.input.json`，并把 `loop_outputs`、`memory_deltas`、可见交互轨迹、私有事件计数和关键决策点整理给 story/critic 使用；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若 critic 要求 `revise` 或 `block`，本轮会记录到 `repair_history.jsonl`，同时写入 `repair_request` 消息和待处理 repair intent；`rp_generate_cli.py` 在修复交付成功后将该 intent 标记为 completed，无法完成时标记为 blocked。若该 revise/block 报告提供 `system_iteration_suggestion`，会追加到卡片文件夹的 `.agent_runs/improvement_queue.jsonl`。
 
-`agent_workflow.py` 可根据 `.agent_runs/<round>/manifest.json` 判断下一步应补齐 agent 产物、生成 `story.input.json`、分派 story/critic，还是运行交付门禁。`control_plane_smoke.py` 使用临时目录构造一轮确定性的多 agent 控制面流程，不调用 live model，用于快速验证 artifact、trace、memory delta/summary 和交付路径。
+`agent_workflow.py` 可根据 `.agent_runs/<round>/manifest.json` 判断下一步应补齐 agent 产物、生成 `story.input.json`、分派 story/critic，还是运行交付门禁。`round_prepare.py` 会在准备新一轮前创建 before-round snapshot，快照保存在 `.agent_runs/snapshots/<snapshot_id>/`，用于需要回退本轮派生产物时恢复。`control_plane_smoke.py` 使用临时目录构造一轮确定性的多 agent 控制面流程，不调用 live model，用于快速验证 artifact、trace、memory delta/summary、消息类型、intent 计数、snapshot 和交付路径。
 
 每 6 轮会为 player 和本轮相关 character 安排一次 `memory_summaries/*.summary.json` 自我记忆整理。摘要只允许写入角色自己视角可知的信息；校验会拒绝未排期文件和 `gm_only`、`world_truth`、`gm_notes`、`omniscient`、`hidden_note`、`out_of_character` 等显式隐藏标记。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
 
@@ -168,7 +171,7 @@ cd skills; npm install
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_workflow.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
+- `python -m py_compile skills/agent_workflow.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
 - 启动 `python skills/start_server.py .`，确认 `http://localhost:8765` 可访问。
 - 用手机或其他同一局域网设备访问启动输出中的 LAN URL。
 - 在 Claude Code 中对空白文件夹运行 `/rp`，完成至少 5 个玩家回合；检查玩家输入即时显示、重要角色独立对话框、进度更新、UI/图片热刷新，以及在玩家决策点停止。
