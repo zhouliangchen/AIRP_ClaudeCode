@@ -59,6 +59,8 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.run_dir = Path(self.tmp.name) / "round-000001"
         self.run_dir.mkdir()
         self.agent_run = load_module("agent_run")
+        self.agent_messages = load_module("agent_messages")
+        self.agent_intents = load_module("agent_intents")
         self.agent_turn_loop = load_module("agent_turn_loop")
         run_interactive_loop = self.agent_turn_loop.run_interactive_loop
 
@@ -92,6 +94,71 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload = self.agent_run.read_json(self.run_dir / "input.json")
         payload["character_contexts"] = {"characters": [dict(character) for character in characters]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
+
+    def test_actor_call_creates_intent_projected_message_and_actor_response_message(self):
+        self.register_characters("Ada")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear a bell.",
+                        "reason": "Ada can hear it.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "The bell is audible nearby.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["auditory"],
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [],
+                    "decision_point": {
+                        "reason": "The player decides what to do next.",
+                        "options": ["wait", "answer"],
+                    },
+                    "stop_reason": "player_decision",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            self.assertEqual(packet["actor_id"], "character:Ada")
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "events": [{
+                    "type": "dialogue",
+                    "target": "",
+                    "content": "I heard it.",
+                    "metadata": {"exact_visible_words": "I heard it."},
+                }],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        messages = self.agent_messages.read_messages(self.run_dir)
+        self.assertIn("request_actor", [message.get("type") for message in messages])
+        self.assertIn("projected_message", [message.get("type") for message in messages])
+        self.assertIn("actor_response", [message.get("type") for message in messages])
+        actor_responses = [message for message in messages if message.get("type") == "actor_response"]
+        self.assertEqual(actor_responses[0].get("source_call_id"), "call-character-Ada-1")
+        completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
+        self.assertTrue(
+            any(intent.get("type") == "project_message" for intent in completed_intents),
+            completed_intents,
+        )
+        self.assertTrue((self.run_dir / "gm.output.json").exists())
+        self.assertTrue((self.run_dir / "actor.outputs.json").exists())
+        self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.agent_run.read_json(self.run_dir / "actor.outputs.json")
 
     def test_actor_packet_receives_gm_visibility_basis(self):
         self.register_character_states({
