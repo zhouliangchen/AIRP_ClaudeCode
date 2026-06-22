@@ -34,9 +34,19 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         _write_json(self.run_dir / "input.json", {"raw_text": "I listen.", "routed_input": {"role_channel": "I listen."}})
         self.dispatcher = _load("agent_dispatcher")
         self.intents = _load("agent_intents")
+        self._restore_after_test(self.dispatcher.input_analysis_apply, "apply_current_run")
+        self._restore_after_test(self.dispatcher.rp_generate_cli, "_dispatch_agent_payload")
+        self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_interactive_agent_loop")
+        self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_delivery")
+        self._restore_after_test(self.dispatcher.agent_outputs, "build_story_input")
+        self._restore_after_test(self.dispatcher, "_dispatch_agent_payload")
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def _restore_after_test(self, owner, name):
+        original = getattr(owner, name)
+        self.addCleanup(setattr, owner, name, original)
 
     def _install_dispatcher_dependencies(self):
         if not hasattr(self.dispatcher, "agent_outputs"):
@@ -430,23 +440,78 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             self.assertEqual(agent_key, "story")
             return {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}}
 
-        self.dispatcher.agent_outputs.build_story_input = fake_build_story_input
-        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+        original_build_story_input = self.dispatcher.agent_outputs.build_story_input
+        original_dispatch = self.dispatcher.rp_generate_cli._dispatch_agent_payload
+        try:
+            self.dispatcher.agent_outputs.build_story_input = fake_build_story_input
+            self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+            result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        finally:
+            self.dispatcher.agent_outputs.build_story_input = original_build_story_input
+            self.dispatcher.rp_generate_cli._dispatch_agent_payload = original_dispatch
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["intent_id"], created["id"])
         self.assertEqual(result["artifacts"], ["artifacts/story.input.json", "artifacts/story.output.json"])
         story_output = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(story_output["content"], "<content>Story text.</content>")
+        self.assertEqual(
+            story_output["content"],
+            "<content>Story text.</content>\n<character_dialogues>[]</character_dialogues>",
+        )
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["review_critic"])
         self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
         self.assertEqual(len(build_calls), 1)
         self.assertEqual(dispatch_calls[0][1], "story prompt")
         self.assertEqual(dispatch_calls[0][3], {"story_input": {"round_id": "round-000001", "fixture": "story input"}})
+
+    def test_compose_story_writes_normalized_story_output_artifact(self):
+        self._install_dispatcher_dependencies()
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "gm", "type": "compose_story", "payload": {"reason": "loop_complete"}},
+        )
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "story.prompt.md").write_text("story prompt", encoding="utf-8")
+
+        def fake_build_story_input(run_dir):
+            payload = {"round_id": "round-000001", "loop_outputs": {"actors": {}}}
+            self.dispatcher.write_artifact(run_dir, "story.input.json", payload)
+            return payload
+
+        def fake_dispatch(_agent_key, _run_dir, _root_dir, _run_claude, extra_context=None):
+            return {
+                "content": (
+                    "<content>Story text.</content>"
+                    "<TOKENS>in: NNNN\nout: NNNN\ntotal: NNNN</TOKENS>"
+                    "<summary>Summary.</summary><options>Wait</options>"
+                ),
+                "character_dialogues": "not a list",
+                "tokens": {"in": "NNNN"},
+                "token_usage": {"total": "NNNN"},
+            }
+
+        original_build_story_input = self.dispatcher.agent_outputs.build_story_input
+        original_dispatch = self.dispatcher._dispatch_agent_payload
+        try:
+            self.dispatcher.agent_outputs.build_story_input = fake_build_story_input
+            self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+            result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        finally:
+            self.dispatcher.agent_outputs.build_story_input = original_build_story_input
+            self.dispatcher._dispatch_agent_payload = original_dispatch
+
+        self.assertTrue(result["ok"])
+        story_output = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
+        self.assertNotIn("tokens", story_output)
+        self.assertNotIn("token_usage", story_output)
+        self.assertEqual(story_output["character_dialogues"], [])
+        self.assertNotIn("<tokens>", story_output["content"].lower())
+        self.assertNotIn("NNNN", story_output["content"])
+        self.assertIn("<character_dialogues>[]</character_dialogues>", story_output["content"])
 
     def test_review_critic_pass_creates_deliver_round_intent(self):
         self._install_dispatcher_dependencies()
@@ -489,6 +554,50 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 "story_output": {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
             },
         )
+
+    def test_review_critic_normalizes_stale_token_failure_to_delivery(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
+        _write_json(
+            self.run_dir / "artifacts" / "story.output.json",
+            {
+                "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+                "character_dialogues": [],
+                "metadata": {},
+            },
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "story", "type": "review_critic", "payload": {"reason": "story_ready"}},
+        )["intent"]
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "critic.prompt.md").write_text("critic prompt", encoding="utf-8")
+
+        def fake_dispatch(_agent_key, _run_dir, _root_dir, _run_claude, extra_context=None):
+            return {
+                "decision": "revise",
+                "hard_failures": ["story.output.json contains placeholder <tokens> values ('NNNN')"],
+                "soft_issues": ["Prose could use sharper sensory detail."],
+                "repair_instruction": "Remove fake token placeholders.",
+                "system_iteration_suggestion": "",
+            }
+
+        original_dispatch = self.dispatcher._dispatch_agent_payload
+        try:
+            self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+            result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        finally:
+            self.dispatcher._dispatch_agent_payload = original_dispatch
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        critic_report = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic_report["decision"], "pass")
+        self.assertEqual(critic_report["hard_failures"], [])
+        self.assertEqual(critic_report["soft_issues"], ["Prose could use sharper sensory detail."])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["deliver_round"])
 
     def test_review_critic_revise_records_repair_request_metadata_and_message(self):
         self._install_dispatcher_dependencies()

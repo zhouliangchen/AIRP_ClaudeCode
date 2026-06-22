@@ -1884,13 +1884,18 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "executor_not_wired")
+        self.assertTrue(result["ok"])
         self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
-        self.assertEqual(len(delivery_attempts), 0)
-        critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
-        self.assertEqual(critic["decision"], "revise")
+        self.assertEqual(len(delivery_attempts), 1)
+        normalized_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
+        normalized_critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertNotIn("<tokens>", normalized_story["content"].lower())
+        self.assertNotIn("NNNN", normalized_story["content"])
+        self.assertNotIn("tokens", normalized_story)
+        self.assertEqual(normalized_critic["decision"], "pass")
+        self.assertEqual(normalized_critic["hard_failures"], [])
+        self.assertEqual(normalized_critic["soft_issues"], ["Prose could use sharper sensory detail."])
 
     def test_normalize_critic_report_keeps_token_failure_when_current_story_has_placeholder(self):
         hard_failures = ["story.output.json contains placeholder <tokens> values ('NNNN')"]

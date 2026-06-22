@@ -309,6 +309,7 @@ def _execute_compose_story(
             run_claude,
             {"story_input": story_input},
         )
+        story_output = rp_generate_cli._normalize_story_output(story_output, story_input)
         write_artifact(run_dir, "story.output.json", story_output)
         artifacts.append("artifacts/story.output.json")
         follow_up = _ensure_follow_up_intent(
@@ -371,6 +372,7 @@ def _execute_review_critic(
             run_claude,
             {"story_input": story_input, "story_output": story_output},
         )
+        critic_report = rp_generate_cli._normalize_critic_report_for_story(critic_report, story_output)
         write_artifact(run_dir, "critic.report.json", critic_report)
         artifacts.append("artifacts/critic.report.json")
         decision = str(critic_report.get("decision") or "")
