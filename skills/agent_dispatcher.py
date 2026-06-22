@@ -531,8 +531,9 @@ def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str
             )
 
         follow_up_type = "compose_story" if mode == "story_only" else "run_gm_turn"
+        follow_up_run_dir = _restored_current_run_dir(card_folder)
         follow_up = _ensure_follow_up_intent(
-            run_dir,
+            follow_up_run_dir,
             intent_id,
             {
                 "requested_by": "rollback",
@@ -546,12 +547,13 @@ def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str
 
     follow_up_id = str(follow_up.get("id") or "")
     created_intents = [follow_up_id] if follow_up.get("created") else []
-    agent_intents.complete_intent(
+    completion = _complete_rollback_intent_if_safe(
         run_dir,
         intent_id,
-        outputs={
+        {
             "executor": "rollback_request",
             "restore": restore,
+            "follow_up_run_dir": str(follow_up_run_dir),
             "follow_up_intent_id": follow_up_id,
             "follow_up_type": follow_up_type,
         },
@@ -565,7 +567,13 @@ def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str
         created_intents=created_intents,
         created_messages=[],
         artifacts=[],
-        detail={"restore": restore, "follow_up_intent_id": follow_up_id, "follow_up_type": follow_up_type},
+        detail={
+            "restore": restore,
+            "follow_up_run_dir": str(follow_up_run_dir),
+            "follow_up_intent_id": follow_up_id,
+            "follow_up_type": follow_up_type,
+            "completion": completion,
+        },
     )
 
 
@@ -645,6 +653,36 @@ def _read_critic_report(run_dir: Path, report_path: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AgentDispatcherError(f"{candidate}: critic report must be a JSON object")
     return payload
+
+
+def _restored_current_run_dir(card_folder: Path) -> Path:
+    current = agent_run.current_run_dir(card_folder)
+    if current is None:
+        raise AgentDispatcherError(f"{Path(card_folder) / '.agent_runs' / 'current'} is missing after rollback restore")
+    return current.resolve()
+
+
+def _complete_rollback_intent_if_safe(run_dir: Path, intent_id: str, outputs: dict[str, Any]) -> dict[str, Any]:
+    if not _intent_in_state(run_dir, intent_id, "accepted"):
+        return {
+            "status": "skipped",
+            "reason": "original_rollback_intent_not_found_after_restore",
+            "run_dir": str(run_dir),
+        }
+    completed = agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
+    return {
+        "status": "completed" if completed.get("ok") else "skipped",
+        "reason": completed.get("reason") or "",
+        "run_dir": str(run_dir),
+        "result": completed.get("result", {}),
+    }
+
+
+def _intent_in_state(run_dir: Path, intent_id: str, state: str) -> bool:
+    try:
+        return any(item.get("id") == intent_id for item in agent_intents.list_intents(run_dir, state))
+    except Exception:
+        return False
 
 
 def _first_text(*values: Any) -> str:

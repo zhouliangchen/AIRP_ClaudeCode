@@ -775,6 +775,39 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
         self.assertEqual(blocked[0]["result"]["outputs"]["restore"]["reason"], "snapshot_missing")
 
+    def test_rollback_request_real_restore_creates_follow_up_in_restored_current_run(self):
+        _write_json(self.run_dir / "manifest.json", {"round_id": "round-000001", "stage": "prepared"})
+        snapshot = self.dispatcher.agent_snapshots.create_snapshot(
+            self.card,
+            "round-000002",
+            reason="fixture",
+        )
+        failed_run = self.card / ".agent_runs" / "round-000002"
+        _write_json(failed_run / "manifest.json", {"round_id": "round-000002", "stage": "prepared"})
+        (self.card / ".agent_runs" / "current").write_text(str(failed_run.resolve()), encoding="utf-8")
+        created = self.intents.create_intent(
+            failed_run,
+            {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {"snapshot_id": snapshot["snapshot_id"], "mode": "round_progression"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(failed_run, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertFalse(failed_run.exists())
+        self.assertEqual(self.dispatcher.agent_run.current_run_dir(self.card), self.run_dir.resolve())
+        restored_pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in restored_pending], ["run_gm_turn"])
+        self.assertEqual(restored_pending[0]["payload"]["rollback"]["snapshot_id"], snapshot["snapshot_id"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
+        self.assertEqual(result["detail"]["completion"]["status"], "skipped")
+        self.assertEqual(result["detail"]["follow_up_run_dir"], str(self.run_dir.resolve()))
+
     def test_rollback_request_story_only_success_creates_compose_story(self):
         restore_calls = []
 
