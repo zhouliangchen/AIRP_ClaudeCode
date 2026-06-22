@@ -294,7 +294,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 
 每轮至少更新 2 个后台角色的 `角色行动` 和 `内心想法`（即使只是"继续做同一件事"也要写 replace）。轮转优先级按"上次更新距今最久"排序。
 
-**步骤 4** — dispatcher 完成 GM、projection、actor、subGM thread 与必要的 GM continuation 后，生成 `.agent_runs/<round>/story.input.json`；story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。可选的 `interaction.trace.json` 只向 story/critic 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。旧 broad loop 如保留，只用于 helper/regression-only 场景，不是默认 live path。
+**步骤 4** — dispatcher 完成 GM、projection、actor、subGM thread 与必要的 GM continuation 后，生成 `.agent_runs/<round>/artifacts/story.input.json`；根目录同名 `.agent_runs/<round>/story.input.json` 只在交付校验/导出边界出现，不是 dispatcher/story-compose 阶段的权威产物。story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。可选的 `interaction.trace.json` 只向 story/critic 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。旧 broad loop 如保留，只用于 helper/regression-only 场景，不是默认 live path。
 
 ### 后处理（AI 只需调用一次）
 
