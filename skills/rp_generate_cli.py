@@ -20,6 +20,7 @@ import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
 import model_debug
+import runtime_settings
 import self_repair
 
 try:
@@ -588,17 +589,15 @@ def _normalize_required_person(value: Any) -> str:
 
 def _delivery_requirements(root: Path) -> Dict[str, Any]:
     settings_path = root / "skills" / "styles" / "settings.json"
-    settings = agent_run.read_json(settings_path, {}) or {}
-    try:
-        target = int(settings.get("wordCount", 2000))
-    except (TypeError, ValueError):
-        target = 2000
+    raw_settings = agent_run.read_json(settings_path, {}) or {}
+    settings = runtime_settings.normalize_settings(raw_settings if isinstance(raw_settings, dict) else {})
+    target = int(settings.get("wordCount", 600))
     return {
         "word_count_target": target,
         "minimum_chinese_chars": int(target * 0.8),
         "delivery_gate": "round_deliver.py",
         "preflight_word_count": settings_path.exists(),
-        "required_person": _normalize_required_person(settings.get("person")),
+        "required_person": _normalize_required_person(None),
     }
 
 

@@ -623,8 +623,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue((self.card / "debug" / "model_calls" / "index.jsonl").exists())
 
-    def test_delivery_requirements_normalizes_invalid_person_to_second_person(self):
+    def test_delivery_requirements_ignores_removed_person_setting(self):
         _write_json(self.styles_dir / "settings.json", {"person": "绗簩浜虹О", "wordCount": 4000})
+
+        _write_json(self.styles_dir / "settings.json", {"person": "third", "wordCount": 4000})
 
         requirements = self.module._delivery_requirements(self.root)
 

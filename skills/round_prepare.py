@@ -25,6 +25,7 @@ import agent_snapshots
 import hidden_settings
 import match_worldbook
 import mvu_check
+import runtime_settings
 from handler import apply_injections, write_progress
 from io_utils import read_file, read_json, walk_paths
 
@@ -343,7 +344,8 @@ def main():
         user_input = ""
     user_text = user_input
     settings_path = styles_dir / "settings.json"
-    settings = read_json(settings_path) or {}
+    raw_settings = read_json(settings_path) or {}
+    settings = runtime_settings.normalize_settings(raw_settings if isinstance(raw_settings, dict) else {})
 
     project_md = Path(card_folder) / "memory" / "project.md"
     recent_memory = ""
@@ -481,8 +483,7 @@ def main():
         static_parts.append("\n=== CARD_STRUCTURE ===\n  (none)")
 
     static_parts.append("\n=== SETTINGS ===")
-    for key in ["style", "nsfw", "person", "wordCount", "antiImpersonation", "bgNpc", "charName"]:
-        val = settings.get(key, "未设置")
+    for key, val in settings.items():
         static_parts.append(f"  {key}: {val}")
 
     # Initvar paths are static (never change after card import)

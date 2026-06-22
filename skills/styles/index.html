@@ -1230,12 +1230,6 @@ body {
         </select>
       </div>
       <div class="setting-row">
-        <span class="label">人称</span>
-        <select id="set-person" onchange="saveSettings()">
-          <option>第二人称</option><option>第三人称</option>
-        </select>
-      </div>
-      <div class="setting-row">
         <span class="label">字数控制</span>
         <input type="number" id="set-wordcount" onchange="saveSettings()" min="100" max="6000" step="100" style="width:80px;text-align:center;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.78em;font-family:var(--font-ui);outline:none;">
       </div>
@@ -1249,33 +1243,18 @@ body {
         </select>
       </div>
       <div class="setting-row">
+        <span class="label">源码自修</span>
+        <label class="toggle-switch" title="仅在 critic 明确判定为系统代码问题时允许源码自修">
+          <input type="checkbox" id="set-source-code-self-repair" onchange="saveSettings()">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
         <span class="label">调试模式</span>
         <label class="toggle-switch" title="开启后会把每次模型调用的完整原始输入与输出写入当前存档 debug/ 目录">
           <input type="checkbox" id="set-model-debug-mode" onchange="saveSettings()">
           <span class="toggle-slider"></span>
         </label>
-      </div>
-      <div class="setting-row">
-        <span class="label">防抢话</span>
-        <label class="toggle-switch">
-          <input type="checkbox" id="set-antiimp" onchange="saveSettings()" checked>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <div class="setting-row">
-        <span class="label">背景NPC</span>
-        <label class="toggle-switch">
-          <input type="checkbox" id="set-bgnpc" onchange="saveSettings()">
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-    </div>
-    <div class="side-card" id="player-settings-card">
-      <h4>玩家设置</h4>
-      <div class="settings-meta-row">
-        <span>你的角色名:</span>
-        <input id="player-name-input" placeholder="可选" value="" oninput="onPlayerNameChange();">
-        <span id="last-action" style="font-style:italic;"></span>
       </div>
     </div>
     <div class="side-card">
@@ -1432,41 +1411,11 @@ function updateWordCount() {
 }
 
 function userName() {
-  const el = document.getElementById('player-name-input');
-  if (!el || el.value === undefined) return '{{user}}';
-  const v = el.value.trim();
-  return v || '{{user}}';
+  return '{{user}}';
 }
 
 function syncPlayerName() {
-  // Sync #player-name-input from MVU variables (initvar) on first load.
-  // The card stores the user reference under 主角.基础信息.姓名 (protagonist path),
-  // not under a separate 玩家 key.
-  var vars = window.MVU_VARIABLES;
-  if (!vars) return;
-  var playerName = '';
-  if (vars['主角'] && vars['主角']['基础信息'] && vars['主角']['基础信息']['姓名']) {
-    playerName = vars['主角']['基础信息']['姓名'];
-  }
-  if (!playerName || playerName === '{{user}}' || playerName === '{[user]}') return;
-  var input = document.getElementById('player-name-input');
-  if (input && input.tagName === 'INPUT' && !input.dataset.synced && (!input.value || input.value === '{{user}}')) {
-    input.value = playerName;
-    input.dataset.synced = '1';
-  }
-}
-
-function onPlayerNameChange() {
-  var input = document.getElementById('player-name-input');
-  if (!input || input.tagName !== 'INPUT') return;
-  var vars = window.MVU_VARIABLES;
-  if (!vars) return;
-  if (!vars['主角']) vars['主角'] = {};
-  if (!vars['主角']['基础信息']) vars['主角']['基础信息'] = {};
-  var newName = input.value.trim();
-  if (newName && newName !== '{{user}}') {
-    vars['主角']['基础信息']['姓名'] = newName;
-  }
+  // Player-name editing was removed from the runtime settings surface.
 }
 
 function replaceUser(s) {
@@ -2087,8 +2036,6 @@ async function doSubmit() {
   const instructionInput = document.getElementById('instruction-input');
   const roleText = roleInput ? roleInput.value : '';
   const instructionText = instructionInput ? instructionInput.value : '';
-  const charNameEl = document.getElementById('player-name-input');
-  const charName = charNameEl ? charNameEl.value.trim() : '';
   if (!roleText.trim() && !instructionText.trim()) return;
   syncLegacyInputBridge();
 
@@ -2102,8 +2049,7 @@ async function doSubmit() {
       body: JSON.stringify({
         text: roleText,
         roleText: roleText,
-        instructionText: instructionText,
-        charName: charName
+        instructionText: instructionText
       })
     });
     const data = await r.json();
@@ -2117,7 +2063,6 @@ async function doSubmit() {
       toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
       toast.style.background = 'var(--accent2)';
       toast.classList.add('show');
-      document.getElementById('last-action').textContent = '上次提交: ' + new Date().toLocaleTimeString();
       setTimeout(() => toast.classList.remove('show'), 2500);
     } else {
       showError('发送失败: ' + (data.error || '未知错误'));
@@ -2194,13 +2139,10 @@ async function loadSettings() {
     document.getElementById('set-style').value = s.style || '北棱特调';
     updateStyleDescription();
     document.getElementById('set-nsfw').value = s.nsfw || '直白';
-    document.getElementById('set-person').value = s.person || '第二人称';
-    document.getElementById('set-antiimp').checked = s.antiImpersonation !== false;
-    document.getElementById('set-bgnpc').checked = s.bgNpc === true;
     document.getElementById('set-wordcount').value = s.wordCount || 600;
     document.getElementById('set-self-repair-mode').value = s.selfRepairMode || 'limited';
+    document.getElementById('set-source-code-self-repair').checked = s.allowSourceCodeSelfRepair === true;
     document.getElementById('set-model-debug-mode').checked = s.modelDebugMode === true;
-    if (s.charName) document.getElementById('player-name-input').value = s.charName;
     render();
   } catch(e) { /* server may not be ready yet */ }
 }
@@ -2209,13 +2151,10 @@ async function saveSettings() {
   const data = {
     style: document.getElementById('set-style').value,
     nsfw: document.getElementById('set-nsfw').value,
-    person: document.getElementById('set-person').value,
-    antiImpersonation: document.getElementById('set-antiimp').checked,
-    bgNpc: document.getElementById('set-bgnpc').checked,
     wordCount: parseInt(document.getElementById('set-wordcount').value) || 600,
     selfRepairMode: document.getElementById('set-self-repair-mode').value,
-    modelDebugMode: document.getElementById('set-model-debug-mode').checked,
-    charName: document.getElementById('player-name-input').value.trim()
+    allowSourceCodeSelfRepair: document.getElementById('set-source-code-self-repair').checked,
+    modelDebugMode: document.getElementById('set-model-debug-mode').checked
   };
   try {
     await fetch(BRIDGE + '/api/settings', {
@@ -2229,17 +2168,6 @@ async function saveSettings() {
     setTimeout(() => badge.classList.remove('show'), 1500);
   } catch(e) { /* offline */ }
 }
-
-// Also save char name when it changes
-function onCharNameChange() {
-  saveSettings();
-  render();
-}
-document.getElementById('player-name-input').addEventListener('input', function() {
-  // Debounce
-  clearTimeout(this._timer);
-  this._timer = setTimeout(onCharNameChange, 600);
-});
 
 function updateTokenCount() {
   var el = document.getElementById('tb-tokens');

@@ -67,6 +67,10 @@ class RuntimeSettingsTest(unittest.TestCase):
         self.assertFalse(result["allowSourceCodeSelfRepair"])
         self.assertNotIn("modelDebugMode", result)
 
+    def test_normalize_settings_accepts_nsfw_off_option(self):
+        result = self.mod.normalize_settings({"nsfw": "关闭"})
+        self.assertEqual(result["nsfw"], "关闭")
+
     def test_read_settings_accepts_utf8_bom_and_filters_unsupported_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"

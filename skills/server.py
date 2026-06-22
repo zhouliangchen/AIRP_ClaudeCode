@@ -30,19 +30,9 @@ SESSION_FILE = ROOT / ".session_init"
 # Allow importing handler from skills/
 sys.path.insert(0, str(SKILLS))
 import handler
+import runtime_settings
 
-DEFAULT_SETTINGS = {
-    "style": "北棱特调",
-    "nsfw": "直白",
-    "person": "第二人称",
-    "antiImpersonation": True,
-    "bgNpc": False,
-    "charName": "",
-    "wordCount": 600,
-    "selfRepairMode": "limited",
-    "allowSourceCodeSelfRepair": False,
-    "modelDebugMode": False,
-}
+DEFAULT_SETTINGS = dict(runtime_settings.DEFAULT_SETTINGS, modelDebugMode=False)
 
 os.chdir(str(ROOT))
 
@@ -88,6 +78,31 @@ def _card_folder():
             except (UnicodeDecodeError, LookupError):
                 continue
     return None
+
+
+def _settings_payload(raw):
+    data = raw if isinstance(raw, dict) else {}
+    settings = runtime_settings.normalize_settings(data)
+    # modelDebugMode is intentionally outside runtime_settings: it controls
+    # local prompt/output logging, not story/runtime quality behavior.
+    settings["modelDebugMode"] = data.get("modelDebugMode") is True
+    return settings
+
+
+def _read_settings_payload():
+    raw = {}
+    if SETTINGS_FILE.exists():
+        try:
+            payload = json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict):
+                raw = payload
+        except Exception:
+            raw = {}
+    return _settings_payload(raw)
+
+
+def _write_settings_payload(settings):
+    SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 MBTI_STACKS = {
@@ -252,15 +267,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = _safe_decode(self.rfile.read(length))
             try:
                 data = json.loads(body)
-                current = DEFAULT_SETTINGS.copy()
-                if SETTINGS_FILE.exists():
-                    try:
-                        current.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig")))
-                    except Exception:
-                        pass
-                current.update(data)
-                SETTINGS_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-                self._json({"ok": True, "settings": current})
+                current = _read_settings_payload()
+                if isinstance(data, dict):
+                    current.update(data)
+                settings = _settings_payload(current)
+                _write_settings_payload(settings)
+                self._json({"ok": True, "settings": settings})
             except json.JSONDecodeError:
                 self._json({"ok": False, "error": "invalid json"})
 
@@ -526,13 +538,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # API: get current settings
         if parsed.path == "/api/settings":
-            settings = DEFAULT_SETTINGS.copy()
+            settings = _read_settings_payload()
             if SETTINGS_FILE.exists():
-                try:
-                    saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
-                    settings.update(saved)
-                except Exception:
-                    pass
+                _write_settings_payload(settings)
             self._json(settings)
             return
 

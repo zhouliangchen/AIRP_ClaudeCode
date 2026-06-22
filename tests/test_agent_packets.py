@@ -2062,6 +2062,24 @@ class AgentPacketTest(unittest.TestCase):
 
     def test_round_prepare_writes_agent_run_packets_and_reports_path(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
+        (styles_dir / "settings.json").write_text(
+            json.dumps(
+                {
+                    "style": "轻松活泼",
+                    "wordCount": "1200",
+                    "nsfw": "舒缓",
+                    "selfRepairMode": "full",
+                    "allowSourceCodeSelfRepair": True,
+                    "person": "第三人称",
+                    "antiImpersonation": False,
+                    "bgNpc": True,
+                    "charName": "旧主角",
+                    "unknown": "drop me",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         round_prepare = _load_round_prepare()
         called = {}
         expected_run_dir = str(self.card / ".agent_runs" / "round-000001")
@@ -2155,6 +2173,16 @@ class AgentPacketTest(unittest.TestCase):
             analyze[0]["payload"]["input_analysis_request_path"],
             "input_analysis.request.md",
         )
+        self.assertIn("  style: 轻松活泼", round_context)
+        self.assertIn("  wordCount: 1200", round_context)
+        self.assertIn("  nsfw: 舒缓", round_context)
+        self.assertIn("  selfRepairMode: full", round_context)
+        self.assertIn("  allowSourceCodeSelfRepair: True", round_context)
+        self.assertNotIn("  person:", round_context)
+        self.assertNotIn("  antiImpersonation:", round_context)
+        self.assertNotIn("  bgNpc:", round_context)
+        self.assertNotIn("  charName:", round_context)
+        self.assertNotIn("unknown", round_context)
         self.assertNotIn("PLAYER_INPUT_HEURISTIC_FALLBACK", round_context)
         self.assertNotIn("=== INPUT_MATCHES ===", round_context)
 

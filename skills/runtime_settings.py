@@ -32,7 +32,7 @@ DEFAULT_SETTINGS = {
 }
 
 SELF_REPAIR_MODES = {"off", "analysis_only", "limited", "full"}
-NSFW_VALUES = {"直白", "舒缓"}
+NSFW_VALUES = {"直白", "舒缓", "关闭"}
 
 
 def bool_value(value: Any) -> bool:

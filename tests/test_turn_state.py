@@ -749,11 +749,26 @@ class TurnStateTest(unittest.TestCase):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn('id="set-self-repair-mode"', html)
+        self.assertIn('id="set-source-code-self-repair"', html)
         self.assertIn('value="analysis_only"', html)
         self.assertIn('value="limited"', html)
         self.assertIn('value="full"', html)
         self.assertIn("s.selfRepairMode || 'limited'", html)
+        self.assertIn("s.allowSourceCodeSelfRepair === true", html)
         self.assertIn("selfRepairMode: document.getElementById('set-self-repair-mode').value", html)
+        self.assertIn("allowSourceCodeSelfRepair: document.getElementById('set-source-code-self-repair').checked", html)
+
+    def test_frontend_removes_obsolete_runtime_settings_controls(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="set-person"', html)
+        self.assertNotIn('id="set-antiimp"', html)
+        self.assertNotIn('id="set-bgnpc"', html)
+        self.assertNotIn('id="player-settings-card"', html)
+        self.assertNotIn('id="player-name-input"', html)
+        self.assertNotIn("antiImpersonation", html)
+        self.assertNotIn("bgNpc", html)
+        self.assertNotIn("charName: document.getElementById", html)
 
     def test_frontend_exposes_model_debug_mode_setting(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
@@ -913,11 +928,26 @@ class TurnStateTest(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=5)
 
-    def test_server_settings_api_accepts_utf8_bom_settings_file(self):
+    def test_server_settings_api_normalizes_runtime_settings_and_preserves_debug_mode(self):
         server = _load_server()
         server.ROOT = self.styles
         server.SETTINGS_FILE = self.styles / "settings.json"
-        payload = json.dumps({"modelDebugMode": True, "selfRepairMode": "full"}, ensure_ascii=False)
+        payload = json.dumps(
+            {
+                "style": "轻松活泼",
+                "wordCount": "1800",
+                "nsfw": "舒缓",
+                "selfRepairMode": "full",
+                "allowSourceCodeSelfRepair": True,
+                "modelDebugMode": True,
+                "person": "第三人称",
+                "antiImpersonation": False,
+                "bgNpc": True,
+                "charName": "旧主角",
+                "unknown": "drop me",
+            },
+            ensure_ascii=False,
+        )
         server.SETTINGS_FILE.write_bytes(payload.encode("utf-8-sig"))
 
         httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -927,13 +957,56 @@ class TurnStateTest(unittest.TestCase):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/settings", timeout=5) as response:
                 result = json.loads(response.read().decode("utf-8"))
+
+            post_payload = {
+                "style": "轻松活泼",
+                "wordCount": "bad",
+                "nsfw": "关闭",
+                "selfRepairMode": "danger",
+                "allowSourceCodeSelfRepair": "yes",
+                "modelDebugMode": False,
+                "person": "第三人称",
+                "charName": "新主角",
+                "unknown": "drop me",
+            }
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}/api/settings",
+                data=json.dumps(post_payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                post_result = json.loads(response.read().decode("utf-8"))
         finally:
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
 
-        self.assertTrue(result["modelDebugMode"])
+        self.assertEqual(result["style"], "轻松活泼")
+        self.assertEqual(result["wordCount"], 1800)
+        self.assertEqual(result["nsfw"], "舒缓")
         self.assertEqual(result["selfRepairMode"], "full")
+        self.assertTrue(result["allowSourceCodeSelfRepair"])
+        self.assertTrue(result["modelDebugMode"])
+        self.assertNotIn("person", result)
+        self.assertNotIn("antiImpersonation", result)
+        self.assertNotIn("bgNpc", result)
+        self.assertNotIn("charName", result)
+        self.assertNotIn("unknown", result)
+
+        self.assertTrue(post_result["ok"])
+        self.assertEqual(post_result["settings"]["style"], "轻松活泼")
+        self.assertEqual(post_result["settings"]["wordCount"], 600)
+        self.assertEqual(post_result["settings"]["nsfw"], "关闭")
+        self.assertEqual(post_result["settings"]["selfRepairMode"], "limited")
+        self.assertFalse(post_result["settings"]["allowSourceCodeSelfRepair"])
+        self.assertFalse(post_result["settings"]["modelDebugMode"])
+        self.assertNotIn("person", post_result["settings"])
+        self.assertNotIn("charName", post_result["settings"])
+        self.assertNotIn("unknown", post_result["settings"])
+
+        saved = json.loads(server.SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved, post_result["settings"])
 
     def test_response_parser_extracts_character_dialogues(self):
         parser = _load_response_parser()
