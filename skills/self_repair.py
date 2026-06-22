@@ -56,7 +56,6 @@ class SelfRepairPolicy(SimpleNamespace):
     def __init__(
         self,
         mode: str,
-        story_preflight_attempts: int,
         delivery_repair_attempts: int,
         critic_retry_limit: int,
         can_auto_repair: bool,
@@ -66,7 +65,6 @@ class SelfRepairPolicy(SimpleNamespace):
     ) -> None:
         super().__init__(
             mode=mode,
-            story_preflight_attempts=story_preflight_attempts,
             delivery_repair_attempts=delivery_repair_attempts,
             critic_retry_limit=critic_retry_limit,
             can_auto_repair=can_auto_repair,
@@ -119,12 +117,12 @@ def load_policy(
         allow_source = _bool_value(env.get("AIRP_ALLOW_SOURCE_CODE_SELF_REPAIR"))
 
     if mode == "off":
-        return SelfRepairPolicy(mode, 0, 0, 0, False, False, False, allow_source)
+        return SelfRepairPolicy(mode, 0, 0, False, False, False, allow_source)
     if mode == "analysis_only":
-        return SelfRepairPolicy(mode, 0, 0, 0, False, False, False, allow_source)
+        return SelfRepairPolicy(mode, 0, 0, False, False, False, allow_source)
     if mode == "full":
-        return SelfRepairPolicy(mode, 3, 3, 2, True, True, True, allow_source)
-    return SelfRepairPolicy(mode, 1, 1, 1, True, False, False, allow_source)
+        return SelfRepairPolicy(mode, 3, 2, True, True, True, allow_source)
+    return SelfRepairPolicy(mode, 1, 1, True, False, False, allow_source)
 
 
 def normalize_repair_routing(payload: Any) -> dict[str, Any]:

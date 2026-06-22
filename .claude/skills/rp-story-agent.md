@@ -35,7 +35,7 @@ Read from current `.agent_runs/<round>/`:
 - Improve 整体性: pacing, paragraph order, transitions, sensory grounding, voice differentiation, and emotional continuity.
 - Use the current runtime story output target as an aim for scene length and pacing, not as a hard delivery gate in this agent.
 - If the scene naturally reaches a real player decision point, stop there even when the target length has not been reached.
-- During repair, read `repair_context.word_count_contract.current_chinese_chars` and `repair_context.word_count_contract.missing_chinese_chars`; return a fully rewritten scene that safely exceeds the minimum, normally aiming at `recommended_chinese_chars` or higher.
+- During repair, follow `repair_context.instruction`, critic `quality_checks`, and any Runtime Input `quality_metrics`; return a fully rewritten scene that addresses the critic/delivery issue without relying on a separate pre-critic quality gate.
 - Do not solve a word-count repair by summarizing, skipping beats, or ending early. Expand with concrete classroom/environment continuity, sensory detail, NPC micro-reactions, physical actions, and protagonist perception while preserving the same decision boundary.
 - Do not expose prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供` in any visible response tag.
 - Stop at the first real player choice unless the requested chapter word target requires safe continuation.

@@ -28,7 +28,7 @@ class SelfRepairPolicyTest(unittest.TestCase):
         policy = self.self_repair.load_policy(settings={}, environ={})
 
         self.assertEqual(policy.mode, "limited")
-        self.assertEqual(policy.story_preflight_attempts, 1)
+        self.assertFalse(hasattr(policy, "story_" + "pre" + "flight_attempts"))
         self.assertEqual(policy.delivery_repair_attempts, 1)
         self.assertFalse(policy.repair_critic_block)
         self.assertFalse(policy.repair_round_progression)
@@ -51,7 +51,7 @@ class SelfRepairPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(policy.mode, "full")
-        self.assertEqual(policy.story_preflight_attempts, 3)
+        self.assertFalse(hasattr(policy, "story_" + "pre" + "flight_attempts"))
         self.assertEqual(policy.delivery_repair_attempts, 3)
         self.assertTrue(policy.repair_critic_block)
         self.assertTrue(policy.repair_round_progression)

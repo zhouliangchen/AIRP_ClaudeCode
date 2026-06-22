@@ -623,14 +623,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue((self.card / "debug" / "model_calls" / "index.jsonl").exists())
 
-    def test_delivery_requirements_ignores_removed_person_setting(self):
-        _write_json(self.styles_dir / "settings.json", {"person": "绗簩浜虹О", "wordCount": 4000})
-
-        _write_json(self.styles_dir / "settings.json", {"person": "third", "wordCount": 4000})
-
-        requirements = self.module._delivery_requirements(self.root)
-
-        self.assertEqual(requirements["required_person"], "第二人称")
+    def test_removed_story_quality_gate_helpers_are_absent_from_cli_surface(self):
+        self.assertFalse(hasattr(self.module, "_delivery_requirements"))
+        self.assertFalse(hasattr(self.module, "_story_" + "pre" + "flight_issues"))
+        self.assertFalse(hasattr(self.module, "_story_" + "pre" + "flight_repair_context"))
 
     def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
         self._queue_run_gm_turn()
@@ -1692,7 +1688,7 @@ class RpGenerateCliTest(unittest.TestCase):
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 1)
 
-    def test_run_round_preflights_story_word_count_before_critic_when_settings_exist(self):
+    def test_run_round_sends_short_story_to_critic_without_story_quality_gate(self):
         self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"wordCount": 100})
         calls = []
@@ -1740,7 +1736,7 @@ class RpGenerateCliTest(unittest.TestCase):
         repair_details = [
             kwargs.get("detail")
             for args, kwargs in progress_calls
-            if args and args[0] == "story.preflight_repair"
+            if args and args[0] == ("story." + "pre" + "flight_repair")
         ]
         self.assertEqual(repair_details, [])
 
@@ -2186,85 +2182,6 @@ class RpGenerateCliTest(unittest.TestCase):
         ])
         self.assertNotIn("old ritual", normalized["content"])
 
-    def test_story_preflight_rejects_third_person_when_second_person_required(self):
-        story = {
-            "content": "<content>雨蒙醒过来的时候，首先闻到教室里的粉笔味。他抬头看向窗外。</content>",
-        }
-        requirements = {
-            "required_person": "第二人称",
-            "player_character_names": ["雨蒙"],
-        }
-
-        issues = self.module._story_preflight_issues(story, requirements)
-
-        self.assertTrue(any("second_person" in issue for issue in issues), issues)
-
-    def test_story_preflight_rejects_third_person_when_readable_chinese_second_person_required(self):
-        story = {
-            "content": "<content>雨蒙醒过来的时候，首先闻到教室里的粉笔味。他抬头看向窗外。</content>",
-        }
-        requirements = {
-            "required_person": "第二人称",
-            "player_character_names": ["雨蒙"],
-        }
-
-        issues = self.module._story_preflight_issues(story, requirements)
-
-        self.assertTrue(any("second_person" in issue for issue in issues), issues)
-
-    def test_story_preflight_requires_actionable_edits_when_input_requests_rewrite(self):
-        story = {
-            "content": (
-                "<content>你在上学路上醒来，并把吊坠扔了出去。</content>"
-                "<character_dialogues>[]</character_dialogues>"
-                "<summary>你发现吊坠回到脚边。</summary>"
-            ),
-        }
-        story_input = {
-            "player_inputs": {
-                "input_analysis": {
-                    "world_updates": {
-                        "retcon_requests": [
-                            {"id": "rr-001", "text": "上一轮课堂段落改定为梦境。"}
-                        ],
-                    },
-                    "narrative_directives": {
-                        "rewrite_previous_output": True,
-                    },
-                },
-            },
-        }
-
-        issues = self.module._story_preflight_issues(story, {}, story_input)
-
-        self.assertIn("rewrite_previous_output_requires_actionable_derived_content_edits", issues)
-
-    def test_story_preflight_accepts_actionable_edits_when_input_requests_rewrite(self):
-        story = {
-            "content": (
-                "<content>你在上学路上醒来，并把吊坠扔了出去。</content>"
-                "<derived_content_edits>"
-                "[{\"turn_index\":0,\"summary\":\"上一轮课堂段落改定为梦境预示\","
-                "\"first_paragraph\":\"你在梦里站在熟悉教室中，所有人都一如往常。\","
-                "\"reason\":\"玩家梦醒回拨\"}]"
-                "</derived_content_edits>"
-                "<character_dialogues>[]</character_dialogues>"
-                "<summary>你发现吊坠回到脚边。</summary>"
-            ),
-        }
-        story_input = {
-            "player_inputs": {
-                "input_analysis": {
-                    "world_updates": {"retcon_requests": [{"id": "rr-001", "text": "梦醒修正。"}]},
-                    "narrative_directives": {"rewrite_previous_output": True},
-                },
-            },
-        }
-
-        issues = self.module._story_preflight_issues(story, {}, story_input)
-
-        self.assertNotIn("rewrite_previous_output_requires_actionable_derived_content_edits", issues)
-
     def test_player_character_names_come_from_input_analysis_not_raw_keyword_matching(self):
         story_input = {
             "player_inputs": {
@@ -2283,39 +2200,6 @@ class RpGenerateCliTest(unittest.TestCase):
 
         story_input["player_inputs"].pop("input_analysis")
         self.assertEqual(self.module._player_character_names_from_story_input(story_input), [])
-
-    def test_story_preflight_repair_context_uses_current_loop_sources(self):
-        context = self.module._story_preflight_repair_context(
-            {"content": "<content>bad draft</content>"},
-            ["content_chinese_chars 3 is below required minimum 10"],
-            {"minimum_chinese_chars": 10},
-            1,
-            None,
-        )
-
-        self.assertIn("loop_outputs", context["authoritative_sources"])
-        self.assertIn("actor.outputs.json", context["authoritative_sources"])
-        self.assertNotIn("player_output", context["authoritative_sources"])
-        self.assertNotIn("character_outputs", context["authoritative_sources"])
-
-    def test_story_preflight_repair_context_explains_delivery_word_count(self):
-        context = self.module._story_preflight_repair_context(
-            {"content": "<content>短稿。</content>"},
-            ["content_chinese_chars 1858 is below required minimum 3200"],
-            {"word_count_target": 4000, "minimum_chinese_chars": 3200},
-            2,
-            None,
-        )
-
-        self.assertIn("round_deliver.py count_chinese", context["word_count_contract"]["method"])
-        self.assertEqual(context["word_count_contract"]["minimum_chinese_chars"], 3200)
-        self.assertEqual(context["word_count_contract"]["recommended_chinese_chars"], 3600)
-        self.assertEqual(context["word_count_contract"]["current_chinese_chars"], 2)
-        self.assertEqual(context["word_count_contract"]["missing_chinese_chars"], 3198)
-        self.assertIn("excluding tags", context["instruction"])
-        self.assertIn("3600", context["instruction"])
-        self.assertIn("Do not summarize or shorten", context["instruction"])
-        self.assertIn("sensory detail", context["instruction"])
 
     def test_critic_skill_does_not_require_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")

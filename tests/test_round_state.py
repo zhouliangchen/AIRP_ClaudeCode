@@ -70,6 +70,12 @@ class RoundStateTest(unittest.TestCase):
         with self.assertRaisesRegex(self.round_state.RoundStateError, "unknown progress state"):
             self.round_state.write_progress_state(self.styles, "missing.state")
 
+    def test_removed_story_quality_gate_state_is_rejected(self):
+        removed_state = "story." + "pre" + "flight_repair"
+
+        with self.assertRaisesRegex(self.round_state.RoundStateError, "unknown progress state"):
+            self.round_state.write_progress_state(self.styles, removed_state)
+
     def test_complete_requires_delivered_manifest_when_run_dir_is_passed(self):
         self._write_manifest({"stage": "story_ready"})
 

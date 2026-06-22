@@ -36,7 +36,6 @@ STATES: Dict[str, StateSpec] = {
     "gm_loop.completed": StateSpec("推演已完成", 58),
     "gm_loop.retrying": StateSpec("推演重试中", 42),
     "story.running": StateSpec("正文生成中", 64),
-    "story.preflight_repair": StateSpec("正文预检修复中", 68),
     "critic.running": StateSpec("质量检查中", 72),
     "critic.revise": StateSpec("按评审意见修订", 74),
     "critic.blocked": StateSpec("评审阻塞", 74),

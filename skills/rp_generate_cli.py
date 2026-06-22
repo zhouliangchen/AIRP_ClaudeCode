@@ -20,7 +20,6 @@ import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
 import model_debug
-import runtime_settings
 import self_repair
 
 try:
@@ -42,7 +41,6 @@ class AgentExecutionError(RuntimeError):
 
 
 MAX_DELIVERY_REPAIR_ATTEMPTS = 3
-MAX_STORY_PREFLIGHT_ATTEMPTS = 3
 MAX_DISPATCHER_STEPS = 64
 _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
     "",
@@ -578,29 +576,6 @@ def _stdout_json(payload: Dict[str, Any], indent: int | None = None) -> str:
     return json.dumps(payload, ensure_ascii=True, indent=indent)
 
 
-def _normalize_required_person(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if "第三" in text or "third" in text:
-        return "第三人称"
-    if "第二" in text or "second" in text:
-        return "第二人称"
-    return "第二人称"
-
-
-def _delivery_requirements(root: Path) -> Dict[str, Any]:
-    settings_path = root / "skills" / "styles" / "settings.json"
-    raw_settings = agent_run.read_json(settings_path, {}) or {}
-    settings = runtime_settings.normalize_settings(raw_settings if isinstance(raw_settings, dict) else {})
-    target = int(settings.get("wordCount", 600))
-    return {
-        "word_count_target": target,
-        "minimum_chinese_chars": int(target * 0.8),
-        "delivery_gate": "round_deliver.py",
-        "preflight_word_count": settings_path.exists(),
-        "required_person": _normalize_required_person(None),
-    }
-
-
 def _delivery_complete(delivery: Dict[str, Any]) -> bool:
     delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
     delivery_action = delivery_result.get("action")
@@ -1032,146 +1007,6 @@ def _player_character_names_from_story_input(story_input: Dict[str, Any]) -> lis
                         if name:
                             names.append(name)
     return list(dict.fromkeys(names))
-
-
-def _has_second_person_violation(main_text: str, requirements: Dict[str, Any]) -> bool:
-    required = str(requirements.get("required_person") or "")
-    if "第二" not in required and "second" not in required.lower():
-        return False
-    sample = re.sub(r"\s+", "", main_text[:1200])
-    if "你" in sample[:500]:
-        return False
-    names = [str(name) for name in requirements.get("player_character_names") or [] if str(name).strip()]
-    name_driven = any(
-        re.search(rf"{re.escape(name)}(醒|坐|站|抬|低|看|闻|伸|把|走|想|觉得|没有|慢慢|忽然)", sample)
-        for name in names
-    )
-    pronoun_driven = ("他" in sample or "她" in sample) and not names
-    return bool(name_driven or pronoun_driven)
-
-
-def _input_analysis_requires_prior_rewrite(story_input: Dict[str, Any] | None) -> bool:
-    if not isinstance(story_input, dict):
-        return False
-    player_inputs = story_input.get("player_inputs")
-    if not isinstance(player_inputs, dict):
-        return False
-    analysis = player_inputs.get("input_analysis")
-    if not isinstance(analysis, dict):
-        return False
-    directives = analysis.get("narrative_directives")
-    if isinstance(directives, dict) and directives.get("rewrite_previous_output") is True:
-        return True
-    world_updates = analysis.get("world_updates")
-    if isinstance(world_updates, dict):
-        retcons = world_updates.get("retcon_requests")
-        if isinstance(retcons, list) and any(isinstance(item, dict) for item in retcons):
-            return True
-    return False
-
-
-def _extract_derived_content_edits_from_story(story: Dict[str, Any]) -> list[Any]:
-    raw = _extract_tag(str(story.get("content") or ""), "derived_content_edits")
-    if not raw:
-        return []
-    try:
-        edits = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    return edits if isinstance(edits, list) else []
-
-
-def _has_actionable_derived_content_edits(story: Dict[str, Any]) -> bool:
-    for edit in _extract_derived_content_edits_from_story(story):
-        if not isinstance(edit, dict):
-            continue
-        try:
-            int(edit.get("turn_index", 0))
-        except Exception:
-            continue
-        for key in ("ai", "content", "new_ai", "first_paragraph", "new_first_paragraph", "summary"):
-            value = edit.get(key)
-            if isinstance(value, str) and value.strip():
-                return True
-    return False
-
-
-def _story_preflight_issues(
-    story: Dict[str, Any],
-    requirements: Dict[str, Any],
-    story_input: Dict[str, Any] | None = None,
-) -> list[str]:
-    issues = []
-    if requirements.get("preflight_word_count"):
-        minimum = int(requirements.get("minimum_chinese_chars", 0) or 0)
-        content_text = _extract_tag(str(story.get("content") or ""), "content") or str(story.get("content") or "")
-        current = _count_chinese_chars(content_text)
-        if current < minimum:
-            issues.append(f"content_chinese_chars {current} is below required minimum {minimum}")
-    main_text = _story_main_text(story)
-    if _has_second_person_violation(main_text, requirements):
-        issues.append("second_person_required_but_story_uses_third_person_player_narration")
-    if "<character_dialogues>" in str(story.get("content") or ""):
-        raw = _extract_tag(str(story.get("content") or ""), "character_dialogues")
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = None
-        if not isinstance(parsed, list):
-            issues.append("character_dialogues tag must contain a JSON array")
-    if _input_analysis_requires_prior_rewrite(story_input) and not _has_actionable_derived_content_edits(story):
-        issues.append("rewrite_previous_output_requires_actionable_derived_content_edits")
-    return issues
-
-
-def _story_preflight_repair_context(
-    story: Dict[str, Any],
-    issues: list[str],
-    requirements: Dict[str, Any],
-    attempt: int,
-    repair_context: Dict[str, Any] | None,
-    max_attempts: int = MAX_STORY_PREFLIGHT_ATTEMPTS,
-) -> Dict[str, Any]:
-    minimum = int(requirements.get("minimum_chinese_chars", 0) or 0)
-    target = int(requirements.get("word_count_target", 0) or 0)
-    recommended = max(minimum, int(target * 0.9) if target > 0 else int(minimum * 1.1))
-    content_text = _extract_tag(str(story.get("content") or ""), "content") or str(story.get("content") or "")
-    current = _count_chinese_chars(content_text)
-    missing = max(0, minimum - current)
-    return {
-        "reason": "story_preflight",
-        "preflight_issues": issues,
-        "delivery_requirements": requirements,
-        "word_count_contract": {
-            "method": "round_deliver.py count_chinese strips tags and counts CJK characters only",
-            "word_count_target": target,
-            "minimum_chinese_chars": minimum,
-            "recommended_chinese_chars": recommended,
-            "current_chinese_chars": current,
-            "missing_chinese_chars": missing,
-        },
-        "authoritative_sources": ["story_input", "loop_outputs", "gm.output.json", "actor.outputs.json", "raw_player_input"],
-        "previous_rejected_story_output": story,
-        "do_not_preserve_rejected_content": True,
-        "repair_attempt": attempt,
-        "max_repair_attempts": max_attempts,
-        "prior_repair_context": repair_context or {},
-        "instruction": (
-            "Rewrite story.output.json from story_input and current agent artifacts. "
-            f"The <content> body must contain at least {minimum} CJK characters excluding tags, "
-            f"and should aim for about {recommended} CJK characters so round_deliver.py count_chinese passes safely. "
-            f"The rejected draft currently has {current} CJK characters and is missing about {missing}. "
-            "If preflight_issues includes rewrite_previous_output_requires_actionable_derived_content_edits, "
-            "emit a <derived_content_edits> JSON array with handler-actionable objects containing turn_index and at least one of "
-            "summary, first_paragraph, new_first_paragraph, ai, content, or new_ai; do not use JSON Patch objects there. "
-            "Do not summarize or shorten the accepted scene structure; expand it with sensory detail, NPC micro-reactions, "
-            "environmental motion, physical continuity, and the protagonist's immediate embodied response while preserving the same decision boundary. "
-            "Preserve raw player input authority, "
-            "obey required_person perspective exactly, avoid visible meta-analysis or <polished_input>, "
-            "keep <character_dialogues>[]</character_dialogues> as a valid JSON array before <summary>, "
-            "and do not include a fake <tokens> block."
-        ),
-    }
 
 
 def _reset_delivery_retry_budget(run_dir: Path, manifest: Dict[str, Any]) -> Dict[str, Any]:
