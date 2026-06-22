@@ -122,6 +122,47 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
 
+    def test_analyze_input_completes_and_creates_run_gm_turn(self):
+        _write_json(self.run_dir / "input_analysis.output.json", {"analysis_mode": "fixture"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "payload": {"input_analysis_request_path": "input_analysis.request.md"},
+            },
+        )["intent"]
+        apply_calls = []
+
+        def fake_apply(card_folder, root_dir):
+            apply_calls.append((Path(card_folder), Path(root_dir)))
+            return {"ok": True, "analysis": {"analysis_mode": "fixture"}}
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["artifacts"], ["artifacts/input_analysis.output.json"])
+        self.assertTrue((self.run_dir / "artifacts" / "input_analysis.output.json").exists())
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["requested_by"], "input_analyst")
+        self.assertEqual(pending[0]["payload"], {"reason": "input_analysis_applied"})
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(len(apply_calls), 1)
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        applied = [item for item in messages if item.get("type") == "analysis_applied"]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(result["created_messages"], [applied[0]["id"]])
+        self.assertEqual(applied[0]["to"], ["gm", "main_agent"])
+        self.assertEqual(applied[0]["payload"]["applied"]["analysis"]["analysis_mode"], "fixture")
+
 
 if __name__ == "__main__":
     unittest.main()

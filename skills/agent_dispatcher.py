@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
 import agent_intents
+import agent_messages
 import agent_run
+import input_analysis_apply
 
 
 SUPPORTED_INTENT_TYPES = {
@@ -111,6 +114,8 @@ def _execute_supported_intent(
     run_command: Callable[..., Any] | None,
 ) -> dict[str, Any]:
     intent_type = str(intent.get("type") or "")
+    if intent_type == "analyze_input":
+        return _execute_analyze_input(run_dir, card_folder, root_dir, intent)
     if intent_type == "assets_task":
         raise AgentDispatcherError("assets_task is not included in SUPPORTED_INTENT_TYPES")
     blocked = agent_intents.block_intent(
@@ -131,6 +136,117 @@ def _execute_supported_intent(
         artifacts=[],
         detail=blocked.get("result", {}),
     )
+
+
+def _execute_analyze_input(
+    run_dir: Path,
+    card_folder: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "analyze_input"})
+
+    applied = input_analysis_apply.apply_current_run(card_folder, root_dir)
+    artifacts = []
+    source_path = run_dir / "input_analysis.output.json"
+    if source_path.exists():
+        destination = artifact_path(run_dir, "input_analysis.output.json")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination)
+        artifacts.append("artifacts/input_analysis.output.json")
+
+    message_result = agent_messages.append_message(
+        run_dir,
+        {
+            "from": "input_analyst",
+            "to": ["gm", "main_agent"],
+            "type": "analysis_applied",
+            "visibility": "gm_only",
+            "payload": {"applied": applied},
+        },
+    )
+    if not message_result.get("ok"):
+        reason = "analysis_message_failed"
+        blocked = agent_intents.block_intent(
+            run_dir,
+            intent_id,
+            reason,
+            outputs={"executor": "analyze_input", "message_result": message_result},
+        )
+        _mark_blocked(
+            run_dir,
+            reason,
+            {"intent_id": intent_id, "message_result": message_result},
+        )
+        return _result(
+            False,
+            "blocked",
+            intent_id=intent_id,
+            intent_type="analyze_input",
+            reason=reason,
+            created_intents=[],
+            created_messages=[],
+            artifacts=artifacts,
+            detail=blocked.get("result", {}),
+        )
+
+    message = message_result.get("message", {})
+    message_id = str(message.get("id") or "")
+    follow_up = _ensure_follow_up_intent(
+        run_dir,
+        intent_id,
+        {
+            "requested_by": "input_analyst",
+            "type": "run_gm_turn",
+            "payload": {"reason": "input_analysis_applied"},
+            "policy": {"source_intent_id": intent_id},
+        },
+    )
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "analyze_input",
+            "applied": applied,
+            "follow_up_intent_id": follow_up_id,
+            "artifacts": artifacts,
+            "message_id": message_id,
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="analyze_input",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[message_id] if message_id else [],
+        artifacts=artifacts,
+        detail={"applied": applied, "follow_up_intent_id": follow_up_id},
+    )
+
+
+def _ensure_follow_up_intent(
+    run_dir: Path,
+    source_intent_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    for state in agent_intents.VALID_STATES:
+        for existing in agent_intents.list_intents(run_dir, state):
+            policy = existing.get("policy")
+            if not isinstance(policy, dict):
+                continue
+            if policy.get("source_intent_id") != source_intent_id:
+                continue
+            if existing.get("type") != payload.get("type"):
+                continue
+            return {"id": existing.get("id"), "created": False, "intent": existing}
+
+    created = agent_intents.create_intent(run_dir, payload)["intent"]
+    return {"id": created.get("id"), "created": True, "intent": created}
 
 
 def _block_stalled(run_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
