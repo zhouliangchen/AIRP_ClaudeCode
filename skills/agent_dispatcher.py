@@ -10,6 +10,7 @@ from typing import Any, Callable
 import agent_outputs
 import agent_snapshots
 import agent_actor_runtime
+import agent_interactions
 import agent_intents
 import agent_messages
 import agent_run
@@ -545,6 +546,11 @@ def _execute_run_actor(
         player_decision_required = _actor_output_requires_player_decision(actor_id, actor_output)
         requires_gm_resolution = _actor_output_requires_gm_resolution(actor_output)
         follow_up_id = ""
+        if player_decision_required:
+            agent_interactions.mark_decision_point(
+                run_dir,
+                "player decision required after actor response",
+            )
         if requires_gm_resolution and not player_decision_required:
             follow_up = _ensure_follow_up_intent(
                 run_dir,

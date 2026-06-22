@@ -733,6 +733,41 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertTrue(result["detail"]["player_decision_required"])
         self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
         self.assertEqual(result["created_intents"], [])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["status"], "decision_point")
+
+    def test_run_actor_stop_for_player_decision_records_decision_point_without_follow_up(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "door"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        self._create_run_actor_intent(projected["id"])
+        actor_output = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "player",
+                    "content": "Choose before I open it.",
+                    "metadata": {
+                        "exact_visible_words": "Choose before I open it.",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "quiet warning",
+                    },
+                }
+            ],
+            "stop_reason": "stop_for_player_decision",
+        }
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: actor_output
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["detail"]["player_decision_required"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        self.assertEqual(result["created_intents"], [])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["status"], "decision_point")
 
     def test_run_actor_cannot_use_unprojected_raw_call_payload(self):
         raw_request = self.dispatcher.agent_messages.append_message(
