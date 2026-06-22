@@ -151,6 +151,59 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
+    def _actor_player_decision_output(self, actor_id="character:Ada"):
+        return {
+            "agent": "player" if actor_id == "player" else "character",
+            "agent_id": actor_id,
+            "character_name": actor_id.split(":", 1)[1] if actor_id.startswith("character:") else "",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "player",
+                    "content": "Choose before I open it.",
+                    "metadata": {
+                        "exact_visible_words": "Choose before I open it.",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "quiet warning",
+                    },
+                }
+            ],
+            "stop_reason": "stop_for_player_decision",
+        }
+
+    def _run_two_actor_fanout_until_actors_pending(self):
+        self._install_dispatcher_dependencies()
+        self._write_multi_actor_input()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+        actor_calls = [
+            self._gm_actor_call(actor_id="character:Ada", call_id="call-character-Ada-1"),
+            self._gm_actor_call(actor_id="character:Bea", call_id="call-character-Bea-1"),
+        ]
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            if agent_key == "gm":
+                return self._gm_output(actor_calls=actor_calls, stop_reason="continue")
+            return self._actor_outputs_by_agent[agent_key]
+
+        self._actor_outputs_by_agent = {}
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        gm_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        self.assertTrue(gm_result["ok"])
+        self.assertEqual(gm_result["intent_id"], created["id"])
+        self.assertEqual([intent["type"] for intent in self.intents.list_intents(self.run_dir, "pending")], [
+            "request_projection",
+            "request_projection",
+        ])
+        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)["ok"])
+        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)["ok"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor", "run_actor"])
+        return created
+
     def _write_subgm_input(self):
         _write_json(
             self.run_dir / "input.json",
@@ -930,6 +983,64 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             ["call-character-Ada-1", "call-character-Bea-1"],
         )
         self.assertEqual(pending[0]["policy"]["source_intent_id"], created["id"])
+
+    def test_run_actor_fanout_decision_first_blocks_later_gm_continuation(self):
+        self._run_two_actor_fanout_until_actors_pending()
+        self._actor_outputs_by_agent = {
+            "character:Ada": self._actor_player_decision_output("character:Ada"),
+            "character:Bea": self._actor_resolution_output("character:Bea"),
+        }
+
+        decision_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        self.assertTrue(decision_actor["ok"])
+        self.assertTrue(decision_actor["detail"]["player_decision_required"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+
+        later_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        self.assertTrue(later_actor["ok"])
+        self.assertEqual(later_actor["created_intents"], [])
+        self.assertTrue(later_actor["detail"]["fanout_player_decision_required"])
+        self.assertTrue(later_actor["detail"]["fanout_continuation_blocked_by_player_decision"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["status"], "decision_point")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(manifest.get("stage"), "blocked")
+        completed_actor_outputs = [
+            item["result"]["outputs"]
+            for item in self.intents.list_intents(self.run_dir, "completed")
+            if item.get("type") == "run_actor"
+        ]
+        self.assertEqual([output["player_decision_required"] for output in completed_actor_outputs], [True, False])
+
+    def test_run_actor_fanout_decision_last_does_not_create_gm_continuation(self):
+        self._run_two_actor_fanout_until_actors_pending()
+        self._actor_outputs_by_agent = {
+            "character:Ada": self._actor_resolution_output("character:Ada"),
+            "character:Bea": self._actor_player_decision_output("character:Bea"),
+        }
+
+        ordinary_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        self.assertTrue(ordinary_actor["ok"])
+        self.assertFalse(ordinary_actor["detail"]["player_decision_required"])
+        self.assertEqual(ordinary_actor["created_intents"], [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+
+        decision_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        self.assertTrue(decision_actor["ok"])
+        self.assertTrue(decision_actor["detail"]["player_decision_required"])
+        self.assertEqual(decision_actor["created_intents"], [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["status"], "decision_point")
+        completed_actor_outputs = [
+            item["result"]["outputs"]
+            for item in self.intents.list_intents(self.run_dir, "completed")
+            if item.get("type") == "run_actor"
+        ]
+        self.assertEqual([output["player_decision_required"] for output in completed_actor_outputs], [False, True])
 
     def test_run_actor_recovers_when_complete_raises_after_side_effects(self):
         packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}

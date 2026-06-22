@@ -549,6 +549,23 @@ def _gm_fanout_ready_for_continuation(run_dir: Path, fanout: dict[str, Any], cur
     return all(source_call_id in completed for source_call_id in fanout["expected_source_call_ids"])
 
 
+def _gm_fanout_has_player_decision_required(run_dir: Path, batch_id: str) -> bool:
+    for existing in agent_intents.list_intents(run_dir, "completed"):
+        if existing.get("type") != "run_actor":
+            continue
+        payload = existing.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        fanout = _normalize_actor_fanout(payload.get("fanout"))
+        if not fanout or fanout["batch_id"] != batch_id:
+            continue
+        result = existing.get("result")
+        outputs = result.get("outputs") if isinstance(result, dict) else None
+        if isinstance(outputs, dict) and outputs.get("player_decision_required") is True:
+            return True
+    return False
+
+
 def _execute_run_actor(
     run_dir: Path,
     root_dir: Path,
@@ -628,20 +645,29 @@ def _execute_run_actor(
 
         player_decision_required = _actor_output_requires_player_decision(actor_id, actor_output)
         requires_gm_resolution = _actor_output_requires_gm_resolution(actor_output)
+        fanout = _normalize_actor_fanout(payload.get("fanout"))
+        fanout_player_decision_required = bool(
+            player_decision_required
+            or (fanout and _gm_fanout_has_player_decision_required(run_dir, fanout["batch_id"]))
+        )
+        fanout_continuation_blocked_by_player_decision = False
         follow_up_id = ""
         if player_decision_required:
             agent_interactions.mark_decision_point(
                 run_dir,
                 "player decision required after actor response",
             )
+            fanout_continuation_blocked_by_player_decision = bool(fanout)
         if not player_decision_required:
-            fanout = _normalize_actor_fanout(payload.get("fanout"))
             follow_up_reason = (
                 "actor_response_requires_resolution"
                 if requires_gm_resolution
                 else "actor_response_continue"
             )
-            if fanout and not _gm_fanout_ready_for_continuation(run_dir, fanout, resolved_source_call_id):
+            if fanout and fanout_player_decision_required:
+                fanout_continuation_blocked_by_player_decision = True
+                follow_up_id = ""
+            elif fanout and not _gm_fanout_ready_for_continuation(run_dir, fanout, resolved_source_call_id):
                 follow_up_id = ""
             elif fanout:
                 completed_source_call_ids = _gm_fanout_completed_source_call_ids(
@@ -736,6 +762,8 @@ def _execute_run_actor(
         "actor_response_message_id": response_message_id,
         "follow_up_intent_id": follow_up_id,
         "player_decision_required": player_decision_required,
+        "fanout_player_decision_required": fanout_player_decision_required,
+        "fanout_continuation_blocked_by_player_decision": fanout_continuation_blocked_by_player_decision,
         "requires_gm_resolution": requires_gm_resolution,
         "artifacts": artifacts,
         "created_messages": created_messages,
