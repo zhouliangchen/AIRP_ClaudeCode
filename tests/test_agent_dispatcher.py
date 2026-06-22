@@ -34,12 +34,16 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         _write_json(self.run_dir / "input.json", {"raw_text": "I listen.", "routed_input": {"role_channel": "I listen."}})
         self.dispatcher = _load("agent_dispatcher")
         self.intents = _load("agent_intents")
+        if not hasattr(self.dispatcher, "agent_snapshots"):
+            self.dispatcher.agent_snapshots = _load("agent_snapshots")
         self._restore_after_test(self.dispatcher.input_analysis_apply, "apply_current_run")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_dispatch_agent_payload")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_interactive_agent_loop")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_delivery")
         self._restore_after_test(self.dispatcher.agent_outputs, "build_story_input")
         self._restore_after_test(self.dispatcher, "_dispatch_agent_payload")
+        if hasattr(self.dispatcher, "agent_snapshots"):
+            self._restore_after_test(self.dispatcher.agent_snapshots, "restore_snapshot")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -657,6 +661,173 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         repair_messages = [item for item in messages if item.get("type") == "repair_request"]
         self.assertEqual(len(repair_messages), 1)
         self.assertEqual(repair_messages[0]["payload"]["repair_fingerprint"], repair_payload["repair_fingerprint"])
+
+    def test_repair_request_story_only_creates_compose_story(self):
+        _write_json(
+            self.run_dir / "artifacts" / "critic.report.json",
+            {
+                "decision": "revise",
+                "repair_instruction": "Rewrite the ending around a concrete player choice.",
+                "repair_routing": {
+                    "stage": "story_composition",
+                    "rollback": "story_only",
+                    "can_auto_repair": True,
+                    "risk": "low",
+                },
+            },
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {"critic_report_path": "artifacts/critic.report.json"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["critic_report_path"], "artifacts/critic.report.json")
+        self.assertEqual(
+            pending[0]["payload"]["repair_routing"],
+            {
+                "stage": "story_composition",
+                "target_agents": ["story"],
+                "rollback": "story_only",
+                "can_auto_repair": True,
+                "risk": "low",
+            },
+        )
+        self.assertEqual(
+            pending[0]["payload"]["repair_instruction"],
+            "Rewrite the ending around a concrete player choice.",
+        )
+        self.assertEqual([item["id"] for item in self.intents.list_intents(self.run_dir, "completed")], [created["id"]])
+
+    def test_repair_request_round_progression_creates_rollback_request(self):
+        _write_json(
+            self.run_dir / "artifacts" / "critic.report.json",
+            {
+                "decision": "revise",
+                "repair_instruction": "Re-run the GM loop from the before-round snapshot.",
+                "repair_routing": {
+                    "stage": "gm_loop",
+                    "rollback": "round_progression",
+                    "can_auto_repair": True,
+                    "risk": "medium",
+                },
+                "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+            },
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {"critic_report_path": "artifacts/critic.report.json"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["rollback_request"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "mode": "round_progression",
+                "reason": "critic_repair",
+                "critic_report_path": "artifacts/critic.report.json",
+                "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+            },
+        )
+
+    def test_rollback_request_blocks_when_snapshot_missing(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {
+                    "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+                    "mode": "round_progression",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "rollback_failed")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["restore"]["reason"], "snapshot_missing")
+
+    def test_rollback_request_story_only_success_creates_compose_story(self):
+        restore_calls = []
+
+        def fake_restore(card_folder, snapshot_id, *, mode):
+            restore_calls.append((Path(card_folder), snapshot_id, mode))
+            return {"ok": True, "snapshot_id": snapshot_id, "mode": mode, "restored": ["memory"], "removed": []}
+
+        self.dispatcher.agent_snapshots.restore_snapshot = fake_restore
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {"snapshot_id": "snapshot_fixture", "mode": "story_only"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["rollback"]["mode"], "story_only")
+        self.assertEqual(restore_calls, [(self.card, "snapshot_fixture", "story_only")])
+
+    def test_rollback_request_round_progression_success_creates_run_gm_turn(self):
+        restore_calls = []
+
+        def fake_restore(card_folder, snapshot_id, *, mode):
+            restore_calls.append((Path(card_folder), snapshot_id, mode))
+            return {"ok": True, "snapshot_id": snapshot_id, "mode": mode, "restored": [".agent_runs/current"], "removed": []}
+
+        self.dispatcher.agent_snapshots.restore_snapshot = fake_restore
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {"snapshot_id": "snapshot_fixture", "mode": "round_progression"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["rollback"]["mode"], "round_progression")
+        self.assertEqual(restore_calls, [(self.card, "snapshot_fixture", "round_progression")])
 
     def test_deliver_round_marks_delivered_when_delivery_command_passes(self):
         self._install_dispatcher_dependencies()

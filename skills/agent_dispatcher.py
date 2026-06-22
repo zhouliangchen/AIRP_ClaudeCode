@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import agent_outputs
+import agent_snapshots
 import agent_intents
 import agent_messages
 import agent_run
 import input_analysis_apply
 import rp_generate_cli
+import self_repair
 
 
 SUPPORTED_INTENT_TYPES = {
@@ -125,6 +127,10 @@ def _execute_supported_intent(
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
         return _execute_review_critic(run_dir, root_dir, intent, run_claude)
+    if intent_type == "repair_request":
+        return _execute_repair_request(run_dir, intent)
+    if intent_type == "rollback_request":
+        return _execute_rollback_request(run_dir, card_folder, intent)
     if intent_type == "deliver_round":
         return _execute_deliver_round(run_dir, card_folder, root_dir, intent, run_command)
     if intent_type == "assets_task":
@@ -418,6 +424,151 @@ def _execute_review_critic(
     )
 
 
+def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "repair_request"})
+
+    try:
+        payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+        report_path = str(payload.get("critic_report_path") or "artifacts/critic.report.json")
+        critic_report = _read_critic_report(run_dir, report_path)
+        routing_source = critic_report.get("repair_routing") if "repair_routing" in critic_report else payload.get("repair_routing")
+        routing = self_repair.normalize_repair_routing(routing_source)
+        repair_instruction = str(critic_report.get("repair_instruction") or payload.get("repair_instruction") or "")
+        decision = str(critic_report.get("decision") or payload.get("decision") or "")
+
+        if routing.get("rollback") == "round_progression":
+            follow_up_payload = {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {
+                    "mode": "round_progression",
+                    "reason": "critic_repair",
+                    "critic_report_path": report_path,
+                },
+                "policy": {"source_intent_id": intent_id},
+            }
+            snapshot_id = _first_text(payload.get("snapshot_id"), critic_report.get("snapshot_id"))
+            if snapshot_id:
+                follow_up_payload["payload"]["snapshot_id"] = snapshot_id
+        else:
+            repair_payload: dict[str, Any] = {
+                "repair_routing": routing,
+                "critic_report_path": report_path,
+            }
+            if repair_instruction:
+                repair_payload["repair_instruction"] = repair_instruction
+            if decision:
+                repair_payload["decision"] = decision
+            follow_up_payload = {
+                "requested_by": "repair",
+                "type": "compose_story",
+                "payload": repair_payload,
+                "policy": {"source_intent_id": intent_id},
+            }
+        follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "repair_request", "repair_request_failed", exc, [])
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "repair_request",
+            "decision": decision,
+            "repair_routing": routing,
+            "follow_up_intent_id": follow_up_id,
+            "follow_up_type": follow_up_payload.get("type"),
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="repair_request",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=[],
+        detail={
+            "decision": decision,
+            "repair_routing": routing,
+            "follow_up_intent_id": follow_up_id,
+            "follow_up_type": follow_up_payload.get("type"),
+        },
+    )
+
+
+def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "rollback_request"})
+
+    try:
+        payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+        snapshot_id = str(payload.get("snapshot_id") or "")
+        mode = str(payload.get("mode") or "round_progression")
+        restore = agent_snapshots.restore_snapshot(card_folder, snapshot_id, mode=mode)
+        if not restore.get("ok"):
+            blocked = agent_intents.block_intent(
+                run_dir,
+                intent_id,
+                "rollback_failed",
+                outputs={"executor": "rollback_request", "restore": restore},
+            )
+            _mark_blocked(run_dir, "rollback_failed", {"intent_id": intent_id, "restore": restore})
+            return _result(
+                False,
+                "blocked",
+                intent_id=intent_id,
+                intent_type="rollback_request",
+                reason="rollback_failed",
+                created_intents=[],
+                created_messages=[],
+                artifacts=[],
+                detail=blocked.get("result", {}),
+            )
+
+        follow_up_type = "compose_story" if mode == "story_only" else "run_gm_turn"
+        follow_up = _ensure_follow_up_intent(
+            run_dir,
+            intent_id,
+            {
+                "requested_by": "rollback",
+                "type": follow_up_type,
+                "payload": {"rollback": restore},
+                "policy": {"source_intent_id": intent_id},
+            },
+        )
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "rollback_request", "rollback_failed", exc, [])
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "rollback_request",
+            "restore": restore,
+            "follow_up_intent_id": follow_up_id,
+            "follow_up_type": follow_up_type,
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="rollback_request",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=[],
+        detail={"restore": restore, "follow_up_intent_id": follow_up_id, "follow_up_type": follow_up_type},
+    )
+
+
 def _execute_deliver_round(
     run_dir: Path,
     card_folder: Path,
@@ -471,6 +622,37 @@ def _execute_deliver_round(
         artifacts=[],
         detail={"delivery": delivery},
     )
+
+
+def _read_critic_report(run_dir: Path, report_path: str) -> dict[str, Any]:
+    relative = Path(report_path)
+    if relative.is_absolute():
+        raise AgentDispatcherError(f"critic report path must be relative: {report_path}")
+    if relative.parts and relative.parts[0] == "artifacts":
+        return read_artifact(run_dir, str(Path(*relative.parts[1:])))
+
+    run_root = run_dir.resolve()
+    artifacts_root = (run_root / "artifacts").resolve()
+    candidate = (run_root / relative).resolve()
+    if candidate == artifacts_root or artifacts_root not in candidate.parents:
+        raise AgentDispatcherError(f"critic report path must stay under artifacts: {report_path}")
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise AgentDispatcherError(f"{candidate}: critic report is invalid JSON") from exc
+    except OSError as exc:
+        raise AgentDispatcherError(f"{candidate}: critic report is missing") from exc
+    if not isinstance(payload, dict):
+        raise AgentDispatcherError(f"{candidate}: critic report must be a JSON object")
+    return payload
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _delivery_succeeded(delivery: dict[str, Any]) -> bool:
