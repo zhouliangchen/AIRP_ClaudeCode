@@ -306,14 +306,19 @@ def _execute_compose_story(
     artifacts: list[str] = []
 
     try:
+        payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+        repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
         story_input = agent_outputs.build_story_input(run_dir)
         artifacts.append("artifacts/story.input.json")
+        extra_context: dict[str, Any] = {"story_input": story_input}
+        if repair_context is not None:
+            extra_context["repair_context"] = repair_context
         story_output = _dispatch_agent_payload(
             "story",
             run_dir,
             root_dir,
             run_claude,
-            {"story_input": story_input},
+            extra_context,
         )
         story_output = rp_generate_cli._normalize_story_output(story_output, story_input)
         write_artifact(run_dir, "story.output.json", story_output)
@@ -436,6 +441,7 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
         routing = self_repair.normalize_repair_routing(routing_source)
         repair_instruction = str(critic_report.get("repair_instruction") or payload.get("repair_instruction") or "")
         decision = str(critic_report.get("decision") or payload.get("decision") or "")
+        repair_context = _repair_context(report_path, critic_report, payload, routing)
 
         if routing.get("rollback") == "round_progression":
             follow_up_payload = {
@@ -445,6 +451,7 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
                     "mode": "round_progression",
                     "reason": "critic_repair",
                     "critic_report_path": report_path,
+                    "repair_context": repair_context,
                 },
                 "policy": {"source_intent_id": intent_id},
             }
@@ -455,6 +462,7 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
             repair_payload: dict[str, Any] = {
                 "repair_routing": routing,
                 "critic_report_path": report_path,
+                "repair_context": repair_context,
             }
             if repair_instruction:
                 repair_payload["repair_instruction"] = repair_instruction
@@ -509,36 +517,44 @@ def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str
         payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
         snapshot_id = str(payload.get("snapshot_id") or "")
         mode = str(payload.get("mode") or "round_progression")
-        restore = agent_snapshots.restore_snapshot(card_folder, snapshot_id, mode=mode)
-        if not restore.get("ok"):
-            blocked = agent_intents.block_intent(
-                run_dir,
-                intent_id,
-                "rollback_failed",
-                outputs={"executor": "rollback_request", "restore": restore},
-            )
-            _mark_blocked(run_dir, "rollback_failed", {"intent_id": intent_id, "restore": restore})
-            return _result(
-                False,
-                "blocked",
-                intent_id=intent_id,
-                intent_type="rollback_request",
-                reason="rollback_failed",
-                created_intents=[],
-                created_messages=[],
-                artifacts=[],
-                detail=blocked.get("result", {}),
-            )
+        repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
+        if mode == "story_only":
+            follow_up_run_dir = _active_run_dir(card_folder, run_dir)
+            restore = _cleanup_story_only_artifacts(follow_up_run_dir)
+        else:
+            restore = agent_snapshots.restore_snapshot(card_folder, snapshot_id, mode=mode)
+            if not restore.get("ok"):
+                blocked = agent_intents.block_intent(
+                    run_dir,
+                    intent_id,
+                    "rollback_failed",
+                    outputs={"executor": "rollback_request", "restore": restore},
+                )
+                _mark_blocked(run_dir, "rollback_failed", {"intent_id": intent_id, "restore": restore})
+                return _result(
+                    False,
+                    "blocked",
+                    intent_id=intent_id,
+                    intent_type="rollback_request",
+                    reason="rollback_failed",
+                    created_intents=[],
+                    created_messages=[],
+                    artifacts=[],
+                    detail=blocked.get("result", {}),
+                )
+            follow_up_run_dir = _restored_current_run_dir(card_folder)
 
         follow_up_type = "compose_story" if mode == "story_only" else "run_gm_turn"
-        follow_up_run_dir = _restored_current_run_dir(card_folder)
+        follow_up_payload: dict[str, Any] = {"rollback": restore}
+        if repair_context is not None:
+            follow_up_payload["repair_context"] = repair_context
         follow_up = _ensure_follow_up_intent(
             follow_up_run_dir,
             intent_id,
             {
                 "requested_by": "rollback",
                 "type": follow_up_type,
-                "payload": {"rollback": restore},
+                "payload": follow_up_payload,
                 "policy": {"source_intent_id": intent_id},
             },
         )
@@ -655,11 +671,46 @@ def _read_critic_report(run_dir: Path, report_path: str) -> dict[str, Any]:
     return payload
 
 
+def _repair_context(
+    critic_report_path: str,
+    critic_report: dict[str, Any],
+    payload: dict[str, Any],
+    routing: dict[str, Any],
+) -> dict[str, Any]:
+    context = {
+        "critic_report_path": critic_report_path,
+        "decision": str(critic_report.get("decision") or payload.get("decision") or ""),
+        "repair_instruction": str(critic_report.get("repair_instruction") or payload.get("repair_instruction") or ""),
+        "repair_routing": routing,
+    }
+    fingerprint = _first_text(payload.get("repair_fingerprint"), critic_report.get("repair_fingerprint"))
+    if fingerprint:
+        context["repair_fingerprint"] = fingerprint
+    return context
+
+
+def _active_run_dir(card_folder: Path, fallback_run_dir: Path) -> Path:
+    current = agent_run.current_run_dir(card_folder)
+    if current is None:
+        return fallback_run_dir.resolve()
+    return current.resolve()
+
+
 def _restored_current_run_dir(card_folder: Path) -> Path:
     current = agent_run.current_run_dir(card_folder)
     if current is None:
         raise AgentDispatcherError(f"{Path(card_folder) / '.agent_runs' / 'current'} is missing after rollback restore")
     return current.resolve()
+
+
+def _cleanup_story_only_artifacts(run_dir: Path) -> dict[str, Any]:
+    removed: list[str] = []
+    for relative in ("story.input.json", "story.output.json", "critic.report.json"):
+        for path, label in ((run_dir / relative, relative), (run_dir / "artifacts" / relative, f"artifacts/{relative}")):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                removed.append(label)
+    return {"ok": True, "mode": "story_only", "removed": removed, "strategy": "story_only_cleanup"}
 
 
 def _complete_rollback_intent_if_safe(run_dir: Path, intent_id: str, outputs: dict[str, Any]) -> dict[str, Any]:
@@ -798,19 +849,30 @@ def _execute_run_gm_turn(
     try:
         if run_claude is None:
             raise AgentDispatcherError("run_claude is required for run_gm_turn")
+        payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+        repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
         manifest = _load_manifest(run_dir)
-        loop_result = rp_generate_cli._run_interactive_agent_loop(run_dir, manifest, root_dir, run_claude)
+        loop_result = rp_generate_cli._run_interactive_agent_loop(
+            run_dir,
+            manifest,
+            root_dir,
+            run_claude,
+            repair_context=repair_context,
+        )
         artifacts = [
             _refresh_root_artifact_to_authority(run_dir, "gm.output.json"),
             _refresh_root_artifact_to_authority(run_dir, "actor.outputs.json"),
         ]
+        follow_up_payload: dict[str, Any] = {"loop_result": loop_result}
+        if repair_context is not None:
+            follow_up_payload["repair_context"] = repair_context
         follow_up = _ensure_follow_up_intent(
             run_dir,
             intent_id,
             {
                 "requested_by": "gm",
                 "type": "compose_story",
-                "payload": {"loop_result": loop_result},
+                "payload": follow_up_payload,
                 "policy": {"source_intent_id": intent_id},
             },
         )

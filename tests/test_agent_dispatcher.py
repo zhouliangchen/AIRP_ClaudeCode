@@ -340,6 +340,40 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(loop_calls[0][2], ROOT)
         self.assertIsNone(loop_calls[0][4])
 
+    def test_run_gm_turn_passes_repair_context_to_gm_loop(self):
+        self._install_dispatcher_dependencies()
+        repair_context = {
+            "critic_report_path": "artifacts/critic.report.json",
+            "decision": "revise",
+            "repair_instruction": "Replay the GM loop with stricter causality.",
+            "repair_routing": {
+                "stage": "gm_loop",
+                "target_agents": ["gm"],
+                "rollback": "round_progression",
+                "can_auto_repair": True,
+                "risk": "medium",
+            },
+            "repair_fingerprint": "fingerprint-gm",
+        }
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "rollback", "type": "run_gm_turn", "payload": {"repair_context": repair_context}},
+        )
+        loop_calls = []
+
+        def fake_loop(run_dir, manifest, root, run_claude, repair_context=None):
+            loop_calls.append(repair_context)
+            _write_json(run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": []})
+            _write_json(run_dir / "actor.outputs.json", {"actor_outputs": {}})
+            return {"gm_steps": 1, "called_actors": []}
+
+        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(loop_calls, [repair_context])
+
     def test_run_gm_turn_rejects_stale_authoritative_artifacts_without_current_root_outputs(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(
@@ -708,6 +742,21 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             pending[0]["payload"]["repair_instruction"],
             "Rewrite the ending around a concrete player choice.",
         )
+        self.assertEqual(
+            pending[0]["payload"]["repair_context"],
+            {
+                "critic_report_path": "artifacts/critic.report.json",
+                "decision": "revise",
+                "repair_instruction": "Rewrite the ending around a concrete player choice.",
+                "repair_routing": {
+                    "stage": "story_composition",
+                    "target_agents": ["story"],
+                    "rollback": "story_only",
+                    "can_auto_repair": True,
+                    "risk": "low",
+                },
+            },
+        )
         self.assertEqual([item["id"] for item in self.intents.list_intents(self.run_dir, "completed")], [created["id"]])
 
     def test_repair_request_round_progression_creates_rollback_request(self):
@@ -723,6 +772,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                     "risk": "medium",
                 },
                 "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+                "repair_fingerprint": "fingerprint-round",
             },
         )
         created = self.intents.create_intent(
@@ -748,8 +798,62 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 "reason": "critic_repair",
                 "critic_report_path": "artifacts/critic.report.json",
                 "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+                "repair_context": {
+                    "critic_report_path": "artifacts/critic.report.json",
+                    "decision": "revise",
+                    "repair_instruction": "Re-run the GM loop from the before-round snapshot.",
+                    "repair_routing": {
+                        "stage": "gm_loop",
+                        "target_agents": ["gm"],
+                        "rollback": "round_progression",
+                        "can_auto_repair": True,
+                        "risk": "medium",
+                    },
+                    "repair_fingerprint": "fingerprint-round",
+                },
             },
         )
+
+    def test_round_progression_repair_context_flows_through_rollback_to_gm_turn(self):
+        _write_json(
+            self.run_dir / "artifacts" / "critic.report.json",
+            {
+                "decision": "revise",
+                "repair_instruction": "Replay the turn from GM state.",
+                "repair_routing": {
+                    "stage": "gm_loop",
+                    "rollback": "round_progression",
+                    "can_auto_repair": True,
+                    "risk": "medium",
+                },
+                "snapshot_id": "round-000001-20260621T123456123456Z-abcdef123456",
+                "repair_fingerprint": "fingerprint-round-flow",
+            },
+        )
+        self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {"critic_report_path": "artifacts/critic.report.json"},
+            },
+        )
+        repair_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self.assertTrue(repair_result["ok"])
+        rollback = self.intents.list_intents(self.run_dir, "pending")[0]
+        repair_context = rollback["payload"]["repair_context"]
+
+        def fake_restore(card_folder, snapshot_id, *, mode):
+            return {"ok": True, "snapshot_id": snapshot_id, "mode": mode, "restored": [".agent_runs/current"], "removed": []}
+
+        self.dispatcher.agent_snapshots.restore_snapshot = fake_restore
+        rollback_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(rollback_result["ok"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+        self.assertEqual(pending[0]["payload"]["repair_context"], repair_context)
+        self.assertEqual(pending[0]["payload"]["repair_context"]["repair_fingerprint"], "fingerprint-round-flow")
 
     def test_rollback_request_blocks_when_snapshot_missing(self):
         created = self.intents.create_intent(
@@ -808,12 +912,73 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["detail"]["completion"]["status"], "skipped")
         self.assertEqual(result["detail"]["follow_up_run_dir"], str(self.run_dir.resolve()))
 
+    def test_rollback_request_story_only_cleanup_preserves_gm_actor_trace_without_snapshot_restore(self):
+        _write_json(self.run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": [{"id": "gm"}]})
+        _write_json(self.run_dir / "actor.outputs.json", {"actor_outputs": {"player": []}})
+        _write_json(self.run_dir / "interaction.trace.json", {"schema_version": 2, "events": [{"id": "trace"}]})
+        _write_json(self.run_dir / "story.input.json", {"stale": "story_input"})
+        _write_json(self.run_dir / "story.output.json", {"stale": "story_output"})
+        _write_json(self.run_dir / "critic.report.json", {"decision": "revise"})
+        _write_json(self.run_dir / "artifacts" / "gm.output.json", {"agent": "gm_loop", "outputs": [{"id": "gm"}]})
+        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", {"actor_outputs": {"player": []}})
+        _write_json(self.run_dir / "artifacts" / "interaction.trace.json", {"schema_version": 2, "events": [{"id": "trace"}]})
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"stale": "story_input"})
+        _write_json(self.run_dir / "artifacts" / "story.output.json", {"stale": "story_output"})
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "revise"})
+        restore_calls = []
+
+        def fail_restore(*args, **kwargs):
+            restore_calls.append((args, kwargs))
+            raise AssertionError("story_only must not call restore_snapshot")
+
+        self.dispatcher.agent_snapshots.restore_snapshot = fail_restore
+        repair_context = {
+            "critic_report_path": "artifacts/critic.report.json",
+            "decision": "revise",
+            "repair_instruction": "Rewrite only the prose.",
+            "repair_routing": {
+                "stage": "story_composition",
+                "target_agents": ["story"],
+                "rollback": "story_only",
+                "can_auto_repair": True,
+                "risk": "low",
+            },
+            "repair_fingerprint": "fingerprint-story",
+        }
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "repair",
+                "type": "rollback_request",
+                "payload": {"snapshot_id": "unused", "mode": "story_only", "repair_context": repair_context},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(restore_calls, [])
+        self.assertEqual(json.loads((self.run_dir / "gm.output.json").read_text(encoding="utf-8"))["agent"], "gm_loop")
+        self.assertTrue((self.run_dir / "actor.outputs.json").exists())
+        self.assertTrue((self.run_dir / "interaction.trace.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "gm.output.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "actor.outputs.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "interaction.trace.json").exists())
+        for relative in ["story.input.json", "story.output.json", "critic.report.json"]:
+            self.assertFalse((self.run_dir / relative).exists(), relative)
+            self.assertFalse((self.run_dir / "artifacts" / relative).exists(), relative)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["payload"]["repair_context"], repair_context)
+        self.assertEqual(pending[0]["payload"]["rollback"]["strategy"], "story_only_cleanup")
+
     def test_rollback_request_story_only_success_creates_compose_story(self):
         restore_calls = []
 
         def fake_restore(card_folder, snapshot_id, *, mode):
             restore_calls.append((Path(card_folder), snapshot_id, mode))
-            return {"ok": True, "snapshot_id": snapshot_id, "mode": mode, "restored": ["memory"], "removed": []}
+            raise AssertionError("story_only must not call restore_snapshot")
 
         self.dispatcher.agent_snapshots.restore_snapshot = fake_restore
         created = self.intents.create_intent(
@@ -833,7 +998,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([item["type"] for item in pending], ["compose_story"])
         self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
         self.assertEqual(pending[0]["payload"]["rollback"]["mode"], "story_only")
-        self.assertEqual(restore_calls, [(self.card, "snapshot_fixture", "story_only")])
+        self.assertEqual(pending[0]["payload"]["rollback"]["strategy"], "story_only_cleanup")
+        self.assertEqual(restore_calls, [])
 
     def test_rollback_request_round_progression_success_creates_run_gm_turn(self):
         restore_calls = []
