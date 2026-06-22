@@ -927,8 +927,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                     if isinstance(side_result, dict):
                         captured_loop["loop_result"].setdefault("side_thread_results", []).append(side_result)
                 if intent_type == "run_gm_turn":
+                    detail = dispatch_result.get("detail") if isinstance(dispatch_result, dict) else {}
+                    detail_loop = detail.get("loop_result") if isinstance(detail, dict) else {}
+                    stop_reason = (
+                        detail_loop.get("stop_reason")
+                        if isinstance(detail_loop, dict)
+                        else None
+                    )
+                    if not stop_reason and isinstance(detail, dict):
+                        stop_reason = detail.get("stop_reason")
                     captured_loop["loop_result"]["stop_reason"] = str(
-                        dispatch_result.get("detail", {}).get("stop_reason") or ""
+                        stop_reason or ""
                     )
                 if intent_type == "compose_story":
                     story_result = dispatch_result
