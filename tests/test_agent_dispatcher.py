@@ -370,6 +370,290 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(completed[0]["result"]["outputs"]["created_messages"], [projected["id"]])
         self.assertEqual(completed[0]["result"]["outputs"]["created_intents"], [pending[0]["id"]])
 
+    def test_request_projection_reuses_existing_projected_message_on_retry(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                    "packet": {
+                        "actor_id": "character:Ada",
+                        "visible_context": {"scene": "hall"},
+                    },
+                },
+            },
+        )["message"]
+        existing = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": ["character:Ada"],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "packet": {
+                        "actor_id": "character:Ada",
+                        "visible_context": {"scene": "hall"},
+                    },
+                    "gm_prompt": "Listen at the door.",
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["created_messages"], [])
+        self.assertEqual(result["detail"]["projected_message_id"], existing["id"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        projected_messages = [message for message in messages if message.get("type") == "projected_message"]
+        self.assertEqual([message["id"] for message in projected_messages], [existing["id"]])
+        inbox = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        self.assertEqual([message["id"] for message in inbox], [existing["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+        self.assertEqual(pending[0]["source_message_id"], existing["id"])
+        self.assertEqual(pending[0]["payload"]["projected_message_id"], existing["id"])
+
+    def test_request_projection_blocks_structured_when_accept_fails(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_accept = self.dispatcher.agent_intents.accept_intent
+
+        self.dispatcher.agent_intents.accept_intent = (
+            lambda _run_dir, _intent_id, outputs=None: {"ok": False, "reason": "fixture_accept_failed"}
+        )
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "accept_intent", original_accept)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "request_projection_accept_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "request_projection_accept_failed")
+        self.assertEqual(blocked[0]["result"]["outputs"]["transition_reason"], "fixture_accept_failed")
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada"), [])
+
+    def test_request_projection_blocks_structured_when_accept_raises(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_accept = self.dispatcher.agent_intents.accept_intent
+
+        def raise_accept(_run_dir, _intent_id, outputs=None):
+            raise RuntimeError("raw accept secret")
+
+        self.dispatcher.agent_intents.accept_intent = raise_accept
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "accept_intent", original_accept)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "request_projection_accept_failed")
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("raw accept secret", serialized)
+        self.assertNotIn("RuntimeError: raw accept secret", serialized)
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "request_projection_accept_failed")
+        self.assertEqual(blocked[0]["result"]["outputs"]["exception_type"], "RuntimeError")
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada"), [])
+
+    def test_request_projection_blocks_structured_when_complete_returns_failure(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_complete = self.dispatcher.agent_intents.complete_intent
+        self.dispatcher.agent_intents.complete_intent = (
+            lambda _run_dir, _intent_id, outputs=None: {"ok": False, "reason": "fixture_complete_failed"}
+        )
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "request_projection_complete_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "request_projection_complete_failed")
+        self.assertEqual(blocked[0]["result"]["outputs"]["transition_reason"], "fixture_complete_failed")
+        inbox = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        self.assertEqual([message["type"] for message in inbox], ["projected_message"])
+
+    def test_request_projection_blocks_structured_when_complete_fails_after_side_effects(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_complete = self.dispatcher.agent_intents.complete_intent
+
+        def complete_then_raise(run_dir, intent_id, outputs=None):
+            original_complete(run_dir, intent_id, outputs=outputs)
+            raise RuntimeError("raw complete secret")
+
+        self.dispatcher.agent_intents.complete_intent = complete_then_raise
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "request_projection_complete_failed")
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("raw complete secret", serialized)
+        self.assertNotIn("RuntimeError: raw complete secret", serialized)
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "request_projection_complete_failed")
+        inbox = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        self.assertEqual([message["type"] for message in inbox], ["projected_message"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+
     def test_request_projection_blocks_when_source_message_missing(self):
         created = self.intents.create_intent(
             self.run_dir,

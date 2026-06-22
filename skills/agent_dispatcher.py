@@ -372,7 +372,19 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
     actor_id = str(payload.get("actor_id") or "")
     source_message_id = str(payload.get("source_message_id") or intent.get("source_message_id") or "")
     source_call_id = str(payload.get("source_call_id") or "")
-    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "request_projection"})
+    accept_failure = _request_projection_transition_failure(
+        run_dir,
+        intent_id,
+        "request_projection_accept_failed",
+        _call_intent_transition(
+            agent_intents.accept_intent,
+            run_dir,
+            intent_id,
+            outputs={"executor": "request_projection"},
+        ),
+    )
+    if accept_failure is not None:
+        return accept_failure
 
     try:
         projection = agent_actor_runtime.project_actor_request(
@@ -409,7 +421,8 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
 
     follow_up_id = str(follow_up.get("id") or "")
     created_intents = [follow_up_id] if follow_up.get("created") else []
-    created_messages = [projected_message_id] if projected_message_id else []
+    projected_message_created = bool(projection.get("projected_message_created", True))
+    created_messages = [projected_message_id] if projected_message_id and projected_message_created else []
     outputs = {
         "executor": "request_projection",
         "intent_type": "request_projection",
@@ -420,7 +433,22 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         "created_messages": created_messages,
         "created_intents": created_intents,
     }
-    agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
+    complete_failure = _request_projection_transition_failure(
+        run_dir,
+        intent_id,
+        "request_projection_complete_failed",
+        _call_intent_transition(
+            agent_intents.complete_intent,
+            run_dir,
+            intent_id,
+            outputs=outputs,
+        ),
+        outputs=outputs,
+        created_intents=created_intents,
+        created_messages=created_messages,
+    )
+    if complete_failure is not None:
+        return complete_failure
     return _result(
         True,
         "completed",
@@ -849,6 +877,77 @@ def _block_executor_failure(
         created_intents=[],
         created_messages=[],
         artifacts=artifacts,
+        detail=blocked.get("result", {}),
+    )
+
+
+def _call_intent_transition(
+    transition: Callable[..., dict[str, Any]],
+    run_dir: Path,
+    intent_id: str,
+    *,
+    outputs: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        result = transition(run_dir, intent_id, outputs=outputs)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "intent_transition_exception",
+            "exception_type": type(exc).__name__,
+        }
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "reason": "invalid_intent_transition_result",
+            "result_type": type(result).__name__,
+        }
+    return result
+
+
+def _request_projection_transition_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    transition_result: dict[str, Any],
+    *,
+    outputs: dict[str, Any] | None = None,
+    created_intents: list[str] | None = None,
+    created_messages: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if transition_result.get("ok"):
+        return None
+
+    detail = {
+        "intent_id": intent_id,
+        "reason": reason,
+        "transition_reason": str(transition_result.get("reason") or "intent_transition_failed"),
+    }
+    exception_type = transition_result.get("exception_type")
+    if isinstance(exception_type, str) and exception_type:
+        detail["exception_type"] = exception_type
+    result_type = transition_result.get("result_type")
+    if isinstance(result_type, str) and result_type:
+        detail["result_type"] = result_type
+    if outputs is not None:
+        detail["attempted_outputs"] = outputs
+
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "request_projection", **detail},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="request_projection",
+        reason=reason,
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=[],
         detail=blocked.get("result", {}),
     )
 

@@ -139,13 +139,38 @@ def project_actor_request(
         )
 
     packet = _projection_packet(actor_id, payload, call)
-    projected_message = _append_projected_message(run_dir, actor_id, call, packet, resolved_call_id)
+    existing_projected_message = find_projected_message(
+        run_dir,
+        actor_id=actor_id,
+        source_call_id=resolved_call_id,
+        source_message_id=source_message_id,
+        call=call,
+    )
+    if existing_projected_message is not None:
+        return {
+            "actor_id": actor_id,
+            "source_message_id": source_message_id,
+            "source_call_id": resolved_call_id,
+            "projected_message_id": str(existing_projected_message["id"]),
+            "projected_message": existing_projected_message,
+            "projected_message_created": False,
+        }
+
+    projected_message = _append_projected_message(
+        run_dir,
+        actor_id,
+        call,
+        packet,
+        resolved_call_id,
+        source_message_id,
+    )
     return {
         "actor_id": actor_id,
         "source_message_id": source_message_id,
         "source_call_id": resolved_call_id,
         "projected_message_id": str(projected_message["id"]),
         "projected_message": projected_message,
+        "projected_message_created": True,
     }
 
 
@@ -229,6 +254,63 @@ def _find_source_message(run_dir: Path, source_message_id: str) -> dict | None:
     return None
 
 
+def find_projected_message(
+    run_dir: Path,
+    *,
+    actor_id: str,
+    source_call_id: str,
+    source_message_id: str = "",
+    call: dict | None = None,
+) -> dict | None:
+    """Return an already-delivered projection matching the request, if present."""
+
+    if not actor_id or not source_call_id:
+        return None
+    for message in reversed(agent_messages.read_messages(run_dir)):
+        if message.get("type") != "projected_message":
+            continue
+        if message.get("status") != "delivered":
+            continue
+        if message.get("source_call_id") != source_call_id:
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("actor_id") != actor_id:
+            continue
+        if not _projection_source_matches(payload, source_message_id, call):
+            continue
+        return message
+    return None
+
+
+def _projection_source_matches(payload: dict, source_message_id: str, call: dict | None) -> bool:
+    existing_source_message_id = payload.get("source_message_id")
+    if existing_source_message_id and source_message_id and existing_source_message_id != source_message_id:
+        return False
+
+    expected_call_id = ""
+    if isinstance(call, dict):
+        expected_call_id = str(call.get("call_id") or "")
+    for candidate in (payload.get("call"), _packet_call(payload)):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_call_id = str(candidate.get("call_id") or "")
+        if candidate_call_id and expected_call_id and candidate_call_id != expected_call_id:
+            return False
+    return True
+
+
+def _packet_call(payload: dict) -> dict | None:
+    packet = payload.get("packet")
+    if not isinstance(packet, dict):
+        return None
+    call = packet.get("call")
+    if isinstance(call, dict):
+        return call
+    return None
+
+
 def _resolve_source_call_id(source_message: dict, call: dict) -> str:
     return str(source_message.get("source_call_id") or call.get("call_id") or "")
 
@@ -250,6 +332,7 @@ def _append_projected_message(
     call: dict,
     packet: dict,
     source_call_id: str,
+    source_message_id: str,
 ) -> dict:
     result = agent_messages.append_message(
         run_dir,
@@ -261,6 +344,7 @@ def _append_projected_message(
             "source_call_id": source_call_id,
             "payload": {
                 "actor_id": actor_id,
+                "source_message_id": source_message_id,
                 "packet": packet,
                 "gm_prompt": str(call.get("prompt") or ""),
             },

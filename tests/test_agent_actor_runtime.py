@@ -129,6 +129,63 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual([message["type"] for message in inbox], ["projected_message"])
         self.assertEqual(inbox[0]["payload"]["packet"]["visible_context"], {"scene": "hall"})
 
+    def test_find_projected_message_matches_delivered_source_call_and_actor(self):
+        request = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        other = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": ["character:Bea"],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {"actor_id": "character:Bea", "source_message_id": request["id"]},
+            },
+        )["message"]
+        matched = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": ["character:Ada"],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "call": {"call_id": "call-character-Ada-1"},
+                },
+            },
+        )["message"]
+
+        result = self.runtime.find_projected_message(
+            self.run_dir,
+            actor_id="character:Ada",
+            source_call_id="call-character-Ada-1",
+            source_message_id=request["id"],
+            call={"call_id": "call-character-Ada-1"},
+        )
+
+        self.assertEqual(other["payload"]["actor_id"], "character:Bea")
+        self.assertEqual(result["id"], matched["id"])
+
     def test_project_actor_request_reports_missing_source(self):
         with self.assertRaisesRegex(
             self.runtime.AgentActorProjectionError,
