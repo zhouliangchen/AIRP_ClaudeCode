@@ -12,7 +12,7 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 按需导入 stage skills. Load only the stage skills required by the current phase:
 
 - Startup or resume: use this skill plus `rp-delivery` only if there is an opening to deliver.
-- New player input: use `rp-input-router`, `rp-input-analyst`, `rp-context-projector`, GM/player/character skills, `rp-story-agent`, `rp-critic-agent`, and `rp-delivery`.
+- New player input: use `rp-input-router`, `rp-input-analyst`, `rp-context-projector`, GM/player/character skills, `rp-story-agent`, `rp-critic-agent`, `rp-postprocess-agent`, and `rp-delivery`.
 - Pure user instruction, repair, or planning: load only router, input analyst, GM/story/critic, and delivery as needed.
 - Image or UI enhancement after text delivery: load `rp-assets-ui`.
 
@@ -35,8 +35,9 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 9. After `gm.output.json`, `actor.outputs.json`, and trace v2 exist, build or request `story.input.json` as the canonical story bundle.
 10. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
 11. Ask `rp-critic-agent` to write `critic.report.json`.
-12. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` only when the configured self-repair mode allows the route, and returns `action: blocked` when the mode, route, or retry limit requires manual intervention.
-13. If `action: retry` is returned, follow `critic.report.json.repair_routing`: `story_composition` and `delivery_gate` rerun story/critic only; `gm_loop`, `actor_agent`, and `subgm` require `full` mode and roll the current round back to the GM-loop checkpoint before regenerating. `system_code` requires both `selfRepairMode: "full"` and `allowSourceCodeSelfRepair: true`; when authorized, the runtime creates a bounded `system_request` intent/message for the main agent, and the dispatcher must not edit source files automatically. If `action: blocked` is returned, stop the automatic repair loop, surface the terminal reason, and wait for manual intervention or explicit authorization before changing prompts/code/process. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
+12. After critic `pass`, dispatch `run_postprocess`. Only after postprocess core validates should dispatcher create `deliver_round`.
+13. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` only when the configured self-repair mode allows the route, and returns `action: blocked` when the mode, route, or retry limit requires manual intervention.
+14. If `action: retry` is returned, follow `critic.report.json.repair_routing`: `story_composition` and `delivery_gate` rerun story/critic only; `gm_loop`, `actor_agent`, and `subgm` require `full` mode and roll the current round back to the GM-loop checkpoint before regenerating. `system_code` requires both `selfRepairMode: "full"` and `allowSourceCodeSelfRepair: true`; when authorized, the runtime creates a bounded `system_request` intent/message for the main agent, and the dispatcher must not edit source files automatically. If `action: blocked` is returned, stop the automatic repair loop, surface the terminal reason, and wait for manual intervention or explicit authorization before changing prompts/code/process. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
 
 Use state-machine progress updates for input analysis, GM loop, actor dispatch, subGM dispatch, Story, Critic, delivery, memory, and lifecycle cleanup. Do not invent new progress state IDs without adding them to `skills/round_state.py`. After delivery, ensure lifecycle cleanup has recorded paused side threads and actor context warnings when applicable.
 
@@ -58,6 +59,7 @@ Use the current `.agent_runs/<round>/` folder as a mailbox:
 - `story.input.json`: canonical bundle containing `loop_outputs`, `memory_deltas`, and `interaction_trace`.
 - `story.output.json`
 - `critic.report.json`
+- `postprocess.output.json`
 - `memory_summaries/*.summary.json`: scheduled actor self-summary outputs, usually every 6 rounds.
 - `repair_history.jsonl`: critic revise/block audit for this round.
 - `.agent_runs/improvement_queue.jsonl`: session-level backlog for systemic prompt/code/process improvements.

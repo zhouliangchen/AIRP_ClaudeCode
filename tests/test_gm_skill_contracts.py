@@ -151,3 +151,56 @@ class GmSkillContractsTest(unittest.TestCase):
         ):
             self.assertIn(reason, text)
         self.assertNotIn("`blocked`", text)
+
+    def test_postprocess_skill_owns_frontend_data_not_progress(self):
+        text = self.read(".claude/skills/rp-postprocess-agent.md")
+
+        self.assertIn("You generate frontend support data after the critic has approved the story.", text)
+        self.assertIn("Do not rewrite story prose.", text)
+        self.assertIn("Do not review prose quality.", text)
+        self.assertIn("Do not write progress.json.", text)
+        for input_name in (
+            "story.input.json",
+            "story.output.json",
+            "critic.report.json",
+            "interaction.trace.json",
+            "ui_manifest.json",
+            "generated asset metadata",
+            "pending postprocess repair queue",
+            "current state.js values",
+        ):
+            self.assertIn(input_name, text)
+        for field in (
+            "schema_version",
+            "core.summary",
+            "core.options",
+            "core.current_goal",
+            "core.state_patch",
+            "ui_extensions",
+            "ui_extension_status",
+            "repair_requests",
+            "metadata",
+        ):
+            self.assertIn(field, text)
+        self.assertIn("source=player_agent_critical_action", text)
+        self.assertIn("requires_confirmation=true", text)
+        self.assertIn("must not leak hidden facts", text)
+        self.assertIn("must not write `<content>`, `<summary>`, or `<options>` tags", text)
+
+    def test_story_and_critic_skills_do_not_own_postprocess_fields(self):
+        story = self.read(".claude/skills/rp-story-agent.md")
+        critic = self.read(".claude/skills/rp-critic-agent.md")
+        delivery = self.read(".claude/skills/rp-delivery.md")
+        orchestrator = self.read(".claude/skills/rp-orchestrator.md")
+
+        self.assertIn("Do not emit `<summary>`; postprocess owns summary.", story)
+        self.assertIn("Do not emit `<options>`; postprocess owns action options.", story)
+        self.assertNotIn("<summary>...</summary><options>...</options>", story)
+        self.assertIn("Frontend data is out of critic scope.", critic)
+        self.assertIn("Do not review, request, generate, or repair summary, options, current_goal, state patches, status panels, or UI extension data.", critic)
+        self.assertIn("Critic reviews the story body and source-backed character dialogue only.", critic)
+        self.assertIn("Postprocess is required before delivery.", delivery)
+        self.assertIn("valid `postprocess.output.json.core`", delivery)
+        self.assertIn("Invalid UI extension data is nonblocking only when a repair record is written", delivery)
+        self.assertIn("After critic `pass`, dispatch `run_postprocess`.", orchestrator)
+        self.assertIn("Only after postprocess core validates should dispatcher create `deliver_round`.", orchestrator)

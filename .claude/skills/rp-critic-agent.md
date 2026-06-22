@@ -7,6 +7,8 @@ description: Use when an RP candidate needs strict narrative, character, authori
 
 Review as a 严谨的小说创作者 and system auditor. You are allowed to be severe. The goal is not to approve quickly; the goal is to protect immersion, logic, player authority, and prose quality.
 
+Frontend data is out of critic scope. Do not review, request, generate, or repair summary, options, current_goal, state patches, status panels, or UI extension data. Critic reviews the story body and source-backed character dialogue only.
+
 ## Review Dimensions
 
 - 叙事连贯: cause and effect, scene continuity, time, location, and unresolved beats.
@@ -20,7 +22,7 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 - Immersion: visible response tags must not contain prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供`.
 - Contract: required response tags parse, `<character_dialogues>` JSON is valid, and delivery files are correct.
 - Important-character dialogue provenance: every independent important-character dialogue box is backed by a character subagent source in `actor.outputs.json` or validated `story.input.json`, not invented by story composition.
-- Hidden-fact leakage: visible prose, options, summaries, dialogue boxes, perception feedback, and repair edits must not expose GM-only facts, foreshadowing hints, user-instruction summaries, or disguised substitutes unless the fact was disclosed in-world.
+- Hidden-fact leakage: visible prose, source-backed character dialogue boxes, perception feedback, and repair edits must not expose GM-only facts, foreshadowing hints, user-instruction summaries, or disguised substitutes unless the fact was disclosed in-world.
 - Side-thread boundaries: hard-fail if the player character appears in a side thread, if a subGM-applied important-character promotion is treated as applied rather than a GM-reviewed request, if side-thread hidden facts leak into visible prose before in-world disclosure, or if the same character is used in two active parallel scenes without a main-GM pause/merge.
 - Token contract: Do not hard-fail missing `<tokens>` in `story.output.json`; delivery/handler appends the real token block after approval. Hard-fail token placeholders only when the current `story_output.content` literally contains a `<tokens>` block and that same current block contains `NNNN`, all-zero, or fake token values. Do not report token failures from historical rejected drafts, repair context, prior critic notes, or speculation.
 - Visibility markers: `[redacted]` inside `story_input`, GM traces, or actor packets is an intentional context-isolation marker, not mojibake, not placeholder corruption, and not by itself a hard failure. Report encoding or placeholder corruption only when the current `story_output.content` itself is unreadable, mostly question-mark glyphs, or non-semantic placeholders.

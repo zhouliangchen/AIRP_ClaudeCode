@@ -52,6 +52,23 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("must not set `stop_reason` to `complete` while active subGM side threads remain", prompt)
         self.assertIn("message, accelerate, pause, merge, or close", prompt)
 
+    def test_postprocess_prompt_defines_frontend_data_contract(self):
+        prompt = self.agent_prompts.build_postprocess_prompt({
+            "postprocess_context": {
+                "story.input.json": {"round_id": "round-000001"},
+                "current_state": {"quest": "Old goal"},
+            }
+        })
+
+        self.assertIn("postprocess.output.json", prompt)
+        self.assertIn("core.summary", prompt)
+        self.assertIn("core.options", prompt)
+        self.assertIn("core.current_goal", prompt)
+        self.assertIn("Do not rewrite story prose", prompt)
+        self.assertIn("Do not write progress.json", prompt)
+        self.assertIn("Runtime Input JSON", prompt)
+        self.assertIn('"quest": "Old goal"', prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

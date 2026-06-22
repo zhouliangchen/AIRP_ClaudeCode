@@ -39,7 +39,8 @@ Read from current `.agent_runs/<round>/`:
 - Do not solve a word-count repair by summarizing, skipping beats, or ending early. Expand with concrete classroom/environment continuity, sensory detail, NPC micro-reactions, physical actions, and protagonist perception while preserving the same decision boundary.
 - Do not expose prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供` in any visible response tag.
 - Stop at the first real player choice unless the requested chapter word target requires safe continuation.
-- Keep options concrete and immediately playable.
+- Do not emit `<summary>`; postprocess owns summary.
+- Do not emit `<options>`; postprocess owns action options.
 
 ## Output
 
@@ -47,7 +48,7 @@ Write `story.output.json`:
 
 ```json
 {
-  "content": "<content>...</content><character_dialogues>[...]</character_dialogues><summary>...</summary><options>...</options>",
+  "content": "<content>...</content><character_dialogues>[...]</character_dialogues>",
   "character_dialogues": [],
   "metadata": {
     "round_id": "round-000001"
@@ -69,8 +70,6 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
   - Must be a JSON array of actionable handler edits, for example:
     `[{"turn_index":0,"summary":"上一轮课堂段落改定为梦境预示","first_paragraph":"你在梦里站在熟悉教室中，所有人都一如往常。","reason":"玩家梦醒回拨"}]`
   - Do not use unsupported JSON Patch-style `{ "op": "...", "path": "...", "value": "..." }` objects here.
-- `<summary>`
-- `<options>`
 - Do not emit `<tokens>` in `story.output.json`; delivery/handler appends the real token block after approval.
 
 Do not run `round_deliver.py`; that belongs to delivery.

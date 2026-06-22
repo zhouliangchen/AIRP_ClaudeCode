@@ -21,6 +21,7 @@ SKILL_PATHS = {
     "character": ".claude/skills/rp-character-agent.md",
     "story": ".claude/skills/rp-story-agent.md",
     "critic": ".claude/skills/rp-critic-agent.md",
+    "postprocess": ".claude/skills/rp-postprocess-agent.md",
 }
 
 AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character", "subgm"}
@@ -478,6 +479,80 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
         "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
     )
+
+
+def build_postprocess_prompt(run_summary: Dict[str, Any]) -> str:
+    """Return the generated postprocess prompt text for frontend support data."""
+    run_summary = run_summary if isinstance(run_summary, dict) else {}
+    runtime_input = run_summary.get("postprocess_context", {})
+    if not isinstance(runtime_input, dict):
+        runtime_input = {}
+    contract = _json_block({
+        "schema_version": 1,
+        "core": {
+            "summary": "player-visible recap of the delivered turn",
+            "options": [
+                {
+                    "label": "Confirm action: visible player action",
+                    "source": "player_agent_critical_action",
+                    "requires_confirmation": True,
+                }
+            ],
+            "current_goal": "current player-visible objective",
+            "state_patch": {},
+        },
+        "ui_extensions": {
+            "status_panels": {},
+            "custom_cards": {},
+            "asset_bindings": {},
+        },
+        "ui_extension_status": {
+            "status": "ok",
+            "issues": [],
+        },
+        "repair_requests": [],
+        "metadata": {},
+    })
+    return f"""
+# Postprocess Agent Prompt
+
+Skill reference: `{SKILL_PATHS["postprocess"]}`
+
+Write `postprocess.output.json`.
+
+Required frontend data contract:
+- `core.summary`
+- `core.options`
+- `core.current_goal`
+- `core.state_patch`
+- `ui_extensions`
+- `ui_extension_status`
+- `repair_requests`
+- `metadata`
+
+Do not rewrite story prose.
+Do not review prose quality.
+Do not write progress.json.
+Do not write `<content>`, `<summary>`, or `<options>` tags.
+
+## Required Output Contract
+
+```json
+{contract}
+```
+
+## Runtime Input JSON
+
+```json
+{_json_block(runtime_input)}
+```
+
+## Skill Body
+
+```markdown
+{_skill_excerpt("postprocess")}
+```
+""".strip()
 
 
 def write_round_prompts(
