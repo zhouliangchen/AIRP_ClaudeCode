@@ -42,6 +42,7 @@ class AgentExecutionError(RuntimeError):
 
 MAX_DELIVERY_REPAIR_ATTEMPTS = 3
 MAX_STORY_PREFLIGHT_ATTEMPTS = 3
+MAX_DISPATCHER_STEPS = 64
 _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
     "",
     "prepared",
@@ -606,6 +607,37 @@ def _delivery_complete(delivery: Dict[str, Any]) -> bool:
     if delivery_result.get("ok") is False:
         complete = False
     return complete
+
+
+import agent_dispatcher
+
+
+def _run_dispatcher_loop(
+    run_dir: Path,
+    card: Path,
+    root: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+    run_command: Callable[..., Any],
+) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
+    results: list[Dict[str, Any]] = []
+    last: Dict[str, Any] = {}
+    for _step in range(MAX_DISPATCHER_STEPS):
+        last = agent_dispatcher.dispatch_next(
+            run_dir,
+            card,
+            root,
+            run_claude=run_claude,
+            run_command=run_command,
+        )
+        results.append(last)
+        if last.get("status") in {"delivered", "blocked", "stalled"}:
+            return last, results
+
+    blocked = dict(last)
+    blocked["ok"] = False
+    blocked["status"] = "blocked"
+    blocked["reason"] = "dispatcher_step_limit"
+    return blocked, results
 
 
 def _pending_repair_intents(run_dir: Path) -> list[dict[str, Any]]:
@@ -1254,7 +1286,6 @@ def run_round(
     if run_dir is None:
         raise AgentExecutionError(f"{card / '.agent_runs' / 'current'} is missing or invalid.")
 
-    repair_policy = self_repair.load_policy(root / "skills" / "styles" / "settings.json")
     manifest = _load_manifest(run_dir)
     settings = agent_run.read_json(root / "skills" / "styles" / "settings.json", {}) or {}
     if not isinstance(settings, dict):
@@ -1272,155 +1303,24 @@ def run_round(
         cwd,
     )
     manifest = _reset_delivery_retry_budget(run_dir, manifest)
-    _write_progress_safe("input_analysis.running", "正在分析玩家输入", percent=38)
-    _ensure_input_analysis(run_dir, manifest, card, root, active_run_claude)
-    _write_progress_safe("input_analysis.applied", "输入分析已应用", percent=45)
-    manifest = _load_manifest(run_dir)
-    expected = manifest.get("expected_outputs") or {}
-    if not isinstance(expected, dict):
-        raise AgentExecutionError("manifest.expected_outputs is required.")
+    last, results = _run_dispatcher_loop(run_dir, card, root, active_run_claude, run_command)
+    status = str(last.get("status") or "")
+    if status == "delivered":
+        return {
+            "ok": True,
+            "action": "generated",
+            "run_dir": str(run_dir),
+            "dispatcher": last,
+            "dispatcher_results": results,
+        }
 
-    story_path = _artifact_output_path(run_dir, str(expected.get("story") or "story.output.json"), "story.output.json")
-    critic_path = _artifact_output_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
-    story_input = _load_existing_story_input(run_dir)
-    if story_input is None:
-        _write_progress_safe("gm_loop.starting", "正在启动 GM 回合", percent=46, detail={"run_id": run_dir.name})
-        loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude)
-        _promote_loop_outputs_to_artifacts(run_dir)
-        story_input = agent_outputs.build_story_input(run_dir)
-    else:
-        loop_result = _loop_result_from_story_input(story_input)
-    story_prompt = _read_prompt(run_dir, manifest, "story")
-    critic_prompt = _read_prompt(run_dir, manifest, "critic")
-    requirements = _delivery_requirements(root)
-    requirements["player_character_names"] = _player_character_names_from_story_input(story_input)
-
-    def dispatch_story_and_critic(repair_context: Dict[str, Any] | None = None) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        story_extra = {"story_input": story_input, "delivery_requirements": requirements}
-        if repair_context:
-            story_extra["repair_context"] = repair_context
-        next_story = {}
-        active_repair_context = repair_context
-        for preflight_attempt in range(repair_policy.story_preflight_attempts + 1):
-            _write_progress_safe("story.running", "正在写作正文", percent=68, detail={"attempt": preflight_attempt + 1})
-            next_story = _dispatch_and_write(
-                "story",
-                story_path,
-                story_prompt,
-                root,
-                active_run_claude,
-                story_extra,
-            )
-            next_story = _normalize_story_output(next_story, story_input)
-            agent_run.write_json(story_path, next_story)
-            issues = _story_preflight_issues(next_story, requirements, story_input)
-            if not issues or preflight_attempt == repair_policy.story_preflight_attempts:
-                break
-            active_repair_context = _story_preflight_repair_context(
-                next_story,
-                issues,
-                requirements,
-                preflight_attempt + 1,
-                active_repair_context,
-                repair_policy.story_preflight_attempts,
-            )
-            _write_progress_safe(
-                "story.preflight_repair",
-                "正在修正文稿预检问题",
-                percent=70,
-                detail={
-                    "attempt": preflight_attempt + 1,
-                    "max_attempts": repair_policy.story_preflight_attempts,
-                    "issues": issues,
-                },
-            )
-            story_extra = {
-                "story_input": story_input,
-                "delivery_requirements": requirements,
-                "repair_context": active_repair_context,
-            }
-        _write_progress_safe("critic.running", "正在质检正文", percent=73)
-        next_critic = _dispatch_and_write(
-            "critic",
-            critic_path,
-            critic_prompt,
-            root,
-            active_run_claude,
-            {"story_input": story_input, "story_output": next_story, "delivery_requirements": requirements},
-        )
-        next_critic = _normalize_critic_report_for_story(next_critic, next_story)
-        agent_run.write_json(critic_path, next_critic)
-        return next_story, next_critic
-
-    story, critic = dispatch_story_and_critic()
-
-    delivery = _run_delivery(card, root, run_command)
-    delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
-    repair_attempt = 0
-    repair_intents_blocked = False
-    while (
-        not _delivery_complete(delivery)
-        and delivery_result.get("action") == "retry"
-        and repair_attempt < repair_policy.delivery_repair_attempts
-    ):
-        repair_attempt += 1
-        _write_progress_safe(
-            "delivery.retrying",
-            "交付前等待修复",
-            percent=65,
-            detail={
-                "attempt": repair_attempt,
-                "max_attempts": repair_policy.delivery_repair_attempts,
-                "reason": delivery_result.get("reason", ""),
-            },
-        )
-        repair_context = _delivery_retry_context(delivery_result, story, critic, repair_attempt)
-        repair_context["max_repair_attempts"] = repair_policy.delivery_repair_attempts
-        repair_routing = self_repair.routing_from_delivery_result(delivery_result)
-        repair_decision = _delivery_retry_decision(delivery_result)
-        if not self_repair.policy_allows_route(repair_policy, repair_routing, repair_decision):
-            _block_pending_repair_intents(
-                run_dir,
-                "repair_not_completed",
-                {"delivery": _repair_intent_delivery_output(delivery)},
-            )
-            repair_intents_blocked = True
-            break
-        if repair_routing.get("rollback") == "round_progression":
-            _reset_round_progression_outputs(run_dir)
-            manifest = _load_manifest(run_dir)
-            loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude, repair_context)
-            _promote_loop_outputs_to_artifacts(run_dir)
-            story_input = agent_outputs.build_story_input(run_dir)
-            requirements = _delivery_requirements(root)
-            requirements["player_character_names"] = _player_character_names_from_story_input(story_input)
-        story, critic = dispatch_story_and_critic(repair_context)
-        delivery = _run_delivery(card, root, run_command)
-        delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
-    delivery_complete = _delivery_complete(delivery)
-    if delivery_complete and repair_attempt > 0:
-        _complete_pending_repair_intents(
-            run_dir,
-            {"delivery": _repair_intent_delivery_output(delivery)},
-        )
-    elif delivery_result.get("action") in {"retry", "blocked"} and not repair_intents_blocked:
-        _block_pending_repair_intents(
-            run_dir,
-            "repair_not_completed",
-            {"delivery": _repair_intent_delivery_output(delivery)},
-        )
     return {
-        "ok": delivery_complete,
-        "action": "generated",
+        "ok": False,
+        "action": "blocked",
         "run_dir": str(run_dir),
-        "artifacts": {
-            "gm": int(loop_result.get("gm_steps", 0) or 0),
-            "actors": sorted(set(loop_result.get("called_actors", []) or [])),
-            "called_actors": list(loop_result.get("called_actors", []) or []),
-            "story": bool(story),
-            "critic": bool(critic),
-        },
-        "delivery": delivery,
+        "reason": last.get("reason") or status or "dispatcher_blocked",
+        "dispatcher": last,
+        "dispatcher_results": results,
     }
 
 

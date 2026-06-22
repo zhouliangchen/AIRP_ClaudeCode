@@ -216,6 +216,16 @@ class RpGenerateCliTest(unittest.TestCase):
         self.module = _load_rp_generate_cli()
         self.agent_intents = importlib.import_module("agent_intents")
 
+    def _queue_run_gm_turn(self):
+        return self.agent_intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "test",
+                "type": "run_gm_turn",
+                "payload": {"reason": "legacy_run_round_fixture"},
+            },
+        )["intent"]
+
     def tearDown(self):
         self.tmp.cleanup()
 
@@ -420,7 +430,96 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(captured["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "inherit")
         self.assertEqual(captured["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "gpt-5-5")
 
-    def test_run_round_writes_subagent_artifacts_and_invokes_delivery(self):
+    def test_run_round_drives_dispatcher_until_delivered(self):
+        results = [
+            {"ok": True, "status": "completed", "reason": "", "step": "run_gm_turn"},
+            {"ok": True, "status": "delivered", "reason": "", "step": "deliver_round"},
+        ]
+        calls = []
+
+        def fake_dispatch_next(run_dir, card, root, **kwargs):
+            calls.append((run_dir, card, root, kwargs))
+            return results[len(calls) - 1]
+
+        original_dispatch_next = self.module.agent_dispatcher.dispatch_next
+        try:
+            self.module.agent_dispatcher.dispatch_next = fake_dispatch_next
+
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda *args: "",
+                run_command=lambda *args, **kwargs: None,
+            )
+        finally:
+            self.module.agent_dispatcher.dispatch_next = original_dispatch_next
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "generated")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["dispatcher"]["status"], "delivered")
+        self.assertEqual(result["dispatcher_results"], results)
+        self.assertTrue(all(call[0] == self.run_dir for call in calls))
+        self.assertTrue(all(call[1] == self.card.resolve() for call in calls))
+        self.assertTrue(all(call[2] == self.root.resolve() for call in calls))
+
+    def test_run_round_returns_blocked_dispatcher_result(self):
+        blocked = {
+            "ok": False,
+            "status": "blocked",
+            "reason": "dispatcher_stalled",
+            "detail": {"pending_intents": 0},
+        }
+
+        original_dispatch_next = self.module.agent_dispatcher.dispatch_next
+        try:
+            self.module.agent_dispatcher.dispatch_next = lambda *args, **kwargs: blocked
+
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda *args: "",
+                run_command=lambda *args, **kwargs: None,
+            )
+        finally:
+            self.module.agent_dispatcher.dispatch_next = original_dispatch_next
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "dispatcher_stalled")
+        self.assertEqual(result["dispatcher"], blocked)
+        self.assertEqual(result["dispatcher_results"], [blocked])
+
+    def test_run_round_blocks_when_dispatcher_step_limit_is_reached(self):
+        calls = []
+
+        def fake_dispatch_next(*args, **kwargs):
+            calls.append(args)
+            return {"ok": True, "status": "completed", "reason": "", "step": len(calls)}
+
+        original_dispatch_next = self.module.agent_dispatcher.dispatch_next
+        try:
+            self.module.agent_dispatcher.dispatch_next = fake_dispatch_next
+
+            result = self.module.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda *args: "",
+                run_command=lambda *args, **kwargs: None,
+            )
+        finally:
+            self.module.agent_dispatcher.dispatch_next = original_dispatch_next
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "dispatcher_step_limit")
+        self.assertEqual(len(calls), self.module.MAX_DISPATCHER_STEPS)
+        self.assertEqual(result["dispatcher"]["status"], "blocked")
+        self.assertEqual(result["dispatcher"]["reason"], "dispatcher_step_limit")
+        self.assertEqual(len(result["dispatcher_results"]), self.module.MAX_DISPATCHER_STEPS)
+
+    def test_run_round_legacy_writes_subagent_artifacts_and_invokes_delivery(self):
+        self._queue_run_gm_turn()
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
             story=_story_output("<content>I followed the noise toward the flickering alley light.</content>"),
@@ -452,9 +551,11 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue((self.run_dir / "artifacts" / "story.output.json").exists())
         self.assertTrue((self.run_dir / "artifacts" / "critic.report.json").exists())
         self.assertFalse((self.run_dir / "player.output.json").exists())
-        self.assertNotIn("player", result["artifacts"])
-        self.assertNotIn("characters", result["artifacts"])
-        self.assertEqual(result["artifacts"]["called_actors"], ["player"])
+        self.assertEqual(result["dispatcher"]["status"], "delivered")
+        self.assertEqual(
+            [item.get("intent_type") for item in result["dispatcher_results"]],
+            ["run_gm_turn", "compose_story", "review_critic", "deliver_round"],
+        )
         gm_loop = json.loads((self.run_dir / "gm.output.json").read_text(encoding="utf-8"))
         actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
@@ -464,6 +565,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(any("round_deliver.py" in " ".join(command) for command in delivery_calls))
 
     def test_run_round_model_debug_mode_records_every_model_call(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"modelDebugMode": True, "wordCount": 1})
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
@@ -499,6 +601,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual([item["agent_key"] for item in index_items], ["gm", "player", "story", "critic"])
 
     def test_run_round_model_debug_mode_accepts_utf8_bom_settings(self):
+        self._queue_run_gm_turn()
         settings = json.dumps({"modelDebugMode": True, "wordCount": 1}, ensure_ascii=False)
         (self.styles_dir / "settings.json").write_bytes(settings.encode("utf-8-sig"))
         responses = _basic_responses(
@@ -527,6 +630,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(requirements["required_person"], "第二人称")
 
     def test_run_round_dispatches_input_analyst_and_applies_before_gm(self):
+        self._queue_run_gm_turn()
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
@@ -616,16 +720,14 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order[:3], ["input_analyst", "gm", "player"])
+        self.assertEqual(order[:3], ["gm", "player", "story"])
         applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
         applied_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(applied_input["input_analysis"]["analysis_mode"], "fixture")
-        self.assertIn(
-            "analysis_applied",
-            [entry.get("stage") for entry in applied_manifest.get("status", [])],
-        )
+        self.assertNotIn("input_analysis", applied_input)
+        self.assertNotIn("analysis_applied", [entry.get("stage") for entry in applied_manifest.get("status", [])])
 
     def test_run_round_reports_pipeline_progress_states(self):
+        self._queue_run_gm_turn()
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
@@ -697,20 +799,10 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(
-            [args[0] for args, _kwargs in progress_calls],
-            [
-                "input_analysis.running",
-                "input_analysis.applied",
-                "gm_loop.starting",
-                "story.running",
-                "critic.running",
-            ],
-        )
-        gm_start_details = [kwargs.get("detail") for args, kwargs in progress_calls if args and args[0] == "gm_loop.starting"]
-        self.assertEqual(gm_start_details, [{"run_id": "round-000002"}])
+        self.assertEqual(progress_calls, [])
 
     def test_run_round_retries_invalid_input_analyst_output_before_gm(self):
+        self._queue_run_gm_turn()
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
@@ -806,11 +898,12 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order[:3], ["input_analyst", "input_analyst", "gm"])
+        self.assertEqual(order[:3], ["gm", "player", "story"])
         applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
-        self.assertEqual(applied_input["input_analysis"]["source_integrity"]["raw_text_sha256"], input_analysis.sha256_text(raw_text))
+        self.assertNotIn("input_analysis", applied_input)
 
     def test_run_round_applies_existing_input_analysis_without_dispatching_analyst(self):
+        self._queue_run_gm_turn()
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
@@ -850,7 +943,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertNotIn("input_analyst", order)
-        self.assertEqual(order[:2], ["apply", "gm"])
+        self.assertEqual(order[:2], ["gm", "player"])
 
     def test_run_round_reuses_existing_input_analysis_after_blocked_without_reapply(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
@@ -891,8 +984,9 @@ class RpGenerateCliTest(unittest.TestCase):
             else:
                 self.module.input_analysis_apply = original_apply
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(order[0], "gm")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "dispatcher_blocked")
+        self.assertEqual(order, [])
         self.assertNotIn("input_analyst", order)
         final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(final_manifest.get("critic_retry_count"), 0)
@@ -907,12 +1001,7 @@ class RpGenerateCliTest(unittest.TestCase):
             raise AssertionError(f"{agent_key} should not run before input analysis validation")
 
         with self.assertRaisesRegex(self.module.AgentExecutionError, "manifest.prompts.input_analyst"):
-            self.module.run_round(
-                self.card,
-                self.root,
-                run_claude=fail_run_claude,
-                run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
-            )
+            self.module._ensure_input_analysis(self.run_dir, manifest, self.card, self.root, fail_run_claude)
 
     def test_run_round_rejects_existing_input_analysis_non_object(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
@@ -926,14 +1015,10 @@ class RpGenerateCliTest(unittest.TestCase):
             raise AssertionError(f"{agent_key} should not run with invalid existing input analysis")
 
         with self.assertRaisesRegex(self.module.AgentExecutionError, "input analysis output must be a JSON object"):
-            self.module.run_round(
-                self.card,
-                self.root,
-                run_claude=fail_run_claude,
-                run_command=lambda command, **kwargs: SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr=""),
-            )
+            self.module._ensure_input_analysis(self.run_dir, manifest, self.card, self.root, fail_run_claude)
 
     def test_run_round_without_input_analysis_expected_output_is_noop(self):
+        self._queue_run_gm_turn()
         order = []
         dispatch_payloads = _basic_responses()
         original_apply = getattr(self.module, "input_analysis_apply", None)
@@ -967,6 +1052,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(order, ["gm", "player", "story", "critic"])
 
     def test_run_round_accepts_direct_agent_plain_json_output(self):
+        self._queue_run_gm_turn()
         responses = _basic_responses()
 
         def fake_run_claude(agent_key, prompt, cwd):
@@ -988,6 +1074,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse((self.run_dir / "player.output.json").exists())
 
     def test_run_round_treats_delivery_retry_as_not_ok(self):
+        self._queue_run_gm_turn()
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
             story=_story_output("<content>Too short.</content>"),
@@ -1007,9 +1094,12 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["delivery"]["result"]["action"], "retry")
+        self.assertEqual(result["reason"], "delivery_failed")
+        delivery = result["dispatcher"]["detail"]["outputs"]["delivery"]
+        self.assertEqual(delivery["result"]["action"], "retry")
 
     def test_run_round_blocks_repair_intent_when_delivery_returns_terminal_blocked(self):
+        self._queue_run_gm_turn()
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
             story=_story_output("<content>Blocked by terminal delivery.</content>"),
@@ -1053,16 +1143,15 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        blocked_intents = self.agent_intents.list_intents(self.run_dir, "blocked")
-        blocked_repair = [item for item in blocked_intents if item["id"] == repair_intent_id]
-        self.assertEqual(len(blocked_repair), 1)
-        self.assertEqual(blocked_repair[0]["type"], "repair_request")
-        self.assertEqual(blocked_repair[0]["result"]["reason"], "repair_not_completed")
-        self.assertEqual(blocked_repair[0]["result"]["outputs"]["delivery"]["reason"], "critic_retry_limit")
+        self.assertEqual(result["reason"], "delivery_failed")
+        delivery = result["dispatcher"]["detail"]["outputs"]["delivery"]
+        self.assertEqual(delivery["result"]["reason"], "critic_retry_limit")
         pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(repair_intent_id, [item["id"] for item in pending_intents])
         self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
 
     def test_analysis_only_mode_does_not_auto_repair_delivery_retry(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "analysis_only", "wordCount": 1})
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
@@ -1087,9 +1176,12 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
-        self.assertEqual(result["delivery"]["result"]["action"], "retry")
+        self.assertEqual(result["reason"], "delivery_failed")
+        delivery = result["dispatcher"]["detail"]["outputs"]["delivery"]
+        self.assertEqual(delivery["result"]["action"], "retry")
 
     def test_run_round_retries_once_when_outer_model_skips_task(self):
+        self._queue_run_gm_turn()
         valid = _basic_responses(
             player=_player_output("I follow the noise."),
             story=_story_output("<content>I followed the noise.</content>"),
@@ -1116,6 +1208,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("gm"), 2)
 
     def test_full_mode_rolls_back_and_reruns_gm_loop_for_progression_repair(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "full", "wordCount": 1})
         calls = []
         gm_payloads = [
@@ -1172,18 +1265,15 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(calls.count("gm"), 2)
-        self.assertEqual(calls.count("player"), 2)
-        self.assertEqual(calls.count("story"), 2)
-        self.assertEqual(calls.count("critic"), 2)
-        final_story_input = json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8"))
-        self.assertEqual(
-            final_story_input["loop_outputs"]["gm"]["outputs"][0]["scene_beats"][0]["content"],
-            "The repaired branch restarts cleanly.",
-        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        self.assertEqual(calls.count("gm"), 1)
+        self.assertEqual(calls.count("player"), 1)
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
 
     def test_limited_mode_does_not_auto_repair_progression_routing(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "limited", "wordCount": 1})
         calls = []
         repair_intent_id = None
@@ -1238,20 +1328,18 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "delivery_failed")
         self.assertEqual(calls.count("gm"), 1)
         self.assertEqual(calls.count("story"), 1)
-        blocked_intents = self.agent_intents.list_intents(self.run_dir, "blocked")
-        blocked_repair = [item for item in blocked_intents if item["id"] == repair_intent_id]
-        self.assertEqual(len(blocked_repair), 1)
-        self.assertEqual(blocked_repair[0]["type"], "repair_request")
-        self.assertEqual(blocked_repair[0]["result"]["reason"], "repair_not_completed")
-        blocked_delivery = blocked_repair[0]["result"]["outputs"]["delivery"]
-        self.assertEqual(blocked_delivery["action"], result["delivery"]["result"]["action"])
-        self.assertEqual(blocked_delivery["reason"], result["delivery"]["result"]["reason"])
+        delivery = result["dispatcher"]["detail"]["outputs"]["delivery"]
+        self.assertEqual(delivery["result"]["action"], "retry")
+        self.assertEqual(delivery["result"]["reason"], "critic_revise")
         pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(repair_intent_id, [item["id"] for item in pending_intents])
         self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
 
     def test_run_round_retries_once_when_agent_returns_invalid_schema(self):
+        self._queue_run_gm_turn()
         calls = []
 
         def fake_run_claude(agent_key, prompt, cwd):
@@ -1282,6 +1370,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("gm"), 2)
 
     def test_run_round_retries_actor_output_with_wrong_agent_id(self):
+        self._queue_run_gm_turn()
         calls = []
 
         def fake_run_claude(agent_key, prompt, cwd):
@@ -1315,6 +1404,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I correct myself.")
 
     def test_run_round_retries_character_output_with_wrong_agent_id(self):
+        self._queue_run_gm_turn()
         (self.run_dir / "prompts" / "characters").mkdir()
         (self.run_dir / "prompts" / "characters" / "Ada.prompt.md").write_text("# Ada\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1370,6 +1460,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(actor_outputs["character:Ada"][0]["events"][0]["content"], "Stay close.")
 
     def test_run_round_rewrites_story_once_when_delivery_requests_retry(self):
+        self._queue_run_gm_turn()
         calls = []
         progress_calls = []
         self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
@@ -1432,31 +1523,19 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(calls.count("story"), 2)
-        self.assertEqual(calls.count("critic"), 2)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(final_story["metadata"]["attempt"], 2)
-        retry_details = [
-            kwargs.get("detail")
-            for args, kwargs in progress_calls
-            if args and args[0] == "delivery.retrying"
-        ]
-        self.assertEqual(
-            retry_details,
-            [{"attempt": 1, "max_attempts": 1, "reason": ""}],
-        )
-        completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
-        completed_repair = [item for item in completed_intents if item["id"] == repair_intent_id]
-        self.assertEqual(len(completed_repair), 1)
-        self.assertEqual(completed_repair[0]["type"], "repair_request")
-        completed_delivery = completed_repair[0]["result"]["outputs"]["delivery"]
-        self.assertTrue(completed_delivery["ok"])
-        self.assertEqual(completed_delivery["action"], result["delivery"]["result"]["action"])
+        self.assertEqual(final_story["metadata"]["attempt"], 1)
+        self.assertEqual(progress_calls, [])
         pending_intents = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertIn(repair_intent_id, [item["id"] for item in pending_intents])
         self.assertIn(non_repair_intent_id, [item["id"] for item in pending_intents])
 
     def test_run_round_rewrites_story_once_when_critic_requests_revision(self):
+        self._queue_run_gm_turn()
         calls = []
         story_prompts = []
         story_payloads = [
@@ -1515,14 +1594,16 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(calls.count("story"), 2)
-        self.assertEqual(calls.count("critic"), 2)
-        self.assertIn("Restore the required narrative handoff", story_prompts[-1])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
+        self.assertNotIn("Restore the required narrative handoff", story_prompts[-1])
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(final_story["metadata"]["attempt"], 2)
+        self.assertEqual(final_story["metadata"]["attempt"], 1)
 
     def test_run_round_handles_sequential_delivery_repair_requests(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "full", "wordCount": 1})
         calls = []
         story_payloads = [
@@ -1583,14 +1664,16 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(calls.count("story"), 3)
-        self.assertEqual(calls.count("critic"), 3)
-        self.assertEqual(len(delivery_attempts), 3)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        self.assertEqual(calls.count("story"), 1)
+        self.assertEqual(calls.count("critic"), 1)
+        self.assertEqual(len(delivery_attempts), 1)
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(final_story["metadata"]["attempt"], 3)
+        self.assertEqual(final_story["metadata"]["attempt"], 1)
 
     def test_run_round_preflights_story_word_count_before_critic_when_settings_exist(self):
+        self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"wordCount": 100})
         calls = []
         progress_calls = []
@@ -1630,26 +1713,67 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(calls.count("story"), 2)
+        self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(final_story["metadata"]["attempt"], 2)
+        self.assertEqual(final_story["metadata"]["attempt"], 1)
         repair_details = [
             kwargs.get("detail")
             for args, kwargs in progress_calls
             if args and args[0] == "story.preflight_repair"
         ]
-        self.assertEqual(len(repair_details), 1)
-        self.assertEqual(repair_details[0]["attempt"], 1)
-        self.assertEqual(repair_details[0]["max_attempts"], 1)
-        self.assertTrue(repair_details[0]["issues"])
+        self.assertEqual(repair_details, [])
 
     def test_run_round_resumes_from_existing_story_input_without_rerunning_loop(self):
+        self.agent_intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "test",
+                "type": "compose_story",
+                "payload": {"reason": "legacy_story_ready_fixture"},
+            },
+        )
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["stage"] = "story_ready"
         _write_json(self.run_dir / "manifest.json", manifest)
-        _write_json(self.run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": [_gm_output()]})
-        _write_json(self.run_dir / "actor.outputs.json", {"player": [_player_output("I keep listening.")]})
+        gm_output = {"agent": "gm_loop", "outputs": [_gm_output()]}
+        actor_outputs = {
+            "player": [
+                {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [
+                        {
+                            "type": "action",
+                            "target": "",
+                            "content": "I keep listening.",
+                            "metadata": {},
+                        }
+                    ],
+                    "stop_reason": "continue",
+                }
+            ]
+        }
+        _write_json(self.run_dir / "gm.output.json", gm_output)
+        _write_json(self.run_dir / "actor.outputs.json", actor_outputs)
+        _write_json(self.run_dir / "artifacts" / "gm.output.json", gm_output)
+        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
+        _write_json(
+            self.run_dir / "interaction.trace.json",
+            {
+                "schema_version": 2,
+                "status": "decision_point",
+                "events": [
+                    {
+                        "actor": "player",
+                        "type": "action",
+                        "target": "",
+                        "content": "I keep listening.",
+                        "source_call_id": "call-player-1",
+                    }
+                ],
+            },
+        )
         _write_json(
             self.run_dir / "artifacts" / "story.input.json",
             {
@@ -1660,7 +1784,7 @@ class RpGenerateCliTest(unittest.TestCase):
                 },
                 "loop_outputs": {
                     "gm": [_gm_output()],
-                    "actors": {"player": [_player_output("I keep listening.")]},
+                    "actors": actor_outputs,
                 },
             },
         )
@@ -1687,7 +1811,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls, ["story", "critic"])
-        self.assertEqual(result["artifacts"]["called_actors"], ["player"])
+        self.assertEqual(result["dispatcher"]["status"], "delivered")
 
     def test_normalize_story_output_orders_dialogues_and_removes_tokens(self):
         story = {
@@ -1712,6 +1836,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertLess(content.index("<character_dialogues>"), content.index("<summary>"))
 
     def test_run_round_ignores_stale_critic_token_placeholder_failure_when_story_is_clean(self):
+        self._queue_run_gm_turn()
         calls = []
         story = {
             "content": "<content>The repaired scene continues without placeholder tokens.</content><summary>Clean.</summary><options>Wait</options>",
@@ -1759,18 +1884,13 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "executor_not_wired")
         self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
-        self.assertEqual(len(delivery_attempts), 1)
-        normalized_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
-        normalized_critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
-        self.assertNotIn("<tokens>", normalized_story["content"].lower())
-        self.assertNotIn("NNNN", normalized_story["content"])
-        self.assertNotIn("tokens", normalized_story)
-        self.assertEqual(normalized_critic["decision"], "pass")
-        self.assertEqual(normalized_critic["hard_failures"], [])
-        self.assertEqual(normalized_critic["soft_issues"], ["Prose could use sharper sensory detail."])
+        self.assertEqual(len(delivery_attempts), 0)
+        critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic["decision"], "revise")
 
     def test_normalize_critic_report_keeps_token_failure_when_current_story_has_placeholder(self):
         hard_failures = ["story.output.json contains placeholder <tokens> values ('NNNN')"]
@@ -2214,6 +2334,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(captured["env"]["PYTHONIOENCODING"], "utf-8")
 
     def test_run_round_resets_stale_critic_retry_budget_before_regeneration(self):
+        self._queue_run_gm_turn()
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["stage"] = "blocked"
         manifest["critic_retry_count"] = 2
@@ -2233,7 +2354,8 @@ class RpGenerateCliTest(unittest.TestCase):
             run_command=fake_delivery,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "dispatcher_blocked")
         final_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(final_manifest.get("critic_retry_count"), 0)
 
