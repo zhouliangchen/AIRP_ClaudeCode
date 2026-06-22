@@ -264,6 +264,21 @@ def read_projected_actor_packet(
 ) -> dict:
     """Read the actor packet from a delivered actor-facing projected message."""
 
+    missing_fields = [
+        field
+        for field, value in (
+            ("actor_id", actor_id),
+            ("projected_message_id", projected_message_id),
+            ("source_call_id", source_call_id),
+        )
+        if not isinstance(value, str) or not value
+    ]
+    if missing_fields:
+        raise AgentActorDispatchError(
+            "run_actor_payload_invalid",
+            {"missing_fields": missing_fields},
+        )
+
     message = _find_source_message(run_dir, projected_message_id)
     if message is None:
         raise AgentActorDispatchError(
@@ -316,7 +331,7 @@ def read_projected_actor_packet(
             },
         )
     projected_source_call_id = str(message.get("source_call_id") or payload.get("source_call_id") or "")
-    if source_call_id and projected_source_call_id != source_call_id:
+    if projected_source_call_id != source_call_id:
         raise AgentActorDispatchError(
             "projected_message_actor_mismatch",
             {

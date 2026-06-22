@@ -561,6 +561,75 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projected_message_missing")
 
+    def test_run_actor_blocks_when_payload_source_call_id_missing(self):
+        projected = self._append_projected_actor_message()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "projection",
+                "type": "run_actor",
+                "source_message_id": projected["id"],
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "projected_message_id": projected["id"],
+                },
+            },
+        )["intent"]
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail("invalid payload was dispatched")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "run_actor_payload_invalid")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
+    def test_run_actor_blocks_when_payload_projected_message_id_missing_despite_top_level_source(self):
+        projected = self._append_projected_actor_message()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "projection",
+                "type": "run_actor",
+                "source_message_id": projected["id"],
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail("invalid payload was dispatched")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "run_actor_payload_invalid")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
+    def test_run_actor_blocks_when_payload_actor_id_missing(self):
+        projected = self._append_projected_actor_message()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "projection",
+                "type": "run_actor",
+                "source_message_id": projected["id"],
+                "payload": {
+                    "projected_message_id": projected["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail("invalid payload was dispatched")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "run_actor_payload_invalid")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
     def test_run_actor_blocks_on_projected_actor_mismatch(self):
         projected = self._append_projected_actor_message(actor_id="character:Bea")
         self._create_run_actor_intent(projected["id"], actor_id="character:Ada")

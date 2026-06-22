@@ -201,6 +201,35 @@ class AgentActorRuntimeTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.reason, "projection_source_missing")
 
+    def test_read_projected_actor_packet_requires_source_call_id(self):
+        projected = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": ["character:Ada"],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "packet": {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}},
+                },
+            },
+        )["message"]
+
+        with self.assertRaisesRegex(
+            self.runtime.AgentActorDispatchError,
+            "run_actor_payload_invalid",
+        ) as raised:
+            self.runtime.read_projected_actor_packet(
+                self.run_dir,
+                actor_id="character:Ada",
+                projected_message_id=projected["id"],
+                source_call_id="",
+            )
+
+        self.assertEqual(raised.exception.reason, "run_actor_payload_invalid")
+
     def test_record_actor_response_creates_gm_only_response_message(self):
         call = {"call_id": "call-character-Ada-1"}
         actor_output = {

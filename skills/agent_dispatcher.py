@@ -474,7 +474,7 @@ def _execute_run_actor(
     intent_id = str(intent.get("id") or "")
     payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
     actor_id = str(payload.get("actor_id") or "")
-    projected_message_id = str(payload.get("projected_message_id") or intent.get("source_message_id") or "")
+    projected_message_id = str(payload.get("projected_message_id") or "")
     source_call_id = str(payload.get("source_call_id") or "")
     accept_failure = _run_actor_transition_failure(
         run_dir,
@@ -493,6 +493,24 @@ def _execute_run_actor(
     artifacts: list[str] = []
     created_messages: list[str] = []
     created_intents: list[str] = []
+
+    missing_payload_fields = [
+        field
+        for field, value in (
+            ("actor_id", actor_id),
+            ("projected_message_id", projected_message_id),
+            ("source_call_id", source_call_id),
+        )
+        if not value
+    ]
+    if missing_payload_fields:
+        return _block_run_actor_failure(
+            run_dir,
+            intent_id,
+            "run_actor_payload_invalid",
+            {"intent_id": intent_id, "missing_fields": missing_payload_fields},
+            artifacts,
+        )
 
     try:
         projection = agent_actor_runtime.read_projected_actor_packet(
