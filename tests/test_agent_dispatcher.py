@@ -2427,7 +2427,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 "hard_failures": [],
                 "soft_issues": ["weak stop point"],
                 "repair_instruction": "Rewrite the stop point around the player decision.",
-                "repair_routing": {"stage": "delivery_gate"},
+                "repair_routing": {"stage": "story_composition", "rollback": "story_only"},
             }
 
         self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
@@ -2446,7 +2446,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(
             repair_payload["repair_routing"],
             {
-                "stage": "delivery_gate",
+                "stage": "story_composition",
                 "target_agents": ["story"],
                 "rollback": "story_only",
                 "can_auto_repair": True,
