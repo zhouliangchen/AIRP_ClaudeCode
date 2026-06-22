@@ -2216,6 +2216,15 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("not mojibake", skill)
         self.assertIn("story_output.content", skill)
 
+    def test_critic_skill_routes_length_as_story_quality_not_delivery_gate(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+
+        self.assertIn("Length", skill)
+        self.assertIn("quality_checks", skill)
+        self.assertIn('`stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, polish, or length need regeneration.', skill)
+        self.assertIn('`stage: "delivery_gate"` when the failure is a mechanical delivery contract such as required response tags, JSON/schema shape, artifact readiness, response mirroring, or handler/parser execution.', skill)
+        self.assertNotIn("mechanical delivery contract such as word count", skill)
+
     def test_story_skill_forbids_story_agent_tokens(self):
         skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
 

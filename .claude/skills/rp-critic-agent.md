@@ -40,8 +40,8 @@ If the same hard failure repeats:
 
 For every `revise` or `block`, also classify the repair route:
 
-- `stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, or polish need regeneration.
-- `stage: "delivery_gate"` when the failure is a mechanical delivery contract such as word count, required tags, or parser-visible formatting.
+- `stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, polish, or length need regeneration.
+- `stage: "delivery_gate"` when the failure is a mechanical delivery contract such as required response tags, JSON/schema shape, artifact readiness, response mirroring, or handler/parser execution.
 - `stage: "gm_loop"` when the scene plan, causality, decision boundary, world-state delta, or GM handling of player authority is wrong and the current round should be replayed from before GM progression.
 - `stage: "actor_agent"` or `stage: "subgm"` when a character/player/subGM artifact caused the issue; name the target agent. The orchestrator will currently roll these back to the GM-loop checkpoint rather than patching one artifact in place.
 - `stage: "system_code"` only when the likely cause is a reusable prompt/code/tooling defect rather than the current story draft. This does not authorize source edits by itself; runtime config must allow source self-repair.

@@ -80,6 +80,24 @@ class SelfRepairPolicyTest(unittest.TestCase):
         self.assertEqual(routing["target_agents"], ["story"])
         self.assertEqual(routing["risk"], "low")
 
+    def test_delivery_result_word_count_reason_is_not_delivery_gate(self):
+        routing = self.self_repair.routing_from_delivery_result(
+            {"action": "retry", "reason": "word_count"}
+        )
+
+        self.assertEqual(routing["stage"], "story_composition")
+        self.assertEqual(routing["rollback"], "story_only")
+        self.assertEqual(routing["target_agents"], ["story"])
+
+    def test_delivery_result_mechanical_reason_routes_to_delivery_gate(self):
+        routing = self.self_repair.routing_from_delivery_result(
+            {"action": "retry", "reason": "agent_outputs"}
+        )
+
+        self.assertEqual(routing["stage"], "delivery_gate")
+        self.assertEqual(routing["rollback"], "story_only")
+        self.assertEqual(routing["target_agents"], ["story"])
+
 
 if __name__ == "__main__":
     unittest.main()

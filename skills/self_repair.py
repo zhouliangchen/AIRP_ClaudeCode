@@ -172,7 +172,7 @@ def routing_from_delivery_result(delivery_result: Mapping[str, Any] | None) -> d
     if isinstance(detail, Mapping) and "repair_routing" in detail:
         return normalize_repair_routing(detail.get("repair_routing"))
     reason = str(result.get("reason") or "")
-    if reason in {"word_count", "player_input_processing", "critic_hard_failures"}:
+    if reason in {"agent_outputs", "artifact_schema", "handler_failed", "handler_retry", "mechanical_artifact"}:
         return normalize_repair_routing({"stage": "delivery_gate", "rollback": "story_only"})
     return normalize_repair_routing({})
 
