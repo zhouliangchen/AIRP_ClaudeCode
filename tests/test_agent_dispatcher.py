@@ -163,6 +163,82 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(applied[0]["to"], ["gm", "main_agent"])
         self.assertEqual(applied[0]["payload"]["applied"]["analysis"]["analysis_mode"], "fixture")
 
+    def test_analyze_input_blocks_with_failure_when_apply_raises_after_accept(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "payload": {"input_analysis_request_path": "input_analysis.request.md"},
+            },
+        )["intent"]
+
+        def fail_apply(_card_folder, _root_dir):
+            raise RuntimeError("fixture apply exploded")
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fail_apply
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "analyze_input_failed")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertIn("fixture apply exploded", blocked[0]["result"]["outputs"]["error"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "analyze_input_failed")
+        self.assertIn("fixture apply exploded", manifest["dispatcher"]["detail"]["error"])
+        self.assertEqual(self.dispatcher.agent_messages.read_messages(self.run_dir), [])
+
+    def test_analyze_input_reuses_apply_path_analysis_applied_message(self):
+        _write_json(self.run_dir / "input_analysis.output.json", {"analysis_mode": "fixture"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "payload": {"input_analysis_request_path": "input_analysis.request.md"},
+            },
+        )["intent"]
+
+        def fake_apply(card_folder, root_dir):
+            message_result = self.dispatcher.agent_messages.append_message(
+                self.run_dir,
+                {
+                    "from": "input_analyst",
+                    "to": ["gm"],
+                    "type": "analysis_applied",
+                    "visibility": "gm_only",
+                    "payload": {
+                        "input_path": "input.json",
+                        "analysis_path": "input_analysis.output.json",
+                        "routed_characters": [],
+                    },
+                },
+            )
+            self.assertTrue(message_result["ok"])
+            return {"ok": True, "analysis": {"analysis_mode": "fixture"}}
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        applied = [item for item in messages if item.get("type") == "analysis_applied"]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0]["to"], ["gm"])
+        self.assertEqual(result["created_messages"], [applied[0]["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,62 +147,68 @@ def _execute_analyze_input(
     intent_id = str(intent.get("id") or "")
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "analyze_input"})
 
-    applied = input_analysis_apply.apply_current_run(card_folder, root_dir)
-    artifacts = []
-    source_path = run_dir / "input_analysis.output.json"
-    if source_path.exists():
-        destination = artifact_path(run_dir, "input_analysis.output.json")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, destination)
-        artifacts.append("artifacts/input_analysis.output.json")
+    try:
+        applied = input_analysis_apply.apply_current_run(card_folder, root_dir)
+        artifacts = []
+        source_path = run_dir / "input_analysis.output.json"
+        if source_path.exists():
+            destination = artifact_path(run_dir, "input_analysis.output.json")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination)
+            artifacts.append("artifacts/input_analysis.output.json")
 
-    message_result = agent_messages.append_message(
-        run_dir,
-        {
-            "from": "input_analyst",
-            "to": ["gm", "main_agent"],
-            "type": "analysis_applied",
-            "visibility": "gm_only",
-            "payload": {"applied": applied},
-        },
-    )
-    if not message_result.get("ok"):
-        reason = "analysis_message_failed"
-        blocked = agent_intents.block_intent(
+        message = _find_analysis_applied_message(run_dir)
+        if message is None:
+            message_result = agent_messages.append_message(
+                run_dir,
+                {
+                    "from": "input_analyst",
+                    "to": ["gm", "main_agent"],
+                    "type": "analysis_applied",
+                    "visibility": "gm_only",
+                    "payload": {"applied": applied},
+                },
+            )
+            if not message_result.get("ok"):
+                reason = "analysis_message_failed"
+                blocked = agent_intents.block_intent(
+                    run_dir,
+                    intent_id,
+                    reason,
+                    outputs={"executor": "analyze_input", "message_result": message_result},
+                )
+                _mark_blocked(
+                    run_dir,
+                    reason,
+                    {"intent_id": intent_id, "message_result": message_result},
+                )
+                return _result(
+                    False,
+                    "blocked",
+                    intent_id=intent_id,
+                    intent_type="analyze_input",
+                    reason=reason,
+                    created_intents=[],
+                    created_messages=[],
+                    artifacts=artifacts,
+                    detail=blocked.get("result", {}),
+                )
+            message = message_result.get("message", {})
+
+        message_id = str(message.get("id") or "")
+        follow_up = _ensure_follow_up_intent(
             run_dir,
             intent_id,
-            reason,
-            outputs={"executor": "analyze_input", "message_result": message_result},
+            {
+                "requested_by": "input_analyst",
+                "type": "run_gm_turn",
+                "payload": {"reason": "input_analysis_applied"},
+                "policy": {"source_intent_id": intent_id},
+            },
         )
-        _mark_blocked(
-            run_dir,
-            reason,
-            {"intent_id": intent_id, "message_result": message_result},
-        )
-        return _result(
-            False,
-            "blocked",
-            intent_id=intent_id,
-            intent_type="analyze_input",
-            reason=reason,
-            created_intents=[],
-            created_messages=[],
-            artifacts=artifacts,
-            detail=blocked.get("result", {}),
-        )
+    except Exception as exc:
+        return _block_analyze_input_failure(run_dir, intent_id, exc)
 
-    message = message_result.get("message", {})
-    message_id = str(message.get("id") or "")
-    follow_up = _ensure_follow_up_intent(
-        run_dir,
-        intent_id,
-        {
-            "requested_by": "input_analyst",
-            "type": "run_gm_turn",
-            "payload": {"reason": "input_analysis_applied"},
-            "policy": {"source_intent_id": intent_id},
-        },
-    )
     follow_up_id = str(follow_up.get("id") or "")
     created_intents = [follow_up_id] if follow_up.get("created") else []
     agent_intents.complete_intent(
@@ -226,6 +232,51 @@ def _execute_analyze_input(
         created_messages=[message_id] if message_id else [],
         artifacts=artifacts,
         detail={"applied": applied, "follow_up_intent_id": follow_up_id},
+    )
+
+
+def _find_analysis_applied_message(run_dir: Path) -> dict[str, Any] | None:
+    for message in reversed(agent_messages.read_messages(run_dir)):
+        if message.get("status") != "delivered":
+            continue
+        if message.get("from") != "input_analyst":
+            continue
+        if message.get("type") != "analysis_applied":
+            continue
+        if message.get("visibility") != "gm_only":
+            continue
+        targets = message.get("to")
+        if not isinstance(targets, list) or "gm" not in targets:
+            continue
+        return message
+    return None
+
+
+def _block_analyze_input_failure(run_dir: Path, intent_id: str, exc: Exception) -> dict[str, Any]:
+    reason = "analyze_input_failed"
+    error = f"{type(exc).__name__}: {exc}"
+    detail = {
+        "intent_id": intent_id,
+        "error": error,
+        "exception_type": type(exc).__name__,
+    }
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "analyze_input", **detail},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="analyze_input",
+        reason=reason,
+        created_intents=[],
+        created_messages=[],
+        artifacts=[],
+        detail=blocked.get("result", {}),
     )
 
 
