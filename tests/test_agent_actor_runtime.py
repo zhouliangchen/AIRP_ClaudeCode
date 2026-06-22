@@ -50,13 +50,18 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual(messages[0]["from"], "gm")
         self.assertEqual(messages[0]["to"], ["projection"])
         self.assertEqual(messages[0]["source_call_id"], "call-character-Ada-1")
-        accepted = self.intents.list_intents(self.run_dir, "accepted")
-        self.assertEqual([intent["id"] for intent in accepted], [intent_id])
-        self.assertEqual(accepted[0]["type"], "request_projection")
-        self.assertEqual(accepted[0]["source_message_id"], message_id)
+        self.assertEqual(self.intents.list_intents(self.run_dir, "accepted"), [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["id"] for intent in pending], [intent_id])
+        self.assertEqual(pending[0]["type"], "request_projection")
+        self.assertEqual(pending[0]["source_message_id"], message_id)
         self.assertEqual(
-            accepted[0]["payload"],
-            {"actor_id": "character:Ada", "source_call_id": "call-character-Ada-1"},
+            pending[0]["payload"],
+            {
+                "actor_id": "character:Ada",
+                "source_message_id": message_id,
+                "source_call_id": "call-character-Ada-1",
+            },
         )
 
     def test_record_projected_actor_message_completes_request_projection_intent(self):

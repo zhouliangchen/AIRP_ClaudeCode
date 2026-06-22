@@ -469,6 +469,110 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
 
+    def test_request_projection_blocks_when_projected_append_rejected(self):
+        source = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": source["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_append = self.dispatcher.agent_actor_runtime.agent_messages.append_message
+        self.addCleanup(setattr, self.dispatcher.agent_actor_runtime.agent_messages, "append_message", original_append)
+
+        def reject_projected_message(run_dir, message):
+            if message.get("type") == "projected_message":
+                return {"ok": False, "reason": "fixture_append_rejected"}
+            return original_append(run_dir, message)
+
+        self.dispatcher.agent_actor_runtime.agent_messages.append_message = reject_projected_message
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "projection_append_rejected")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projection_append_rejected")
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada"), [])
+
+    def test_request_projection_blocks_when_projected_append_missing_id(self):
+        source = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": source["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+        original_append = self.dispatcher.agent_actor_runtime.agent_messages.append_message
+        self.addCleanup(setattr, self.dispatcher.agent_actor_runtime.agent_messages, "append_message", original_append)
+
+        def missing_projected_message_id(run_dir, message):
+            if message.get("type") == "projected_message":
+                return {"ok": True, "message": {}}
+            return original_append(run_dir, message)
+
+        self.dispatcher.agent_actor_runtime.agent_messages.append_message = missing_projected_message_id
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "projection_append_missing_id")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projection_append_missing_id")
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada"), [])
+
     def test_run_gm_turn_writes_artifacts_and_creates_compose_story(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(

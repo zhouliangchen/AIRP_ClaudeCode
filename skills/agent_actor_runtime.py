@@ -53,16 +53,13 @@ def record_request_actor(run_dir: Path, sender: str, actor_id: str, call: dict) 
                     "source_message_id": str(request_message["id"]),
                     "payload": {
                         "actor_id": actor_id,
+                        "source_message_id": str(request_message["id"]),
                         "source_call_id": call_id,
                     },
                 },
             ),
         )
         intent_id = str(intent["id"])
-        _require_intent_result(
-            "accept request_projection intent",
-            agent_intents.accept_intent(run_dir, intent_id),
-        )
         return str(request_message["id"]), intent_id
     except AgentActorRuntimeError:
         raise
