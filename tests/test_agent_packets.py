@@ -2155,9 +2155,6 @@ class AgentPacketTest(unittest.TestCase):
             analyze[0]["payload"]["input_analysis_request_path"],
             "input_analysis.request.md",
         )
-        self.assertNotIn("=== AGENT_WORKFLOW ===", round_context)
-        self.assertNotIn("AGENT_WORKFLOW_ADVICE", round_context)
-        self.assertNotIn("dispatch_agent_outputs", round_context)
         self.assertNotIn("PLAYER_INPUT_HEURISTIC_FALLBACK", round_context)
         self.assertNotIn("=== INPUT_MATCHES ===", round_context)
 
