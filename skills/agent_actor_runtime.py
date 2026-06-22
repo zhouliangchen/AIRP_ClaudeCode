@@ -39,6 +39,7 @@ def record_request_actor(
     call: dict,
     *,
     source_intent_id: str = "",
+    fanout: dict | None = None,
 ) -> tuple[str, str]:
     """Record a GM/subGM request for an actor-facing projection."""
 
@@ -71,8 +72,12 @@ def record_request_actor(
                 "source_call_id": call_id,
             },
         }
+        if isinstance(fanout, dict) and fanout:
+            intent_payload["payload"]["fanout"] = fanout
         if source_intent_id:
             intent_payload["policy"] = {"source_intent_id": source_intent_id}
+            if isinstance(fanout, dict) and fanout.get("batch_id"):
+                intent_payload["policy"]["fanout_batch_id"] = str(fanout.get("batch_id"))
         intent = _require_intent_result(
             "create request_projection intent",
             agent_intents.create_intent(run_dir, intent_payload),

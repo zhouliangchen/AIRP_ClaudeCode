@@ -398,6 +398,7 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
     actor_id = str(payload.get("actor_id") or "")
     source_message_id = str(payload.get("source_message_id") or intent.get("source_message_id") or "")
     source_call_id = str(payload.get("source_call_id") or "")
+    fanout = _normalize_actor_fanout(payload.get("fanout"))
     accept_failure = _request_projection_transition_failure(
         run_dir,
         intent_id,
@@ -421,6 +422,13 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         )
         projected_message_id = str(projection.get("projected_message_id") or "")
         resolved_source_call_id = str(projection.get("source_call_id") or source_call_id)
+        run_actor_payload = {
+            "actor_id": actor_id,
+            "projected_message_id": projected_message_id,
+            "source_call_id": resolved_source_call_id,
+        }
+        if fanout:
+            run_actor_payload["fanout"] = fanout
         follow_up = _ensure_follow_up_intent(
             run_dir,
             intent_id,
@@ -428,12 +436,11 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
                 "requested_by": "projection",
                 "type": "run_actor",
                 "source_message_id": projected_message_id,
-                "payload": {
-                    "actor_id": actor_id,
-                    "projected_message_id": projected_message_id,
-                    "source_call_id": resolved_source_call_id,
+                "payload": run_actor_payload,
+                "policy": {
+                    "source_intent_id": intent_id,
+                    **({"fanout_batch_id": fanout["batch_id"]} if fanout else {}),
                 },
-                "policy": {"source_intent_id": intent_id},
             },
         )
     except agent_actor_runtime.AgentActorProjectionError as exc:
@@ -486,6 +493,60 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         artifacts=[],
         detail=outputs,
     )
+
+
+def _normalize_actor_fanout(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    batch_id = str(value.get("batch_id") or "")
+    source_gm_intent_id = str(value.get("source_gm_intent_id") or "")
+    raw_expected = value.get("expected_source_call_ids")
+    if not batch_id or not source_gm_intent_id or not isinstance(raw_expected, list):
+        return None
+    expected_source_call_ids: list[str] = []
+    for item in raw_expected:
+        source_call_id = str(item or "")
+        if source_call_id and source_call_id not in expected_source_call_ids:
+            expected_source_call_ids.append(source_call_id)
+    if not expected_source_call_ids:
+        return None
+    return {
+        "batch_id": batch_id,
+        "source_gm_intent_id": source_gm_intent_id,
+        "expected_source_call_ids": expected_source_call_ids,
+    }
+
+
+def _gm_fanout_completed_source_call_ids(
+    run_dir: Path,
+    batch_id: str,
+    current_source_call_id: str = "",
+) -> list[str]:
+    completed: list[str] = []
+    if current_source_call_id:
+        completed.append(current_source_call_id)
+    for existing in agent_intents.list_intents(run_dir, "completed"):
+        if existing.get("type") != "run_actor":
+            continue
+        payload = existing.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        fanout = _normalize_actor_fanout(payload.get("fanout"))
+        if not fanout or fanout["batch_id"] != batch_id:
+            continue
+        result = existing.get("result")
+        outputs = result.get("outputs") if isinstance(result, dict) else None
+        if not isinstance(outputs, dict):
+            continue
+        source_call_id = str(outputs.get("source_call_id") or payload.get("source_call_id") or "")
+        if source_call_id and source_call_id not in completed:
+            completed.append(source_call_id)
+    return completed
+
+
+def _gm_fanout_ready_for_continuation(run_dir: Path, fanout: dict[str, Any], current_source_call_id: str) -> bool:
+    completed = set(_gm_fanout_completed_source_call_ids(run_dir, fanout["batch_id"], current_source_call_id))
+    return all(source_call_id in completed for source_call_id in fanout["expected_source_call_ids"])
 
 
 def _execute_run_actor(
@@ -574,30 +635,66 @@ def _execute_run_actor(
                 "player decision required after actor response",
             )
         if not player_decision_required:
+            fanout = _normalize_actor_fanout(payload.get("fanout"))
             follow_up_reason = (
                 "actor_response_requires_resolution"
                 if requires_gm_resolution
                 else "actor_response_continue"
             )
-            follow_up = _ensure_follow_up_intent(
-                run_dir,
-                intent_id,
-                {
-                    "requested_by": actor_id,
-                    "type": "run_gm_turn",
-                    "payload": {
-                        "reason": follow_up_reason,
-                        "actor_id": actor_id,
-                        "source_call_id": resolved_source_call_id,
-                        "actor_response_message_id": response_message_id,
-                        "actor_outputs_path": "artifacts/actor.outputs.json",
+            if fanout and not _gm_fanout_ready_for_continuation(run_dir, fanout, resolved_source_call_id):
+                follow_up_id = ""
+            elif fanout:
+                completed_source_call_ids = _gm_fanout_completed_source_call_ids(
+                    run_dir,
+                    fanout["batch_id"],
+                    resolved_source_call_id,
+                )
+                follow_up = _ensure_follow_up_intent_by_payload(
+                    run_dir,
+                    fanout["source_gm_intent_id"],
+                    {
+                        "requested_by": actor_id,
+                        "type": "run_gm_turn",
+                        "payload": {
+                            "reason": "actor_fanout_complete",
+                            "fanout_batch_id": fanout["batch_id"],
+                            "source_gm_intent_id": fanout["source_gm_intent_id"],
+                            "expected_source_call_ids": fanout["expected_source_call_ids"],
+                            "completed_source_call_ids": completed_source_call_ids,
+                            "actor_response_message_id": response_message_id,
+                            "actor_outputs_path": "artifacts/actor.outputs.json",
+                        },
+                        "policy": {
+                            "source_intent_id": fanout["source_gm_intent_id"],
+                            "source_actor_intent_id": intent_id,
+                            "fanout_batch_id": fanout["batch_id"],
+                        },
                     },
-                    "policy": {"source_intent_id": intent_id},
-                },
-            )
-            follow_up_id = str(follow_up.get("id") or "")
-            if follow_up.get("created"):
-                created_intents.append(follow_up_id)
+                    payload_keys=("fanout_batch_id",),
+                )
+                follow_up_id = str(follow_up.get("id") or "")
+                if follow_up.get("created"):
+                    created_intents.append(follow_up_id)
+            else:
+                follow_up = _ensure_follow_up_intent(
+                    run_dir,
+                    intent_id,
+                    {
+                        "requested_by": actor_id,
+                        "type": "run_gm_turn",
+                        "payload": {
+                            "reason": follow_up_reason,
+                            "actor_id": actor_id,
+                            "source_call_id": resolved_source_call_id,
+                            "actor_response_message_id": response_message_id,
+                            "actor_outputs_path": "artifacts/actor.outputs.json",
+                        },
+                        "policy": {"source_intent_id": intent_id},
+                    },
+                )
+                follow_up_id = str(follow_up.get("id") or "")
+                if follow_up.get("created"):
+                    created_intents.append(follow_up_id)
     except agent_actor_runtime.AgentActorDispatchError as exc:
         if exc.reason in {"projected_message_missing", "projected_message_actor_mismatch", "projected_message_invalid"}:
             return _block_run_actor_failure(
@@ -1499,6 +1596,123 @@ def _block_run_actor_failure(
     )
 
 
+def _run_gm_turn_transition_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    transition_result: dict[str, Any],
+    *,
+    outputs: dict[str, Any] | None = None,
+    artifacts: list[str] | None = None,
+    created_intents: list[str] | None = None,
+    created_messages: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if transition_result.get("ok"):
+        return None
+
+    if reason == "run_gm_turn_complete_failed" and outputs is not None:
+        recovered = _recover_completed_run_gm_turn_transition(
+            run_dir,
+            intent_id,
+            reason,
+            outputs,
+            artifacts=artifacts or [],
+            created_intents=created_intents or [],
+            created_messages=created_messages or [],
+        )
+        if recovered is not None:
+            return recovered
+
+    detail = {
+        "intent_id": intent_id,
+        "reason": reason,
+        "transition_reason": str(transition_result.get("reason") or "intent_transition_failed"),
+    }
+    exception_type = transition_result.get("exception_type")
+    if isinstance(exception_type, str) and exception_type:
+        detail["exception_type"] = exception_type
+    result_type = transition_result.get("result_type")
+    if isinstance(result_type, str) and result_type:
+        detail["result_type"] = result_type
+    if outputs is not None:
+        detail["attempted_outputs"] = outputs
+
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "run_gm_turn", **detail, "artifacts": list(artifacts or [])},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="run_gm_turn",
+        reason=reason,
+        created_intents=created_intents or [],
+        created_messages=created_messages or [],
+        artifacts=artifacts or [],
+        detail=blocked.get("result", {}),
+    )
+
+
+def _recover_completed_run_gm_turn_transition(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    outputs: dict[str, Any],
+    *,
+    artifacts: list[str],
+    created_intents: list[str],
+    created_messages: list[str],
+) -> dict[str, Any] | None:
+    completed_intent = _find_intent_in_state(run_dir, intent_id, "completed")
+    if not completed_intent:
+        return None
+
+    attempted_artifacts = outputs.get("artifacts")
+    if not isinstance(attempted_artifacts, list):
+        attempted_artifacts = artifacts
+    artifact_paths = [str(path) for path in attempted_artifacts if isinstance(path, str) and path]
+    if "artifacts/gm.output.json" not in artifact_paths:
+        return None
+    if not all(_run_relative_file_exists(run_dir, path) for path in artifact_paths):
+        return None
+
+    attempted_intents: list[str] = []
+    for key in ("created_projection_intents", "created_subgm_intents", "created_progression_intents"):
+        value = outputs.get(key)
+        if isinstance(value, list):
+            attempted_intents.extend(str(item) for item in value if isinstance(item, str) and item)
+    if not attempted_intents:
+        attempted_intents = created_intents
+    if not all(_intent_exists(run_dir, follow_up_id) for follow_up_id in attempted_intents):
+        return None
+
+    attempted_messages = outputs.get("created_messages")
+    if not isinstance(attempted_messages, list):
+        attempted_messages = created_messages
+    message_ids = [str(item) for item in attempted_messages if isinstance(item, str) and item]
+    if not all(_message_exists(run_dir, message_id, "request_actor") for message_id in message_ids):
+        return None
+
+    detail = dict(outputs)
+    detail["transition_failure_recovered"] = reason
+    detail["completed_intent_state"] = str(completed_intent.get("state") or "")
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_gm_turn",
+        reason="run_gm_turn_complete_recovered",
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=artifact_paths,
+        detail=detail,
+    )
+
+
 def _run_subgm_thread_transition_failure(
     run_dir: Path,
     intent_id: str,
@@ -1706,7 +1920,19 @@ def _execute_run_gm_turn(
     run_claude: Callable[[str, str, str | Path], str] | None,
 ) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
-    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "run_gm_turn"})
+    accept_failure = _run_gm_turn_transition_failure(
+        run_dir,
+        intent_id,
+        "run_gm_turn_accept_failed",
+        _call_intent_transition(
+            agent_intents.accept_intent,
+            run_dir,
+            intent_id,
+            outputs={"executor": "run_gm_turn"},
+        ),
+    )
+    if accept_failure is not None:
+        return accept_failure
     artifacts: list[str] = []
 
     try:
@@ -1740,6 +1966,18 @@ def _execute_run_gm_turn(
         runnable_side_threads = [
             summary for summary in loop_result.get("runnable_side_threads", []) if isinstance(summary, dict)
         ]
+        expected_actor_call_ids = [
+            str(call.get("call_id") or "")
+            for call in actor_calls
+            if str(call.get("actor_id") or "") and str(call.get("call_id") or "")
+        ]
+        fanout = None
+        if len(expected_actor_call_ids) > 1:
+            fanout = {
+                "batch_id": f"gm-fanout-{intent_id}",
+                "source_gm_intent_id": intent_id,
+                "expected_source_call_ids": expected_actor_call_ids,
+            }
 
         if not player_decision_required:
             for call in actor_calls:
@@ -1752,6 +1990,7 @@ def _execute_run_gm_turn(
                     actor_id,
                     call,
                     source_intent_id=intent_id,
+                    fanout=fanout,
                 )
                 created_messages.append(message_id)
                 created_projection_intents.append(projection_intent_id)
@@ -1821,21 +2060,34 @@ def _execute_run_gm_turn(
         return _block_executor_failure(run_dir, intent_id, "run_gm_turn", "run_gm_turn_failed", exc, artifacts)
 
     created_intents = [*created_projection_intents, *created_subgm_intents, *created_progression_intents]
-    agent_intents.complete_intent(
+    outputs = {
+        "executor": "run_gm_turn",
+        "loop_result": loop_result,
+        "follow_up_intent_id": follow_up_id,
+        "player_decision_required": player_decision_required,
+        "created_projection_intents": created_projection_intents,
+        "created_subgm_intents": created_subgm_intents,
+        "created_progression_intents": created_progression_intents,
+        "created_messages": created_messages,
+        "artifacts": artifacts,
+    }
+    complete_failure = _run_gm_turn_transition_failure(
         run_dir,
         intent_id,
-        outputs={
-            "executor": "run_gm_turn",
-            "loop_result": loop_result,
-            "follow_up_intent_id": follow_up_id,
-            "player_decision_required": player_decision_required,
-            "created_projection_intents": created_projection_intents,
-            "created_subgm_intents": created_subgm_intents,
-            "created_progression_intents": created_progression_intents,
-            "created_messages": created_messages,
-            "artifacts": artifacts,
-        },
+        "run_gm_turn_complete_failed",
+        _call_intent_transition(
+            agent_intents.complete_intent,
+            run_dir,
+            intent_id,
+            outputs=outputs,
+        ),
+        outputs=outputs,
+        artifacts=artifacts,
+        created_intents=created_intents,
+        created_messages=created_messages,
     )
+    if complete_failure is not None:
+        return complete_failure
     return _result(
         True,
         "completed",
@@ -1845,15 +2097,7 @@ def _execute_run_gm_turn(
         created_intents=created_intents,
         created_messages=created_messages,
         artifacts=artifacts,
-        detail={
-            "loop_result": loop_result,
-            "follow_up_intent_id": follow_up_id,
-            "player_decision_required": player_decision_required,
-            "created_projection_intents": created_projection_intents,
-            "created_subgm_intents": created_subgm_intents,
-            "created_progression_intents": created_progression_intents,
-            "created_messages": created_messages,
-        },
+        detail=outputs,
     )
 
 
