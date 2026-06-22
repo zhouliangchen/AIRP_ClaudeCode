@@ -52,6 +52,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         original = getattr(owner, name)
         self.addCleanup(setattr, owner, name, original)
 
+    def _root_with_settings(self, settings):
+        root = Path(self.tmp.name) / f"root_{len(list(Path(self.tmp.name).glob('root_*'))):02d}"
+        settings_path = root / "skills" / "styles" / "settings.json"
+        _write_json(settings_path, settings)
+        return root
+
     def _install_dispatcher_dependencies(self):
         if not hasattr(self.dispatcher, "agent_outputs"):
             self.dispatcher.agent_outputs = _load("agent_outputs")
@@ -2584,6 +2590,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         )
 
     def test_repair_request_system_code_creates_bounded_system_request(self):
+        root = self._root_with_settings(
+            {"selfRepairMode": "full", "allowSourceCodeSelfRepair": True}
+        )
         _write_json(
             self.run_dir / "artifacts" / "critic.report.json",
             {
@@ -2608,7 +2617,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )["intent"]
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, root)
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")
@@ -2649,6 +2658,47 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(len(system_messages), 1)
         self.assertEqual(system_messages[0]["to"], ["system"])
         self.assertEqual(system_messages[0]["payload"]["intent_id"], pending[0]["id"])
+
+    def test_repair_request_system_code_blocks_without_source_switch(self):
+        root = self._root_with_settings(
+            {"selfRepairMode": "full", "allowSourceCodeSelfRepair": False}
+        )
+        _write_json(
+            self.run_dir / "artifacts" / "critic.report.json",
+            {
+                "decision": "revise",
+                "repair_instruction": "Diagnose the reusable dispatcher defect.",
+                "repair_routing": {
+                    "stage": "system_code",
+                    "rollback": "none",
+                    "can_auto_repair": True,
+                    "risk": "medium",
+                },
+            },
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {"critic_report_path": "artifacts/critic.report.json"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, root)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "source_code_self_repair_not_authorized")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["reason"], "source_code_self_repair_not_authorized")
+        outputs = blocked[0]["result"]["outputs"]
+        self.assertEqual(outputs["executor"], "repair_request")
+        self.assertEqual(outputs["repair_routing"]["stage"], "system_code")
+        self.assertTrue(outputs["requires_source_repair_authorization"])
 
     def test_system_request_blocks_without_executing_source_edits(self):
         created = self.intents.create_intent(

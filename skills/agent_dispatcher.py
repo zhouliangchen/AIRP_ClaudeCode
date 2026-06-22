@@ -140,7 +140,7 @@ def _execute_supported_intent(
     if intent_type == "review_critic":
         return _execute_review_critic(run_dir, root_dir, intent, run_claude)
     if intent_type == "repair_request":
-        return _execute_repair_request(run_dir, intent)
+        return _execute_repair_request(run_dir, root_dir, intent)
     if intent_type == "rollback_request":
         return _execute_rollback_request(run_dir, card_folder, intent)
     if intent_type == "system_request":
@@ -1031,7 +1031,7 @@ def _execute_review_critic(
     )
 
 
-def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+def _execute_repair_request(run_dir: Path, root_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "repair_request"})
     created_messages: list[str] = []
@@ -1047,6 +1047,37 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
         repair_context = _repair_context(report_path, critic_report, payload, routing)
 
         if routing.get("stage") == "system_code":
+            policy = self_repair.load_policy(root_dir / "skills" / "styles" / "settings.json")
+            if not self_repair.policy_allows_route(policy, routing, decision):
+                blocked = agent_intents.block_intent(
+                    run_dir,
+                    intent_id,
+                    "source_code_self_repair_not_authorized",
+                    outputs={
+                        "executor": "repair_request",
+                        "decision": decision,
+                        "critic_report_path": report_path,
+                        "repair_instruction": repair_instruction,
+                        "repair_routing": routing,
+                        "requires_source_repair_authorization": True,
+                    },
+                )
+                _mark_blocked(
+                    run_dir,
+                    "source_code_self_repair_not_authorized",
+                    {"intent_id": intent_id, "repair_routing": routing},
+                )
+                return _result(
+                    False,
+                    "blocked",
+                    intent_id=intent_id,
+                    intent_type="repair_request",
+                    reason="source_code_self_repair_not_authorized",
+                    created_intents=[],
+                    created_messages=[],
+                    artifacts=[],
+                    detail=blocked.get("result", {}),
+                )
             system_payload: dict[str, Any] = {
                 "reason": "source_code_self_repair",
                 "bounded": True,
