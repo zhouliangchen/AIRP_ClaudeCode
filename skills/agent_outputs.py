@@ -871,6 +871,49 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     return story_input
 
 
+def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]:
+    """Extract structured high/critical player custom actions from story input."""
+    if not isinstance(story_input, dict):
+        return []
+    interaction_trace = story_input.get("interaction_trace")
+    if not isinstance(interaction_trace, dict):
+        return []
+    visible_events = interaction_trace.get("visible_events")
+    if not isinstance(visible_events, list):
+        return []
+
+    evidence = []
+    for index, event in enumerate(visible_events):
+        if not isinstance(event, dict):
+            continue
+        custom_action = event.get("custom_action")
+        if not isinstance(custom_action, dict):
+            continue
+
+        actor = str(event.get("actor") or "").strip()
+        custom_actor = str(custom_action.get("actor_id") or "").strip()
+        if actor != "player" and custom_actor != "player":
+            continue
+
+        risk_level = str(custom_action.get("risk_level") or "").strip().lower()
+        if risk_level not in {"high", "critical"}:
+            continue
+
+        label = str(custom_action.get("visible_content") or event.get("content") or "").strip()
+        if not label:
+            continue
+
+        evidence_id = str(event.get("id") or "").strip() or f"critical-action-{index + 1}"
+        evidence.append(
+            {
+                "id": evidence_id,
+                "required_label": label,
+                "risk_level": risk_level,
+            }
+        )
+    return evidence
+
+
 def build_critic_quality_metrics(run_dir: str | Path, story_output: Dict[str, Any]) -> Dict[str, Any]:
     """Build deterministic critic-facing style and length metrics for `story.output.json`."""
     root = Path(run_dir)

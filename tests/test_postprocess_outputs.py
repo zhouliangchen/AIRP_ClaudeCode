@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -137,6 +139,97 @@ class PostprocessOutputTest(unittest.TestCase):
                 "actions": ["Look around", "Ask Ada"],
             },
         )
+
+    def test_validate_requires_fixed_option_for_critical_player_action(self):
+        payload = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You brace at the sealed door.",
+                "options": ["Step back and reassess"],
+                "current_goal": "Confirm the risky action before continuing.",
+            },
+        }
+        evidence = [
+            {
+                "id": "critical-action-1",
+                "required_label": "push open the sealed door",
+                "risk_level": "critical",
+            }
+        ]
+
+        result = self.mod.validate_postprocess_output(payload, critical_action_evidence=evidence)
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "missing fixed option for critical action: critical-action-1",
+            result["errors"],
+        )
+
+    def test_validate_accepts_fixed_option_for_critical_player_action(self):
+        payload = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You brace at the sealed door.",
+                "options": [
+                    {
+                        "label": "Confirm action: push open the sealed door",
+                        "source": "player_agent_critical_action",
+                        "requires_confirmation": True,
+                    }
+                ],
+                "current_goal": "Confirm the risky action before continuing.",
+            },
+        }
+        evidence = [
+            {
+                "id": "critical-action-1",
+                "required_label": "push open the sealed door",
+                "risk_level": "critical",
+            }
+        ]
+
+        result = self.mod.validate_postprocess_output(payload, critical_action_evidence=evidence)
+
+        self.assertTrue(result["ok"])
+
+    def test_record_ui_extension_repair_writes_run_artifact_and_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card"
+            run_dir = card / ".agent_runs" / "round-000001"
+            run_dir.mkdir(parents=True)
+
+            record = self.mod.record_ui_extension_repair(
+                run_dir,
+                card,
+                reason="missing relationship panel data",
+                required_keys=["ui_extensions.status_panels.relationships"],
+                source_artifacts=["artifacts/postprocess.output.json"],
+            )
+
+            repair_path = run_dir / "artifacts" / "postprocess_repairs" / f"{record['id']}.json"
+            self.assertTrue(repair_path.exists())
+            artifact = json.loads(repair_path.read_text(encoding="utf-8"))
+            self.assertEqual(artifact["schema_version"], 1)
+            self.assertEqual(artifact["id"], record["id"])
+            self.assertEqual(artifact["round_id"], "round-000001")
+            self.assertEqual(artifact["status"], "pending")
+            self.assertEqual(artifact["scope"], "ui_extensions")
+            self.assertEqual(artifact["reason"], "missing relationship panel data")
+            self.assertEqual(
+                artifact["required_keys"],
+                ["ui_extensions.status_panels.relationships"],
+            )
+            self.assertEqual(artifact["source_artifacts"], ["artifacts/postprocess.output.json"])
+            self.assertEqual(artifact["attempts"], 1)
+
+            queue_path = card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+            queue_items = [
+                json.loads(line)
+                for line in queue_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(queue_items, [artifact])
 
 
 if __name__ == "__main__":

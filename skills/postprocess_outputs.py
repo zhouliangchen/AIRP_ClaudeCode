@@ -1,5 +1,11 @@
 """Validation helpers for postprocess.output.json artifacts."""
 
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+
 ALLOWED_STATE_PATCH_KEYS = {"quest", "stage", "time", "location", "env", "actions"}
 DEFAULT_UI_EXTENSIONS = {"status_panels": {}, "custom_cards": {}, "asset_bindings": {}}
 
@@ -67,9 +73,9 @@ def validate_critical_action_options(options, evidence):
     errors = []
     for index, item in enumerate(evidence):
         if not any(option_matches_evidence(option, item) for option in options):
-            label = _clean_text(item.get("required_label")) if isinstance(item, dict) else ""
-            detail = label or f"#{index}"
-            errors.append(f"critical_action_evidence {detail} is not covered by core.options")
+            evidence_id = _clean_text(item.get("id")) if isinstance(item, dict) else ""
+            detail = evidence_id or f"#{index}"
+            errors.append(f"missing fixed option for critical action: {detail}")
     return errors
 
 
@@ -151,3 +157,43 @@ def _normalize_ui_extensions(value):
         if isinstance(value.get(key), dict):
             normalized[key] = value[key]
     return normalized
+
+
+def _clean_string_list(value):
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value:
+        text = _clean_text(item)
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _append_jsonl(path, row):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, source_artifacts):
+    root = Path(run_dir)
+    card_root = Path(card_dir)
+    repair_id = f"postprocess-repair-{uuid.uuid4().hex}"
+    record = {
+        "schema_version": 1,
+        "id": repair_id,
+        "round_id": root.name,
+        "status": "pending",
+        "scope": "ui_extensions",
+        "reason": _clean_text(reason),
+        "required_keys": _clean_string_list(required_keys),
+        "source_artifacts": _clean_string_list(source_artifacts),
+        "attempts": 1,
+    }
+
+    repair_path = root / "artifacts" / "postprocess_repairs" / f"{repair_id}.json"
+    repair_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    _append_jsonl(card_root / ".agent_runs" / "postprocess_repair_queue.jsonl", record)
+    return record

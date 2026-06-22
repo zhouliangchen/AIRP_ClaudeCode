@@ -298,6 +298,66 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_extracts_player_critical_action_evidence_from_story_input(self):
+        story_input = {
+            "interaction_trace": {
+                "visible_events": [
+                    {
+                        "id": "event-1",
+                        "actor": "player",
+                        "type": "custom_action",
+                        "content": "I pry open the sealed door.",
+                        "custom_action": {
+                            "actor_id": "player",
+                            "visible_content": "Pry open the sealed door",
+                            "risk_level": "critical",
+                        },
+                    },
+                    {
+                        "id": "event-2",
+                        "actor": "character:Ada",
+                        "type": "custom_action",
+                        "content": "Ada tests the lock.",
+                        "custom_action": {
+                            "actor_id": "character:Ada",
+                            "visible_content": "Test the lock",
+                            "risk_level": "critical",
+                        },
+                    },
+                    {
+                        "id": "event-3",
+                        "actor": "player",
+                        "type": "custom_action",
+                        "content": "I listen at the door.",
+                        "custom_action": {
+                            "actor_id": "player",
+                            "visible_content": "Listen at the door",
+                            "risk_level": "medium",
+                        },
+                    },
+                    {
+                        "id": "event-4",
+                        "actor": "player",
+                        "type": "action",
+                        "content": "I mention a critical problem without structured risk.",
+                    },
+                ]
+            }
+        }
+
+        result = self.agent_outputs.extract_player_critical_action_evidence(story_input)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "id": "event-1",
+                    "required_label": "Pry open the sealed door",
+                    "risk_level": "critical",
+                }
+            ],
+        )
+
     def test_build_story_input_copies_runtime_guidance_without_removed_settings(self):
         manifest_path = self.run_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
