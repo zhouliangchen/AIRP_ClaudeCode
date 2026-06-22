@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -577,10 +578,9 @@ def _execute_run_gm_turn(
             raise AgentDispatcherError("run_claude is required for run_gm_turn")
         manifest = _load_manifest(run_dir)
         loop_result = rp_generate_cli._run_interactive_agent_loop(run_dir, manifest, root_dir, run_claude)
-        rp_generate_cli._promote_loop_outputs_to_artifacts(run_dir)
         artifacts = [
-            _copy_root_artifact_to_authority(run_dir, "gm.output.json"),
-            _copy_root_artifact_to_authority(run_dir, "actor.outputs.json"),
+            _refresh_root_artifact_to_authority(run_dir, "gm.output.json"),
+            _refresh_root_artifact_to_authority(run_dir, "actor.outputs.json"),
         ]
         follow_up = _ensure_follow_up_intent(
             run_dir,
@@ -661,18 +661,30 @@ def _blocked_terminal_result(manifest: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _copy_root_artifact_to_authority(run_dir: Path, relative_path: str) -> str:
+def _refresh_root_artifact_to_authority(run_dir: Path, relative_path: str) -> str:
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        raise AgentDispatcherError(f"executor artifact path must be relative: {relative_path}")
+
+    run_root = run_dir.resolve()
+    source = (run_root / relative).resolve()
+    if source != run_root and run_root not in source.parents:
+        raise AgentDispatcherError(f"executor artifact path escapes run directory: {relative_path}")
+    if not source.exists():
+        raise AgentDispatcherError(f"{source}: expected current executor artifact is missing")
+
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise AgentDispatcherError(f"{source}: current executor artifact is invalid JSON") from exc
+    except OSError as exc:
+        raise AgentDispatcherError(f"{source}: current executor artifact cannot be read") from exc
+    if not isinstance(payload, dict):
+        raise AgentDispatcherError(f"{source}: current executor artifact must be a JSON object")
+
     authoritative = artifact_path(run_dir, relative_path)
-    if authoritative.exists():
-        return f"artifacts/{relative_path}"
-
-    source = run_dir / relative_path
-    if source.exists():
-        authoritative.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, authoritative)
-        return f"artifacts/{relative_path}"
-
-    raise AgentDispatcherError(f"{source}: expected executor artifact is missing")
+    agent_run.write_json(authoritative, payload)
+    return f"artifacts/{relative_path}"
 
 
 def _mark_blocked(run_dir: Path, reason: str, detail: dict[str, Any]) -> None:
