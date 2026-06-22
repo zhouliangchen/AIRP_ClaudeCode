@@ -163,7 +163,7 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(actor_responses[0].get("source_call_id"), "call-character-Ada-1")
         completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
         self.assertTrue(
-            any(intent.get("type") == "project_message" for intent in completed_intents),
+            any(intent.get("type") == "request_projection" for intent in completed_intents),
             completed_intents,
         )
         self.assertTrue((self.run_dir / "gm.output.json").exists())
@@ -173,13 +173,13 @@ class AgentTurnLoopTest(unittest.TestCase):
 
     def test_actor_dispatch_wraps_runtime_write_exceptions_as_loop_errors(self):
         self.register_characters("Ada")
-        original_create_intent = self.agent_turn_loop.agent_intents.create_intent
+        original_create_intent = self.agent_turn_loop.agent_actor_runtime.agent_intents.create_intent
         root_cause = RuntimeError("intent store unavailable")
 
         def raise_create_intent(*_args, **_kwargs):
             raise root_cause
 
-        self.agent_turn_loop.agent_intents.create_intent = raise_create_intent
+        self.agent_turn_loop.agent_actor_runtime.agent_intents.create_intent = raise_create_intent
 
         def dispatch(agent_key, packet):
             if agent_key == "gm":
@@ -220,7 +220,7 @@ class AgentTurnLoopTest(unittest.TestCase):
             ) as raised:
                 self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
         finally:
-            self.agent_turn_loop.agent_intents.create_intent = original_create_intent
+            self.agent_turn_loop.agent_actor_runtime.agent_intents.create_intent = original_create_intent
 
         self.assertIs(raised.exception.__cause__, root_cause)
 
@@ -300,7 +300,7 @@ class AgentTurnLoopTest(unittest.TestCase):
         )
         completed_intents = self.agent_intents.list_intents(self.run_dir, "completed")
         self.assertEqual(
-            len([intent for intent in completed_intents if intent.get("type") == "project_message"]),
+            len([intent for intent in completed_intents if intent.get("type") == "request_projection"]),
             2,
         )
         ada_inbox = self.agent_messages.read_inbox(self.run_dir, "character:Ada")

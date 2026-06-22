@@ -9,11 +9,10 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Deque, Iterable
 
+import agent_actor_runtime
 import agent_actor_batches
 import agent_interactions
-import agent_intents
 import agent_lifecycle
-import agent_messages
 import agent_projection
 import agent_run
 import agent_schemas
@@ -763,71 +762,21 @@ def _record_routing_warnings(run_dir: Path, warnings: list[dict]) -> None:
         )
 
 
-def _require_message_result(action: str, result: dict) -> dict:
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise AgentTurnLoopError(f"{action} failed: {result}")
-    message = result.get("message")
-    if not isinstance(message, dict) or not message.get("id"):
-        raise AgentTurnLoopError(f"{action} failed: missing message id")
-    return message
-
-
-def _require_intent_result(action: str, result: dict) -> dict:
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise AgentTurnLoopError(f"{action} failed: {result}")
-    intent = result.get("intent")
-    if not isinstance(intent, dict) or not intent.get("id"):
-        raise AgentTurnLoopError(f"{action} failed: missing intent id")
-    return intent
-
-
 def _runtime_write_error(action: str, exc: Exception) -> AgentTurnLoopError:
     return AgentTurnLoopError(f"{action} failed: {exc}")
 
 
+def _actor_runtime_loop_error(exc: agent_actor_runtime.AgentActorRuntimeError) -> AgentTurnLoopError:
+    error = AgentTurnLoopError(str(exc))
+    cause = exc.__cause__ if exc.__cause__ is not None else exc
+    raise error from cause
+
+
 def _record_request_actor_intent(run_dir: Path, sender: str, actor_id: str, call: dict) -> tuple[str, str]:
     try:
-        call_id = str(call.get("call_id") or "")
-        request_message = _require_message_result(
-            "append request_actor message",
-            agent_messages.append_message(
-                run_dir,
-                {
-                    "from": sender,
-                    "to": ["projection"],
-                    "type": "request_actor",
-                    "visibility": "gm_only",
-                    "source_call_id": call_id,
-                    "payload": {
-                        "actor_id": actor_id,
-                        "call": call,
-                    },
-                },
-            ),
-        )
-        intent = _require_intent_result(
-            "create project_message intent",
-            agent_intents.create_intent(
-                run_dir,
-                {
-                    "requested_by": sender,
-                    "type": "project_message",
-                    "source_message_id": str(request_message["id"]),
-                    "payload": {
-                        "actor_id": actor_id,
-                        "source_call_id": call_id,
-                    },
-                },
-            ),
-        )
-        intent_id = str(intent["id"])
-        _require_intent_result(
-            "accept project_message intent",
-            agent_intents.accept_intent(run_dir, intent_id),
-        )
-        return str(request_message["id"]), intent_id
-    except AgentTurnLoopError:
-        raise
+        return agent_actor_runtime.record_request_actor(run_dir, sender, actor_id, call)
+    except agent_actor_runtime.AgentActorRuntimeError as exc:
+        _actor_runtime_loop_error(exc)
     except Exception as exc:
         raise _runtime_write_error("record request_actor intent", exc) from exc
 
@@ -840,61 +789,18 @@ def _record_projected_actor_message(
     intent_id: str,
 ) -> str:
     try:
-        projected_message = _require_message_result(
-            "append projected_message",
-            agent_messages.append_message(
-                run_dir,
-                {
-                    "from": "projection",
-                    "to": [actor_id],
-                    "type": "projected_message",
-                    "visibility": "actor_facing",
-                    "source_call_id": str(call.get("call_id") or ""),
-                    "payload": {
-                        "actor_id": actor_id,
-                        "packet": packet,
-                        "gm_prompt": str(call.get("prompt") or ""),
-                    },
-                },
-            ),
-        )
-        _require_intent_result(
-            "complete project_message intent",
-            agent_intents.complete_intent(
-                run_dir,
-                intent_id,
-                outputs={"projected_message_id": str(projected_message["id"])},
-            ),
-        )
-        return str(projected_message["id"])
-    except AgentTurnLoopError:
-        raise
+        return agent_actor_runtime.record_projected_actor_message(run_dir, actor_id, call, packet, intent_id)
+    except agent_actor_runtime.AgentActorRuntimeError as exc:
+        _actor_runtime_loop_error(exc)
     except Exception as exc:
         raise _runtime_write_error("record projected actor message", exc) from exc
 
 
 def _record_actor_response_message(run_dir: Path, actor_id: str, call: dict, actor_output: dict) -> str:
     try:
-        response_message = _require_message_result(
-            "append actor_response",
-            agent_messages.append_message(
-                run_dir,
-                {
-                    "from": actor_id,
-                    "to": ["gm"],
-                    "type": "actor_response",
-                    "visibility": "gm_only",
-                    "source_call_id": str(call.get("call_id") or ""),
-                    "payload": {
-                        "actor_id": actor_id,
-                        "output": actor_output,
-                    },
-                },
-            ),
-        )
-        return str(response_message["id"])
-    except AgentTurnLoopError:
-        raise
+        return agent_actor_runtime.record_actor_response(run_dir, actor_id, call, actor_output)
+    except agent_actor_runtime.AgentActorRuntimeError as exc:
+        _actor_runtime_loop_error(exc)
     except Exception as exc:
         raise _runtime_write_error("record actor_response message", exc) from exc
 
