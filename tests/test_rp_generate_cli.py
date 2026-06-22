@@ -1082,7 +1082,7 @@ class RpGenerateCliTest(unittest.TestCase):
             return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
 
         def fake_retry_delivery(command, **kwargs):
-            return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"word_count"}\n', stderr="")
+            return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"agent_outputs"}\n', stderr="")
 
         result = self.module.run_round(
             self.card,
@@ -1162,7 +1162,7 @@ class RpGenerateCliTest(unittest.TestCase):
             return _agent_stream(json.dumps(responses[agent_key], ensure_ascii=False))
 
         def fake_retry_delivery(command, **kwargs):
-            return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"word_count"}\n', stderr="")
+            return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"agent_outputs"}\n', stderr="")
 
         result = self.module.run_round(
             self.card,
@@ -1475,7 +1475,7 @@ class RpGenerateCliTest(unittest.TestCase):
         actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
         self.assertEqual(actor_outputs["character:Ada"][0]["events"][0]["content"], "Stay close.")
 
-    def test_run_round_rewrites_story_once_when_delivery_requests_retry(self):
+    def test_run_round_preserves_pending_repair_intents_when_delivery_requests_retry(self):
         self._queue_run_gm_turn()
         calls = []
         progress_calls = []
@@ -1529,7 +1529,7 @@ class RpGenerateCliTest(unittest.TestCase):
                         "payload": {"note": "must remain pending"},
                     },
                 )["intent"]["id"]
-                return SimpleNamespace(returncode=0, stdout='{"action":"retry","word_count":{"current":10,"threshold":100}}\n', stderr="")
+                return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"agent_outputs","hint":"missing artifact"}\n', stderr="")
             return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
 
         result = self.module.run_round(
@@ -1618,7 +1618,7 @@ class RpGenerateCliTest(unittest.TestCase):
         final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 1)
 
-    def test_run_round_handles_sequential_delivery_repair_requests(self):
+    def test_run_round_stops_after_first_delivery_retry(self):
         self._queue_run_gm_turn()
         _write_json(self.styles_dir / "settings.json", {"selfRepairMode": "full", "wordCount": 1})
         calls = []
@@ -1657,7 +1657,7 @@ class RpGenerateCliTest(unittest.TestCase):
         def fake_delivery(command, **kwargs):
             delivery_attempts.append(command)
             if len(delivery_attempts) == 1:
-                return SimpleNamespace(returncode=0, stdout='{"action":"retry","word_count":{"current":10,"threshold":100},"hint":"expand"}\n', stderr="")
+                return SimpleNamespace(returncode=0, stdout='{"action":"retry","reason":"agent_outputs","hint":"missing artifact"}\n', stderr="")
             if len(delivery_attempts) == 2:
                 return SimpleNamespace(
                     returncode=0,

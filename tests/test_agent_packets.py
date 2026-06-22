@@ -69,12 +69,12 @@ def _write_json(path, data):
 
 
 class CriticGateSourceTest(unittest.TestCase):
-    def test_round_deliver_reads_current_critic_report(self):
+    def test_round_deliver_delegates_critic_decision_to_agent_output_gate(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
 
-        self.assertIn("import agent_run", source)
-        self.assertIn("read_current_critic_report", source)
-        self.assertIn("critic_hard_failures", source)
+        self.assertIn("prepare_delivery", source)
+        self.assertNotIn("read_current_critic_report", source)
+        self.assertNotIn("critic_hard_failures", source)
 
     def test_round_deliver_uses_agent_output_gate(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
@@ -247,19 +247,29 @@ class CriticGateRuntimeTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run_round_deliver(self, critic_report, handler_message):
+    def _run_round_deliver(self, handler_message, *, handler_result=None, gate_result=None):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
-        original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
         original_subprocess_run = self.round_deliver.subprocess.run
-        self.round_deliver.agent_run.read_current_critic_report = lambda card_folder: critic_report
-        self.round_deliver.subprocess.run = lambda *args, **kwargs: self.fail(handler_message)
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+        handler_calls = []
+
+        def fake_subprocess_run(*args, **kwargs):
+            handler_calls.append((args, kwargs))
+            if handler_result is not None:
+                return handler_result
+            self.fail(handler_message)
+
+        self.round_deliver.subprocess.run = fake_subprocess_run
+        if gate_result is not None:
+            self.round_deliver.agent_outputs.prepare_delivery = lambda card_folder, styles_dir: gate_result
 
         token_stats = importlib.import_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
         original_load_checkpoint = token_stats.load_checkpoint
         original_compute_delta = token_stats.compute_delta
         original_read_usage_since = token_stats.read_usage_since
+        exit_code = 0
         try:
             token_stats.locate_transcript = lambda: None
             token_stats.load_checkpoint = lambda card_folder: {}
@@ -277,66 +287,36 @@ class CriticGateRuntimeTest(unittest.TestCase):
             stdout = io.StringIO()
             try:
                 sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
-                with self.assertRaises(SystemExit) as ctx:
+                try:
                     with contextlib.redirect_stdout(stdout):
                         self.round_deliver.main()
+                except SystemExit as exc:
+                    exit_code = exc.code
             finally:
                 sys.argv = old_argv
         finally:
-            self.round_deliver.agent_run.read_current_critic_report = original_read_current_critic_report
             self.round_deliver.subprocess.run = original_subprocess_run
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
             token_stats.locate_transcript = original_locate_transcript
             token_stats.load_checkpoint = original_load_checkpoint
             token_stats.compute_delta = original_compute_delta
             token_stats.read_usage_since = original_read_usage_since
 
-        return ctx.exception.code, json.loads(stdout.getvalue().strip()), progress_calls
+        return exit_code, json.loads(stdout.getvalue().strip()), progress_calls, handler_calls
 
-    def test_round_deliver_retries_on_critic_hard_failures(self):
-        exit_code, payload, progress_calls = self._run_round_deliver(
-            critic_report={"passed": False, "hard_failures": ["missing continuity fix"]},
-            handler_message="handler should not run when critic gate retries",
+    def test_round_deliver_delivers_short_content_after_agent_output_gate_passes(self):
+        exit_code, payload, progress_calls, handler_calls = self._run_round_deliver(
+            handler_message="handler should run after mechanical delivery gate passes",
+            handler_result=SimpleNamespace(returncode=0, stdout="handler ok", stderr=""),
+            gate_result={"ok": True, "story_output": {"content": "<content>短</content>"}},
         )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["action"], "retry")
-        self.assertEqual(payload["reason"], "critic_hard_failures")
-        self.assertEqual(payload["critic_report"]["hard_failures"], ["missing continuity fix"])
-        self.assertTrue(any(args[:2] == ("delivery.retrying", "质检未通过，等待修复") for args, _ in progress_calls))
-        retry_details = [
-            kwargs.get("detail")
-            for args, kwargs in progress_calls
-            if args and args[0] == "delivery.retrying"
-        ]
-        self.assertEqual(retry_details, [{"reason": "critic_hard_failures", "failure_count": 1}])
-
-    def test_round_deliver_ignores_malformed_critic_hard_failures(self):
-        exit_code, payload, progress_calls = self._run_round_deliver(
-            critic_report={"passed": False, "hard_failures": "oops"},
-            handler_message="handler should not run when word-count retry triggers",
-        )
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["action"], "retry")
+        self.assertEqual(payload["action"], "done")
         self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
-        self.assertNotIn("critic_report", payload)
-        self.assertIn("word_count", payload)
-        self.assertTrue(any(args[:2] == ("delivery.retrying", "回复未达字数要求，等待重写") for args, _ in progress_calls))
-
-    def test_round_deliver_ignores_missing_critic_report(self):
-        original_read_current_critic_report = self.round_deliver.agent_run.read_current_critic_report
-        exit_code, payload, progress_calls = self._run_round_deliver(
-            critic_report={},
-            handler_message="handler should not run when no-report falls through to word-count retry",
-        )
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["action"], "retry")
-        self.assertNotEqual(payload.get("reason"), "critic_hard_failures")
-        self.assertNotIn("critic_report", payload)
-        self.assertIn("word_count", payload)
-        self.assertIs(self.round_deliver.agent_run.read_current_critic_report, original_read_current_critic_report)
-        self.assertTrue(any(args[:2] == ("delivery.retrying", "回复未达字数要求，等待重写") for args, _ in progress_calls))
+        self.assertNotIn("word_count", payload)
+        self.assertGreaterEqual(len(handler_calls), 2)
+        self.assertTrue(any(args and "delivery.delivering" == args[0] for args, _ in progress_calls))
 
     def test_round_deliver_returns_retry_when_agent_output_gate_blocks(self):
         progress_calls = []

@@ -25,7 +25,7 @@ AIRP_ClaudeCode/
 │  ├─ start_server.py       # 启动 server.py 与 MVU 服务
 │  ├─ import_prepare.py     # 启动/导入管线
 │  ├─ round_prepare.py      # 每轮控制面上下文与 agent 邮箱准备
-│  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
+│  ├─ round_deliver.py      # 每轮机械交付、handler 调用和记忆更新
 │  ├─ agent_dispatcher.py   # 消费 pending intents 并显式驱动 projection/actor/subGM 协作
 │  ├─ agent_actor_runtime.py # 共享 actor 协作 helper 与 trace/产物写入
 │  ├─ agent_messages.py     # 每轮 append-only 消息总线与 inbox 投影
@@ -83,7 +83,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 ## 核心角色 subagent
 
-`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 消息驱动运行时。它保留原始输入、创建 input analyst 请求、生成初始 GM/actor/story/critic prompt 与 manifest，但不负责从玩家文本中推断语义。该目录包含 `input.json`、`input.raw.json`、`input_analysis.request.md`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`；运行时还会维护 append-only 通信日志 `messages.jsonl`、每个 agent 的投递索引 `inboxes/`、可执行控制面请求 `intents/`，以及物化交付文件 `artifacts/`。Agents 可以通过消息和 intent 请求协作，Python 仍对 ACL、投影、trace、snapshot、schema 和交付门禁保持权威控制。运行中还会按需写入 `input_analysis.output.json`、`gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`；这些 root artifact 主要是交付、记忆边界和调试导出，控制面权威以 `artifacts/` 与 intent/message runtime 为准。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_input_analysis`、`analysis_applied`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
+`round_prepare.py` 每轮会生成 `skills/styles/character_contexts.json`，并在当前卡片文件夹下创建 `.agent_runs/<round>/` 消息驱动运行时。它保留原始输入、创建 input analyst 请求、生成初始 GM/actor/story/critic prompt 与 manifest，但不负责从玩家文本中推断语义。该目录包含 `input.json`、`input.raw.json`、`input_analysis.request.md`、`gm.context.json`、`player.context.json`、`characters/*.context.json`、`prompts/*.prompt.md` 和 `manifest.json`；运行时还会维护 append-only 通信日志 `messages.jsonl`、每个 agent 的投递索引 `inboxes/`、可执行控制面请求 `intents/`，以及物化交付文件 `artifacts/`。Agents 可以通过消息和 intent 请求协作，Python 仍对 ACL、投影、trace、snapshot、schema 和机械交付边界保持权威控制。运行中还会按需写入 `input_analysis.output.json`、`gm.output.json`、`actor.outputs.json`、`interaction.trace.json`、`story.input.json`、`memory_summaries/*.summary.json` 和 `repair_history.jsonl`；这些 root artifact 主要是交付、记忆边界和调试导出，控制面权威以 `artifacts/` 与 intent/message runtime 为准。`manifest.json` 的 `expected_outputs` 使用当前契约：`input_analysis`、`gm`、`actors`、`story`、`critic`，以及可选的 `memory_summaries`；不会再要求独立的 `player.output.json` 或 `characters/*.output.json`。`manifest.json` 会记录阶段历史，例如 `prepared`、`prompts_ready`、`awaiting_input_analysis`、`analysis_applied`、`awaiting_agent_outputs`、`story_ready`、`critic_passed`、`delivered` 或 `blocked`。
 
 浏览器设置中的运行时选项由 `runtime_settings.py` 统一规范化。每轮只会把 `style`、`wordCount`、`nsfw`、`selfRepairMode` 和 `allowSourceCodeSelfRepair` 写入 round context、agent context、manifest 与 story input；调试模式仍由前端/服务端单独保存。`style` 会尝试读取 `skills/styles/presets/<文风>.json` 的 `name`、`title`、`content` 作为 story agent 的创作指引，并把同一份文风资料交给 critic 作为后续风格检查输入。`wordCount` 当前作为 GM 的软性节奏提示和 story output target；critic 会收到由 `runtime_settings.py` 生成的确定性字数指标并写入结构化长度检查，若本轮停在真实玩家决策点则可豁免扩写。`nsfw` 只作为 GM/subGM/story 创作语气提示，不作为 critic 校验项。
 
@@ -133,8 +133,8 @@ $env:AIRP_SELF_REPAIR_MODE="analysis_only"
 ```
 
 - `off`：跳过自动修复步骤，失败后等待人工或外部工具处理。
-- `analysis_only`：只保留 critic/交付门禁诊断与修复建议，不自动重写 story 或重跑 GM。
-- `limited`：默认模式，只自动处理低风险的 story/delivery 类问题，例如字数、标签、格式、视角或润色整理问题；不会自动修复 critic `block` 或重跑整轮剧情推进。
+- `analysis_only`：只保留 critic 诊断和机械交付诊断与修复建议，不自动重写 story 或重跑 GM。
+- `limited`：默认模式，只自动处理 critic 要求的低风险 story 修订，以及交付阶段发现的产物、schema、handler 等机械问题；不会自动修复 critic `block` 或重跑整轮剧情推进。
 - `full`：允许更高上限的修复循环，并可在 critic 判断问题出在 GM/actor/subGM 剧情推进环节时，回退本轮 `.agent_runs/<round>/` 内的推演派生产物，再让 GM 带着修复上下文重新开始本轮推演。
 
 critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退范围。`story_composition` 与 `delivery_gate` 只重跑 story/critic；`gm_loop`、`actor_agent` 与 `subgm` 会在 `full` 模式下回退本轮 dispatcher 派生的 GM/actor/subGM 产物并重新调度。当前第一版不做单个 actor/subGM 的局部热修补，以避免 `interaction.trace.json`、`source_call_id` 和 side thread 状态不一致。

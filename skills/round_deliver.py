@@ -3,7 +3,7 @@
 round_deliver.py — 回合后处理管线。
 
 处理 AI 已写入 response.txt 之后的所有机械步骤：
-质检 → handler 交付 → 记忆更新 → 故事规划检查。
+产物检查 → handler 交付 → 记忆更新 → 故事规划检查。
 
 用法:
   python round_deliver.py <card_folder> <ROOT>
@@ -20,7 +20,7 @@ import agent_memory
 import agent_outputs
 import agent_run
 from handler import write_progress
-from io_utils import read_file, read_json
+from io_utils import read_file
 
 
 def _write_progress_safe(stage, label, percent=None, detail=None):
@@ -45,17 +45,6 @@ def validate_player_processing(response_text, round_context):
     return []
 
 
-def count_chinese(text):
-    """Count Chinese characters in text, stripping HTML."""
-    clean = re.sub(r"<[^>]+>", "", text)
-    count = 0
-    for ch in clean:
-        cp = ord(ch)
-        if 0x4e00 <= cp <= 0x9fff or 0x3400 <= cp <= 0x4dbf or 0x20000 <= cp <= 0x2a6df:
-            count += 1
-    return count
-
-
 def main():
     if len(sys.argv) < 3:
         print(json.dumps({"ok": False, "error": "Usage: round_deliver.py <card_folder> <ROOT>"}))
@@ -65,7 +54,7 @@ def main():
     root = sys.argv[2]
     styles_dir = Path(root) / "skills" / "styles"
     response_path = styles_dir / "response.txt"
-    _write_progress_safe("delivery.validating", "正在质检回复", percent=75)
+    _write_progress_safe("delivery.validating", "正在检查交付产物", percent=75)
 
     delivery_gate = agent_outputs.prepare_delivery(card_folder, styles_dir)
     if not delivery_gate.get("ok", False):
@@ -99,38 +88,9 @@ def main():
         print(json.dumps({"ok": False, "error": "response.txt is empty"}))
         sys.exit(1)
 
-    critic_report = agent_run.read_current_critic_report(card_folder)
-    critic_hard_failures = []
-    if isinstance(critic_report, dict):
-        raw_hard_failures = critic_report.get("hard_failures")
-        if isinstance(raw_hard_failures, list):
-            critic_hard_failures = raw_hard_failures
-        if critic_report.get("passed") is False and critic_hard_failures:
-            _write_progress_safe(
-                "delivery.retrying",
-                "质检未通过，等待修复",
-                percent=65,
-                detail={"reason": "critic_hard_failures", "failure_count": len(critic_hard_failures)},
-            )
-            print(json.dumps({
-                "action": "retry",
-                "reason": "critic_hard_failures",
-                "critic_report": critic_report,
-                "hint": "根据 critic.report.json 修复 story 输出后重新写入 response.txt。"
-            }, ensure_ascii=False))
-            sys.exit(0)
-
-    # ── 1. Word Count Check ──
-    settings = read_json(styles_dir / "settings.json") or {}
-    word_count_target = settings.get("wordCount", 2000)
-    threshold = int(word_count_target * 0.8)
-
-    content_match = re.search(r"<content>(.*?)</content>", response_text, re.DOTALL)
-    content_text = content_match.group(1) if content_match else response_text
-    chinese_count = count_chinese(content_text)
     edit_only = _extract_tag(response_text, "edit_only") and "<derived_content_edits>" in response_text
 
-    # ── 2. Token Collection (checkpoint-based delta) ──
+    # ── 1. Token Collection (checkpoint-based delta) ──
     import token_stats
 
     transcript_path = token_stats.locate_transcript()
@@ -170,34 +130,6 @@ def main():
                              delta["input_tokens"] + delta["output_tokens"]),
     }
 
-    # ── 3. Quality Gate ──
-    ratio = chinese_count / word_count_target if word_count_target > 0 else 1.0
-    round_context = read_file(styles_dir / "round_context.txt") or ""
-    processing_warnings = validate_player_processing(response_text, round_context)
-
-    if processing_warnings:
-        _write_progress_safe("delivery.retrying", "回复未按玩家输入权威规则修正，等待重写", percent=65)
-        print(json.dumps({
-            "action": "retry",
-            "reason": "player_input_processing",
-            "warnings": processing_warnings,
-            "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
-            "tokens": token_data,
-            "hint": "请根据 input_analysis.output.json 的结构化结果和 critic.report.json 修复 story 输出。"
-        }, ensure_ascii=False))
-        sys.exit(0)
-
-    if not edit_only and chinese_count < threshold:
-        # Word count failed — signal retry (do NOT save checkpoint)
-        _write_progress_safe("delivery.retrying", "回复未达字数要求，等待重写", percent=65)
-        print(json.dumps({
-            "action": "retry",
-            "word_count": {"current": chinese_count, "target": word_count_target, "threshold": threshold, "ratio": round(ratio, 2)},
-            "tokens": token_data,
-            "hint": f"当前 {chinese_count} 字，目标 {word_count_target} 字（最低 {threshold} 字）。请扩充感官细节、NPC 微反应、环境变化。禁止灌水重复。"
-        }, ensure_ascii=False))
-        sys.exit(0)
-
     # Append token block to response.txt BEFORE handler reads it.
     # Always append (even with delta=0) so cumulative/startup stats are visible.
     if "<tokens>" not in response_text:
@@ -205,7 +137,7 @@ def main():
         with open(response_path, "a", encoding="utf-8") as f:
             f.write("\n" + token_block)
 
-    # ── 4. Deliver to Frontend ──
+    # ── 2. Deliver to Frontend ──
     _write_progress_safe("delivery.delivering", "正在交付到前端", percent=85)
     handler_ok = False
     try:
@@ -245,7 +177,6 @@ def main():
             "edit_only": True,
             "generatedCount": generated_count,
             "story_plan_due": False,
-            "word_count": {"current": chinese_count, "target": word_count_target, "ratio": round(ratio, 2)},
             "tokens": token_data,
             "memory_updated": False,
             "summary": "已按玩家指令重写前文 AI 派生章节"
@@ -255,7 +186,7 @@ def main():
     # Save checkpoint only after successful delivery
     token_stats.save_checkpoint(card_folder, delta=delta, label="round")
 
-    # ── 5. Memory Update ──
+    # ── 3. Memory Update ──
     _write_progress_safe("memory.finalizing", "正在更新记忆", percent=95)
     memory_ok = False
     try:
@@ -282,7 +213,7 @@ def main():
     except Exception as exc:
         agent_memory_error = str(exc)
 
-    # ── 6. Story Planning Check ──
+    # ── 4. Story Planning Check ──
     state_js = read_file(styles_dir / "state.js")
     generated_count = 0
     if state_js:
@@ -293,7 +224,7 @@ def main():
     plan_interval = 8  # default
     story_plan_due = generated_count > 0 and generated_count % plan_interval == 0
 
-    # ── 7. Summary ──
+    # ── 5. Summary ──
     summary_text = ""
     summary_match = re.search(r"<summary>(.*?)</summary>", response_text, re.DOTALL)
     if summary_match:
@@ -353,7 +284,6 @@ def main():
         "action": "done",
         "generatedCount": generated_count,
         "story_plan_due": story_plan_due,
-        "word_count": {"current": chinese_count, "target": word_count_target, "ratio": round(ratio, 2)},
         "tokens": token_data,
         "memory_updated": memory_ok,
         "agent_memory_updated": agent_memory_ok,
