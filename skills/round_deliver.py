@@ -35,16 +35,6 @@ def _extract_tag(text, tag):
     return m.group(1).strip() if m else ""
 
 
-def validate_player_processing(response_text, round_context):
-    """No-op compatibility hook.
-
-    Semantic player-input handling is validated when input_analysis.output.json
-    is applied and when agent artifacts are prepared for delivery. This stage
-    must not infer player intent by scanning the preserved input text.
-    """
-    return []
-
-
 def main():
     if len(sys.argv) < 3:
         print(json.dumps({"ok": False, "error": "Usage: round_deliver.py <card_folder> <ROOT>"}))
