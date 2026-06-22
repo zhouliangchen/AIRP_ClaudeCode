@@ -831,6 +831,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "raw_gm_output": _initial_gm_output_fixture(),
             "actor_packets": [],
             "gm_packets": [],
+            "critic_context": {},
             "loop_result": {
                 "ok": True,
                 "gm_steps": 0,
@@ -878,6 +879,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if agent_key == "story":
                 return _story_output_fixture(run_dir)
             if agent_key == "critic":
+                captured_loop["critic_context"] = context
                 return _critic_report_fixture()
             raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
 
@@ -1061,6 +1063,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "mode": delivery.get("mode"),
             },
             "dispatcher": _dispatcher_evidence(run_dir, agent_intents),
+            "quality_metrics": captured_loop.get("critic_context", {}).get("quality_metrics", {}),
             "story": _story_evidence(run_dir),
             "manifest_stage": manifest.get("stage"),
             "progress": {
