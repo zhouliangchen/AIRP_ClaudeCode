@@ -19,12 +19,15 @@ The remaining goal is not to replace another fixed workflow layer. That has alre
 
 The current runtime has a dispatcher-first main chain, but `run_gm_turn` still invokes the existing GM loop as a broad helper. That helper already contains mature behavior for projection, actor batches, subGM side threads, perception continuation, dialogue transfer, visibility proof, trace writes, and actor context versioning. The problem is boundary placement: those interactions are still mostly internal to the GM loop instead of being first-class messages and intents that the dispatcher can schedule, audit, retry, block, or extend.
 
+The refactor must also reduce long-term code volume and control-flow duplication. New dispatcher-native paths should not simply wrap old workflow paths forever. Each phase should either delete the replaced branch, shrink it into a focused helper, or mark it as a temporary compatibility path with tests proving it is not the default live route.
+
 This design turns the remaining work into one coordinated refactor:
 
 1. Make projection, actor dispatch, and subGM dispatch real dispatcher executors.
 2. Move assets/UI and system-improvement requests into nonblocking message/intent lanes.
 3. Remove remaining control-plane root artifact and legacy stage assumptions where they still affect behavior or documentation.
-4. Verify the whole runtime with deterministic smoke plus a manual five-turn `/rp` acceptance run.
+4. Structurally simplify old loop and artifact code as dispatcher-native paths take over.
+5. Verify the whole runtime with deterministic smoke plus a manual five-turn `/rp` acceptance run.
 
 ## Design Options Considered
 
@@ -49,6 +52,13 @@ This gives tighter documents but weakens interface consistency. It is only prefe
 ## Recommended Architecture
 
 Keep `agent_dispatcher.py` as the only live next-action engine, but reduce the size of the `run_gm_turn` executor.
+
+Use a "replace then remove" discipline:
+
+- Extract stable domain helpers only when multiple executors need them or when extraction lets an old monolithic branch disappear.
+- Avoid adding permanent adapter layers whose only purpose is preserving old root-artifact or fixed-loop behavior.
+- After an executor becomes authoritative, remove the old decision branch in the same phase or record a specific follow-up cleanup task.
+- Prefer smaller modules with explicit contracts over one growing dispatcher or one growing turn-loop file.
 
 The target split is:
 
@@ -81,6 +91,8 @@ The existing GM loop has valuable tested logic, but it performs projection, acto
 - GM completion checks.
 
 The initial implementation may keep a compatibility executor for complex GM-loop behavior, but the dispatcher smoke must prove at least one full path through explicit projection and actor intents.
+
+That compatibility executor must be treated as temporary. Once equivalent dispatcher-native coverage exists, the old broad GM-loop branch should be reduced to reusable validation, trace, batching, and packet-building helpers rather than remaining as a second orchestration path.
 
 ### Gap 3: Async Assets/UI Is Not In The Runtime
 
@@ -354,6 +366,11 @@ Manual acceptance remains required:
 
 ## Migration Plan
 
+Each phase has two outputs:
+
+- a behavior output: the new dispatcher-native capability works and is tested;
+- a simplification output: the replaced old path is deleted, narrowed, or explicitly quarantined as temporary.
+
 ### Phase 1: Extract Collaboration Helpers
 
 Move reusable pieces out of `agent_turn_loop.py` and `subgm_turn_loop.py` without changing behavior:
@@ -364,7 +381,7 @@ Move reusable pieces out of `agent_turn_loop.py` and `subgm_turn_loop.py` withou
 - trace append helpers,
 - side-thread dispatch wrapper.
 
-The existing tests should pass before dispatcher behavior is changed.
+The existing tests should pass before dispatcher behavior is changed. This phase should not create a large generic utility module. If a helper is used by only one future executor and does not remove complexity, keep it local until the boundary is proven.
 
 ### Phase 2: Implement Projection And Actor Executors
 
@@ -382,6 +399,13 @@ Existing ready-thread batch execution may remain as a helper, but the dispatcher
 
 Refactor `run_gm_turn` so it no longer consumes all actor and subGM work internally. It should create follow-up intents and return. Temporary compatibility mode is allowed only behind explicit tests and must not be the default final path.
 
+This is the main structural simplification phase. Remove or collapse old branches that:
+
+- execute projection and actor dispatch as hidden side effects of one GM-loop call,
+- assemble story readiness from implicit loop completion instead of pending intents,
+- duplicate dispatcher decisions in `rp_generate_cli.py`, `agent_turn_loop.py`, or delivery helpers,
+- mirror root artifacts before they are needed by a delivery or memory boundary.
+
 ### Phase 5: Add Assets And System Request Lanes
 
 Implement `assets_task` and `system_request` as nonblocking lanes.
@@ -395,6 +419,13 @@ Audit root artifact references and update documentation:
 - root reads are either removed or documented as delivery/memory boundaries,
 - README/CLAUDE/AGENTS describe dispatcher-native projection/actor/subGM,
 - stale workflow-era sections are corrected.
+
+Also add a code-size and branch-reduction review:
+
+- identify modules whose responsibilities became narrower after the refactor,
+- delete obsolete compatibility helpers,
+- remove tests that only preserve old fixed-flow behavior,
+- keep regression tests for behavior and safety, not for old implementation shape.
 
 ### Phase 7: Verification And Manual Acceptance
 
@@ -426,6 +457,9 @@ The recommended next implementation plan should cover Phase 1 through Phase 4 fi
 - Risk: dispatcher becomes too large.
   Control: keep executor functions thin and move domain logic to focused helper modules once boundaries are proven.
 
+- Risk: the refactor increases code size by keeping old and new paths alive.
+  Control: every implementation plan must include cleanup tasks for the old path it replaces, and final verification must search for obsolete branch names, compatibility helpers, and root-artifact authority reads.
+
 - Risk: async assets modify UI files after delivery in a way that breaks the frontend.
   Control: assets tasks write manifest-backed records and never block or roll back delivered text.
 
@@ -451,3 +485,4 @@ After implementation, update:
 - Scope check: this is intentionally a remaining-work umbrella spec, but the migration plan identifies a smaller first implementation plan covering dispatcher-native collaboration.
 - Ambiguity check: root artifacts are allowed only as delivery or legacy consumer boundaries, not dispatcher authority.
 - Safety check: actor-facing delivery still requires projection, player authority remains protected, subGM authority remains scoped, and source modifications require explicit user-approved work outside normal gameplay.
+- Maintainability check: the design requires replaced old paths to be deleted, narrowed, or quarantined so the refactor does not grow permanent duplicate orchestration code.
