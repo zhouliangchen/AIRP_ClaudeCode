@@ -538,20 +538,22 @@ def _delivery_retry_decision(delivery_result: Dict[str, Any]) -> str:
 
 
 def _reset_round_progression_outputs(run_dir: Path) -> None:
-    for name in [
+    artifact_names = [
         "gm.output.json",
         "actor.outputs.json",
         "interaction.trace.json",
         "story.input.json",
         "story.output.json",
         "critic.report.json",
-    ]:
-        try:
-            (run_dir / name).unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+    ]
+    for base_dir in (run_dir, run_dir / "artifacts"):
+        for name in artifact_names:
+            try:
+                (base_dir / name).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
     for name in ["side_threads", "memory_summaries"]:
         path = run_dir / name

@@ -268,10 +268,24 @@ class RpGenerateCliTest(unittest.TestCase):
     def test_progression_rollback_preserves_post_round_memory_jobs(self):
         job_path = self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json"
         _write_json(job_path, {"agent_id": "character:Ada"})
+        reset_files = [
+            "gm.output.json",
+            "actor.outputs.json",
+            "interaction.trace.json",
+            "story.input.json",
+            "story.output.json",
+            "critic.report.json",
+        ]
+        for name in reset_files:
+            _write_json(self.run_dir / name, {"source": "root", "name": name})
+            _write_json(self.run_dir / "artifacts" / name, {"source": "artifacts", "name": name})
 
         self.module._reset_round_progression_outputs(self.run_dir)
 
         self.assertTrue(job_path.exists())
+        for name in reset_files:
+            self.assertFalse((self.run_dir / name).exists(), name)
+            self.assertFalse((self.run_dir / "artifacts" / name).exists(), name)
 
     def test_validate_accepts_subgm_wrapper_and_checks_thread_id(self):
         payload = {"subgm_output": _subgm_output("side_a")}
