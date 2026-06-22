@@ -287,6 +287,72 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
 
+    def test_run_gm_turn_writes_artifacts_and_creates_compose_story(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+        loop_calls = []
+
+        def fake_loop(run_dir, manifest, root, run_claude, repair_context=None):
+            loop_calls.append((Path(run_dir), manifest, Path(root), run_claude, repair_context))
+            self.dispatcher.write_artifact(run_dir, "gm.output.json", {"agent": "gm_loop", "outputs": []})
+            self.dispatcher.write_artifact(run_dir, "actor.outputs.json", {"actor_outputs": {}})
+            _write_json(run_dir / "interaction.trace.json", {"schema_version": 2, "status": "decision_point", "events": []})
+            return {"gm_steps": 1, "called_actors": []}
+
+        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertTrue((self.run_dir / "artifacts" / "gm.output.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "actor.outputs.json").exists())
+        self.assertEqual(
+            result["artifacts"],
+            ["artifacts/gm.output.json", "artifacts/actor.outputs.json"],
+        )
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"], {"loop_result": {"gm_steps": 1, "called_actors": []}})
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        self.assertEqual(len(loop_calls), 1)
+        self.assertEqual(loop_calls[0][0], self.run_dir)
+        self.assertEqual(loop_calls[0][2], ROOT)
+        self.assertIsNone(loop_calls[0][4])
+
+    def test_run_gm_turn_blocks_when_loop_raises_after_accept(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+
+        def fake_loop(_run_dir, _manifest, _root, _run_claude, repair_context=None):
+            raise RuntimeError("fixture gm loop exploded")
+
+        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "run_gm_turn_failed")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertIn("fixture gm loop exploded", blocked[0]["result"]["outputs"]["error"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "accepted"), [])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "run_gm_turn_failed")
+
     def test_compose_story_writes_story_output_artifact_and_creates_review_intent(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(

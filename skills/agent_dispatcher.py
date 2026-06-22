@@ -118,6 +118,8 @@ def _execute_supported_intent(
     intent_type = str(intent.get("type") or "")
     if intent_type == "analyze_input":
         return _execute_analyze_input(run_dir, card_folder, root_dir, intent)
+    if intent_type == "run_gm_turn":
+        return _execute_run_gm_turn(run_dir, root_dir, intent, run_claude)
     if intent_type == "compose_story":
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
@@ -560,6 +562,64 @@ def _block_analyze_input_failure(run_dir: Path, intent_id: str, exc: Exception) 
     )
 
 
+def _execute_run_gm_turn(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "run_gm_turn"})
+    artifacts: list[str] = []
+
+    try:
+        if run_claude is None:
+            raise AgentDispatcherError("run_claude is required for run_gm_turn")
+        manifest = _load_manifest(run_dir)
+        loop_result = rp_generate_cli._run_interactive_agent_loop(run_dir, manifest, root_dir, run_claude)
+        rp_generate_cli._promote_loop_outputs_to_artifacts(run_dir)
+        artifacts = [
+            _copy_root_artifact_to_authority(run_dir, "gm.output.json"),
+            _copy_root_artifact_to_authority(run_dir, "actor.outputs.json"),
+        ]
+        follow_up = _ensure_follow_up_intent(
+            run_dir,
+            intent_id,
+            {
+                "requested_by": "gm",
+                "type": "compose_story",
+                "payload": {"loop_result": loop_result},
+                "policy": {"source_intent_id": intent_id},
+            },
+        )
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "run_gm_turn", "run_gm_turn_failed", exc, artifacts)
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "run_gm_turn",
+            "loop_result": loop_result,
+            "follow_up_intent_id": follow_up_id,
+            "artifacts": artifacts,
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_gm_turn",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=artifacts,
+        detail={"loop_result": loop_result, "follow_up_intent_id": follow_up_id},
+    )
+
+
 def _ensure_follow_up_intent(
     run_dir: Path,
     source_intent_id: str,
@@ -599,6 +659,20 @@ def _blocked_terminal_result(manifest: dict[str, Any]) -> dict[str, Any]:
         created_messages=[],
         detail=dispatcher,
     )
+
+
+def _copy_root_artifact_to_authority(run_dir: Path, relative_path: str) -> str:
+    authoritative = artifact_path(run_dir, relative_path)
+    if authoritative.exists():
+        return f"artifacts/{relative_path}"
+
+    source = run_dir / relative_path
+    if source.exists():
+        authoritative.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, authoritative)
+        return f"artifacts/{relative_path}"
+
+    raise AgentDispatcherError(f"{source}: expected executor artifact is missing")
 
 
 def _mark_blocked(run_dir: Path, reason: str, detail: dict[str, Any]) -> None:
