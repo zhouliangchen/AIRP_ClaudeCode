@@ -6,6 +6,7 @@ from pathlib import Path
 
 import agent_intents
 import agent_messages
+import agent_run
 
 
 class AgentActorRuntimeError(RuntimeError):
@@ -14,6 +15,15 @@ class AgentActorRuntimeError(RuntimeError):
 
 class AgentActorProjectionError(AgentActorRuntimeError):
     """Raised when a projection request must block with a structured reason."""
+
+    def __init__(self, reason: str, detail: dict | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = detail or {}
+
+
+class AgentActorDispatchError(AgentActorRuntimeError):
+    """Raised when a run_actor request must block with a structured reason."""
 
     def __init__(self, reason: str, detail: dict | None = None):
         super().__init__(reason)
@@ -243,6 +253,137 @@ def record_actor_response(run_dir: Path, actor_id: str, call: dict, actor_output
         raise
     except Exception as exc:
         raise _runtime_write_error("record actor_response message", exc) from exc
+
+
+def read_projected_actor_packet(
+    run_dir: Path,
+    *,
+    actor_id: str,
+    projected_message_id: str,
+    source_call_id: str,
+) -> dict:
+    """Read the actor packet from a delivered actor-facing projected message."""
+
+    message = _find_source_message(run_dir, projected_message_id)
+    if message is None:
+        raise AgentActorDispatchError(
+            "projected_message_missing",
+            {"projected_message_id": projected_message_id},
+        )
+    if message.get("type") != "projected_message":
+        raise AgentActorDispatchError(
+            "projected_message_missing",
+            {
+                "projected_message_id": projected_message_id,
+                "message_type": message.get("type"),
+            },
+        )
+    if message.get("status") != "delivered" or message.get("visibility") != "actor_facing":
+        raise AgentActorDispatchError(
+            "projected_message_invalid",
+            {
+                "projected_message_id": projected_message_id,
+                "message_status": message.get("status"),
+                "message_visibility": message.get("visibility"),
+            },
+        )
+
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        raise AgentActorDispatchError(
+            "actor_dispatch_failed",
+            {"projected_message_id": projected_message_id, "error": "projected_payload_missing"},
+        )
+
+    targets = message.get("to")
+    if not isinstance(targets, list) or actor_id not in targets:
+        raise AgentActorDispatchError(
+            "projected_message_actor_mismatch",
+            {
+                "projected_message_id": projected_message_id,
+                "expected_actor_id": actor_id,
+                "message_targets": targets,
+            },
+        )
+    projected_actor_id = str(payload.get("actor_id") or "")
+    if projected_actor_id != actor_id:
+        raise AgentActorDispatchError(
+            "projected_message_actor_mismatch",
+            {
+                "projected_message_id": projected_message_id,
+                "expected_actor_id": actor_id,
+                "projected_actor_id": projected_actor_id,
+            },
+        )
+    projected_source_call_id = str(message.get("source_call_id") or payload.get("source_call_id") or "")
+    if source_call_id and projected_source_call_id != source_call_id:
+        raise AgentActorDispatchError(
+            "projected_message_actor_mismatch",
+            {
+                "projected_message_id": projected_message_id,
+                "expected_source_call_id": source_call_id,
+                "projected_source_call_id": projected_source_call_id,
+            },
+        )
+
+    packet = payload.get("packet")
+    if not isinstance(packet, dict):
+        raise AgentActorDispatchError(
+            "actor_dispatch_failed",
+            {"projected_message_id": projected_message_id, "error": "projected_packet_missing"},
+        )
+    packet_actor_id = str(packet.get("actor_id") or actor_id)
+    if packet_actor_id != actor_id:
+        raise AgentActorDispatchError(
+            "projected_message_actor_mismatch",
+            {
+                "projected_message_id": projected_message_id,
+                "expected_actor_id": actor_id,
+                "packet_actor_id": packet_actor_id,
+            },
+        )
+
+    call = packet.get("call")
+    if not isinstance(call, dict):
+        call = {
+            "call_id": projected_source_call_id,
+            "actor_id": actor_id,
+            "prompt": str(payload.get("gm_prompt") or ""),
+        }
+    return {
+        "message": message,
+        "packet": packet,
+        "call": call,
+        "source_call_id": projected_source_call_id,
+    }
+
+
+def append_actor_output(run_dir: Path, actor_id: str, actor_output: dict) -> dict:
+    """Append a validated actor output to root and authoritative artifact files."""
+
+    try:
+        root_path = Path(run_dir) / "actor.outputs.json"
+        current = agent_run.read_json(root_path, {}) if root_path.exists() else {}
+        if current is None:
+            current = {}
+        if not isinstance(current, dict):
+            raise AgentActorRuntimeError("actor.outputs.json must be a JSON object")
+        outputs = dict(current)
+        actor_items = outputs.get(actor_id)
+        if actor_items is None:
+            actor_items = []
+        if not isinstance(actor_items, list):
+            raise AgentActorRuntimeError(f"actor.outputs.json.{actor_id} must be a list")
+        actor_items = list(actor_items)
+        actor_items.append(actor_output)
+        outputs[actor_id] = actor_items
+        agent_run.write_json(root_path, outputs)
+        agent_run.write_json(Path(run_dir) / "artifacts" / "actor.outputs.json", outputs)
+        return outputs
+    except AgentActorRuntimeError:
+        raise
+    except Exception as exc:
+        raise _runtime_write_error("append actor output", exc) from exc
 
 
 def _find_source_message(run_dir: Path, source_message_id: str) -> dict | None:

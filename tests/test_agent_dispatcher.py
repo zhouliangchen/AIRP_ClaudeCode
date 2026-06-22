@@ -58,6 +58,79 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         if not hasattr(self.dispatcher, "rp_generate_cli"):
             self.dispatcher.rp_generate_cli = _load("rp_generate_cli")
 
+    def _append_projected_actor_message(
+        self,
+        *,
+        actor_id="character:Ada",
+        source_call_id="call-character-Ada-1",
+        packet=None,
+        payload_actor_id=None,
+        to=None,
+    ):
+        packet = packet if packet is not None else {"actor_id": actor_id, "visible_context": {"scene": "hall"}}
+        return self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "projection",
+                "to": to if to is not None else [actor_id],
+                "type": "projected_message",
+                "visibility": "actor_facing",
+                "source_call_id": source_call_id,
+                "payload": {
+                    "actor_id": payload_actor_id if payload_actor_id is not None else actor_id,
+                    "source_message_id": "msg_source",
+                    "packet": packet,
+                    "gm_prompt": "Listen at the door.",
+                },
+            },
+        )["message"]
+
+    def _create_run_actor_intent(
+        self,
+        projected_message,
+        *,
+        actor_id="character:Ada",
+        source_call_id="call-character-Ada-1",
+        extra_payload=None,
+    ):
+        payload = {
+            "actor_id": actor_id,
+            "projected_message_id": projected_message,
+            "source_call_id": source_call_id,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+        return self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "projection",
+                "type": "run_actor",
+                "source_message_id": projected_message,
+                "payload": payload,
+            },
+        )["intent"]
+
+    def _actor_resolution_output(self, actor_id="character:Ada"):
+        return {
+            "agent": "player" if actor_id == "player" else "character",
+            "agent_id": actor_id,
+            "character_name": actor_id.split(":", 1)[1] if actor_id.startswith("character:") else "",
+            "events": [
+                {
+                    "type": "custom_action",
+                    "target": "archive door",
+                    "content": "I test the lock.",
+                    "metadata": {
+                        "category": "interaction",
+                        "visible_content": "I test the lock.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "low",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,
@@ -441,6 +514,146 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
         self.assertEqual(pending[0]["source_message_id"], existing["id"])
         self.assertEqual(pending[0]["payload"]["projected_message_id"], existing["id"])
+
+    def test_run_actor_from_projected_message_writes_response_artifact_and_run_gm_turn(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        created = self._create_run_actor_intent(projected["id"])
+        actor_output = self._actor_resolution_output()
+        dispatch_calls = []
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            dispatch_calls.append((agent_key, run_dir, root_dir, extra_context))
+            return actor_output
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["intent_type"], "run_actor")
+        self.assertEqual([call[0] for call in dispatch_calls], ["character:Ada"])
+        self.assertEqual(dispatch_calls[0][3]["actor_packet"], packet)
+        self.assertEqual(dispatch_calls[0][3]["projected_message_id"], projected["id"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        actor_responses = [message for message in messages if message.get("type") == "actor_response"]
+        self.assertEqual(len(actor_responses), 1)
+        self.assertEqual(actor_responses[0]["payload"]["output"], actor_output)
+        root_payload = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
+        artifact_payload = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
+        self.assertEqual(root_payload, {"character:Ada": [actor_output]})
+        self.assertEqual(artifact_payload, root_payload)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_gm_turn"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+
+    def test_run_actor_blocks_when_projected_message_missing(self):
+        created = self._create_run_actor_intent("msg_999999")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "projected_message_missing")
+        self.assertEqual(result["intent_id"], created["id"])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projected_message_missing")
+
+    def test_run_actor_blocks_on_projected_actor_mismatch(self):
+        projected = self._append_projected_actor_message(actor_id="character:Bea")
+        self._create_run_actor_intent(projected["id"], actor_id="character:Ada")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "projected_message_actor_mismatch")
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
+    def test_run_actor_blocks_invalid_actor_schema_as_dispatch_failed(self):
+        projected = self._append_projected_actor_message()
+        self._create_run_actor_intent(projected["id"])
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [],
+            "stop_reason": "continue",
+        }
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "actor_dispatch_failed")
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
+    def test_run_actor_player_high_risk_stops_without_story_or_delivery_follow_up(self):
+        packet = {"actor_id": "player", "visible_context": {"scene": "door"}}
+        projected = self._append_projected_actor_message(
+            actor_id="player",
+            source_call_id="call-player-1",
+            packet=packet,
+        )
+        self._create_run_actor_intent(projected["id"], actor_id="player", source_call_id="call-player-1")
+        actor_output = {
+            "agent": "player",
+            "agent_id": "player",
+            "events": [
+                {
+                    "type": "custom_action",
+                    "target": "unstable bridge",
+                    "content": "I jump onto the unstable bridge.",
+                    "metadata": {
+                        "category": "movement",
+                        "visible_content": "I jump onto the unstable bridge.",
+                        "requires_gm_resolution": True,
+                        "risk_level": "high",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: actor_output
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["detail"]["player_decision_required"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        self.assertEqual(result["created_intents"], [])
+
+    def test_run_actor_cannot_use_unprojected_raw_call_payload(self):
+        raw_request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Use this raw prompt.",
+                    },
+                    "packet": {"actor_id": "character:Ada", "visible_context": {"unsafe": True}},
+                },
+            },
+        )["message"]
+        self._create_run_actor_intent(
+            raw_request["id"],
+            extra_payload={"packet": {"actor_id": "character:Ada", "visible_context": {"unsafe": True}}},
+        )
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail("raw request payload was dispatched")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "projected_message_missing")
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
 
     def test_request_projection_blocks_structured_when_accept_fails(self):
         request = self.dispatcher.agent_messages.append_message(

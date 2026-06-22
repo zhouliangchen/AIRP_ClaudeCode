@@ -13,6 +13,7 @@ import agent_actor_runtime
 import agent_intents
 import agent_messages
 import agent_run
+import agent_turn_loop
 import input_analysis_apply
 import rp_generate_cli
 import self_repair
@@ -126,6 +127,8 @@ def _execute_supported_intent(
         return _execute_run_gm_turn(run_dir, root_dir, intent, run_claude)
     if intent_type == "request_projection":
         return _execute_request_projection(run_dir, intent)
+    if intent_type == "run_actor":
+        return _execute_run_actor(run_dir, root_dir, intent, run_claude)
     if intent_type == "compose_story":
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
@@ -458,6 +461,163 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         created_intents=created_intents,
         created_messages=created_messages,
         artifacts=[],
+        detail=outputs,
+    )
+
+
+def _execute_run_actor(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    actor_id = str(payload.get("actor_id") or "")
+    projected_message_id = str(payload.get("projected_message_id") or intent.get("source_message_id") or "")
+    source_call_id = str(payload.get("source_call_id") or "")
+    accept_failure = _run_actor_transition_failure(
+        run_dir,
+        intent_id,
+        "run_actor_accept_failed",
+        _call_intent_transition(
+            agent_intents.accept_intent,
+            run_dir,
+            intent_id,
+            outputs={"executor": "run_actor"},
+        ),
+    )
+    if accept_failure is not None:
+        return accept_failure
+
+    artifacts: list[str] = []
+    created_messages: list[str] = []
+    created_intents: list[str] = []
+
+    try:
+        projection = agent_actor_runtime.read_projected_actor_packet(
+            run_dir,
+            actor_id=actor_id,
+            projected_message_id=projected_message_id,
+            source_call_id=source_call_id,
+        )
+        actor_packet = projection["packet"]
+        resolved_source_call_id = str(projection.get("source_call_id") or source_call_id)
+        raw_actor_payload = _dispatch_agent_payload(
+            agent_turn_loop._dispatch_actor_key(actor_id),
+            run_dir,
+            root_dir,
+            run_claude,
+            {
+                "actor_packet": actor_packet,
+                "projected_message_id": projected_message_id,
+                "source_call_id": resolved_source_call_id,
+            },
+        )
+        actor_output = agent_turn_loop._validate_actor(actor_id, raw_actor_payload)
+        call = projection.get("call") if isinstance(projection.get("call"), dict) else {}
+        if resolved_source_call_id and not call.get("call_id"):
+            call = {**call, "call_id": resolved_source_call_id}
+        response_message_id = agent_actor_runtime.record_actor_response(run_dir, actor_id, call, actor_output)
+        created_messages.append(response_message_id)
+        agent_actor_runtime.append_actor_output(run_dir, actor_id, actor_output)
+        artifacts.append("artifacts/actor.outputs.json")
+
+        player_decision_required = _actor_output_requires_player_decision(actor_id, actor_output)
+        requires_gm_resolution = _actor_output_requires_gm_resolution(actor_output)
+        follow_up_id = ""
+        if requires_gm_resolution and not player_decision_required:
+            follow_up = _ensure_follow_up_intent(
+                run_dir,
+                intent_id,
+                {
+                    "requested_by": actor_id,
+                    "type": "run_gm_turn",
+                    "payload": {
+                        "reason": "actor_response_requires_resolution",
+                        "actor_id": actor_id,
+                        "source_call_id": resolved_source_call_id,
+                        "actor_response_message_id": response_message_id,
+                        "actor_outputs_path": "artifacts/actor.outputs.json",
+                    },
+                    "policy": {"source_intent_id": intent_id},
+                },
+            )
+            follow_up_id = str(follow_up.get("id") or "")
+            if follow_up.get("created"):
+                created_intents.append(follow_up_id)
+    except agent_actor_runtime.AgentActorDispatchError as exc:
+        if exc.reason in {"projected_message_missing", "projected_message_actor_mismatch", "projected_message_invalid"}:
+            return _block_run_actor_failure(
+                run_dir,
+                intent_id,
+                exc.reason,
+                {"intent_id": intent_id, **exc.detail},
+                artifacts,
+                created_messages=created_messages,
+            )
+        return _block_run_actor_failure(
+            run_dir,
+            intent_id,
+            "actor_dispatch_failed",
+            {"intent_id": intent_id, "reason": exc.reason, **exc.detail},
+            artifacts,
+            created_messages=created_messages,
+        )
+    except Exception as exc:
+        return _block_run_actor_failure(
+            run_dir,
+            intent_id,
+            "actor_dispatch_failed",
+            {
+                "intent_id": intent_id,
+                "exception_type": type(exc).__name__,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            artifacts,
+            created_messages=created_messages,
+        )
+
+    outputs = {
+        "executor": "run_actor",
+        "intent_type": "run_actor",
+        "actor_id": actor_id,
+        "projected_message_id": projected_message_id,
+        "source_call_id": resolved_source_call_id,
+        "actor_response_message_id": response_message_id,
+        "follow_up_intent_id": follow_up_id,
+        "player_decision_required": player_decision_required,
+        "requires_gm_resolution": requires_gm_resolution,
+        "artifacts": artifacts,
+        "created_messages": created_messages,
+        "created_intents": created_intents,
+    }
+    complete_failure = _run_actor_transition_failure(
+        run_dir,
+        intent_id,
+        "run_actor_complete_failed",
+        _call_intent_transition(
+            agent_intents.complete_intent,
+            run_dir,
+            intent_id,
+            outputs=outputs,
+        ),
+        outputs=outputs,
+        artifacts=artifacts,
+        created_intents=created_intents,
+        created_messages=created_messages,
+    )
+    if complete_failure is not None:
+        return complete_failure
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_actor",
+        reason="",
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=artifacts,
         detail=outputs,
     )
 
@@ -952,6 +1112,83 @@ def _request_projection_transition_failure(
     )
 
 
+def _run_actor_transition_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    transition_result: dict[str, Any],
+    *,
+    outputs: dict[str, Any] | None = None,
+    artifacts: list[str] | None = None,
+    created_intents: list[str] | None = None,
+    created_messages: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if transition_result.get("ok"):
+        return None
+
+    detail = {
+        "intent_id": intent_id,
+        "reason": reason,
+        "transition_reason": str(transition_result.get("reason") or "intent_transition_failed"),
+    }
+    exception_type = transition_result.get("exception_type")
+    if isinstance(exception_type, str) and exception_type:
+        detail["exception_type"] = exception_type
+    result_type = transition_result.get("result_type")
+    if isinstance(result_type, str) and result_type:
+        detail["result_type"] = result_type
+    if outputs is not None:
+        detail["attempted_outputs"] = outputs
+
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "run_actor", **detail, "artifacts": list(artifacts or [])},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="run_actor",
+        reason=reason,
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=artifacts,
+        detail=blocked.get("result", {}),
+    )
+
+
+def _block_run_actor_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    detail: dict[str, Any],
+    artifacts: list[str],
+    *,
+    created_messages: list[str] | None = None,
+) -> dict[str, Any]:
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "run_actor", "reason": reason, **detail, "artifacts": artifacts},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="run_actor",
+        reason=reason,
+        created_intents=[],
+        created_messages=created_messages or [],
+        artifacts=artifacts,
+        detail=blocked.get("result", {}),
+    )
+
+
 def _block_projection_failure(
     run_dir: Path,
     intent_id: str,
@@ -1170,6 +1407,36 @@ def _refresh_root_artifact_to_authority(run_dir: Path, relative_path: str) -> st
     authoritative = artifact_path(run_dir, relative_path)
     agent_run.write_json(authoritative, payload)
     return f"artifacts/{relative_path}"
+
+
+def _actor_output_requires_gm_resolution(actor_output: dict[str, Any]) -> bool:
+    for event in actor_output.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "perceive_request":
+            return True
+        if event_type == "custom_action":
+            metadata = event.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("requires_gm_resolution") is True:
+                return True
+    return False
+
+
+def _actor_output_requires_player_decision(actor_id: str, actor_output: dict[str, Any]) -> bool:
+    if str(actor_output.get("stop_reason") or "") == "stop_for_player_decision":
+        return True
+    for event in actor_output.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "stop_for_player_decision":
+            return True
+        if event_type == "custom_action" and actor_id == "player":
+            metadata = event.get("metadata")
+            if isinstance(metadata, dict) and str(metadata.get("risk_level") or "") in {"high", "critical"}:
+                return True
+    return False
 
 
 def _mark_blocked(run_dir: Path, reason: str, detail: dict[str, Any]) -> None:
