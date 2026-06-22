@@ -446,6 +446,22 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "soft_issues": [],
         "repair_instruction": "",
         "system_iteration_suggestion": "",
+        "quality_checks": {
+            "style_alignment": {
+                "status": "pass",
+                "expected_style": "",
+                "profile_title": "",
+                "notes": "",
+            },
+            "length": {
+                "status": "pass",
+                "target": 0,
+                "minimum": 0,
+                "current": 0,
+                "exempted": False,
+                "notes": "",
+            },
+        },
     })
     return _base_prompt(
         "Critic Agent Prompt",
@@ -453,7 +469,15 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "critic.report.json",
         contract,
         run_summary,
-    ) + _critic_style_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
+    ) + _critic_style_guidance(run_summary) + (
+        "\n\nRuntime quality validation:\n"
+        "- The dispatcher passes `quality_metrics` in Runtime Input next to `story_input` and `story_output`.\n"
+        "- Fill `quality_checks.style_alignment` from the selected style and style profile; use `pass`, `revise`, `block`, or `not_checked`.\n"
+        "- Fill `quality_checks.length` from `quality_metrics.word_count`; use `pass`, `revise`, `block`, `exempt`, or `not_checked`.\n"
+        "- If `quality_metrics.word_count.exempted` is true because of a player decision stop, set the length status to `exempt` or otherwise note the player decision exemption instead of requiring expansion.\n"
+        "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
+        "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
+    )
 
 
 def write_round_prompts(

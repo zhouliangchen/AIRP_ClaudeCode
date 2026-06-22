@@ -1378,6 +1378,9 @@ class AgentPacketTest(unittest.TestCase):
                 "soft_issues",
                 "repair_instruction",
                 "system_iteration_suggestion",
+                "quality_checks",
+                "style_alignment",
+                "length",
             ),
         }
         prompt_texts = {
@@ -1410,6 +1413,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("story output target: 1200", story_prompt)
         self.assertIn("NSFW creative tone: 舒缓", story_prompt)
         self.assertIn("轻快节奏", critic_prompt)
+        self.assertIn("quality_metrics", critic_prompt)
+        self.assertIn("style_alignment", critic_prompt)
+        self.assertIn("length", critic_prompt)
+        self.assertIn("player decision", critic_prompt)
         self.assertNotIn("NSFW creative tone: 舒缓", critic_prompt)
         for prompt_name, prompt_text in {
             "story": story_prompt,

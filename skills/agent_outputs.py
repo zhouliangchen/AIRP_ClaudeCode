@@ -871,6 +871,36 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     return story_input
 
 
+def build_critic_quality_metrics(run_dir: str | Path, story_output: Dict[str, Any]) -> Dict[str, Any]:
+    """Build deterministic critic-facing style and length metrics for `story.output.json`."""
+    root = Path(run_dir)
+    manifest = _load_manifest(root)
+    if manifest is None:
+        raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
+
+    runtime_payload = runtime_settings.normalize_prompt_payload({
+        "settings": manifest.get("runtime_settings", {}),
+        "style_profile": manifest.get("style_profile", {}),
+    })
+    settings = runtime_payload["settings"]
+    style_profile = runtime_payload["style_profile"]
+    metrics = runtime_settings.build_quality_metrics(root, settings, style_profile, story_output)
+
+    word_count = dict(metrics.get("word_count", {}))
+    word_count["exemption_reason"] = "player_decision" if word_count.get("exempted") else ""
+    profile_metrics = dict(metrics.get("style_profile", {}))
+    profile_metrics["title"] = style_profile.get("title", "")
+    profile_metrics["content"] = style_profile.get("content", "")
+
+    return {
+        "style": settings["style"],
+        "style_profile": profile_metrics,
+        "word_count": word_count,
+        "chinese_char_count": dict(metrics.get("chinese_char_count", {})),
+        "visible_content": dict(metrics.get("visible_content", {})),
+    }
+
+
 def _retry_result(reason: str, message: str, detail: Any = None) -> Dict[str, Any]:
     result = {
         "ok": False,

@@ -2308,6 +2308,21 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             self.run_dir / "artifacts" / "story.output.json",
             {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
         )
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["runtime_settings"] = {
+            "style": "light",
+            "wordCount": 1000,
+            "nsfw": "关闭",
+            "selfRepairMode": "limited",
+            "allowSourceCodeSelfRepair": False,
+        }
+        manifest["style_profile"] = {
+            "name": "light",
+            "title": "Light Style",
+            "content": "Use direct sentences.",
+            "warning": "",
+        }
+        _write_json(self.run_dir / "manifest.json", manifest)
         created = self.intents.create_intent(
             self.run_dir,
             {"requested_by": "story", "type": "review_critic", "payload": {"reason": "story_ready"}},
@@ -2335,13 +2350,17 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([item["type"] for item in pending], ["deliver_round"])
         self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
         self.assertEqual(dispatch_calls[0][1], "critic prompt")
+        critic_context = dispatch_calls[0][3]
+        self.assertEqual(critic_context["story_input"], {"round_id": "round-000001"})
         self.assertEqual(
-            dispatch_calls[0][3],
-            {
-                "story_input": {"round_id": "round-000001"},
-                "story_output": {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
-            },
+            critic_context["story_output"],
+            {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
         )
+        self.assertEqual(critic_context["quality_metrics"]["style"], "light")
+        self.assertEqual(critic_context["quality_metrics"]["style_profile"]["title"], "Light Style")
+        self.assertEqual(critic_context["quality_metrics"]["word_count"]["target"], 1000)
+        self.assertEqual(critic_context["quality_metrics"]["word_count"]["current"], 2)
+        self.assertNotIn("nsfw", json.dumps(critic_context["quality_metrics"], ensure_ascii=False))
 
     def test_review_critic_normalizes_stale_token_failure_to_delivery(self):
         self._install_dispatcher_dependencies()

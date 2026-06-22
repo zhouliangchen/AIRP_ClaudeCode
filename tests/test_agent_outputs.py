@@ -329,6 +329,41 @@ class AgentOutputsTest(unittest.TestCase):
         for removed_key in ("person", "antiImpersonation", "bgNpc", "charName"):
             self.assertNotIn(removed_key, story_input_text)
 
+    def test_build_critic_quality_metrics_uses_runtime_metrics_and_player_decision_exemption(self):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["runtime_settings"] = {
+            "style": "轻松活泼",
+            "wordCount": 1000,
+            "nsfw": "舒缓",
+            "selfRepairMode": "limited",
+            "allowSourceCodeSelfRepair": False,
+        }
+        manifest["style_profile"] = {
+            "name": "轻松活泼",
+            "title": "轻快节奏",
+            "content": "用明亮、轻快的句子推进场景。",
+            "warning": "",
+        }
+        _write_json(manifest_path, manifest)
+        story_output = {"content": "<content>你推开门。Take cover now.</content>"}
+
+        metrics = self.agent_outputs.build_critic_quality_metrics(self.run_dir, story_output)
+
+        self.assertEqual(metrics["word_count"]["target"], 1000)
+        self.assertEqual(metrics["word_count"]["minimum"], 800)
+        self.assertEqual(metrics["word_count"]["current"], 7)
+        self.assertFalse(metrics["word_count"]["exempted"])
+        self.assertEqual(metrics["style_profile"]["name"], "轻松活泼")
+        self.assertEqual(metrics["style_profile"]["title"], "轻快节奏")
+        self.assertEqual(metrics["style_profile"]["content"], "用明亮、轻快的句子推进场景。")
+        self.assertNotIn("nsfw", json.dumps(metrics, ensure_ascii=False))
+
+        self.agent_interactions.mark_decision_point(self.run_dir, "choose", options=["enter"])
+        exempt_metrics = self.agent_outputs.build_critic_quality_metrics(self.run_dir, story_output)
+        self.assertTrue(exempt_metrics["word_count"]["exempted"])
+        self.assertEqual(exempt_metrics["word_count"]["exemption_reason"], "player_decision")
+
     def test_build_story_input_reads_artifacts_directory_when_present(self):
         artifacts_dir = self.run_dir / "artifacts"
 

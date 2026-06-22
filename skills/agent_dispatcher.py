@@ -970,12 +970,17 @@ def _execute_review_critic(
     try:
         story_input = read_artifact(run_dir, "story.input.json")
         story_output = read_artifact(run_dir, "story.output.json")
+        quality_metrics = agent_outputs.build_critic_quality_metrics(run_dir, story_output)
         critic_report = _dispatch_agent_payload(
             "critic",
             run_dir,
             root_dir,
             run_claude,
-            {"story_input": story_input, "story_output": story_output},
+            {
+                "story_input": story_input,
+                "story_output": story_output,
+                "quality_metrics": quality_metrics,
+            },
         )
         critic_report = rp_generate_cli._normalize_critic_report_for_story(critic_report, story_output)
         write_artifact(run_dir, "critic.report.json", critic_report)

@@ -62,6 +62,8 @@ PERCEPTION_RESPONSE_KEYS = {
     "visibility_basis",
 }
 CRITIC_DECISIONS = {"pass", "revise", "block"}
+CRITIC_QUALITY_STATUSES = {"pass", "revise", "block", "not_checked"}
+CRITIC_LENGTH_STATUSES = CRITIC_QUALITY_STATUSES | {"exempt"}
 
 SUBGM_COMMAND_ACTIONS = {"start", "message", "accelerate", "pause", "resume", "merge", "close"}
 SUBGM_OUTPUT_STATUSES = {"running", "paused", "completed", "blocked", "needs_gm"}
@@ -736,6 +738,100 @@ def validate_story_output(payload: Any) -> Dict[str, Any]:
     }
 
 
+def _optional_int(payload: Dict[str, Any], key: str, default: int = 0, path: str = "") -> int:
+    full_path = _path(path, key)
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError(f"{full_path} must be an integer")
+    return value
+
+
+def _optional_bool(payload: Dict[str, Any], key: str, default: bool = False, path: str = "") -> bool:
+    full_path = _path(path, key)
+    value = payload.get(key, default)
+    if not isinstance(value, bool):
+        raise ValidationError(f"{full_path} must be a boolean")
+    return value
+
+
+def _normalize_quality_status(
+    payload: Dict[str, Any],
+    key: str,
+    allowed: set[str],
+    path: str,
+    default: str = "not_checked",
+) -> str:
+    status = _optional_str(payload, key, default, path)
+    if status not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValidationError(f"{_path(path, key)} must be one of: {allowed_text}")
+    return status
+
+
+def _normalize_critic_quality_checks(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if "quality_checks" not in payload:
+        return {
+            "style_alignment": {
+                "status": "not_checked",
+                "expected_style": "",
+                "profile_title": "",
+                "notes": "",
+            },
+            "length": {
+                "status": "not_checked",
+                "target": 0,
+                "minimum": 0,
+                "current": 0,
+                "exempted": False,
+                "notes": "",
+            },
+        }
+
+    checks = _optional_dict(payload, "quality_checks", "critic_report")
+    if "nsfw" in checks:
+        raise ValidationError("critic_report.quality_checks.nsfw is not a critic validation item")
+
+    style = _optional_dict(checks, "style_alignment", "critic_report.quality_checks")
+    length = _optional_dict(checks, "length", "critic_report.quality_checks")
+
+    return {
+        "style_alignment": {
+            "status": _normalize_quality_status(
+                style,
+                "status",
+                CRITIC_QUALITY_STATUSES,
+                "critic_report.quality_checks.style_alignment",
+            ),
+            "expected_style": _optional_str(
+                style,
+                "expected_style",
+                "",
+                "critic_report.quality_checks.style_alignment",
+            ),
+            "profile_title": _optional_str(
+                style,
+                "profile_title",
+                "",
+                "critic_report.quality_checks.style_alignment",
+            ),
+            "notes": _optional_str(style, "notes", "", "critic_report.quality_checks.style_alignment"),
+        },
+        "length": {
+            "status": _normalize_quality_status(
+                length,
+                "status",
+                CRITIC_LENGTH_STATUSES,
+                "critic_report.quality_checks.length",
+            ),
+            "target": _optional_int(length, "target", 0, "critic_report.quality_checks.length"),
+            "minimum": _optional_int(length, "minimum", 0, "critic_report.quality_checks.length"),
+            "current": _optional_int(length, "current", 0, "critic_report.quality_checks.length"),
+            "exempted": _optional_bool(length, "exempted", False, "critic_report.quality_checks.length"),
+            "notes": _optional_str(length, "notes", "", "critic_report.quality_checks.length"),
+        },
+    }
+
+
 def validate_critic_report(payload: Any) -> Dict[str, Any]:
     """Validate and normalize `critic.report.json`."""
     data = _require_dict(payload, "critic_report")
@@ -748,6 +844,7 @@ def validate_critic_report(payload: Any) -> Dict[str, Any]:
         "soft_issues": _optional_list(data, "soft_issues", "critic_report"),
         "repair_instruction": _optional_str(data, "repair_instruction", path="critic_report"),
         "system_iteration_suggestion": _optional_str(data, "system_iteration_suggestion", path="critic_report"),
+        "quality_checks": _normalize_critic_quality_checks(data),
     }
     if "repair_routing" in data:
         normalized["repair_routing"] = _optional_dict(data, "repair_routing", "critic_report")

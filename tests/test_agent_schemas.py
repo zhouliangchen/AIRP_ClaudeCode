@@ -1120,6 +1120,78 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaises(self.agent_schemas.ValidationError):
             self.agent_schemas.validate_actor_output(payload)
 
+    def test_validate_critic_report_accepts_structured_quality_checks(self):
+        payload = {
+            "decision": "revise",
+            "hard_failures": ["too short"],
+            "soft_issues": [],
+            "repair_instruction": "Expand toward the target.",
+            "system_iteration_suggestion": "",
+            "quality_checks": {
+                "style_alignment": {
+                    "status": "pass",
+                    "expected_style": "轻松活泼",
+                    "profile_title": "轻快节奏",
+                    "notes": "The prose uses short, direct sentences.",
+                },
+                "length": {
+                    "status": "revise",
+                    "target": 1200,
+                    "minimum": 960,
+                    "current": 320,
+                    "exempted": False,
+                    "notes": "Below the target and no player decision exemption applies.",
+                },
+            },
+            "repair_routing": {
+                "stage": "story_composition",
+                "target_agents": ["story"],
+                "rollback": "story_only",
+                "can_auto_repair": True,
+                "risk": "low",
+            },
+        }
+
+        normalized = self.agent_schemas.validate_critic_report(payload)
+
+        self.assertEqual(normalized["quality_checks"]["style_alignment"]["status"], "pass")
+        self.assertEqual(normalized["quality_checks"]["style_alignment"]["expected_style"], "轻松活泼")
+        self.assertEqual(normalized["quality_checks"]["length"]["status"], "revise")
+        self.assertEqual(normalized["quality_checks"]["length"]["target"], 1200)
+        self.assertFalse(normalized["quality_checks"]["length"]["exempted"])
+        self.assertNotIn("nsfw", json.dumps(normalized["quality_checks"], ensure_ascii=False))
+        self.assertNotIn("required_person", json.dumps(normalized, ensure_ascii=False))
+
+    def test_validate_critic_report_rejects_invalid_quality_checks(self):
+        base = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+        }
+
+        invalid_status = {
+            **base,
+            "quality_checks": {
+                "style_alignment": {"status": "maybe"},
+                "length": {"status": "pass", "target": 1200, "minimum": 960, "current": 1180, "exempted": False},
+            },
+        }
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "quality_checks.style_alignment.status"):
+            self.agent_schemas.validate_critic_report(invalid_status)
+
+        nsfw_quality = {
+            **base,
+            "quality_checks": {
+                "style_alignment": {"status": "pass"},
+                "length": {"status": "pass", "target": 1200, "minimum": 960, "current": 1180, "exempted": False},
+                "nsfw": {"status": "pass"},
+            },
+        }
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "quality_checks.nsfw"):
+            self.agent_schemas.validate_critic_report(nsfw_quality)
+
     def test_validate_actor_output_rejects_unknown_event_type(self):
         payload = {
             "agent": "player",
