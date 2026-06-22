@@ -1079,6 +1079,27 @@ def _record_terminal_repair_request_intent(run_dir: Path, critic_report: Dict[st
     return _record_repair_request_intent(run_dir, critic_report)
 
 
+def record_critic_repair_request(card_folder: str | Path, run_dir: str | Path, critic_report: Dict[str, Any]) -> Dict[str, Any]:
+    """Record critic repair metadata and create the standard repair_request intent."""
+
+    root = Path(run_dir)
+    manifest = _load_manifest(root)
+    if manifest is None:
+        raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
+    history = _record_critic_repair(card_folder, root, manifest, critic_report)
+    intent_result = _record_repair_request_intent(root, critic_report)
+    intent = intent_result.get("intent") if isinstance(intent_result, dict) else None
+    intent_id = intent.get("id", "") if isinstance(intent, dict) else ""
+    return {
+        "ok": True,
+        "id": intent_id,
+        "created": not bool(intent_result.get("deduped")),
+        "history": history,
+        "intent": intent,
+        "deduped": bool(intent_result.get("deduped")),
+    }
+
+
 def _block_repair_request_intent(
     run_dir: Path,
     intent_result: Dict[str, Any],

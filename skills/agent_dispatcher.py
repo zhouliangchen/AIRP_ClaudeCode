@@ -378,17 +378,13 @@ def _execute_review_critic(
                 "payload": {"critic_report_path": "artifacts/critic.report.json", "decision": decision},
                 "policy": {"source_intent_id": intent_id},
             }
+            follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
         else:
-            follow_up_payload = {
-                "requested_by": "critic",
-                "type": "repair_request",
-                "payload": {
-                    "critic_report_path": "artifacts/critic.report.json",
-                    "decision": decision,
-                },
-                "policy": {"source_intent_id": intent_id},
-            }
-        follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
+            follow_up = agent_outputs.record_critic_repair_request(
+                run_dir.parents[1],
+                run_dir,
+                critic_report,
+            )
     except Exception as exc:
         return _block_executor_failure(run_dir, intent_id, "review_critic", "review_critic_failed", exc, artifacts)
 
@@ -473,12 +469,7 @@ def _execute_deliver_round(
 
 
 def _delivery_succeeded(delivery: dict[str, Any]) -> bool:
-    if not isinstance(delivery, dict) or not delivery.get("ok"):
-        return False
-    result = delivery.get("result")
-    if isinstance(result, dict) and result.get("ok") is False:
-        return False
-    return True
+    return bool(rp_generate_cli._delivery_complete(delivery))
 
 
 def _block_executor_failure(

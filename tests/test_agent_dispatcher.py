@@ -372,6 +372,65 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )
 
+    def test_review_critic_revise_records_repair_request_metadata_and_message(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
+        _write_json(
+            self.run_dir / "artifacts" / "story.output.json",
+            {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "story", "type": "review_critic", "payload": {"reason": "story_ready"}},
+        )["intent"]
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "critic.prompt.md").write_text("critic prompt", encoding="utf-8")
+
+        def fake_dispatch(_agent_key, _prompt, _root_dir, _run_claude, extra_context=None):
+            self.assertEqual(extra_context["story_input"], {"round_id": "round-000001"})
+            return {
+                "decision": "revise",
+                "hard_failures": [],
+                "soft_issues": ["weak stop point"],
+                "repair_instruction": "Rewrite the stop point around the player decision.",
+                "repair_routing": {"stage": "delivery_gate"},
+            }
+
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["repair_request"])
+        repair_payload = pending[0]["payload"]
+        self.assertEqual(repair_payload["critic_report_path"], "artifacts/critic.report.json")
+        self.assertEqual(repair_payload["decision"], "revise")
+        self.assertEqual(repair_payload["repair_instruction"], "Rewrite the stop point around the player decision.")
+        self.assertEqual(
+            repair_payload["repair_routing"],
+            {
+                "stage": "delivery_gate",
+                "target_agents": ["story"],
+                "rollback": "story_only",
+                "can_auto_repair": True,
+                "risk": "low",
+            },
+        )
+        self.assertTrue(repair_payload["repair_fingerprint"])
+        history_path = self.run_dir / "repair_history.jsonl"
+        self.assertTrue(history_path.exists())
+        history = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["repair_instruction"], "Rewrite the stop point around the player decision.")
+        self.assertEqual(history[0]["repair_routing"], repair_payload["repair_routing"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        repair_messages = [item for item in messages if item.get("type") == "repair_request"]
+        self.assertEqual(len(repair_messages), 1)
+        self.assertEqual(repair_messages[0]["payload"]["repair_fingerprint"], repair_payload["repair_fingerprint"])
+
     def test_deliver_round_marks_delivered_when_delivery_command_passes(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
@@ -418,6 +477,32 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["intent_id"], created["id"])
         self.assertEqual(result["reason"], "delivery_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "delivery_failed")
+
+    def test_deliver_round_blocks_when_delivery_requests_retry_with_outer_ok(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+
+        def fake_run_delivery(_card_folder, _root_dir, _run_command):
+            return {"ok": True, "result": {"action": "retry", "ok": True}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
