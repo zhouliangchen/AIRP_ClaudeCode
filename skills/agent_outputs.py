@@ -357,13 +357,6 @@ def _write_manifest(run_dir: Path, manifest: Dict[str, Any]) -> None:
     agent_run.write_json(run_dir / "manifest.json", manifest)
 
 
-def _expected_outputs(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    expected = manifest.get("expected_outputs")
-    if not isinstance(expected, dict):
-        raise AgentOutputError("manifest.expected_outputs is required")
-    return expected
-
-
 def _validate_actor_key(actor_id: Any, context: str) -> str:
     actor_key = str(actor_id or "").strip()
     if actor_key == "player":

@@ -1224,7 +1224,7 @@ def _ensure_input_analysis(
     expected = manifest.get("expected_outputs") or {}
     prompts = manifest.get("prompts") or {}
     if not isinstance(expected, dict):
-        raise AgentExecutionError("manifest.expected_outputs is required.")
+        raise AgentExecutionError("manifest.expected_outputs must be an object when present.")
     if not isinstance(prompts, dict):
         raise AgentExecutionError("manifest.prompts is required.")
 
