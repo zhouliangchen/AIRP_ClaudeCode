@@ -38,6 +38,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _install_dispatcher_dependencies(self):
+        if not hasattr(self.dispatcher, "agent_outputs"):
+            self.dispatcher.agent_outputs = _load("agent_outputs")
+        if not hasattr(self.dispatcher, "rp_generate_cli"):
+            self.dispatcher.rp_generate_cli = _load("rp_generate_cli")
+
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,
@@ -280,6 +286,143 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["created_messages"], [applied[1]["id"]])
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+
+    def test_compose_story_writes_story_output_artifact_and_creates_review_intent(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "gm", "type": "compose_story", "payload": {"reason": "loop_complete"}},
+        )["intent"]
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"] = {"story": "prompts/story.custom.md"}
+        _write_json(self.run_dir / "manifest.json", manifest)
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "story.custom.md").write_text("story prompt", encoding="utf-8")
+        build_calls = []
+        dispatch_calls = []
+
+        def fake_build_story_input(run_dir):
+            payload = {"round_id": "round-000001", "fixture": "story input"}
+            build_calls.append(Path(run_dir))
+            self.dispatcher.write_artifact(run_dir, "story.input.json", payload)
+            return payload
+
+        def fake_dispatch(agent_key, prompt, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, prompt, Path(root_dir), extra_context))
+            self.assertEqual(agent_key, "story")
+            return {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}}
+
+        self.dispatcher.agent_outputs.build_story_input = fake_build_story_input
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["artifacts"], ["artifacts/story.input.json", "artifacts/story.output.json"])
+        story_output = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(story_output["content"], "<content>Story text.</content>")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["review_critic"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(len(build_calls), 1)
+        self.assertEqual(dispatch_calls[0][1], "story prompt")
+        self.assertEqual(dispatch_calls[0][3], {"story_input": {"round_id": "round-000001", "fixture": "story input"}})
+
+    def test_review_critic_pass_creates_deliver_round_intent(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
+        _write_json(
+            self.run_dir / "artifacts" / "story.output.json",
+            {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "story", "type": "review_critic", "payload": {"reason": "story_ready"}},
+        )["intent"]
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "critic.prompt.md").write_text("critic prompt", encoding="utf-8")
+        dispatch_calls = []
+
+        def fake_dispatch(agent_key, prompt, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, prompt, Path(root_dir), extra_context))
+            self.assertEqual(agent_key, "critic")
+            return {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": ""}
+
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["artifacts"], ["artifacts/critic.report.json"])
+        critic_report = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic_report["decision"], "pass")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["deliver_round"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(dispatch_calls[0][1], "critic prompt")
+        self.assertEqual(
+            dispatch_calls[0][3],
+            {
+                "story_input": {"round_id": "round-000001"},
+                "story_output": {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}},
+            },
+        )
+
+    def test_deliver_round_marks_delivered_when_delivery_command_passes(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+        delivery_calls = []
+
+        def fake_run_delivery(card_folder, root_dir, run_command):
+            delivery_calls.append((Path(card_folder), Path(root_dir), run_command))
+            return {"ok": True, "result": {"ok": True, "mode": "agent_run"}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["intent_id"], created["id"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "delivered")
+        self.assertEqual(manifest["dispatcher"]["status"], "delivered")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        self.assertEqual(len(delivery_calls), 1)
+
+    def test_deliver_round_blocks_when_delivery_command_fails(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+
+        def fake_run_delivery(_card_folder, _root_dir, _run_command):
+            return {"ok": False, "returncode": 1, "result": {"ok": False, "reason": "fixture_delivery_error"}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "delivery_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "delivery_failed")
 
 
 if __name__ == "__main__":

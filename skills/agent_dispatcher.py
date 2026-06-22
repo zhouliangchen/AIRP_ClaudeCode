@@ -6,10 +6,12 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+import agent_outputs
 import agent_intents
 import agent_messages
 import agent_run
 import input_analysis_apply
+import rp_generate_cli
 
 
 SUPPORTED_INTENT_TYPES = {
@@ -116,6 +118,12 @@ def _execute_supported_intent(
     intent_type = str(intent.get("type") or "")
     if intent_type == "analyze_input":
         return _execute_analyze_input(run_dir, card_folder, root_dir, intent)
+    if intent_type == "compose_story":
+        return _execute_compose_story(run_dir, root_dir, intent, run_claude)
+    if intent_type == "review_critic":
+        return _execute_review_critic(run_dir, root_dir, intent, run_claude)
+    if intent_type == "deliver_round":
+        return _execute_deliver_round(run_dir, card_folder, root_dir, intent, run_command)
     if intent_type == "assets_task":
         raise AgentDispatcherError("assets_task is not included in SUPPORTED_INTENT_TYPES")
     blocked = agent_intents.block_intent(
@@ -135,6 +143,49 @@ def _execute_supported_intent(
         created_messages=[],
         artifacts=[],
         detail=blocked.get("result", {}),
+    )
+
+
+def _read_prompt(run_dir: Path, key: str) -> str:
+    manifest = _load_manifest(run_dir)
+    prompts = manifest.get("prompts")
+    relative_path = ""
+    if isinstance(prompts, dict):
+        value = prompts.get(key)
+        if isinstance(value, str):
+            relative_path = value
+    if not relative_path:
+        relative_path = f"prompts/{key}.prompt.md"
+
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        raise AgentDispatcherError(f"prompt path must be relative: {relative_path}")
+    prompt_path = (run_dir / relative).resolve()
+    root = run_dir.resolve()
+    if prompt_path != root and root not in prompt_path.parents:
+        raise AgentDispatcherError(f"prompt path escapes run directory: {relative_path}")
+    try:
+        return prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AgentDispatcherError(f"{prompt_path}: prompt is missing") from exc
+
+
+def _dispatch_agent_payload(
+    agent_key: str,
+    run_dir: Path,
+    root_dir: Path,
+    run_claude: Callable[[str, str, str | Path], str] | None,
+    extra_context: dict[str, Any],
+) -> dict[str, Any]:
+    if run_claude is None:
+        raise AgentDispatcherError(f"run_claude is required for {agent_key}")
+    prompt = _read_prompt(run_dir, agent_key)
+    return rp_generate_cli._dispatch_agent_payload(
+        agent_key,
+        prompt,
+        root_dir,
+        run_claude,
+        extra_context=extra_context,
     )
 
 
@@ -232,6 +283,235 @@ def _execute_analyze_input(
         created_messages=[message_id] if message_id else [],
         artifacts=artifacts,
         detail={"applied": applied, "follow_up_intent_id": follow_up_id},
+    )
+
+
+def _execute_compose_story(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "compose_story"})
+    artifacts: list[str] = []
+
+    try:
+        story_input = agent_outputs.build_story_input(run_dir)
+        artifacts.append("artifacts/story.input.json")
+        story_output = _dispatch_agent_payload(
+            "story",
+            run_dir,
+            root_dir,
+            run_claude,
+            {"story_input": story_input},
+        )
+        write_artifact(run_dir, "story.output.json", story_output)
+        artifacts.append("artifacts/story.output.json")
+        follow_up = _ensure_follow_up_intent(
+            run_dir,
+            intent_id,
+            {
+                "requested_by": "story",
+                "type": "review_critic",
+                "payload": {
+                    "story_input_path": "artifacts/story.input.json",
+                    "story_output_path": "artifacts/story.output.json",
+                },
+                "policy": {"source_intent_id": intent_id},
+            },
+        )
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "compose_story", "compose_story_failed", exc, artifacts)
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "compose_story",
+            "follow_up_intent_id": follow_up_id,
+            "artifacts": artifacts,
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="compose_story",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=artifacts,
+        detail={"follow_up_intent_id": follow_up_id},
+    )
+
+
+def _execute_review_critic(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "review_critic"})
+    artifacts: list[str] = []
+
+    try:
+        story_input = read_artifact(run_dir, "story.input.json")
+        story_output = read_artifact(run_dir, "story.output.json")
+        critic_report = _dispatch_agent_payload(
+            "critic",
+            run_dir,
+            root_dir,
+            run_claude,
+            {"story_input": story_input, "story_output": story_output},
+        )
+        write_artifact(run_dir, "critic.report.json", critic_report)
+        artifacts.append("artifacts/critic.report.json")
+        decision = str(critic_report.get("decision") or "")
+        if decision == "pass":
+            follow_up_payload = {
+                "requested_by": "critic",
+                "type": "deliver_round",
+                "payload": {"critic_report_path": "artifacts/critic.report.json", "decision": decision},
+                "policy": {"source_intent_id": intent_id},
+            }
+        else:
+            follow_up_payload = {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {
+                    "critic_report_path": "artifacts/critic.report.json",
+                    "decision": decision,
+                },
+                "policy": {"source_intent_id": intent_id},
+            }
+        follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "review_critic", "review_critic_failed", exc, artifacts)
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    agent_intents.complete_intent(
+        run_dir,
+        intent_id,
+        outputs={
+            "executor": "review_critic",
+            "decision": decision,
+            "follow_up_intent_id": follow_up_id,
+            "artifacts": artifacts,
+        },
+    )
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="review_critic",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=artifacts,
+        detail={"decision": decision, "follow_up_intent_id": follow_up_id},
+    )
+
+
+def _execute_deliver_round(
+    run_dir: Path,
+    card_folder: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_command: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "deliver_round"})
+
+    try:
+        if run_command is None:
+            raise AgentDispatcherError("run_command is required for deliver_round")
+        delivery = rp_generate_cli._run_delivery(card_folder, root_dir, run_command)
+        if not _delivery_succeeded(delivery):
+            blocked = agent_intents.block_intent(
+                run_dir,
+                intent_id,
+                "delivery_failed",
+                outputs={"executor": "deliver_round", "delivery": delivery},
+            )
+            _mark_blocked(run_dir, "delivery_failed", {"intent_id": intent_id, "delivery": delivery})
+            return _result(
+                False,
+                "blocked",
+                intent_id=intent_id,
+                intent_type="deliver_round",
+                reason="delivery_failed",
+                created_intents=[],
+                created_messages=[],
+                artifacts=[],
+                detail=blocked.get("result", {}),
+            )
+        _mark_delivered(run_dir, {"intent_id": intent_id, "delivery": delivery})
+        agent_intents.complete_intent(
+            run_dir,
+            intent_id,
+            outputs={"executor": "deliver_round", "delivery": delivery},
+        )
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "deliver_round", "delivery_failed", exc, [])
+
+    return _result(
+        True,
+        "delivered",
+        intent_id=intent_id,
+        intent_type="deliver_round",
+        reason="",
+        created_intents=[],
+        created_messages=[],
+        artifacts=[],
+        detail={"delivery": delivery},
+    )
+
+
+def _delivery_succeeded(delivery: dict[str, Any]) -> bool:
+    if not isinstance(delivery, dict) or not delivery.get("ok"):
+        return False
+    result = delivery.get("result")
+    if isinstance(result, dict) and result.get("ok") is False:
+        return False
+    return True
+
+
+def _block_executor_failure(
+    run_dir: Path,
+    intent_id: str,
+    intent_type: str,
+    reason: str,
+    exc: Exception,
+    artifacts: list[str],
+) -> dict[str, Any]:
+    error = f"{type(exc).__name__}: {exc}"
+    detail = {
+        "intent_id": intent_id,
+        "error": error,
+        "exception_type": type(exc).__name__,
+    }
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": intent_type, **detail, "artifacts": artifacts},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type=intent_type,
+        reason=reason,
+        created_intents=[],
+        created_messages=[],
+        artifacts=artifacts,
+        detail=blocked.get("result", {}),
     )
 
 
@@ -337,6 +617,16 @@ def _mark_blocked(run_dir: Path, reason: str, detail: dict[str, Any]) -> None:
     history = manifest.setdefault("stage_history", [])
     if isinstance(history, list):
         history.append({"stage": "blocked", "reason": reason})
+    agent_run.write_json(run_dir / "manifest.json", manifest)
+
+
+def _mark_delivered(run_dir: Path, detail: dict[str, Any]) -> None:
+    manifest = _load_manifest(run_dir)
+    manifest["stage"] = "delivered"
+    manifest["dispatcher"] = {"status": "delivered", "detail": detail}
+    history = manifest.setdefault("stage_history", [])
+    if isinstance(history, list):
+        history.append({"stage": "delivered", "reason": "dispatcher_delivered"})
     agent_run.write_json(run_dir / "manifest.json", manifest)
 
 
