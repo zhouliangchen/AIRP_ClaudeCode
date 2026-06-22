@@ -16,6 +16,7 @@ import agent_run
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import runtime_settings
 import subgm_threads
 
 try:
@@ -275,6 +276,11 @@ def _subgm_packet(run_dir: Path, side_dir: Path, thread_id: str, state: dict, in
         messages = _read_jsonl(side_dir / "messages.jsonl")
         side_thread_summaries = subgm_threads.load_thread_summaries(run_dir)
         subgm_messages = subgm_threads.load_messages_for_gm(run_dir)
+        manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
+    runtime_payload = runtime_settings.normalize_prompt_payload({
+        "settings": manifest.get("runtime_settings", {}),
+        "style_profile": manifest.get("style_profile", {}),
+    })
     return {
         "thread_id": thread_id,
         "input": input_payload,
@@ -288,6 +294,8 @@ def _subgm_packet(run_dir: Path, side_dir: Path, thread_id: str, state: dict, in
         "main_trace_summary": agent_interactions.summarize_for_story_input(run_dir),
         "side_thread_summaries": side_thread_summaries,
         "subgm_messages": subgm_messages,
+        "runtime_settings": runtime_payload["settings"],
+        "style_profile": runtime_payload["style_profile"],
     }
 
 

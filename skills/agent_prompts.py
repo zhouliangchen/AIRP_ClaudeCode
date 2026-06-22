@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 import agent_memory
 import agent_run
+import runtime_settings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,53 @@ def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
 
 def _write_prompt(path: Path, body: str) -> None:
     agent_run.write_text(path, body.strip() + "\n")
+
+
+def _runtime_payload(context: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(context, dict):
+        return runtime_settings.normalize_prompt_payload(None)
+    return runtime_settings.normalize_prompt_payload({
+        "settings": context.get("runtime_settings"),
+        "style_profile": context.get("style_profile"),
+    })
+
+
+def _gm_runtime_guidance(context: Dict[str, Any]) -> str:
+    payload = _runtime_payload(context)
+    settings = payload["settings"]
+    return (
+        "\n\nRuntime creative guidance:\n"
+        f"- NSFW tone option: {settings['nsfw']}\n"
+        f"- soft word-count target: {settings['wordCount']}\n"
+        f"- self-repair mode: {settings['selfRepairMode']}; source-code self-repair allowed: {settings['allowSourceCodeSelfRepair']}\n"
+    )
+
+
+def _story_runtime_guidance(context: Dict[str, Any]) -> str:
+    payload = _runtime_payload(context)
+    settings = payload["settings"]
+    profile = payload["style_profile"]
+    return (
+        "\n\nRuntime creative guidance for story output:\n"
+        f"- style: {settings['style']}\n"
+        f"- style title: {profile.get('title', '')}\n"
+        f"- style profile content: {profile.get('content', '')}\n"
+        f"- story output target: {settings['wordCount']} words/Chinese-character units as a soft target, unless the scene must stop for a player decision.\n"
+        f"- NSFW creative tone: {settings['nsfw']}\n"
+    )
+
+
+def _critic_style_guidance(context: Dict[str, Any]) -> str:
+    context = context if isinstance(context, dict) else {}
+    raw_style = context.get("style")
+    style = raw_style.strip() if isinstance(raw_style, str) and raw_style.strip() else ""
+    profile = context.get("style_profile") if isinstance(context.get("style_profile"), dict) else {}
+    return (
+        "\n\nRuntime style guidance for later validation:\n"
+        f"- style: {style or profile.get('name', '')}\n"
+        f"- style title: {profile.get('title', '')}\n"
+        f"- style profile content: {profile.get('content', '')}\n"
+    )
 
 
 def _base_prompt(
@@ -231,7 +279,7 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "gm.output.json",
         contract,
         context,
-    ) + (
+    ) + _gm_runtime_guidance(context) + (
         "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, "
         "`word_target`, `complete`, `max_steps`.\n"
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
@@ -359,7 +407,7 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
         context,
         "Use only the assigned side-thread context below and return exactly one JSON subGM output object. "
         "The runtime loop validates it and persists it under the side-thread directory.",
-    ) + (
+    ) + _gm_runtime_guidance(context) + (
         "\n\nAllowed `status` values: `running`, `paused`, `completed`, `blocked`, `needs_gm`.\n"
         "\nEvery `actor_calls[]` item must include valid per-call "
         "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
@@ -388,7 +436,7 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "story.output.json",
         contract,
         run_summary,
-    ) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
+    ) + _story_runtime_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
 
 def _critic_prompt(run_summary: Dict[str, Any]) -> str:
@@ -405,7 +453,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "critic.report.json",
         contract,
         run_summary,
-    ) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
+    ) + _critic_style_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
 
 def write_round_prompts(
@@ -415,6 +463,7 @@ def write_round_prompts(
     character_packets: Dict[str, Dict[str, Any]],
     card_folder: str | Path | None = None,
     input_analysis_request: Dict[str, Any] | None = None,
+    runtime_settings_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Write prompt files and return the round manifest."""
     root = Path(run_dir)
@@ -425,6 +474,7 @@ def write_round_prompts(
         input_request = gm_packet.get("input_analysis_request", {}) if isinstance(gm_packet, dict) else {}
     else:
         input_request = input_analysis_request
+    runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     input_analyst_prompt = prompt_root / "input_analyst.prompt.md"
     gm_prompt = prompt_root / "gm.prompt.md"
     player_prompt = prompt_root / "player.prompt.md"
@@ -442,16 +492,30 @@ def write_round_prompts(
         _write_prompt(prompt_path, _character_prompt(packet))
         character_prompts[safe_name] = _rel(prompt_path, root)
 
-    run_summary = {
+    story_summary = {
         "run_dir": str(root.resolve()),
         "inputs": {
             "gm": "gm.output.json",
             "actors": "actor.outputs.json",
         },
         "story_input": "story.input.json",
+        "runtime_settings": runtime_payload["settings"],
+        "style_profile": runtime_payload["style_profile"],
     }
-    _write_prompt(story_prompt, _story_prompt(run_summary))
-    _write_prompt(critic_prompt, _critic_prompt(run_summary))
+    critic_summary = {
+        "run_dir": str(root.resolve()),
+        "inputs": {
+            "gm": "gm.output.json",
+            "actors": "actor.outputs.json",
+            "story": "story.output.json",
+            "story_input": "story.input.json",
+        },
+        "story_input": "story.input.json",
+        "style": runtime_payload["settings"]["style"],
+        "style_profile": runtime_payload["style_profile"],
+    }
+    _write_prompt(story_prompt, _story_prompt(story_summary))
+    _write_prompt(critic_prompt, _critic_prompt(critic_summary))
 
     manifest = {
         "round_id": root.name,
@@ -470,6 +534,8 @@ def write_round_prompts(
             "story": "story.output.json",
             "critic": "critic.report.json",
         },
+        "runtime_settings": runtime_payload["settings"],
+        "style_profile": runtime_payload["style_profile"],
     }
     if card_folder is not None and agent_memory.memory_summary_due(root.name):
         summary_agents = ["player"] + [f"character:{name}" for name in character_prompts.keys()]

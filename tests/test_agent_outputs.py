@@ -298,6 +298,37 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_build_story_input_copies_runtime_guidance_without_removed_settings(self):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["runtime_settings"] = {
+            "style": "轻松活泼",
+            "wordCount": 1200,
+            "nsfw": "舒缓",
+            "selfRepairMode": "full",
+            "allowSourceCodeSelfRepair": True,
+        }
+        manifest["style_profile"] = {
+            "name": "轻松活泼",
+            "title": "轻快节奏",
+            "content": "用明亮、轻快的句子推进场景。",
+            "warning": "",
+        }
+        _write_json(manifest_path, manifest)
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["runtime_settings"], manifest["runtime_settings"])
+        self.assertEqual(story_input["style_guidance"]["title"], "轻快节奏")
+        self.assertIn("用明亮、轻快的句子推进场景。", story_input["style_guidance"]["content"])
+        self.assertEqual(story_input["story_output_guidance"]["word_count_target"], 1200)
+        self.assertEqual(story_input["story_output_guidance"]["nsfw"], "舒缓")
+        self.assertEqual(story_input["critic_style_guidance"]["style"], "轻松活泼")
+        self.assertNotIn("nsfw", story_input["critic_style_guidance"])
+        story_input_text = json.dumps(story_input, ensure_ascii=False)
+        for removed_key in ("person", "antiImpersonation", "bgNpc", "charName"):
+            self.assertNotIn(removed_key, story_input_text)
+
     def test_build_story_input_reads_artifacts_directory_when_present(self):
         artifacts_dir = self.run_dir / "artifacts"
 

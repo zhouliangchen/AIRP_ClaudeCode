@@ -13,6 +13,7 @@ import agent_memory
 import agent_lifecycle
 import agent_messages
 import input_analysis
+import runtime_settings
 
 
 def _to_text(value: Any) -> str:
@@ -394,8 +395,10 @@ def build_gm_packet(
     card_data=None,
     character_contexts=None,
     hidden_setting_records=None,
+    runtime_settings_payload=None,
 ):
     """Build GM packet with both role and instruction channels."""
+    runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     return {
         "agent": "gm",
         "card_folder": str(card_folder),
@@ -406,6 +409,8 @@ def build_gm_packet(
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts or [],
         "components": routed_input.get("components", []),
+        "runtime_settings": runtime_payload["settings"],
+        "style_profile": runtime_payload["style_profile"],
     }
 
 
@@ -595,11 +600,13 @@ def prepare_agent_run(
     turn_index=None,
     input_payload=None,
     hidden_setting_records=None,
+    runtime_settings_payload=None,
 ):
     """Create one round run directory and persist agent packets."""
     routed_input = route_input_payload(user_text, input_payload)
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
     hidden_setting_records = hidden_setting_records or []
+    runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     input_request = build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data)
     world_state = _build_world_state(
         routed_input,
@@ -621,6 +628,8 @@ def prepare_agent_run(
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
     input_json["visible_events"] = world_state["visible_events"]
+    input_json["runtime_settings"] = runtime_payload["settings"]
+    input_json["style_profile"] = runtime_payload["style_profile"]
     degraded_memory_state = agent_memory.previous_post_round_memory_state(card_folder)
     if degraded_memory_state:
         input_json["degraded_memory_state"] = degraded_memory_state
@@ -664,6 +673,7 @@ def prepare_agent_run(
         card_data,
         character_contexts,
         hidden_setting_records=hidden_setting_records,
+        runtime_settings_payload=runtime_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
@@ -686,6 +696,7 @@ def prepare_agent_run(
         character_packets,
         card_folder=card_folder,
         input_analysis_request=model_input_request,
+        runtime_settings_payload=runtime_payload,
     )
     return {
         "run_dir": str(run_dir.resolve()),
@@ -719,6 +730,7 @@ def rebuild_agent_run_from_analysis(
     card_data=None,
     character_contexts=None,
     hidden_setting_records=None,
+    runtime_settings_payload=None,
 ):
     """Rewrite final agent packets/prompts after input analysis has been applied."""
     root = Path(run_dir)
@@ -726,6 +738,13 @@ def rebuild_agent_run_from_analysis(
     hidden_setting_records = hidden_setting_records or []
     card_data = card_data if isinstance(card_data, dict) else {}
     character_contexts = character_contexts or {"characters": []}
+    if runtime_settings_payload is None:
+        previous_manifest = agent_run.read_json(root / "manifest.json", {}) or {}
+        runtime_settings_payload = {
+            "settings": previous_manifest.get("runtime_settings", {}),
+            "style_profile": previous_manifest.get("style_profile", {}),
+        }
+    runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     world_state = _build_world_state(
         routed_input,
         chat_log,
@@ -746,6 +765,8 @@ def rebuild_agent_run_from_analysis(
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts,
         "visible_events": world_state["visible_events"],
+        "runtime_settings": runtime_payload["settings"],
+        "style_profile": runtime_payload["style_profile"],
     }
     agent_run.write_json(root / "input.json", input_json)
     _append_required_message(
@@ -770,6 +791,7 @@ def rebuild_agent_run_from_analysis(
         card_data,
         character_contexts,
         hidden_setting_records=hidden_setting_records,
+        runtime_settings_payload=runtime_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(raw_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
@@ -791,6 +813,7 @@ def rebuild_agent_run_from_analysis(
         character_packets,
         card_folder=card_folder,
         input_analysis_request=_input_analysis_model_request(raw_request),
+        runtime_settings_payload=runtime_payload,
     )
     agent_run.append_manifest_stage(
         manifest,

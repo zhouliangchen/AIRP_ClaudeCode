@@ -16,7 +16,6 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 - Player authority: raw player input is preserved; AI-derived data bends to player revisions.
 - Decision point: the text stops before deciding critical player choices.
 - Style: avoids banned cliches, flat exposition, same-voice dialogue, and abstract emotion labels.
-- Perspective: when `delivery_requirements.required_person` is `第二人称`, protagonist-facing narration must use second person (`你`) rather than third-person protagonist naming or `他/她` as the narrative subject.
 - Immersion: visible response tags must not contain prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供`.
 - Contract: required response tags parse, `<character_dialogues>` JSON is valid, and delivery files are correct.
 - Important-character dialogue provenance: every independent important-character dialogue box is backed by a character subagent source in `actor.outputs.json` or validated `story.input.json`, not invented by story composition.
@@ -28,7 +27,7 @@ Review as a 严谨的小说创作者 and system auditor. You are allowed to be s
 
 ## Failure Handling
 
-Hard failures require rewrite before delivery. Perspective violations, visible meta-analysis, leaked routing/user-instruction summaries, and missing `<derived_content_edits>` when player authority requires repairing earlier AI-derived content are hard failures, not style preferences. Soft issues may pass with notes.
+Hard failures require rewrite before delivery. Visible meta-analysis, leaked routing/user-instruction summaries, and missing `<derived_content_edits>` when player authority requires repairing earlier AI-derived content are hard failures, not style preferences. Soft issues may pass with notes.
 
 If the same hard failure repeats:
 
@@ -39,7 +38,7 @@ If the same hard failure repeats:
 
 For every `revise` or `block`, also classify the repair route:
 
-- `stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, perspective, or polish need regeneration.
+- `stage: "story_composition"` when GM/actor facts are usable and only final prose, structure, tags, or polish need regeneration.
 - `stage: "delivery_gate"` when the failure is a mechanical delivery contract such as word count, required tags, or parser-visible formatting.
 - `stage: "gm_loop"` when the scene plan, causality, decision boundary, world-state delta, or GM handling of player authority is wrong and the current round should be replayed from before GM progression.
 - `stage: "actor_agent"` or `stage: "subgm"` when a character/player/subGM artifact caused the issue; name the target agent. The orchestrator will currently roll these back to the GM-loop checkpoint rather than patching one artifact in place.

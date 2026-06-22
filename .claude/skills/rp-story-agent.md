@@ -33,9 +33,8 @@ Read from current `.agent_runs/<round>/`:
 - Important-character dialogue from side threads must remain source-backed by validated side `actor.outputs.json`/trace provenance in `story.input.json`; do not turn subGM notes into independent dialogue boxes.
 - Before delivery, check that main prose and `<character_dialogues>` do not leak hidden facts, foreshadowing hints, user-instruction summaries, or GM-only rationale through visible narration, dialogue, perception, options, or summaries.
 - Improve 整体性: pacing, paragraph order, transitions, sensory grounding, voice differentiation, and emotional continuity.
-- Obey `delivery_requirements.required_person` exactly. If it is `第二人称`, the main prose must address the protagonist as `你`; do not narrate the protagonist as a third-person named character.
-- Treat `delivery_requirements.word_count_target` and `delivery_requirements.minimum_chinese_chars` from Runtime Input as hard delivery gates. Main prose with less than `delivery_requirements.minimum_chinese_chars` is invalid even if the scene feels complete.
-- In plain terms: less than delivery_requirements.minimum_chinese_chars is invalid.
+- Use the current runtime story output target as an aim for scene length and pacing, not as a hard delivery gate in this agent.
+- If the scene naturally reaches a real player decision point, stop there even when the target length has not been reached.
 - During repair, read `repair_context.word_count_contract.current_chinese_chars` and `repair_context.word_count_contract.missing_chinese_chars`; return a fully rewritten scene that safely exceeds the minimum, normally aiming at `recommended_chinese_chars` or higher.
 - Do not solve a word-count repair by summarizing, skipping beats, or ending early. Expand with concrete classroom/environment continuity, sensory detail, NPC micro-reactions, physical actions, and protagonist perception while preserving the same decision boundary.
 - Do not expose prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供` in any visible response tag.

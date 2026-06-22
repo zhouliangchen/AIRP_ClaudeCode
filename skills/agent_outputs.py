@@ -16,6 +16,7 @@ import agent_messages
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import runtime_settings
 import self_repair
 
 
@@ -821,6 +822,12 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         output_source_call_ids_by_actor,
     )
     side_threads = _load_side_thread_outputs(root, input_payload)
+    runtime_payload = runtime_settings.normalize_prompt_payload({
+        "settings": manifest.get("runtime_settings", {}),
+        "style_profile": manifest.get("style_profile", {}),
+    })
+    settings = runtime_payload["settings"]
+    style_profile = runtime_payload["style_profile"]
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
@@ -837,6 +844,26 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         "delivery_constraints": {
             "preserve_raw_player_inputs": True,
             "preserve_character_dialogue_metadata": True,
+        },
+        "runtime_settings": settings,
+        "style_guidance": {
+            "style": settings["style"],
+            "name": style_profile.get("name", ""),
+            "title": style_profile.get("title", ""),
+            "content": style_profile.get("content", ""),
+            "warning": style_profile.get("warning", ""),
+        },
+        "story_output_guidance": {
+            "word_count_target": settings["wordCount"],
+            "word_count_is_soft": True,
+            "nsfw": settings["nsfw"],
+        },
+        "critic_style_guidance": {
+            "style": settings["style"],
+            "name": style_profile.get("name", ""),
+            "title": style_profile.get("title", ""),
+            "content": style_profile.get("content", ""),
+            "warning": style_profile.get("warning", ""),
         },
     }
     _write_artifact(root, "story.input.json", story_input)

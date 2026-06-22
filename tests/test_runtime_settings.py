@@ -121,6 +121,30 @@ class RuntimeSettingsTest(unittest.TestCase):
         self.assertIn("默认说明", result["content"])
         self.assertIn("missing", result["warning"])
 
+    def test_load_style_profile_rejects_unsafe_style_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            presets = root / "presets"
+            outside = root / "outside"
+            presets.mkdir()
+            outside.mkdir()
+            (presets / "北棱特调.json").write_text(
+                json.dumps({"name": "北棱特调", "content": "安全默认。"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (outside / "secret.json").write_text(
+                json.dumps({"name": "secret", "content": "leaked"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            for unsafe_name in ("../outside/secret", "..\\outside\\secret", "/outside/secret", "C:\\outside\\secret"):
+                with self.subTest(unsafe_name=unsafe_name):
+                    result = self.mod.load_style_profile(presets, unsafe_name)
+                    self.assertEqual(result["name"], "北棱特调")
+                    self.assertEqual(result["content"], "安全默认。")
+                    self.assertIn("unsafe", result["warning"])
+                    self.assertNotIn("leaked", json.dumps(result, ensure_ascii=False))
+
     def test_count_words_and_chinese_chars_are_deterministic(self):
         text = "你推开门。Take cover now."
         self.assertEqual(self.mod.count_chinese_chars(text), 4)

@@ -19,7 +19,7 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 HOST = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("AIRP_HOST", "0.0.0.0")).strip() or "0.0.0.0"
 SKILLS = Path(__file__).parent
 ROOT = SKILLS / "styles"
-PROFILES_DIR = ROOT / "profiles"
+PRESETS_DIR = ROOT / "presets"
 INPUT_FILE = ROOT / "input.txt"
 PENDING_FILE = ROOT / ".pending"
 SETTINGS_FILE = ROOT / "settings.json"
@@ -455,7 +455,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not name:
                     self._json({"ok": False, "error": "missing name"}, 400)
                     return
-                target = PROFILES_DIR / f"{name}.md"
+                if name in {".", ".."} or ":" in name or "/" in name or "\\" in name:
+                    self._json({"ok": False, "error": "unsafe name"}, 400)
+                    return
+                target = PRESETS_DIR / f"{name}.json"
                 if target.exists():
                     target.unlink()
                     self._json({"ok": True})
@@ -514,20 +517,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # API: list available style profiles
         if parsed.path == "/api/style-profiles":
             profiles = []
-            if PROFILES_DIR.exists():
-                for f in sorted(PROFILES_DIR.glob("*.md")):
-                    name = f.stem
-                    content = f.read_text(encoding="utf-8")
-                    title = name
-                    desc = ""
-                    lines = content.strip().split("\n")
-                    for line in lines:
-                        if line.startswith("# ") and not line.startswith("## "):
-                            title = line[2:].strip()
-                        elif line.strip() and not line.startswith("#"):
-                            desc = line.strip()
-                            break
-                    profiles.append({"name": name, "title": title, "description": desc})
+            if PRESETS_DIR.exists():
+                for f in sorted(PRESETS_DIR.glob("*.json")):
+                    try:
+                        payload = json.loads(f.read_text(encoding="utf-8-sig"))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    raw_name = payload.get("name")
+                    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else f.stem
+                    raw_title = payload.get("title")
+                    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else name
+                    raw_description = payload.get("description")
+                    description = raw_description.strip() if isinstance(raw_description, str) else ""
+                    profiles.append({"name": name, "title": title, "description": description})
             self._json(profiles)
             return
 

@@ -346,6 +346,7 @@ def main():
     settings_path = styles_dir / "settings.json"
     raw_settings = read_json(settings_path) or {}
     settings = runtime_settings.normalize_settings(raw_settings if isinstance(raw_settings, dict) else {})
+    runtime_settings_payload = runtime_settings.build_prompt_payload(settings, styles_dir / "presets")
 
     project_md = Path(card_folder) / "memory" / "project.md"
     recent_memory = ""
@@ -446,6 +447,7 @@ def main():
             turn_index=turn_index,
             input_payload=explicit_input_payload or None,
             hidden_setting_records=hidden_setting_records,
+            runtime_settings_payload=runtime_settings_payload,
         )
     except Exception as exc:
         agent_run_error = str(exc)
@@ -485,6 +487,16 @@ def main():
     static_parts.append("\n=== SETTINGS ===")
     for key, val in settings.items():
         static_parts.append(f"  {key}: {val}")
+    style_profile = runtime_settings_payload.get("style_profile", {})
+    if isinstance(style_profile, dict):
+        static_parts.append("\n=== STYLE_GUIDANCE ===")
+        static_parts.append(f"  name: {style_profile.get('name', settings.get('style', ''))}")
+        static_parts.append(f"  title: {style_profile.get('title', '')}")
+        if style_profile.get("warning"):
+            static_parts.append(f"  warning: {style_profile.get('warning')}")
+        content = style_profile.get("content", "")
+        if content:
+            static_parts.append(str(content)[:2000])
 
     # Initvar paths are static (never change after card import)
     if initvar:

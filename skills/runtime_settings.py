@@ -102,21 +102,74 @@ def _profile_from_payload(payload: Any, fallback_name: str) -> dict[str, str]:
     return {"name": name, "title": title, "content": content, "warning": ""}
 
 
+def _safe_preset_path(root: Path, name: str) -> Path | None:
+    if not isinstance(name, str):
+        return None
+    selected = name.strip()
+    if not selected or selected in {".", ".."}:
+        return None
+    if ":" in selected or "/" in selected or "\\" in selected:
+        return None
+    if any(part == ".." for part in Path(selected).parts):
+        return None
+    try:
+        root_resolved = root.resolve()
+        candidate = (root / f"{selected}.json").resolve()
+        candidate.relative_to(root_resolved)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
 def load_style_profile(presets_dir: str | Path, name: str) -> dict[str, str]:
     root = Path(presets_dir)
     selected = name.strip() if isinstance(name, str) and name.strip() else DEFAULT_SETTINGS["style"]
-    profile_path = root / f"{selected}.json"
     warning = ""
     profile_name = selected
+    profile_path = _safe_preset_path(root, selected)
 
-    if not profile_path.exists():
-        warning = f"style profile missing: {selected}"
+    if profile_path is None:
+        warning = f"unsafe style profile name: {selected}"
         profile_name = DEFAULT_SETTINGS["style"]
-        profile_path = root / f"{profile_name}.json"
+        profile_path = _safe_preset_path(root, profile_name)
 
-    profile = _profile_from_payload(_read_json(profile_path, {}), profile_name)
+    if profile_path is None or not profile_path.exists():
+        warning = f"{warning}; style profile missing: {profile_name}".strip("; ")
+        profile_name = DEFAULT_SETTINGS["style"]
+        profile_path = _safe_preset_path(root, profile_name)
+
+    payload = _read_json(profile_path, {}) if profile_path is not None else {}
+    profile = _profile_from_payload(payload, profile_name)
     profile["warning"] = warning
     return profile
+
+
+def normalize_prompt_payload(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    data = payload if isinstance(payload, Mapping) else {}
+    raw_settings = data.get("settings") if isinstance(data.get("settings"), Mapping) else data
+    settings = normalize_settings(raw_settings if isinstance(raw_settings, Mapping) else {})
+    raw_profile = data.get("style_profile")
+    style_profile = _profile_from_payload(raw_profile, settings["style"])
+    if isinstance(raw_profile, Mapping):
+        warning = raw_profile.get("warning")
+        if isinstance(warning, str):
+            style_profile["warning"] = warning
+    return {
+        "settings": settings,
+        "style_profile": style_profile,
+    }
+
+
+def build_prompt_payload(settings: Mapping[str, Any] | None, presets_dir: str | Path | None = None) -> dict[str, Any]:
+    normalized = normalize_settings(settings)
+    if presets_dir is None:
+        style_profile = _profile_from_payload({"name": normalized["style"]}, normalized["style"])
+    else:
+        style_profile = load_style_profile(presets_dir, normalized["style"])
+    return normalize_prompt_payload({
+        "settings": normalized,
+        "style_profile": style_profile,
+    })
 
 
 def extract_tag(text: str, tag: str) -> str:

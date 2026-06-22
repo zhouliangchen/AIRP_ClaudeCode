@@ -1008,6 +1008,50 @@ class TurnStateTest(unittest.TestCase):
         saved = json.loads(server.SETTINGS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(saved, post_result["settings"])
 
+    def test_server_style_profiles_api_lists_json_presets(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.PRESETS_DIR = self.styles / "presets"
+        server.PRESETS_DIR.mkdir()
+        (server.PRESETS_DIR / "轻松活泼.json").write_text(
+            json.dumps(
+                {
+                    "name": "轻松活泼",
+                    "title": "轻快节奏",
+                    "description": "明亮快节奏",
+                    "content": "用明亮、轻快的句子推进场景。",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        old_profiles = self.styles / "profiles"
+        old_profiles.mkdir()
+        (old_profiles / "旧文风.md").write_text("# 旧文风\n不应列出", encoding="utf-8")
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/style-profiles", timeout=5) as response:
+                profiles = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(
+            profiles,
+            [
+                {
+                    "name": "轻松活泼",
+                    "title": "轻快节奏",
+                    "description": "明亮快节奏",
+                }
+            ],
+        )
+
     def test_response_parser_extracts_character_dialogues(self):
         parser = _load_response_parser()
         response = """

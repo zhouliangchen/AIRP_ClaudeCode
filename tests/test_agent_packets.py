@@ -1289,6 +1289,21 @@ class AgentPacketTest(unittest.TestCase):
             card_data={"title": "Prompt Test"},
             character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
             turn_index=0,
+            runtime_settings_payload={
+                "settings": {
+                    "style": "轻松活泼",
+                    "wordCount": 1200,
+                    "nsfw": "舒缓",
+                    "selfRepairMode": "full",
+                    "allowSourceCodeSelfRepair": True,
+                },
+                "style_profile": {
+                    "name": "轻松活泼",
+                    "title": "轻快节奏",
+                    "content": "用明亮、轻快的句子推进场景。",
+                    "warning": "",
+                },
+            },
         )
 
         run_dir = Path(result["run_dir"])
@@ -1332,8 +1347,6 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertIn("story.input.json.interaction_trace", story_prompt)
-        self.assertIn("delivery_requirements.word_count_target", story_prompt)
-        self.assertIn("less than delivery_requirements.minimum_chinese_chars is invalid", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
@@ -1387,8 +1400,32 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("GM may emit `source_agent: \"gm\"`", gm_prompt)
         self.assertIn("preprocess is handled by input analysis", gm_prompt)
         self.assertIn("subGM agents must not emit applied promotion records", gm_prompt)
+        self.assertIn("Runtime creative guidance", gm_prompt)
+        self.assertIn("NSFW tone option: 舒缓", gm_prompt)
+        self.assertIn("soft word-count target: 1200", gm_prompt)
         self.assertIn('"stop_reason": "continue"', player_prompt)
         self.assertIn('"stop_reason": "continue"', char_prompt)
+        self.assertIn("轻快节奏", story_prompt)
+        self.assertIn("用明亮、轻快的句子推进场景。", story_prompt)
+        self.assertIn("story output target: 1200", story_prompt)
+        self.assertIn("NSFW creative tone: 舒缓", story_prompt)
+        self.assertIn("轻快节奏", critic_prompt)
+        self.assertNotIn("NSFW creative tone: 舒缓", critic_prompt)
+        for prompt_name, prompt_text in {
+            "story": story_prompt,
+            "critic": critic_prompt,
+        }.items():
+            with self.subTest(prompt=prompt_name, forbidden_runtime_contract="required_person"):
+                self.assertNotIn("required_person", prompt_text)
+            with self.subTest(prompt=prompt_name, forbidden_runtime_contract="minimum_chinese_chars"):
+                self.assertNotIn("minimum_chinese_chars", prompt_text)
+            for removed_key in ("person", "antiImpersonation", "bgNpc", "charName"):
+                with self.subTest(prompt=prompt_name, removed_key=removed_key):
+                    self.assertNotIn(removed_key, prompt_text)
+        self.assertNotIn("wordCount", critic_prompt)
+        self.assertNotIn("NSFW tone option", critic_prompt)
+        self.assertNotIn("NSFW creative tone", critic_prompt)
+        self.assertNotIn('"nsfw"', critic_prompt)
         self.assertNotIn("continue|", gm_prompt)
         self.assertNotIn("continue|", player_prompt)
         self.assertNotIn("continue|", char_prompt)
@@ -1456,6 +1493,20 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(manifest["expected_outputs"]["actors"], "actor.outputs.json")
         self.assertNotIn("player", manifest["expected_outputs"])
         self.assertNotIn("characters", manifest["expected_outputs"])
+        self.assertEqual(
+            manifest["runtime_settings"],
+            {
+                "style": "轻松活泼",
+                "wordCount": 1200,
+                "nsfw": "舒缓",
+                "selfRepairMode": "full",
+                "allowSourceCodeSelfRepair": True,
+            },
+        )
+        self.assertEqual(manifest["style_profile"]["title"], "轻快节奏")
+        manifest_text = json.dumps(manifest, ensure_ascii=False)
+        for removed_key in ("person", "antiImpersonation", "bgNpc", "charName"):
+            self.assertNotIn(removed_key, manifest_text)
         self.assertIn('"actors": "actor.outputs.json"', story_prompt)
         self.assertIn('"actors": "actor.outputs.json"', critic_prompt)
         self.assertNotIn("interaction_trace", manifest.get("expected_outputs", {}))
@@ -2080,6 +2131,19 @@ class AgentPacketTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        presets_dir = styles_dir / "presets"
+        presets_dir.mkdir()
+        (presets_dir / "轻松活泼.json").write_text(
+            json.dumps(
+                {
+                    "name": "轻松活泼",
+                    "title": "轻快节奏",
+                    "content": "用明亮、轻快的句子推进场景。",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         round_prepare = _load_round_prepare()
         called = {}
         expected_run_dir = str(self.card / ".agent_runs" / "round-000001")
@@ -2133,6 +2197,18 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(called["turn_index"], 0)
         self.assertIsInstance(called["character_contexts"], dict)
         self.assertTrue(called["snapshots_before_prepare"])
+        self.assertEqual(
+            called["runtime_settings_payload"]["settings"],
+            {
+                "style": "轻松活泼",
+                "wordCount": 1200,
+                "nsfw": "舒缓",
+                "selfRepairMode": "full",
+                "allowSourceCodeSelfRepair": True,
+            },
+        )
+        self.assertEqual(called["runtime_settings_payload"]["style_profile"]["name"], "轻松活泼")
+        self.assertEqual(called["runtime_settings_payload"]["style_profile"]["title"], "轻快节奏")
 
         round_context_path = styles_dir / "round_context.txt"
         self.assertTrue(round_context_path.exists())
@@ -2178,6 +2254,9 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("  nsfw: 舒缓", round_context)
         self.assertIn("  selfRepairMode: full", round_context)
         self.assertIn("  allowSourceCodeSelfRepair: True", round_context)
+        self.assertIn("=== STYLE_GUIDANCE ===", round_context)
+        self.assertIn("  title: 轻快节奏", round_context)
+        self.assertIn("用明亮、轻快的句子推进场景。", round_context)
         self.assertNotIn("  person:", round_context)
         self.assertNotIn("  antiImpersonation:", round_context)
         self.assertNotIn("  bgNpc:", round_context)
