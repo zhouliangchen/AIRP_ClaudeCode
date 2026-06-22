@@ -1167,6 +1167,11 @@ def _block_repair_request_intent(
     intent_id = intent.get("id", "") if isinstance(intent, dict) else ""
     if not intent_id:
         raise AgentOutputError("repair_request intent id is missing")
+    routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
+    requires_source_authorization = (
+        routing.get("stage") == "system_code"
+        and reason == "source_code_self_repair_not_authorized"
+    )
     return agent_intents.block_intent(
         run_dir,
         intent_id,
@@ -1175,9 +1180,16 @@ def _block_repair_request_intent(
             "delivery_reason": reason,
             "critic_decision": critic_report.get("decision", ""),
             "critic_report_path": "artifacts/critic.report.json",
-            "repair_routing": self_repair.normalize_repair_routing(critic_report.get("repair_routing")),
+            "repair_routing": routing,
+            "requires_source_repair_authorization": requires_source_authorization,
         },
     )
+
+
+def _blocked_route_reason(routing: Dict[str, Any]) -> str:
+    if routing.get("stage") == "system_code":
+        return "source_code_self_repair_not_authorized"
+    return "self_repair_mode_blocks_route"
 
 
 def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[str, Any]:
@@ -1220,10 +1232,11 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            block_reason = _blocked_route_reason(routing)
             intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
-            _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
+            _block_repair_request_intent(run_dir, intent_result, block_reason, critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
-            return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
+            return _blocked_result(block_reason, "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
             intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)
@@ -1236,10 +1249,11 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         _record_critic_repair(card_folder, run_dir, manifest, critic_report)
         routing = self_repair.normalize_repair_routing(critic_report.get("repair_routing"))
         if not self_repair.policy_allows_route(policy, routing, decision):
+            block_reason = _blocked_route_reason(routing)
             intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
-            _block_repair_request_intent(run_dir, intent_result, "self_repair_mode_blocks_route", critic_report)
+            _block_repair_request_intent(run_dir, intent_result, block_reason, critic_report)
             _mark_blocked_without_retry(run_dir, manifest)
-            return _blocked_result("self_repair_mode_blocks_route", "Self-repair mode does not allow this critic repair route.", critic_report)
+            return _blocked_result(block_reason, "Self-repair mode does not allow this critic repair route.", critic_report)
         if _critic_retry_count(manifest) >= policy.critic_retry_limit:
             intent_result = _record_terminal_repair_request_intent(run_dir, critic_report)
             _block_repair_request_intent(run_dir, intent_result, "critic_retry_limit", critic_report)

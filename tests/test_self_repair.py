@@ -57,6 +57,26 @@ class SelfRepairPolicyTest(unittest.TestCase):
         self.assertTrue(policy.repair_round_progression)
         self.assertTrue(policy.allow_source_code_self_repair)
 
+    def test_system_code_route_requires_full_mode_and_source_switch(self):
+        routing = self.self_repair.normalize_repair_routing({"stage": "system_code"})
+
+        limited_with_switch = self.self_repair.load_policy(
+            settings={"selfRepairMode": "limited", "allowSourceCodeSelfRepair": True},
+            environ={},
+        )
+        full_without_switch = self.self_repair.load_policy(
+            settings={"selfRepairMode": "full", "allowSourceCodeSelfRepair": False},
+            environ={},
+        )
+        full_with_switch = self.self_repair.load_policy(
+            settings={"selfRepairMode": "full", "allowSourceCodeSelfRepair": True},
+            environ={},
+        )
+
+        self.assertFalse(self.self_repair.policy_allows_route(limited_with_switch, routing))
+        self.assertFalse(self.self_repair.policy_allows_route(full_without_switch, routing))
+        self.assertTrue(self.self_repair.policy_allows_route(full_with_switch, routing))
+
     def test_policy_settings_file_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / "settings.json"

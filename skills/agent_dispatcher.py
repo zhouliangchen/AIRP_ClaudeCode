@@ -32,6 +32,7 @@ SUPPORTED_INTENT_TYPES = {
     "review_critic",
     "repair_request",
     "rollback_request",
+    "system_request",
     "deliver_round",
 }
 
@@ -142,6 +143,8 @@ def _execute_supported_intent(
         return _execute_repair_request(run_dir, intent)
     if intent_type == "rollback_request":
         return _execute_rollback_request(run_dir, card_folder, intent)
+    if intent_type == "system_request":
+        return _execute_system_request(run_dir, intent)
     if intent_type == "deliver_round":
         return _execute_deliver_round(run_dir, card_folder, root_dir, intent, run_command)
     if intent_type == "assets_task":
@@ -1031,6 +1034,7 @@ def _execute_review_critic(
 def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "repair_request"})
+    created_messages: list[str] = []
 
     try:
         payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
@@ -1042,7 +1046,29 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
         decision = str(critic_report.get("decision") or payload.get("decision") or "")
         repair_context = _repair_context(report_path, critic_report, payload, routing)
 
-        if routing.get("rollback") == "round_progression":
+        if routing.get("stage") == "system_code":
+            system_payload: dict[str, Any] = {
+                "reason": "source_code_self_repair",
+                "bounded": True,
+                "requires": {
+                    "selfRepairMode": "full",
+                    "allowSourceCodeSelfRepair": True,
+                },
+                "critic_report_path": report_path,
+                "repair_context": repair_context,
+            }
+            if repair_instruction:
+                system_payload["repair_instruction"] = repair_instruction
+            system_iteration_suggestion = str(critic_report.get("system_iteration_suggestion") or "")
+            if system_iteration_suggestion:
+                system_payload["system_iteration_suggestion"] = system_iteration_suggestion
+            follow_up_payload = {
+                "requested_by": "repair",
+                "type": "system_request",
+                "payload": system_payload,
+                "policy": {"source_intent_id": intent_id},
+            }
+        elif routing.get("rollback") == "round_progression":
             follow_up_payload = {
                 "requested_by": "repair",
                 "type": "rollback_request",
@@ -1074,10 +1100,30 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
                 "policy": {"source_intent_id": intent_id},
             }
         follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
+        follow_up_id = str(follow_up.get("id") or "")
+        if routing.get("stage") == "system_code" and follow_up.get("created"):
+            message = agent_messages.append_message(
+                run_dir,
+                {
+                    "from": "repair",
+                    "to": ["system"],
+                    "type": "system_request",
+                    "visibility": "gm_only",
+                    "payload": {"intent_id": follow_up_id, **follow_up_payload["payload"]},
+                },
+            )
+            if not message.get("ok"):
+                raise AgentDispatcherError(f"system_request message append failed: {message!r}")
+            source_message_id = str((message.get("message") or {}).get("id") or "")
+            if not source_message_id:
+                raise AgentDispatcherError("system_request source message id is missing")
+            attached = agent_intents.attach_source_message(run_dir, follow_up_id, source_message_id)
+            if not attached.get("ok"):
+                raise AgentDispatcherError(f"system_request source message attach failed: {attached!r}")
+            created_messages.append(source_message_id)
     except Exception as exc:
         return _block_executor_failure(run_dir, intent_id, "repair_request", "repair_request_failed", exc, [])
 
-    follow_up_id = str(follow_up.get("id") or "")
     created_intents = [follow_up_id] if follow_up.get("created") else []
     agent_intents.complete_intent(
         run_dir,
@@ -1097,7 +1143,7 @@ def _execute_repair_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
         intent_type="repair_request",
         reason="",
         created_intents=created_intents,
-        created_messages=[],
+        created_messages=created_messages,
         artifacts=[],
         detail={
             "decision": decision,
@@ -1189,6 +1235,37 @@ def _execute_rollback_request(run_dir: Path, card_folder: Path, intent: dict[str
             "follow_up_type": follow_up_type,
             "completion": completion,
         },
+    )
+
+
+def _execute_system_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        "system_request_requires_main_agent",
+        outputs={
+            "executor": "system_request",
+            "payload": payload,
+            "note": "Source-code repair requires an explicit main-agent workflow; dispatcher will not edit source code automatically.",
+        },
+    )
+    _mark_blocked(
+        run_dir,
+        "system_request_requires_main_agent",
+        {"intent_id": intent_id, "payload": payload},
+    )
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="system_request",
+        reason="system_request_requires_main_agent",
+        created_intents=[],
+        created_messages=[],
+        artifacts=[],
+        detail=blocked.get("result", {}),
     )
 
 

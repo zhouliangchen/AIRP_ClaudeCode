@@ -44,7 +44,7 @@ For every `revise` or `block`, also classify the repair route:
 - `stage: "delivery_gate"` when the failure is a mechanical delivery contract such as required response tags, JSON/schema shape, artifact readiness, response mirroring, or handler/parser execution.
 - `stage: "gm_loop"` when the scene plan, causality, decision boundary, world-state delta, or GM handling of player authority is wrong and the current round should be replayed from before GM progression.
 - `stage: "actor_agent"` or `stage: "subgm"` when a character/player/subGM artifact caused the issue; name the target agent. The orchestrator will currently roll these back to the GM-loop checkpoint rather than patching one artifact in place.
-- `stage: "system_code"` only when the likely cause is a reusable prompt/code/tooling defect rather than the current story draft. This does not authorize source edits by itself; runtime config must allow source self-repair.
+- `stage: "system_code"` only when the likely cause is a reusable prompt/code/tooling defect rather than the current story draft. This does not authorize source edits by itself; runtime config must have both `selfRepairMode: "full"` and `allowSourceCodeSelfRepair: true`.
 - Use `rollback: "story_only"` for story/delivery issues, `rollback: "round_progression"` for GM/actor/subGM issues, and `rollback: "none"` for source-code/system analysis.
 
 ## Output File

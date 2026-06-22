@@ -2592,6 +2592,61 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(blocked_intents[0]["result"]["outputs"]["delivery_reason"], "self_repair_mode_blocks_route")
         self.assertEqual(blocked_intents[0]["result"]["outputs"]["critic_decision"], "revise")
 
+    def test_prepare_delivery_full_mode_blocks_system_code_without_source_switch(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full", "allowSourceCodeSelfRepair": False}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        routing = {
+            "stage": "system_code",
+            "target_agents": ["system"],
+            "rollback": "none",
+            "can_auto_repair": True,
+            "risk": "medium",
+        }
+        self._write_story_and_critic(
+            decision="revise",
+            repair_routing=routing,
+            repair_instruction="Investigate the reusable dispatcher defect.",
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "source_code_self_repair_not_authorized")
+        self.assertEqual(self._repair_request_intents("pending"), [])
+        blocked_intents = self._repair_request_intents("blocked")
+        self.assertEqual(len(blocked_intents), 1)
+        self.assertEqual(blocked_intents[0]["result"]["reason"], "source_code_self_repair_not_authorized")
+        self.assertEqual(blocked_intents[0]["result"]["outputs"]["repair_routing"], routing)
+        self.assertTrue(blocked_intents[0]["result"]["outputs"]["requires_source_repair_authorization"])
+
+    def test_prepare_delivery_full_mode_with_source_switch_records_system_code_repair_request(self):
+        (self.styles_dir / "settings.json").write_text(
+            json.dumps({"selfRepairMode": "full", "allowSourceCodeSelfRepair": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        routing = {
+            "stage": "system_code",
+            "target_agents": ["system"],
+            "rollback": "none",
+            "can_auto_repair": True,
+            "risk": "medium",
+        }
+        self._write_story_and_critic(
+            decision="revise",
+            repair_routing=routing,
+            repair_instruction="Diagnose and fix the reusable dispatcher defect.",
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        self.assertEqual(result["reason"], "critic_revise")
+        self._assert_single_repair_request_intent(routing)
+
     def test_prepare_delivery_full_mode_recreates_pending_after_limited_blocked_intent(self):
         settings_path = self.styles_dir / "settings.json"
         settings_path.write_text(

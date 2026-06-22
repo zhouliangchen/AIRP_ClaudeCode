@@ -2583,6 +2583,99 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )
 
+    def test_repair_request_system_code_creates_bounded_system_request(self):
+        _write_json(
+            self.run_dir / "artifacts" / "critic.report.json",
+            {
+                "decision": "revise",
+                "repair_instruction": "Diagnose and fix the reusable dispatcher defect.",
+                "system_iteration_suggestion": "Add a regression test before changing source code.",
+                "repair_routing": {
+                    "stage": "system_code",
+                    "rollback": "none",
+                    "can_auto_repair": True,
+                    "risk": "medium",
+                },
+                "repair_fingerprint": "fingerprint-system-code",
+            },
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "repair_request",
+                "payload": {"critic_report_path": "artifacts/critic.report.json"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["system_request"])
+        self.assertEqual(pending[0]["requested_by"], "repair")
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "reason": "source_code_self_repair",
+                "bounded": True,
+                "requires": {
+                    "selfRepairMode": "full",
+                    "allowSourceCodeSelfRepair": True,
+                },
+                "critic_report_path": "artifacts/critic.report.json",
+                "repair_instruction": "Diagnose and fix the reusable dispatcher defect.",
+                "system_iteration_suggestion": "Add a regression test before changing source code.",
+                "repair_context": {
+                    "critic_report_path": "artifacts/critic.report.json",
+                    "decision": "revise",
+                    "repair_instruction": "Diagnose and fix the reusable dispatcher defect.",
+                    "repair_routing": {
+                        "stage": "system_code",
+                        "target_agents": ["system"],
+                        "rollback": "none",
+                        "can_auto_repair": True,
+                        "risk": "medium",
+                    },
+                    "repair_fingerprint": "fingerprint-system-code",
+                },
+            },
+        )
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        system_messages = [item for item in messages if item.get("type") == "system_request"]
+        self.assertEqual(len(system_messages), 1)
+        self.assertEqual(system_messages[0]["to"], ["system"])
+        self.assertEqual(system_messages[0]["payload"]["intent_id"], pending[0]["id"])
+
+    def test_system_request_blocks_without_executing_source_edits(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "repair",
+                "type": "system_request",
+                "payload": {
+                    "reason": "source_code_self_repair",
+                    "bounded": True,
+                    "repair_instruction": "Diagnose before editing source code.",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "system_request_requires_main_agent")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["executor"], "system_request")
+        self.assertEqual(blocked[0]["result"]["outputs"]["payload"], created["payload"])
+
     def test_round_progression_repair_context_flows_through_rollback_to_gm_turn(self):
         _write_json(
             self.run_dir / "artifacts" / "critic.report.json",

@@ -139,7 +139,7 @@ $env:AIRP_SELF_REPAIR_MODE="analysis_only"
 
 critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退范围。`story_composition` 与 `delivery_gate` 只重跑 story/critic；`gm_loop`、`actor_agent` 与 `subgm` 会在 `full` 模式下回退本轮 dispatcher 派生的 GM/actor/subGM 产物并重新调度。当前第一版不做单个 actor/subGM 的局部热修补，以避免 `interaction.trace.json`、`source_call_id` 和 side thread 状态不一致。
 
-如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须额外开启 `allowSourceCodeSelfRepair: true`，默认关闭；普通游玩中不会因为 critic 报告而自动修改关键项目源码。
+如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须同时满足 `selfRepairMode: "full"` 和 `allowSourceCodeSelfRepair: true`；普通游玩中不会因为 critic 报告而自动修改关键项目源码。未授权时，本轮会以 `source_code_self_repair_not_authorized` 阻断并保留 repair intent；已授权时，运行时只创建有边界的 `system_request` intent/message，交给主 agent 按显式工作流诊断和修改源码，dispatcher 本身不会执行任意源码编辑。
 
 ## 模型调用调试日志
 
