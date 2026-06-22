@@ -16,6 +16,7 @@ import agent_messages
 import agent_run
 import agent_turn_loop
 import input_analysis_apply
+import postprocess_outputs
 import rp_generate_cli
 import self_repair
 import subgm_threads
@@ -30,6 +31,7 @@ SUPPORTED_INTENT_TYPES = {
     "run_subgm_thread",
     "compose_story",
     "review_critic",
+    "run_postprocess",
     "repair_request",
     "rollback_request",
     "system_request",
@@ -140,6 +142,8 @@ def _execute_supported_intent(
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
         return _execute_review_critic(run_dir, root_dir, intent, run_claude)
+    if intent_type == "run_postprocess":
+        return _execute_run_postprocess(run_dir, card_folder, root_dir, intent, run_claude)
     if intent_type == "repair_request":
         return _execute_repair_request(run_dir, root_dir, intent)
     if intent_type == "rollback_request":
@@ -993,7 +997,7 @@ def _execute_review_critic(
         if decision == "pass":
             follow_up_payload = {
                 "requested_by": "critic",
-                "type": "deliver_round",
+                "type": "run_postprocess",
                 "payload": {"critic_report_path": "artifacts/critic.report.json", "decision": decision},
                 "policy": {"source_intent_id": intent_id},
             }
@@ -1029,6 +1033,120 @@ def _execute_review_critic(
         created_messages=[],
         artifacts=artifacts,
         detail={"decision": decision, "follow_up_intent_id": follow_up_id},
+    )
+
+
+def _execute_run_postprocess(
+    run_dir: Path,
+    card_folder: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "run_postprocess"})
+    artifacts: list[str] = []
+
+    try:
+        story_input = read_artifact(run_dir, "story.input.json")
+        story_output = read_artifact(run_dir, "story.output.json")
+        critic_report = read_artifact(run_dir, "critic.report.json")
+        critical_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
+        context = {
+            "story_input": story_input,
+            "story_output": story_output,
+            "critic_report": critic_report,
+            "critical_action_evidence": critical_evidence,
+            "pending_repairs": postprocess_outputs.read_pending_repairs(card_folder),
+        }
+        raw_output = _dispatch_agent_payload(
+            "postprocess",
+            run_dir,
+            root_dir,
+            run_claude,
+            {"postprocess_context": context},
+        )
+        validation = postprocess_outputs.validate_postprocess_output(
+            raw_output,
+            critical_action_evidence=critical_evidence,
+        )
+        if not validation.get("ok"):
+            blocked = agent_intents.block_intent(
+                run_dir,
+                intent_id,
+                "postprocess_core_invalid",
+                outputs={
+                    "executor": "run_postprocess",
+                    "validation": validation,
+                    "artifacts": artifacts,
+                },
+            )
+            _mark_blocked(run_dir, "postprocess_core_invalid", {"intent_id": intent_id, "validation": validation})
+            return _result(
+                False,
+                "blocked",
+                intent_id=intent_id,
+                intent_type="run_postprocess",
+                reason="postprocess_core_invalid",
+                created_intents=[],
+                created_messages=[],
+                artifacts=artifacts,
+                detail=blocked.get("result", {}),
+            )
+
+        postprocess = validation["output"]
+        write_artifact(run_dir, "postprocess.output.json", postprocess)
+        agent_run.write_json(run_dir / "postprocess.output.json", postprocess)
+        artifacts.extend(["artifacts/postprocess.output.json", "postprocess.output.json"])
+
+        repair_record = None
+        if postprocess_outputs.ui_extensions_need_repair(postprocess):
+            status = postprocess.get("ui_extension_status")
+            reason = ""
+            if isinstance(status, dict):
+                reason = str(status.get("status") or "ui_extensions_need_repair")
+            repair_record = postprocess_outputs.record_ui_extension_repair(
+                run_dir,
+                card_folder,
+                reason=reason or "ui_extensions_need_repair",
+                required_keys=postprocess_outputs.ui_extension_required_keys(postprocess),
+                source_artifacts=["artifacts/postprocess.output.json"],
+            )
+            artifacts.append(f"artifacts/postprocess_repairs/{repair_record['id']}.json")
+
+        follow_up_payload = {
+            "requested_by": "postprocess",
+            "type": "deliver_round",
+            "payload": {
+                "reason": "postprocess_core_valid",
+                "postprocess_output_path": "artifacts/postprocess.output.json",
+            },
+            "policy": {"source_intent_id": intent_id},
+        }
+        follow_up = _ensure_follow_up_intent(run_dir, intent_id, follow_up_payload)
+    except Exception as exc:
+        return _block_executor_failure(run_dir, intent_id, "run_postprocess", "run_postprocess_failed", exc, artifacts)
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    outputs = {
+        "executor": "run_postprocess",
+        "follow_up_intent_id": follow_up_id,
+        "artifacts": artifacts,
+    }
+    if repair_record is not None:
+        outputs["ui_extension_repair_id"] = repair_record.get("id")
+    agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_postprocess",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=artifacts,
+        detail=outputs,
     )
 
 

@@ -231,6 +231,43 @@ class PostprocessOutputTest(unittest.TestCase):
             ]
             self.assertEqual(queue_items, [artifact])
 
+    def test_read_pending_repairs_only_returns_pending_queue_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            queue_path = card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+            queue_path.parent.mkdir(parents=True)
+            rows = [
+                {"id": "repair-1", "status": "pending", "required_keys": ["ui.a"]},
+                {"id": "repair-2", "status": "completed", "required_keys": ["ui.b"]},
+                {"id": "repair-3", "status": "pending", "required_keys": ["ui.c"]},
+            ]
+            queue_path.write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\nnot-json\n",
+                encoding="utf-8",
+            )
+
+            repairs = self.mod.read_pending_repairs(card)
+
+            self.assertEqual([item["id"] for item in repairs], ["repair-1", "repair-3"])
+
+    def test_ui_extension_repair_helpers_detect_status_and_required_keys(self):
+        payload = {
+            "ui_extension_status": {
+                "status": "needs_repair",
+                "issues": [
+                    {"key": "ui_extensions.status_panels.relationships", "message": "missing"},
+                    "ui_extensions.custom_cards.map",
+                    {"message": "no key"},
+                ],
+            }
+        }
+
+        self.assertTrue(self.mod.ui_extensions_need_repair(payload))
+        self.assertEqual(
+            self.mod.ui_extension_required_keys(payload),
+            ["ui_extensions.status_panels.relationships", "ui_extensions.custom_cards.map"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

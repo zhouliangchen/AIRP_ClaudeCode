@@ -2344,7 +2344,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertNotIn("NNNN", story_output["content"])
         self.assertIn("<character_dialogues>[]</character_dialogues>", story_output["content"])
 
-    def test_review_critic_pass_creates_deliver_round_intent(self):
+    def test_review_critic_pass_creates_run_postprocess_intent(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
         _write_json(
@@ -2390,7 +2390,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         critic_report = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
         self.assertEqual(critic_report["decision"], "pass")
         pending = self.intents.list_intents(self.run_dir, "pending")
-        self.assertEqual([item["type"] for item in pending], ["deliver_round"])
+        self.assertEqual([item["type"] for item in pending], ["run_postprocess"])
+        self.assertEqual(pending[0]["requested_by"], "critic")
         self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
         self.assertEqual(dispatch_calls[0][1], "critic prompt")
         critic_context = dispatch_calls[0][3]
@@ -2447,7 +2448,159 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(critic_report["hard_failures"], [])
         self.assertEqual(critic_report["soft_issues"], ["Prose could use sharper sensory detail."])
         pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_postprocess"])
+
+    def test_run_postprocess_writes_output_and_creates_delivery_intent(self):
+        self._install_dispatcher_dependencies()
+        story_input = {
+            "round_id": "round-000001",
+            "interaction_trace": {
+                "visible_events": [
+                    {
+                        "id": "critical-action-1",
+                        "actor": "player",
+                        "custom_action": {
+                            "actor_id": "player",
+                            "risk_level": "critical",
+                            "visible_content": "I push open the sealed door.",
+                        },
+                    }
+                ]
+            },
+        }
+        story_output = {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}}
+        critic_report = {"decision": "pass", "hard_failures": [], "soft_issues": []}
+        _write_json(self.run_dir / "artifacts" / "story.input.json", story_input)
+        _write_json(self.run_dir / "artifacts" / "story.output.json", story_output)
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", critic_report)
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "postprocess.prompt.md").write_text("postprocess prompt", encoding="utf-8")
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "run_postprocess", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+        dispatch_calls = []
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, Path(run_dir), Path(root_dir), extra_context))
+            return {
+                "schema_version": 1,
+                "core": {
+                    "summary": "You reach the sealed door.",
+                    "current_goal": "Confirm whether to force the door.",
+                    "options": [
+                        {
+                            "label": "Confirm action: I push open the sealed door.",
+                            "source": "player_agent_critical_action",
+                            "requires_confirmation": True,
+                        }
+                    ],
+                },
+                "ui_extension_status": {"status": "ok", "issues": []},
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["artifacts"], ["artifacts/postprocess.output.json", "postprocess.output.json"])
+        postprocess_artifact = json.loads(
+            (self.run_dir / "artifacts" / "postprocess.output.json").read_text(encoding="utf-8")
+        )
+        postprocess_root = json.loads((self.run_dir / "postprocess.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(postprocess_artifact, postprocess_root)
+        self.assertEqual(postprocess_artifact["core"]["summary"], "You reach the sealed door.")
+        pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["deliver_round"])
+        self.assertEqual(pending[0]["requested_by"], "postprocess")
+        self.assertEqual(pending[0]["payload"]["reason"], "postprocess_core_valid")
+        self.assertEqual(dispatch_calls[0][0], "postprocess")
+        postprocess_context = dispatch_calls[0][3]["postprocess_context"]
+        self.assertEqual(postprocess_context["story_input"], story_input)
+        self.assertEqual(postprocess_context["story_output"], story_output)
+        self.assertEqual(postprocess_context["critic_report"], critic_report)
+        self.assertEqual(postprocess_context["pending_repairs"], [])
+        self.assertTrue(postprocess_context["critical_action_evidence"])
+
+    def test_run_postprocess_blocks_core_invalid_without_delivery_intent(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
+        _write_json(self.run_dir / "artifacts" / "story.output.json", {"content": "<content>Story text.</content>"})
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "postprocess.prompt.md").write_text("postprocess prompt", encoding="utf-8")
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "run_postprocess", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+
+        def fake_dispatch(_agent_key, _run_dir, _root_dir, _run_claude, extra_context=None):
+            return {
+                "schema_version": 1,
+                "core": {"summary": "Only a summary."},
+                "ui_extension_status": {"status": "ok", "issues": []},
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["intent_type"], "run_postprocess")
+        self.assertEqual(result["reason"], "postprocess_core_invalid")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+
+    def test_run_postprocess_records_ui_extension_repair_but_still_delivers(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
+        _write_json(self.run_dir / "artifacts" / "story.output.json", {"content": "<content>Story text.</content>"})
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "postprocess.prompt.md").write_text("postprocess prompt", encoding="utf-8")
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "run_postprocess", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+
+        def fake_dispatch(_agent_key, _run_dir, _root_dir, _run_claude, extra_context=None):
+            return {
+                "schema_version": 1,
+                "core": {
+                    "summary": "You pause at the map table.",
+                    "current_goal": "Choose the next route.",
+                    "options": ["Study the map"],
+                },
+                "ui_extension_status": {
+                    "status": "needs_repair",
+                    "issues": [{"key": "ui_extensions.status_panels.relationships"}],
+                },
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["deliver_round"])
+        repairs_dir = self.run_dir / "artifacts" / "postprocess_repairs"
+        repair_files = list(repairs_dir.glob("*.json"))
+        self.assertEqual(len(repair_files), 1)
+        repair = json.loads(repair_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(repair["status"], "pending")
+        self.assertEqual(repair["required_keys"], ["ui_extensions.status_panels.relationships"])
+        queue_path = self.card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+        queue_items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([item["id"] for item in queue_items], [repair["id"]])
 
     def test_review_critic_revise_records_repair_request_metadata_and_message(self):
         self._install_dispatcher_dependencies()

@@ -176,6 +176,60 @@ def _append_jsonl(path, row):
         handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def read_pending_repairs(card_dir):
+    """Return pending postprocess UI-extension repairs for the card."""
+
+    queue_path = Path(card_dir) / ".agent_runs" / "postprocess_repair_queue.jsonl"
+    if not queue_path.exists():
+        return []
+
+    repairs = []
+    for line in queue_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("status") == "pending":
+            repairs.append(row)
+    return repairs
+
+
+def ui_extensions_need_repair(postprocess):
+    """Return whether non-core UI extension data needs a follow-up repair."""
+
+    if not isinstance(postprocess, dict):
+        return False
+    status = postprocess.get("ui_extension_status")
+    if not isinstance(status, dict):
+        return False
+    return str(status.get("status") or "").strip().lower() in {"failed", "partial", "needs_repair"}
+
+
+def ui_extension_required_keys(postprocess):
+    """Extract affected UI extension keys from ui_extension_status.issues."""
+
+    if not isinstance(postprocess, dict):
+        return []
+    status = postprocess.get("ui_extension_status")
+    if not isinstance(status, dict):
+        return []
+    issues = status.get("issues")
+    if not isinstance(issues, list):
+        return []
+
+    keys = []
+    for issue in issues:
+        if isinstance(issue, dict):
+            key = _clean_text(issue.get("key"))
+        else:
+            key = _clean_text(issue)
+        if key:
+            keys.append(key)
+    return keys
+
+
 def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, source_artifacts):
     root = Path(run_dir)
     card_root = Path(card_dir)
