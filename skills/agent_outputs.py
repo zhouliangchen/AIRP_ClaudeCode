@@ -253,11 +253,22 @@ def _read_json_required(path: Path) -> Dict[str, Any]:
 
 
 def _artifact_path(root: Path, relative_path: str) -> Path:
-    return root / "artifacts" / relative_path
+    raw = Path(str(relative_path))
+    if raw.is_absolute() or any(part == ".." for part in raw.parts):
+        raise AgentOutputError(f"{relative_path}: artifact path must be run-relative and stay under artifacts")
+    if not str(relative_path).strip() or str(relative_path).strip() in {".", ""}:
+        raise AgentOutputError("artifact path must not be empty")
+    artifacts_dir = (root / "artifacts").resolve()
+    candidate = (artifacts_dir / raw).resolve()
+    try:
+        candidate.relative_to(artifacts_dir)
+    except ValueError as exc:
+        raise AgentOutputError(f"{relative_path}: artifact path escapes artifacts directory") from exc
+    return candidate
 
 
 def _write_artifact(root: Path, relative_path: str, payload: Dict[str, Any]) -> None:
-    agent_run.write_json(root / "artifacts" / relative_path, payload)
+    agent_run.write_json(_artifact_path(root, relative_path), payload)
 
 
 def export_delivery_artifact(root: str | Path, relative_path: str) -> Path:
@@ -1161,6 +1172,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 
     response_path = Path(styles_dir) / "response.txt"
+    export_delivery_artifact(run_dir, "story.input.json")
     export_delivery_artifact(run_dir, "story.output.json")
     export_delivery_artifact(run_dir, "critic.report.json")
     agent_run.write_text(response_path, story_output["content"])

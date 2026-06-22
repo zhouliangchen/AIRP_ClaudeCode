@@ -204,8 +204,8 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         if mark_decision:
             self.agent_interactions.mark_decision_point(run_dir, "player must choose whether to enter", ["enter", "wait"])
 
-        _write_json(run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": [gm_output]})
-        _write_json(run_dir / "actor.outputs.json", actor_outputs)
+        _write_json(run_dir / "artifacts" / "gm.output.json", {"agent": "gm_loop", "outputs": [gm_output]})
+        _write_json(run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
 
     def test_complete_file_protocol_round_without_live_model(self):
         self.assertTrue(FIXTURE.exists())
@@ -232,7 +232,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
 
         self._write_loop_artifacts(run_dir, scenario)
         _write_json(
-            run_dir / "story.output.json",
+            run_dir / "artifacts" / "story.output.json",
             {
                 "content": scenario["story_content"],
                 "character_dialogues": [
@@ -243,7 +243,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             },
         )
         _write_json(
-            run_dir / "critic.report.json",
+            run_dir / "artifacts" / "critic.report.json",
             {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": ""},
         )
 
@@ -339,7 +339,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
 
         self._write_loop_artifacts(run_dir, scenario, include_private_note=True, mark_decision=True)
         _write_json(
-            run_dir / "story.output.json",
+            run_dir / "artifacts" / "story.output.json",
             {
                 "content": scenario["story_content"],
                 "character_dialogues": [
@@ -350,7 +350,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             },
         )
         _write_json(
-            run_dir / "critic.report.json",
+            run_dir / "artifacts" / "critic.report.json",
             {
                 "decision": "revise",
                 "hard_failures": [],
@@ -366,7 +366,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertFalse((self.styles_dir / "response.txt").exists())
 
         _write_json(
-            run_dir / "critic.report.json",
+            run_dir / "artifacts" / "critic.report.json",
             {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
         )
         delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)

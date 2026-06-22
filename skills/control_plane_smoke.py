@@ -424,7 +424,7 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
 
 def _write_story_and_critic_outputs(run_dir: Path) -> None:
     _write_json(
-        run_dir / "story.output.json",
+        run_dir / "artifacts" / "story.output.json",
         {
             "content": (
                 '<content>Ada lowered her voice. "That pendant is older than this school," '
@@ -441,7 +441,7 @@ def _write_story_and_critic_outputs(run_dir: Path) -> None:
         },
     )
     _write_json(
-        run_dir / "critic.report.json",
+        run_dir / "artifacts" / "critic.report.json",
         {
             "decision": "pass",
             "hard_failures": [],
@@ -450,6 +450,15 @@ def _write_story_and_critic_outputs(run_dir: Path) -> None:
             "system_iteration_suggestion": "",
         },
     )
+
+
+def _promote_loop_outputs_to_artifacts(run_dir: Path) -> None:
+    for name in ("gm.output.json", "actor.outputs.json"):
+        source = run_dir / name
+        if source.exists():
+            payload = _read_json(source)
+            if isinstance(payload, dict):
+                _write_json(run_dir / "artifacts" / name, payload)
 
 
 def _summary_payload(agent_id: str) -> Dict[str, Any]:
@@ -628,7 +637,7 @@ def _structured_memory_evidence(card: Path) -> Dict[str, Any]:
 
 def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> Dict[str, Any]:
     gm_output = _read_json(run_dir / "gm.output.json")
-    story_input = _read_json(run_dir / "story.input.json")
+    story_input = _read_json(run_dir / "artifacts" / "story.input.json")
     input_json = _read_json(run_dir / "input.json")
     loop_outputs = story_input.get("loop_outputs", {})
     actor_packets = captured_loop.get("actor_packets", [])
@@ -853,6 +862,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         _ensure_smoke_character_contexts(run_dir)
 
         captured_loop = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
+        _promote_loop_outputs_to_artifacts(run_dir)
         _schedule_suli_memory_summary(card, run_dir, agent_memory)
         _write_story_and_critic_outputs(run_dir)
         delivery = agent_outputs.prepare_delivery(card, styles_dir)
@@ -905,7 +915,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if isinstance(item, dict)
         ]
         trace = agent_interactions.summarize_for_story_input(run_dir)
-        story_input = _read_json(run_dir / "story.input.json")
+        story_input = _read_json(run_dir / "artifacts" / "story.input.json")
         story_input_analysis = (
             story_input.get("player_inputs", {}).get("input_analysis", {})
             if isinstance(story_input, dict)

@@ -301,6 +301,15 @@ def _relative_path(run_dir: Path, value: str, default: str) -> Path:
     return run_dir / relative
 
 
+def _artifact_output_path(run_dir: Path, value: str, default: str) -> Path:
+    relative = Path(str(value or default))
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        raise AgentExecutionError(f"{value or default}: output artifact path must be run-relative")
+    if relative.parts and relative.parts[0] == "artifacts":
+        return run_dir / relative
+    return run_dir / "artifacts" / relative
+
+
 def _read_prompt(run_dir: Path, manifest: Dict[str, Any], key: str) -> str:
     prompts = manifest.get("prompts") or {}
     if not isinstance(prompts, dict):
@@ -619,7 +628,7 @@ def _repair_intent_delivery_output(delivery: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_existing_story_input(run_dir: Path) -> Dict[str, Any] | None:
-    path = run_dir / "story.input.json"
+    path = run_dir / "artifacts" / "story.input.json"
     if not path.exists():
         return None
     try:
@@ -631,6 +640,16 @@ def _load_existing_story_input(run_dir: Path) -> Dict[str, Any] | None:
     if not isinstance(payload, dict):
         raise AgentExecutionError(f"{path}: story input must be a JSON object.")
     return payload
+
+
+def _promote_loop_outputs_to_artifacts(run_dir: Path) -> None:
+    for name in ("gm.output.json", "actor.outputs.json"):
+        source = run_dir / name
+        if not source.exists():
+            continue
+        payload = agent_run.read_json(source)
+        if isinstance(payload, dict):
+            agent_run.write_json(run_dir / "artifacts" / name, payload)
 
 
 def _loop_result_from_story_input(story_input: Dict[str, Any]) -> Dict[str, Any]:
@@ -1259,12 +1278,13 @@ def run_round(
     if not isinstance(expected, dict):
         raise AgentExecutionError("manifest.expected_outputs is required.")
 
-    story_path = _relative_path(run_dir, str(expected.get("story") or "story.output.json"), "story.output.json")
-    critic_path = _relative_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
+    story_path = _artifact_output_path(run_dir, str(expected.get("story") or "story.output.json"), "story.output.json")
+    critic_path = _artifact_output_path(run_dir, str(expected.get("critic") or "critic.report.json"), "critic.report.json")
     story_input = _load_existing_story_input(run_dir)
     if story_input is None:
         _write_progress_safe("gm_loop.starting", "正在启动 GM 回合", percent=46, detail={"run_id": run_dir.name})
         loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude)
+        _promote_loop_outputs_to_artifacts(run_dir)
         story_input = agent_outputs.build_story_input(run_dir)
     else:
         loop_result = _loop_result_from_story_input(story_input)
@@ -1368,6 +1388,7 @@ def run_round(
             _reset_round_progression_outputs(run_dir)
             manifest = _load_manifest(run_dir)
             loop_result = _run_interactive_agent_loop(run_dir, manifest, root, active_run_claude, repair_context)
+            _promote_loop_outputs_to_artifacts(run_dir)
             story_input = agent_outputs.build_story_input(run_dir)
             requirements = _delivery_requirements(root)
             requirements["player_character_names"] = _player_character_names_from_story_input(story_input)

@@ -320,6 +320,18 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertTrue((artifacts_dir / "story.input.json").exists())
         self.assertFalse((self.run_dir / "story.input.json").exists())
 
+    def test_export_delivery_artifact_rejects_absolute_path(self):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "run-relative"):
+            self.agent_outputs.export_delivery_artifact(self.run_dir, str(self.run_dir / "artifacts" / "story.output.json"))
+
+    def test_export_delivery_artifact_rejects_parent_traversal(self):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "run-relative"):
+            self.agent_outputs.export_delivery_artifact(self.run_dir, "../story.output.json")
+
+    def test_internal_artifact_writer_rejects_parent_traversal(self):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "run-relative"):
+            self.agent_outputs._write_artifact(self.run_dir, "../story.input.json", {"bad": True})
+
     def test_build_story_input_uses_loop_outputs_and_trace_v2(self):
         _write_json(
             self.run_dir / "artifacts" / "gm.output.json",
@@ -2767,6 +2779,32 @@ class AgentOutputsTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "critic_passed")
         self.assertIn("critic_passed", [item["stage"] for item in manifest["status"]])
+
+    def test_prepare_delivery_pass_exports_root_files_only_after_pass(self):
+        self.agent_outputs.build_story_input(self.run_dir)
+        _write_root_json(
+            self.run_dir / "story.input.json",
+            {"source": "stale root story input"},
+        )
+        self._write_story_and_critic(decision="revise")
+
+        retry = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(retry["ok"])
+        self.assertEqual(
+            json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8")),
+            {"source": "stale root story input"},
+        )
+
+        self._write_story_and_critic(decision="pass")
+        passed = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(passed["ok"])
+        root_story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+        artifact_story_input = json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8"))
+        self.assertEqual(root_story_input, artifact_story_input)
+        self.assertTrue((self.run_dir / "story.output.json").exists())
+        self.assertTrue((self.run_dir / "critic.report.json").exists())
 
     def test_prepare_delivery_reads_story_and_critic_from_artifacts_directory(self):
         self._write_story_and_critic(decision="pass")

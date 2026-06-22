@@ -74,7 +74,7 @@ class SubgmStoryInputTest(unittest.TestCase):
             },
         )
         _write_json(
-            self.run_dir / "gm.output.json",
+            self.run_dir / "artifacts" / "gm.output.json",
             {
                 "agent": "gm_loop",
                 "outputs": [
@@ -91,7 +91,7 @@ class SubgmStoryInputTest(unittest.TestCase):
                 ],
             },
         )
-        _write_json(self.run_dir / "actor.outputs.json", {})
+        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", {})
         self.agent_interactions.init_trace(self.run_dir, participants=["gm"], chapter_target_words=1200)
 
     def _write_side_thread(self, side_dir, thread_id):
@@ -245,7 +245,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_actor_call_blank_call_id_is_rejected_without_writing_story_input(self):
         subgm_output = json.loads((self.side_dir / "subgm.output.json").read_text(encoding="utf-8"))
@@ -256,7 +256,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "call_id"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_actor_output_without_subgm_actor_call_is_rejected_without_writing_story_input(self):
         subgm_output = json.loads((self.side_dir / "subgm.output.json").read_text(encoding="utf-8"))
@@ -266,7 +266,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "actor_calls"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_actor_output_outside_allowed_characters_is_rejected_without_writing_story_input(self):
         _write_json(
@@ -321,7 +321,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "allowed_characters"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_actor_extra_source_call_id_is_rejected_without_writing_story_input(self):
         actor_outputs = json.loads((self.side_dir / "actor.outputs.json").read_text(encoding="utf-8"))
@@ -347,7 +347,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "extra"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_subgm_message_or_world_hidden_phrase_is_rejected_without_writing_story_input(self):
         for field, replacement in (
@@ -355,8 +355,8 @@ class SubgmStoryInputTest(unittest.TestCase):
             ("world_state_delta", [{"scope": "rooftop", "fact": "moon base archive"}]),
         ):
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    self.run_dir.joinpath("story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    self.run_dir.joinpath("artifacts", "story.input.json").unlink()
                 self._write_side_thread(self.side_dir, "side_ada_rooftop")
                 subgm_output = json.loads((self.side_dir / "subgm.output.json").read_text(encoding="utf-8"))
                 subgm_output[field] = replacement
@@ -365,7 +365,7 @@ class SubgmStoryInputTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, field):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_subgm_request_hidden_marker_is_rejected_without_writing_story_input(self):
         for field, replacement in (
@@ -373,8 +373,8 @@ class SubgmStoryInputTest(unittest.TestCase):
             ("promotion_requests", [{"reason": "world_truth should not reach story"}]),
         ):
             with self.subTest(field=field):
-                if (self.run_dir / "story.input.json").exists():
-                    self.run_dir.joinpath("story.input.json").unlink()
+                if (self.run_dir / "artifacts" / "story.input.json").exists():
+                    self.run_dir.joinpath("artifacts", "story.input.json").unlink()
                 self._write_side_thread(self.side_dir, "side_ada_rooftop")
                 subgm_output = json.loads((self.side_dir / "subgm.output.json").read_text(encoding="utf-8"))
                 subgm_output[field] = replacement
@@ -383,7 +383,7 @@ class SubgmStoryInputTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, field):
                     self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "story.input.json").exists())
+                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_thread_missing_trace_is_rejected_without_writing_story_input(self):
         (self.side_dir / "actor.outputs.json").unlink()
@@ -392,7 +392,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"interaction\.trace\.json"):
             self.agent_outputs.build_story_input(self.run_dir)
 
-        self.assertFalse((self.run_dir / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_side_subgm_world_state_delta_has_source_thread_id(self):
         story_input = self.agent_outputs.build_story_input(self.run_dir)

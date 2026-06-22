@@ -95,6 +95,17 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload["character_contexts"] = {"characters": [dict(character) for character in characters]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
 
+    def promote_loop_outputs_to_artifacts(self):
+        artifacts = self.run_dir / "artifacts"
+        self.agent_run.write_json(
+            artifacts / "gm.output.json",
+            self.agent_run.read_json(self.run_dir / "gm.output.json"),
+        )
+        self.agent_run.write_json(
+            artifacts / "actor.outputs.json",
+            self.agent_run.read_json(self.run_dir / "actor.outputs.json"),
+        )
+
     def test_actor_call_creates_intent_projected_message_and_actor_response_message(self):
         self.register_characters("Ada")
 
@@ -2638,6 +2649,7 @@ class AgentTurnLoopTest(unittest.TestCase):
                 },
             },
         )
+        self.promote_loop_outputs_to_artifacts()
 
         story_input = load_module("agent_outputs").build_story_input(self.run_dir)
 
@@ -2801,6 +2813,7 @@ class AgentTurnLoopTest(unittest.TestCase):
                 },
             },
         )
+        self.promote_loop_outputs_to_artifacts()
 
         story_input = load_module("agent_outputs").build_story_input(self.run_dir)
 

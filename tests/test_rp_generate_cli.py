@@ -434,9 +434,9 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue((self.run_dir / "gm.output.json").exists())
         self.assertTrue((self.run_dir / "actor.outputs.json").exists())
         self.assertTrue((self.run_dir / "interaction.trace.json").exists())
-        self.assertTrue((self.run_dir / "story.input.json").exists())
-        self.assertTrue((self.run_dir / "story.output.json").exists())
-        self.assertTrue((self.run_dir / "critic.report.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "story.input.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "story.output.json").exists())
+        self.assertTrue((self.run_dir / "artifacts" / "critic.report.json").exists())
         self.assertFalse((self.run_dir / "player.output.json").exists())
         self.assertNotIn("player", result["artifacts"])
         self.assertNotIn("characters", result["artifacts"])
@@ -1163,7 +1163,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("player"), 2)
         self.assertEqual(calls.count("story"), 2)
         self.assertEqual(calls.count("critic"), 2)
-        final_story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
+        final_story_input = json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8"))
         self.assertEqual(
             final_story_input["loop_outputs"]["gm"]["outputs"][0]["scene_beats"][0]["content"],
             "The repaired branch restarts cleanly.",
@@ -1421,7 +1421,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(calls.count("story"), 2)
         self.assertEqual(calls.count("critic"), 2)
-        final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
+        final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
         retry_details = [
             kwargs.get("detail")
@@ -1505,7 +1505,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("story"), 2)
         self.assertEqual(calls.count("critic"), 2)
         self.assertIn("Restore the required narrative handoff", story_prompts[-1])
-        final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
+        final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
 
     def test_run_round_handles_sequential_delivery_repair_requests(self):
@@ -1573,7 +1573,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("story"), 3)
         self.assertEqual(calls.count("critic"), 3)
         self.assertEqual(len(delivery_attempts), 3)
-        final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
+        final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 3)
 
     def test_run_round_preflights_story_word_count_before_critic_when_settings_exist(self):
@@ -1618,7 +1618,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(calls.count("story"), 2)
         self.assertEqual(calls.count("critic"), 1)
-        final_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
+        final_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertEqual(final_story["metadata"]["attempt"], 2)
         repair_details = [
             kwargs.get("detail")
@@ -1637,7 +1637,7 @@ class RpGenerateCliTest(unittest.TestCase):
         _write_json(self.run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": [_gm_output()]})
         _write_json(self.run_dir / "actor.outputs.json", {"player": [_player_output("I keep listening.")]})
         _write_json(
-            self.run_dir / "story.input.json",
+            self.run_dir / "artifacts" / "story.input.json",
             {
                 "round_id": "round-000002",
                 "player_inputs": {
@@ -1729,7 +1729,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         def fake_delivery(command, **kwargs):
             delivery_attempts.append(command)
-            critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+            critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
             if critic.get("decision") == "pass" and critic.get("hard_failures") == []:
                 return SimpleNamespace(returncode=0, stdout='{"action":"done"}\n', stderr="")
             return SimpleNamespace(
@@ -1749,8 +1749,8 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
         self.assertEqual(len(delivery_attempts), 1)
-        normalized_story = json.loads((self.run_dir / "story.output.json").read_text(encoding="utf-8"))
-        normalized_critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+        normalized_story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
+        normalized_critic = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
         self.assertNotIn("<tokens>", normalized_story["content"].lower())
         self.assertNotIn("NNNN", normalized_story["content"])
         self.assertNotIn("tokens", normalized_story)
