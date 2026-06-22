@@ -248,6 +248,15 @@ def _find_analysis_applied_message(run_dir: Path) -> dict[str, Any] | None:
         targets = message.get("to")
         if not isinstance(targets, list) or "gm" not in targets:
             continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("input_path") != "input.json":
+            continue
+        if payload.get("analysis_path") != "input_analysis.output.json":
+            continue
+        if not isinstance(payload.get("routed_characters"), list):
+            continue
         return message
     return None
 

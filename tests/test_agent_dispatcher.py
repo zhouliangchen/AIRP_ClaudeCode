@@ -239,6 +239,48 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
 
+    def test_analyze_input_ignores_stale_unrelated_analysis_applied_message(self):
+        _write_json(self.run_dir / "input_analysis.output.json", {"analysis_mode": "fixture"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "payload": {"input_analysis_request_path": "input_analysis.request.md"},
+            },
+        )["intent"]
+        stale = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "input_analyst",
+                "to": ["gm"],
+                "type": "analysis_applied",
+                "visibility": "gm_only",
+                "payload": {"unrelated": True},
+            },
+        )
+        self.assertTrue(stale["ok"])
+
+        def fake_apply(_card_folder, _root_dir):
+            return {"ok": True, "analysis": {"analysis_mode": "fixture"}}
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        applied = [item for item in messages if item.get("type") == "analysis_applied"]
+        self.assertEqual(len(applied), 2)
+        self.assertEqual(applied[0]["payload"], {"unrelated": True})
+        self.assertEqual(applied[1]["to"], ["gm", "main_agent"])
+        self.assertEqual(applied[1]["payload"]["applied"]["analysis"]["analysis_mode"], "fixture")
+        self.assertEqual(result["created_messages"], [applied[1]["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+
 
 if __name__ == "__main__":
     unittest.main()
