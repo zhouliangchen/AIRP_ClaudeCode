@@ -1,5 +1,4 @@
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -109,39 +108,6 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual(messages[0]["to"], ["gm"])
         self.assertEqual(messages[0]["visibility"], "gm_only")
         self.assertEqual(messages[0]["payload"]["output"], actor_output)
-
-    def test_append_actor_output_artifact_preserves_existing_outputs(self):
-        artifact = self.run_dir / "artifacts" / "actor.outputs.json"
-        artifact.parent.mkdir(parents=True)
-        artifact.write_text(
-            json.dumps({"character:Ada": [{"events": [{"content": "old"}]}]}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        new_output = {"events": [{"content": "new"}]}
-
-        payload = self.runtime.append_actor_output_artifact(
-            self.run_dir,
-            "character:Ada",
-            new_output,
-        )
-
-        self.assertEqual(
-            payload,
-            {"character:Ada": [{"events": [{"content": "old"}]}, new_output]},
-        )
-        self.assertEqual(self.runtime.read_actor_outputs_artifact(self.run_dir), payload)
-
-    def test_append_actor_output_artifact_adds_first_actor_output(self):
-        actor_output = {"events": [{"content": "first"}]}
-
-        payload = self.runtime.append_actor_output_artifact(
-            self.run_dir,
-            "character:Bea",
-            actor_output,
-        )
-
-        self.assertEqual(payload, {"character:Bea": [actor_output]})
-        self.assertEqual(self.runtime.read_actor_outputs_artifact(self.run_dir), payload)
 
     def test_record_request_actor_reports_missing_message_id(self):
         original_append = self.runtime.agent_messages.append_message

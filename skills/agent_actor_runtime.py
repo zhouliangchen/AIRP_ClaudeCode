@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import agent_intents
 import agent_messages
-import agent_run
 
 
 class AgentActorRuntimeError(RuntimeError):
@@ -132,40 +130,6 @@ def record_actor_response(run_dir: Path, actor_id: str, call: dict, actor_output
         raise
     except Exception as exc:
         raise _runtime_write_error("record actor_response message", exc) from exc
-
-
-def read_actor_outputs_artifact(run_dir: Path) -> dict:
-    """Read dispatcher-authoritative actor outputs artifact if present."""
-
-    path = Path(run_dir) / "artifacts" / "actor.outputs.json"
-    if not path.exists():
-        return {}
-    data = agent_run.read_json(path, {})
-    if not isinstance(data, dict):
-        raise AgentActorRuntimeError(f"{path}: actor outputs artifact must be a JSON object")
-    return data
-
-
-def append_actor_output_artifact(run_dir: Path, actor_id: str, actor_output: dict) -> dict:
-    """Append one actor output to artifacts/actor.outputs.json."""
-
-    if not isinstance(actor_id, str) or not actor_id:
-        raise AgentActorRuntimeError("actor_id must be a non-empty string")
-    if not isinstance(actor_output, dict):
-        raise AgentActorRuntimeError("actor_output must be a JSON object")
-
-    payload = read_actor_outputs_artifact(run_dir)
-    existing = payload.get(actor_id)
-    if existing is None:
-        outputs: list[dict[str, Any]] = []
-    elif isinstance(existing, list):
-        outputs = list(existing)
-    else:
-        raise AgentActorRuntimeError(f"actor outputs for {actor_id} must be a list")
-    outputs.append(actor_output)
-    payload[actor_id] = outputs
-    agent_run.write_json(Path(run_dir) / "artifacts" / "actor.outputs.json", payload)
-    return payload
 
 
 def _require_message_result(action: str, result: dict) -> dict:
