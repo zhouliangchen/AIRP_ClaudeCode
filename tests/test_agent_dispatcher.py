@@ -592,6 +592,48 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         completed = self.intents.list_intents(self.run_dir, "completed")
         self.assertEqual([item["id"] for item in completed], [created["id"]])
 
+    def test_run_actor_recovers_when_complete_raises_after_side_effects(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        created = self._create_run_actor_intent(projected["id"])
+        actor_output = self._actor_resolution_output()
+        original_complete = self.dispatcher.agent_intents.complete_intent
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            return actor_output
+
+        def complete_then_raise(run_dir, intent_id, outputs=None):
+            original_complete(run_dir, intent_id, outputs=outputs)
+            raise RuntimeError("raw complete secret")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+        self.dispatcher.agent_intents.complete_intent = complete_then_raise
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "run_actor_complete_recovered")
+        self.assertEqual(result["detail"]["transition_failure_recovered"], "run_actor_complete_failed")
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("raw complete secret", serialized)
+        self.assertNotIn("RuntimeError: raw complete secret", serialized)
+        self.assertEqual(self.intents.list_intents(self.run_dir, "blocked"), [])
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_gm_turn"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertTrue((self.run_dir / "artifacts" / "actor.outputs.json").exists())
+        self.assertTrue((self.run_dir / "interaction.trace.json").exists())
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        actor_responses = [message for message in messages if message.get("type") == "actor_response"]
+        self.assertEqual([message["id"] for message in actor_responses], result["created_messages"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(manifest.get("stage"), "blocked")
+
     def test_run_actor_blocks_when_projected_message_missing(self):
         created = self._create_run_actor_intent("msg_999999")
 

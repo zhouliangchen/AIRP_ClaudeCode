@@ -1020,6 +1020,46 @@ def _intent_in_state(run_dir: Path, intent_id: str, state: str) -> bool:
         return False
 
 
+def _find_intent_in_state(run_dir: Path, intent_id: str, state: str) -> dict[str, Any] | None:
+    try:
+        for item in agent_intents.list_intents(run_dir, state):
+            if item.get("id") == intent_id:
+                return item
+    except Exception:
+        return None
+    return None
+
+
+def _intent_exists(run_dir: Path, intent_id: str) -> bool:
+    return any(
+        _intent_in_state(run_dir, intent_id, state)
+        for state in ("pending", "accepted", "rejected", "completed", "blocked")
+    )
+
+
+def _message_exists(run_dir: Path, message_id: str, message_type: str) -> bool:
+    try:
+        return any(
+            message.get("id") == message_id and message.get("type") == message_type
+            for message in agent_messages.read_messages(run_dir)
+        )
+    except Exception:
+        return False
+
+
+def _run_relative_file_exists(run_dir: Path, relative_path: str) -> bool:
+    path = Path(relative_path)
+    if path.is_absolute():
+        return False
+    try:
+        root = run_dir.resolve()
+        candidate = (run_dir / path).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return candidate.is_file()
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -1151,6 +1191,19 @@ def _run_actor_transition_failure(
     if transition_result.get("ok"):
         return None
 
+    if reason == "run_actor_complete_failed" and outputs is not None:
+        recovered = _recover_completed_run_actor_transition(
+            run_dir,
+            intent_id,
+            reason,
+            outputs,
+            artifacts=artifacts or [],
+            created_intents=created_intents or [],
+            created_messages=created_messages or [],
+        )
+        if recovered is not None:
+            return recovered
+
     detail = {
         "intent_id": intent_id,
         "reason": reason,
@@ -1182,6 +1235,53 @@ def _run_actor_transition_failure(
         created_messages=created_messages,
         artifacts=artifacts,
         detail=blocked.get("result", {}),
+    )
+
+
+def _recover_completed_run_actor_transition(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    outputs: dict[str, Any],
+    *,
+    artifacts: list[str],
+    created_intents: list[str],
+    created_messages: list[str],
+) -> dict[str, Any] | None:
+    completed_intent = _find_intent_in_state(run_dir, intent_id, "completed")
+    if not completed_intent:
+        return None
+
+    actor_response_message_id = str(outputs.get("actor_response_message_id") or "")
+    if not actor_response_message_id or not _message_exists(run_dir, actor_response_message_id, "actor_response"):
+        return None
+
+    attempted_artifacts = outputs.get("artifacts")
+    if not isinstance(attempted_artifacts, list):
+        attempted_artifacts = artifacts
+    artifact_paths = [str(path) for path in attempted_artifacts if isinstance(path, str) and path]
+    if "artifacts/actor.outputs.json" not in artifact_paths:
+        return None
+    if not all(_run_relative_file_exists(run_dir, path) for path in artifact_paths):
+        return None
+
+    follow_up_intent_id = str(outputs.get("follow_up_intent_id") or "")
+    if follow_up_intent_id and not _intent_exists(run_dir, follow_up_intent_id):
+        return None
+
+    detail = dict(outputs)
+    detail["transition_failure_recovered"] = reason
+    detail["completed_intent_state"] = str(completed_intent.get("state") or "")
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_actor",
+        reason="run_actor_complete_recovered",
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=artifact_paths,
+        detail=detail,
     )
 
 
