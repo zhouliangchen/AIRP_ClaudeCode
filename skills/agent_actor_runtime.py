@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import agent_intents
+import agent_interactions
 import agent_messages
 import agent_run
 
@@ -399,6 +400,55 @@ def append_actor_output(run_dir: Path, actor_id: str, actor_output: dict) -> dic
         raise
     except Exception as exc:
         raise _runtime_write_error("append actor output", exc) from exc
+
+
+def _event_content(event: dict) -> str:
+    return str(event.get("content") or "")
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def record_actor_event(run_dir: Path, actor_id: str, event: dict, source_call_id: str) -> None:
+    """Record one actor output event in the authoritative interaction trace."""
+
+    event_type = str(event.get("type") or "")
+    if event_type in {"dialogue", "action", "custom_action"}:
+        visibility = "world_visible"
+    elif event_type == "perceive_request":
+        visibility = "gm_visible"
+    else:
+        visibility = "actor_visible"
+    public_metadata = None
+    if event_type == "custom_action":
+        metadata = _dict(event.get("metadata"))
+        public_metadata = {
+            "actor_id": actor_id,
+            "category": str(metadata.get("category") or ""),
+            "visible_content": str(metadata.get("visible_content") or ""),
+            "requires_gm_resolution": bool(metadata.get("requires_gm_resolution")),
+            "risk_level": str(metadata.get("risk_level") or ""),
+            "target": str(event.get("target") or ""),
+        }
+    agent_interactions.append_event(
+        run_dir,
+        actor=actor_id,
+        visibility=visibility,
+        event_type=event_type,
+        content=_event_content(event),
+        target=str(event.get("target") or ""),
+        source_call_id=source_call_id,
+        public_metadata=public_metadata,
+    )
+
+
+def record_actor_events(run_dir: Path, actor_id: str, actor_output: dict, source_call_id: str) -> None:
+    """Record all events from a validated actor output in the interaction trace."""
+
+    for event in actor_output.get("events", []):
+        if isinstance(event, dict):
+            record_actor_event(run_dir, actor_id, event, source_call_id)
 
 
 def _find_source_message(run_dir: Path, source_message_id: str) -> dict | None:

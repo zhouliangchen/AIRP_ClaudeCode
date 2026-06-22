@@ -264,34 +264,7 @@ def _record_actor_event(
     event: dict,
     source_call_id: str,
 ) -> None:
-    event_type = str(event.get("type") or "")
-    if event_type in {"dialogue", "action", "custom_action"}:
-        visibility = "world_visible"
-    elif event_type == "perceive_request":
-        visibility = "gm_visible"
-    else:
-        visibility = "actor_visible"
-    public_metadata = None
-    if event_type == "custom_action":
-        metadata = _dict(event.get("metadata"))
-        public_metadata = {
-            "actor_id": actor_id,
-            "category": str(metadata.get("category") or ""),
-            "visible_content": str(metadata.get("visible_content") or ""),
-            "requires_gm_resolution": bool(metadata.get("requires_gm_resolution")),
-            "risk_level": str(metadata.get("risk_level") or ""),
-            "target": str(event.get("target") or ""),
-        }
-    agent_interactions.append_event(
-        run_dir,
-        actor=actor_id,
-        visibility=visibility,
-        event_type=event_type,
-        content=_event_content(event),
-        target=str(event.get("target") or ""),
-        source_call_id=source_call_id,
-        public_metadata=public_metadata,
-    )
+    agent_actor_runtime.record_actor_event(run_dir, actor_id, event, source_call_id)
 
 
 def _contains_dynamic_hidden_phrase(text: str, hidden_phrases: Iterable[str]) -> bool:

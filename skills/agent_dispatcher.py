@@ -540,6 +540,7 @@ def _execute_run_actor(
         created_messages.append(response_message_id)
         agent_actor_runtime.append_actor_output(run_dir, actor_id, actor_output)
         artifacts.append("artifacts/actor.outputs.json")
+        agent_actor_runtime.record_actor_events(run_dir, actor_id, actor_output, resolved_source_call_id)
 
         player_decision_required = _actor_output_requires_player_decision(actor_id, actor_output)
         requires_gm_resolution = _actor_output_requires_gm_resolution(actor_output)

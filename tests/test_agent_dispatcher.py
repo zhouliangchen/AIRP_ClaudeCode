@@ -544,6 +544,48 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         artifact_payload = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
         self.assertEqual(root_payload, {"character:Ada": [actor_output]})
         self.assertEqual(artifact_payload, root_payload)
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        actor_events = [
+            event
+            for event in trace["events"]
+            if event.get("actor") == "character:Ada"
+        ]
+        self.assertEqual(len(actor_events), 1)
+        self.assertEqual(actor_events[0]["type"], "custom_action")
+        self.assertEqual(actor_events[0]["source_call_id"], "call-character-Ada-1")
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Ada is close enough to respond."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-character-Ada-1",
+                                "actor_id": "character:Ada",
+                                "prompt": "React to the archive door.",
+                                "reason": "Ada is present in the scene.",
+                                "visibility_basis": {
+                                    "mode": "direct",
+                                    "summary": "character:Ada is directly addressed by this test GM prompt.",
+                                    "target_actor": "character:Ada",
+                                    "visible_to": ["character:Ada"],
+                                },
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        story_input = self.dispatcher.agent_outputs.build_story_input(self.run_dir)
+        self.assertEqual(len(story_input["loop_outputs"]["actors"]["character:Ada"]), 1)
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([intent["type"] for intent in pending], ["run_gm_turn"])
         self.assertEqual(result["created_intents"], [pending[0]["id"]])
