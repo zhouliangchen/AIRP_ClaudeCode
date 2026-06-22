@@ -12,6 +12,15 @@ class AgentActorRuntimeError(RuntimeError):
     """Raised when actor collaboration artifacts cannot be recorded."""
 
 
+class AgentActorProjectionError(AgentActorRuntimeError):
+    """Raised when a projection request must block with a structured reason."""
+
+    def __init__(self, reason: str, detail: dict | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = detail or {}
+
+
 def record_request_actor(run_dir: Path, sender: str, actor_id: str, call: dict) -> tuple[str, str]:
     """Record a GM/subGM request for an actor-facing projection."""
 
@@ -59,6 +68,88 @@ def record_request_actor(run_dir: Path, sender: str, actor_id: str, call: dict) 
         raise
     except Exception as exc:
         raise _runtime_write_error("record request_actor intent", exc) from exc
+
+
+def project_actor_request(
+    run_dir: Path,
+    *,
+    actor_id: str,
+    source_message_id: str,
+    source_call_id: str,
+) -> dict:
+    """Project a request_actor message into the target actor inbox."""
+
+    source_message = _find_source_message(run_dir, source_message_id)
+    if source_message is None:
+        raise AgentActorProjectionError(
+            "projection_source_missing",
+            {"source_message_id": source_message_id},
+        )
+    if source_message.get("type") != "request_actor" or source_message.get("status") != "delivered":
+        raise AgentActorProjectionError(
+            "projection_source_invalid",
+            {
+                "source_message_id": source_message_id,
+                "source_type": source_message.get("type"),
+                "source_status": source_message.get("status"),
+            },
+        )
+
+    payload = source_message.get("payload")
+    if not isinstance(payload, dict):
+        raise AgentActorProjectionError(
+            "projection_source_invalid",
+            {"source_message_id": source_message_id, "error": "payload_missing"},
+        )
+
+    source_actor_id = str(payload.get("actor_id") or "")
+    if source_actor_id != actor_id:
+        raise AgentActorProjectionError(
+            "projection_actor_mismatch",
+            {
+                "source_message_id": source_message_id,
+                "expected_actor_id": actor_id,
+                "source_actor_id": source_actor_id,
+            },
+        )
+
+    call = payload.get("call")
+    if not isinstance(call, dict):
+        raise AgentActorProjectionError(
+            "projection_source_invalid",
+            {"source_message_id": source_message_id, "error": "call_missing"},
+        )
+    call_actor_id = str(call.get("actor_id") or actor_id)
+    if call_actor_id != actor_id:
+        raise AgentActorProjectionError(
+            "projection_actor_mismatch",
+            {
+                "source_message_id": source_message_id,
+                "expected_actor_id": actor_id,
+                "call_actor_id": call_actor_id,
+            },
+        )
+
+    resolved_call_id = _resolve_source_call_id(source_message, call)
+    if source_call_id and resolved_call_id != source_call_id:
+        raise AgentActorProjectionError(
+            "projection_call_mismatch",
+            {
+                "source_message_id": source_message_id,
+                "expected_source_call_id": source_call_id,
+                "source_call_id": resolved_call_id,
+            },
+        )
+
+    packet = _projection_packet(actor_id, payload, call)
+    projected_message = _append_projected_message(run_dir, actor_id, call, packet, resolved_call_id)
+    return {
+        "actor_id": actor_id,
+        "source_message_id": source_message_id,
+        "source_call_id": resolved_call_id,
+        "projected_message_id": str(projected_message["id"]),
+        "projected_message": projected_message,
+    }
 
 
 def record_projected_actor_message(
@@ -130,6 +221,66 @@ def record_actor_response(run_dir: Path, actor_id: str, call: dict, actor_output
         raise
     except Exception as exc:
         raise _runtime_write_error("record actor_response message", exc) from exc
+
+
+def _find_source_message(run_dir: Path, source_message_id: str) -> dict | None:
+    if not isinstance(source_message_id, str) or not source_message_id:
+        return None
+    for message in agent_messages.read_messages(run_dir):
+        if message.get("id") == source_message_id:
+            return message
+    return None
+
+
+def _resolve_source_call_id(source_message: dict, call: dict) -> str:
+    return str(source_message.get("source_call_id") or call.get("call_id") or "")
+
+
+def _projection_packet(actor_id: str, payload: dict, call: dict) -> dict:
+    packet = payload.get("packet")
+    if not isinstance(packet, dict):
+        packet = call.get("packet")
+    if isinstance(packet, dict):
+        projected = dict(packet)
+        projected.setdefault("actor_id", actor_id)
+        return projected
+    return {"actor_id": actor_id, "call": call}
+
+
+def _append_projected_message(
+    run_dir: Path,
+    actor_id: str,
+    call: dict,
+    packet: dict,
+    source_call_id: str,
+) -> dict:
+    result = agent_messages.append_message(
+        run_dir,
+        {
+            "from": "projection",
+            "to": [actor_id],
+            "type": "projected_message",
+            "visibility": "actor_facing",
+            "source_call_id": source_call_id,
+            "payload": {
+                "actor_id": actor_id,
+                "packet": packet,
+                "gm_prompt": str(call.get("prompt") or ""),
+            },
+        },
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise AgentActorProjectionError(
+            "projection_append_rejected",
+            {"message_result": result},
+        )
+    message = result.get("message")
+    if not isinstance(message, dict) or not message.get("id"):
+        raise AgentActorProjectionError(
+            "projection_append_missing_id",
+            {"message_result": result},
+        )
+    return message
 
 
 def _require_message_result(action: str, result: dict) -> dict:

@@ -301,6 +301,174 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
 
+    def test_request_projection_creates_projected_message_and_run_actor_intent(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                    "packet": {
+                        "actor_id": "character:Ada",
+                        "visible_context": {"scene": "hall"},
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["intent_type"], "request_projection")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        inbox = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        self.assertEqual([message["type"] for message in inbox], ["projected_message"])
+        projected = inbox[0]
+        self.assertEqual(result["created_messages"], [projected["id"]])
+        self.assertEqual(projected["from"], "projection")
+        self.assertEqual(projected["source_call_id"], "call-character-Ada-1")
+        self.assertEqual(projected["payload"]["actor_id"], "character:Ada")
+        self.assertEqual(projected["payload"]["packet"]["visible_context"], {"scene": "hall"})
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "actor_id": "character:Ada",
+                "projected_message_id": projected["id"],
+                "source_call_id": "call-character-Ada-1",
+            },
+        )
+        self.assertEqual(pending[0]["source_message_id"], projected["id"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(completed[0]["result"]["outputs"]["intent_type"], "request_projection")
+        self.assertEqual(completed[0]["result"]["outputs"]["created_messages"], [projected["id"]])
+        self.assertEqual(completed[0]["result"]["outputs"]["created_intents"], [pending[0]["id"]])
+
+    def test_request_projection_blocks_when_source_message_missing(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": "msg_999999",
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "projection_source_missing")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projection_source_missing")
+
+    def test_request_projection_blocks_when_source_is_not_request_actor(self):
+        source = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "analysis_applied",
+                "visibility": "gm_only",
+                "payload": {"actor_id": "character:Ada"},
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "source_message_id": source["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "projection_source_invalid")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+
+    def test_request_projection_blocks_on_actor_mismatch(self):
+        source = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Bea",
+                    "source_message_id": source["id"],
+                    "source_call_id": "call-character-Ada-1",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "projection_actor_mismatch")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+
     def test_run_gm_turn_writes_artifacts_and_creates_compose_story(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(

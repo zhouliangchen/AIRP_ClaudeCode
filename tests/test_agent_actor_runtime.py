@@ -86,6 +86,58 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual([message["type"] for message in inbox], ["projected_message"])
         self.assertEqual(inbox[0]["payload"]["packet"], packet)
 
+    def test_project_actor_request_reads_source_and_appends_projected_message(self):
+        request = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Listen at the door.",
+                    },
+                    "packet": {
+                        "actor_id": "character:Ada",
+                        "visible_context": {"scene": "hall"},
+                    },
+                },
+            },
+        )["message"]
+
+        result = self.runtime.project_actor_request(
+            self.run_dir,
+            actor_id="character:Ada",
+            source_message_id=request["id"],
+            source_call_id="call-character-Ada-1",
+        )
+
+        self.assertEqual(result["projected_message_id"], "msg_000002")
+        self.assertEqual(result["source_message_id"], request["id"])
+        self.assertEqual(result["source_call_id"], "call-character-Ada-1")
+        inbox = self.messages.read_inbox(self.run_dir, "character:Ada")
+        self.assertEqual([message["type"] for message in inbox], ["projected_message"])
+        self.assertEqual(inbox[0]["payload"]["packet"]["visible_context"], {"scene": "hall"})
+
+    def test_project_actor_request_reports_missing_source(self):
+        with self.assertRaisesRegex(
+            self.runtime.AgentActorProjectionError,
+            "projection_source_missing",
+        ) as raised:
+            self.runtime.project_actor_request(
+                self.run_dir,
+                actor_id="character:Ada",
+                source_message_id="msg_999999",
+                source_call_id="call-character-Ada-1",
+            )
+
+        self.assertEqual(raised.exception.reason, "projection_source_missing")
+
     def test_record_actor_response_creates_gm_only_response_message(self):
         call = {"call_id": "call-character-Ada-1"}
         actor_output = {

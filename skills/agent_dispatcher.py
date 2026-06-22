@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import agent_outputs
 import agent_snapshots
+import agent_actor_runtime
 import agent_intents
 import agent_messages
 import agent_run
@@ -123,6 +124,8 @@ def _execute_supported_intent(
         return _execute_analyze_input(run_dir, card_folder, root_dir, intent)
     if intent_type == "run_gm_turn":
         return _execute_run_gm_turn(run_dir, root_dir, intent, run_claude)
+    if intent_type == "request_projection":
+        return _execute_request_projection(run_dir, intent)
     if intent_type == "compose_story":
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
@@ -360,6 +363,74 @@ def _execute_compose_story(
         created_messages=[],
         artifacts=artifacts,
         detail={"follow_up_intent_id": follow_up_id},
+    )
+
+
+def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    actor_id = str(payload.get("actor_id") or "")
+    source_message_id = str(payload.get("source_message_id") or intent.get("source_message_id") or "")
+    source_call_id = str(payload.get("source_call_id") or "")
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "request_projection"})
+
+    try:
+        projection = agent_actor_runtime.project_actor_request(
+            run_dir,
+            actor_id=actor_id,
+            source_message_id=source_message_id,
+            source_call_id=source_call_id,
+        )
+        projected_message_id = str(projection.get("projected_message_id") or "")
+        resolved_source_call_id = str(projection.get("source_call_id") or source_call_id)
+        follow_up = _ensure_follow_up_intent(
+            run_dir,
+            intent_id,
+            {
+                "requested_by": "projection",
+                "type": "run_actor",
+                "source_message_id": projected_message_id,
+                "payload": {
+                    "actor_id": actor_id,
+                    "projected_message_id": projected_message_id,
+                    "source_call_id": resolved_source_call_id,
+                },
+                "policy": {"source_intent_id": intent_id},
+            },
+        )
+    except agent_actor_runtime.AgentActorProjectionError as exc:
+        return _block_projection_failure(run_dir, intent_id, exc)
+    except Exception as exc:
+        wrapped = agent_actor_runtime.AgentActorProjectionError(
+            "request_projection_failed",
+            {"error": f"{type(exc).__name__}: {exc}", "exception_type": type(exc).__name__},
+        )
+        return _block_projection_failure(run_dir, intent_id, wrapped)
+
+    follow_up_id = str(follow_up.get("id") or "")
+    created_intents = [follow_up_id] if follow_up.get("created") else []
+    created_messages = [projected_message_id] if projected_message_id else []
+    outputs = {
+        "executor": "request_projection",
+        "intent_type": "request_projection",
+        "projected_message_id": projected_message_id,
+        "source_message_id": source_message_id,
+        "source_call_id": resolved_source_call_id,
+        "follow_up_intent_id": follow_up_id,
+        "created_messages": created_messages,
+        "created_intents": created_intents,
+    }
+    agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="request_projection",
+        reason="",
+        created_intents=created_intents,
+        created_messages=created_messages,
+        artifacts=[],
+        detail=outputs,
     )
 
 
@@ -778,6 +849,37 @@ def _block_executor_failure(
         created_intents=[],
         created_messages=[],
         artifacts=artifacts,
+        detail=blocked.get("result", {}),
+    )
+
+
+def _block_projection_failure(
+    run_dir: Path,
+    intent_id: str,
+    exc: agent_actor_runtime.AgentActorProjectionError,
+) -> dict[str, Any]:
+    reason = exc.reason
+    detail = {
+        "intent_id": intent_id,
+        "reason": reason,
+        **exc.detail,
+    }
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "request_projection", **detail},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="request_projection",
+        reason=reason,
+        created_intents=[],
+        created_messages=[],
+        artifacts=[],
         detail=blocked.get("result", {}),
     )
 
