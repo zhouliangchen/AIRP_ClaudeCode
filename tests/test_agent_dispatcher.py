@@ -131,6 +131,26 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
+    def _actor_dialogue_continue_output(self, actor_id="character:Ada"):
+        return {
+            "agent": "player" if actor_id == "player" else "character",
+            "agent_id": actor_id,
+            "character_name": actor_id.split(":", 1)[1] if actor_id.startswith("character:") else "",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "player",
+                    "content": "The door is quiet.",
+                    "metadata": {
+                        "exact_visible_words": "The door is quiet.",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "calm report",
+                    },
+                }
+            ],
+            "stop_reason": "continue",
+        }
+
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,
@@ -592,6 +612,26 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         completed = self.intents.list_intents(self.run_dir, "completed")
         self.assertEqual([item["id"] for item in completed], [created["id"]])
 
+    def test_run_actor_dialogue_continue_creates_run_gm_turn_without_resolution_requirement(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        created = self._create_run_actor_intent(projected["id"])
+        actor_output = self._actor_dialogue_continue_output()
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: actor_output
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertFalse(result["detail"]["requires_gm_resolution"])
+        self.assertFalse(result["detail"]["player_decision_required"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_gm_turn"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["payload"]["reason"], "actor_response_continue")
+        self.assertEqual(pending[0]["payload"]["actor_id"], "character:Ada")
+        self.assertEqual(pending[0]["payload"]["actor_response_message_id"], result["created_messages"][0])
+
     def test_run_actor_recovers_when_complete_raises_after_side_effects(self):
         packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}
         projected = self._append_projected_actor_message(packet=packet)
@@ -631,6 +671,81 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
         actor_responses = [message for message in messages if message.get("type") == "actor_response"]
         self.assertEqual([message["id"] for message in actor_responses], result["created_messages"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(manifest.get("stage"), "blocked")
+
+    def test_run_actor_blocks_when_complete_returns_failure(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        created = self._create_run_actor_intent(projected["id"])
+        actor_output = self._actor_resolution_output()
+        original_complete = self.dispatcher.agent_intents.complete_intent
+
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: actor_output
+        self.dispatcher.agent_intents.complete_intent = (
+            lambda _run_dir, _intent_id, outputs=None: {"ok": False, "reason": "fixture_complete_failed"}
+        )
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "run_actor_complete_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "run_actor_complete_failed")
+        self.assertEqual(blocked[0]["result"]["outputs"]["transition_reason"], "fixture_complete_failed")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "run_actor_complete_failed")
+
+    def test_run_actor_player_decision_recovers_when_complete_raises_after_side_effects_without_follow_up(self):
+        packet = {"actor_id": "character:Ada", "visible_context": {"scene": "door"}}
+        projected = self._append_projected_actor_message(packet=packet)
+        created = self._create_run_actor_intent(projected["id"])
+        actor_output = {
+            "agent": "character",
+            "agent_id": "character:Ada",
+            "character_name": "Ada",
+            "events": [
+                {
+                    "type": "dialogue",
+                    "target": "player",
+                    "content": "Choose before I open it.",
+                    "metadata": {
+                        "exact_visible_words": "Choose before I open it.",
+                        "delivery_channel": "spoken",
+                        "visible_tone_or_action": "quiet warning",
+                    },
+                }
+            ],
+            "stop_reason": "stop_for_player_decision",
+        }
+        original_complete = self.dispatcher.agent_intents.complete_intent
+
+        def complete_then_raise(run_dir, intent_id, outputs=None):
+            original_complete(run_dir, intent_id, outputs=outputs)
+            raise RuntimeError("raw complete secret")
+
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: actor_output
+        self.dispatcher.agent_intents.complete_intent = complete_then_raise
+        self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "run_actor_complete_recovered")
+        self.assertTrue(result["detail"]["player_decision_required"])
+        self.assertEqual(result["detail"]["follow_up_intent_id"], "")
+        self.assertEqual(result["created_intents"], [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "blocked"), [])
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertNotEqual(manifest.get("stage"), "blocked")
 

@@ -551,7 +551,12 @@ def _execute_run_actor(
                 run_dir,
                 "player decision required after actor response",
             )
-        if requires_gm_resolution and not player_decision_required:
+        if not player_decision_required:
+            follow_up_reason = (
+                "actor_response_requires_resolution"
+                if requires_gm_resolution
+                else "actor_response_continue"
+            )
             follow_up = _ensure_follow_up_intent(
                 run_dir,
                 intent_id,
@@ -559,7 +564,7 @@ def _execute_run_actor(
                     "requested_by": actor_id,
                     "type": "run_gm_turn",
                     "payload": {
-                        "reason": "actor_response_requires_resolution",
+                        "reason": follow_up_reason,
                         "actor_id": actor_id,
                         "source_call_id": resolved_source_call_id,
                         "actor_response_message_id": response_message_id,
