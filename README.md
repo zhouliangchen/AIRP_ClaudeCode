@@ -26,7 +26,7 @@ AIRP_ClaudeCode/
 │  ├─ import_prepare.py     # 启动/导入管线
 │  ├─ round_prepare.py      # 每轮控制面上下文与 agent 邮箱准备
 │  ├─ round_deliver.py      # 每轮交付、质检和记忆更新
-│  ├─ agent_workflow.py     # 根据 manifest 给出下一步控制面动作
+│  ├─ agent_dispatcher.py   # 消费 pending intents 并驱动 dispatcher-first 运行时
 │  ├─ agent_messages.py     # 每轮 append-only 消息总线与 inbox 投影
 │  ├─ agent_intents.py      # 可执行控制面 intent 生命周期
 │  ├─ agent_snapshots.py    # .agent_runs 快照与回滚辅助
@@ -100,7 +100,7 @@ actor 可以返回受控的 `custom_action` 事件来表达非标准但可见的
 
 subagent 不直接写 `skills/styles/response.txt`，也不直接交付前端。GM 交互循环产物写入根目录 `gm.output.json`（`gm_loop` 包装，内部为一个或多个 GM 输出），player/character 产物聚合写入根目录 `actor.outputs.json`；`agent_outputs.py` 同时支持从 `artifacts/` 读取等价物化文件，并会把组装后的 `story.input.json` 写入根目录和 `artifacts/` 镜像。`agent_outputs.py` 会校验 `gm.output.json`、`actor.outputs.json` 和 trace v2 的 `source_call_id` 对应关系后生成 `story.input.json`，并把 `loop_outputs`、`memory_deltas`、可见交互轨迹、私有事件计数和关键决策点整理给 story/critic 使用；story agent 写 `story.output.json`，critic agent 写 `critic.report.json`。`round_deliver.py` 只在产物完整、critic 通过后把 story 内容镜像到 `response.txt` 并调用 `handler.py`。若 critic 要求 `revise` 或 `block`，本轮会记录到 `repair_history.jsonl`，同时写入 `repair_request` 消息和待处理 repair intent；`rp_generate_cli.py` 在修复交付成功后将该 intent 标记为 completed，无法完成时标记为 blocked。若该 revise/block 报告提供 `system_iteration_suggestion`，会追加到卡片文件夹的 `.agent_runs/improvement_queue.jsonl`。
 
-`agent_workflow.py` 可根据 `.agent_runs/<round>/manifest.json` 判断下一步应补齐 agent 产物、生成 `story.input.json`、分派 story/critic，还是运行交付门禁。`round_prepare.py` 会在准备新一轮前创建 before-round snapshot，快照保存在 `.agent_runs/snapshots/<snapshot_id>/`，用于需要回退本轮派生产物时恢复。`control_plane_smoke.py` 使用临时目录构造一轮确定性的多 agent 控制面流程，不调用 live model，用于快速验证 artifact、trace、memory delta/summary、消息类型、intent 计数、snapshot 和交付路径。
+`agent_dispatcher.py` 以 pending intents 作为可执行下一步来源，调度 input analysis、GM/actor、story、critic、repair 与 delivery intent，把权威产物写入 `artifacts/`，并在不安全或停滞运行时阻断本轮；根目录同名 story/critic 文件只是交付边界导出，不再作为控制面权威。`round_prepare.py` 会在准备新一轮前创建 before-round snapshot，快照保存在 `.agent_runs/snapshots/<snapshot_id>/`，用于需要回退本轮派生产物时恢复。`control_plane_smoke.py` 使用临时目录构造一轮确定性的多 agent 控制面流程，不调用 live model，用于快速验证 artifact、trace、memory delta/summary、消息类型、intent 计数、snapshot 和交付路径。
 
 每 6 轮会为 player 和本轮相关 character 安排一次 `memory_summaries/*.summary.json` 自我记忆整理。摘要只允许写入角色自己视角可知的信息；校验会拒绝未排期文件和 `gm_only`、`world_truth`、`gm_notes`、`omniscient`、`hidden_note`、`out_of_character` 等显式隐藏标记。若某个重要角色本轮确实使用了 subagent，story 输出可保留 `character_dialogues` 元数据，前端会在主叙事前以独立对话框显示。
 
