@@ -259,6 +259,52 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
+    def test_dispatch_agent_payload_uses_loop_prompt_for_subgm_packets(self):
+        prompts = []
+        dispatch_calls = []
+
+        def fake_read_loop_prompt(run_dir, manifest, agent_key, packet=None):
+            prompts.append((Path(run_dir), manifest, agent_key, packet))
+            return "generated subGM loop prompt"
+
+        def fake_dispatch(agent_key, prompt, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, prompt, Path(root_dir), extra_context))
+            return {"agent": "subGM", "thread_id": "side_suli_rooftop", "status": "completed"}
+
+        self.dispatcher.rp_generate_cli._read_loop_prompt = fake_read_loop_prompt
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher._dispatch_agent_payload(
+            "subGM:side_suli_rooftop",
+            self.run_dir,
+            ROOT,
+            run_claude=lambda *_args: "{}",
+            extra_context={"packet": {"thread_id": "side_suli_rooftop"}},
+        )
+
+        self.assertEqual(result["agent"], "subGM")
+        self.assertEqual(prompts[0][2], "subGM:side_suli_rooftop")
+        self.assertEqual(prompts[0][3], {"thread_id": "side_suli_rooftop"})
+        self.assertEqual(dispatch_calls[0][1], "generated subGM loop prompt")
+
+    def test_dispatch_agent_payload_does_not_fallback_on_loop_prompt_generation_bug(self):
+        def fake_read_loop_prompt(_run_dir, _manifest, _agent_key, _packet=None):
+            raise ValueError("prompt generation bug")
+
+        self.dispatcher.rp_generate_cli._read_loop_prompt = fake_read_loop_prompt
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail(
+            "dispatch should not run after prompt generation bug"
+        )
+
+        with self.assertRaisesRegex(ValueError, "prompt generation bug"):
+            self.dispatcher._dispatch_agent_payload(
+                "subGM:side_suli_rooftop",
+                self.run_dir,
+                ROOT,
+                run_claude=lambda *_args: "{}",
+                extra_context={"packet": {"thread_id": "side_suli_rooftop"}},
+            )
+
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,

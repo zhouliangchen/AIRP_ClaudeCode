@@ -190,6 +190,11 @@ def _read_prompt(run_dir: Path, key: str) -> str:
         raise AgentDispatcherError(f"{prompt_path}: prompt is missing") from exc
 
 
+def _is_loop_prompt_missing(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "missing prompt path" in text or "prompt is missing" in text
+
+
 def _dispatch_agent_payload(
     agent_key: str,
     run_dir: Path,
@@ -207,7 +212,9 @@ def _dispatch_agent_payload(
     if agent_key.startswith("subGM:") or agent_key.startswith("character:") or agent_key == "player":
         try:
             prompt = rp_generate_cli._read_loop_prompt(run_dir, _load_manifest(run_dir), agent_key, packet)
-        except Exception:
+        except rp_generate_cli.AgentExecutionError as exc:
+            if not _is_loop_prompt_missing(exc):
+                raise
             prompt = _read_prompt(run_dir, agent_key)
     else:
         prompt = _read_prompt(run_dir, agent_key)

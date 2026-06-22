@@ -74,6 +74,47 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _read_text_if_exists(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SubgmTurnLoopError(f"{path}: cannot snapshot file") from exc
+
+
+def _restore_text_snapshot(path: Path, snapshot: str | None) -> None:
+    if snapshot is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(snapshot, encoding="utf-8")
+
+
+def _snapshot_paths(paths: list[Path]) -> dict[Path, str | None]:
+    return {path: _read_text_if_exists(path) for path in paths}
+
+
+def _restore_snapshots(snapshots: dict[Path, str | None]) -> None:
+    for path, snapshot in snapshots.items():
+        _restore_text_snapshot(path, snapshot)
+
+
+def _step_snapshot_paths(run_dir: Path, side_dir: Path) -> list[Path]:
+    return [
+        side_dir / "subgm.output.json",
+        side_dir / "interaction.trace.json",
+        side_dir / "actor.outputs.json",
+        side_dir / "state.json",
+        side_dir / "messages.jsonl",
+        run_dir / "messages.jsonl",
+        run_dir / "inboxes" / "gm.jsonl",
+    ]
+
+
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -449,20 +490,33 @@ def run_side_thread(
         steps += 1
         final_status = str(output.get("status") or "")
         last_output = output
-        with SIDE_THREAD_IO_LOCK:
+        step_snapshots = _snapshot_paths(_step_snapshot_paths(root, side_dir))
+        try:
             _write_json(side_dir / "subgm.output.json", output)
-        _record_subgm_output(side_dir, f"subGM:{safe_id}", actor_visible_output, hidden_phrases)
-        _route_actor_calls(
-            root,
-            side_dir,
-            state_before,
-            input_payload,
-            actor_visible_output,
-            dispatch,
-            called_actors,
-            hidden_phrases,
-        )
-        _append_subgm_messages(root, safe_id, state_before, output)
+            _record_subgm_output(side_dir, f"subGM:{safe_id}", actor_visible_output, hidden_phrases)
+            _route_actor_calls(
+                root,
+                side_dir,
+                state_before,
+                input_payload,
+                actor_visible_output,
+                dispatch,
+                called_actors,
+                hidden_phrases,
+            )
+            _append_subgm_messages(root, safe_id, state_before, output)
+        except Exception:
+            _restore_snapshots(step_snapshots)
+            called_actors[:] = [
+                actor_id
+                for actor_id in called_actors
+                if actor_id not in {
+                    str(call.get("actor_id") or "")
+                    for call in output.get("actor_calls", [])
+                    if isinstance(call, dict)
+                }
+            ]
+            raise
 
         if final_status in STOP_STATUSES:
             break

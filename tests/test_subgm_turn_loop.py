@@ -389,6 +389,75 @@ class SubgmTurnLoopTest(unittest.TestCase):
 
         self.assertEqual(actor_packets, [])
 
+    def test_out_of_boundary_actor_call_failure_does_not_leak_unapproved_side_output(self):
+        leaked_beat = "UNAPPROVED boundary beat should never persist."
+        leaked_resume = "UNAPPROVED boundary resume should never persist."
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    scene_beats=[{"content": leaked_beat}],
+                    events=[{"type": "scene", "content": "UNAPPROVED boundary event should never persist."}],
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-Bert-1",
+                            "actor_id": "character:Bert",
+                            "prompt": "You notice a forbidden side-thread clue.",
+                            "reason": "Bert is outside this side-thread boundary.",
+                        }
+                    ],
+                    messages_to_gm=[{"content": "UNAPPROVED boundary message should never persist."}],
+                    next_resume_point=leaked_resume,
+                )
+            raise AssertionError(agent_key)
+
+        with self.assertRaisesRegex(self.subgm_turn_loop.SubgmTurnLoopError, "allowed_characters"):
+            self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
+
+        side_dir = self.run_dir / "side_threads" / "side_suli_rooftop"
+        self.assertFalse((side_dir / "subgm.output.json").exists())
+        self.assertFalse((side_dir / "actor.outputs.json").exists())
+        trace_text = (side_dir / "interaction.trace.json").read_text(encoding="utf-8")
+        self.assertNotIn("UNAPPROVED", trace_text)
+        summaries = self.subgm_threads.load_thread_summaries(self.run_dir)
+        self.assertEqual(summaries[0]["last_scene_beats"], [])
+        self.assertEqual(summaries[0]["next_resume_point"], "")
+
+    def test_player_actor_call_failure_does_not_leak_unapproved_side_output(self):
+        leaked_beat = "UNAPPROVED player beat should never persist."
+        leaked_resume = "UNAPPROVED player resume should never persist."
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    scene_beats=[{"content": leaked_beat}],
+                    events=[{"type": "scene", "content": "UNAPPROVED player event should never persist."}],
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-Player-1",
+                            "actor_id": "player",
+                            "prompt": "This must not route to the player.",
+                            "reason": "Player is forbidden in side threads.",
+                            "visibility_basis": visibility_basis("player"),
+                        }
+                    ],
+                    messages_to_gm=[{"content": "UNAPPROVED player message should never persist."}],
+                    next_resume_point=leaked_resume,
+                )
+            raise AssertionError(agent_key)
+
+        with self.assertRaisesRegex(self.subgm_turn_loop.SubgmTurnLoopError, "must not target player"):
+            self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
+
+        side_dir = self.run_dir / "side_threads" / "side_suli_rooftop"
+        self.assertFalse((side_dir / "subgm.output.json").exists())
+        self.assertFalse((side_dir / "actor.outputs.json").exists())
+        trace_text = (side_dir / "interaction.trace.json").read_text(encoding="utf-8")
+        self.assertNotIn("UNAPPROVED", trace_text)
+        summaries = self.subgm_threads.load_thread_summaries(self.run_dir)
+        self.assertEqual(summaries[0]["last_scene_beats"], [])
+        self.assertEqual(summaries[0]["next_resume_point"], "")
+
     def test_subgm_scene_visibility_metadata_reaches_side_trace_summary(self):
         def dispatch(agent_key, packet):
             if agent_key == "subGM:side_suli_rooftop":
