@@ -100,6 +100,15 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(payload["messages"]["total"], 1)
         self.assertIn("projected_message", payload["messages"]["types"])
         self.assertGreaterEqual(payload["intents"]["completed"], 1)
+        self.assertIn("dispatcher", payload)
+        self.assertEqual(payload["dispatcher"]["status"], "delivered")
+        self.assertEqual(payload["dispatcher"]["manifest_status"], "delivered")
+        self.assertIn("analyze_input", payload["dispatcher"]["completed_intent_types"])
+        self.assertIn("run_gm_turn", payload["dispatcher"]["completed_intent_types"])
+        self.assertIn("compose_story", payload["dispatcher"]["completed_intent_types"])
+        self.assertIn("review_critic", payload["dispatcher"]["completed_intent_types"])
+        self.assertIn("deliver_round", payload["dispatcher"]["completed_intent_types"])
+        self.assertNotIn("workflow_advice", payload)
         self.assertTrue(payload["snapshot"]["ok"])
 
     def test_control_plane_smoke_rejects_lifecycle_cleanup_failure(self):

@@ -70,6 +70,12 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _smoke_temp_parent(repo: Path) -> Path:
+    parent = repo / ".tmp"
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent
+
+
 def _contains_text(value: Any, text: str) -> bool:
     return str(text).lower() in json.dumps(value, ensure_ascii=False).lower()
 
@@ -422,43 +428,31 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
     return captured
 
 
-def _write_story_and_critic_outputs(run_dir: Path) -> None:
-    _write_json(
-        run_dir / "artifacts" / "story.output.json",
-        {
-            "content": (
-                '<content>Ada lowered her voice. "That pendant is older than this school," '
-                "she said, stopping before the next choice belonged to the player.</content>"
-            ),
-            "character_dialogues": [
-                {
-                    "character": "Ada",
-                    "text": "That pendant is older than this school.",
-                    "source_agent": "character:Ada",
-                }
-            ],
-            "metadata": {"round_id": run_dir.name, "source": "control_plane_smoke"},
-        },
-    )
-    _write_json(
-        run_dir / "artifacts" / "critic.report.json",
-        {
-            "decision": "pass",
-            "hard_failures": [],
-            "soft_issues": [],
-            "repair_instruction": "",
-            "system_iteration_suggestion": "",
-        },
-    )
+def _story_output_fixture(run_dir: Path) -> Dict[str, Any]:
+    return {
+        "content": (
+            '<content>Ada lowered her voice. "That pendant is older than this school," '
+            "she said, stopping before the next choice belonged to the player.</content>"
+        ),
+        "character_dialogues": [
+            {
+                "character": "Ada",
+                "text": "That pendant is older than this school.",
+                "source_agent": "character:Ada",
+            }
+        ],
+        "metadata": {"round_id": run_dir.name, "source": "control_plane_smoke"},
+    }
 
 
-def _promote_loop_outputs_to_artifacts(run_dir: Path) -> None:
-    for name in ("gm.output.json", "actor.outputs.json"):
-        source = run_dir / name
-        if source.exists():
-            payload = _read_json(source)
-            if isinstance(payload, dict):
-                _write_json(run_dir / "artifacts" / name, payload)
+def _critic_report_fixture() -> Dict[str, Any]:
+    return {
+        "decision": "pass",
+        "hard_failures": [],
+        "soft_issues": [],
+        "repair_instruction": "",
+        "system_iteration_suggestion": "",
+    }
 
 
 def _summary_payload(agent_id: str) -> Dict[str, Any]:
@@ -761,6 +755,23 @@ def _subgm_evidence(
     }
 
 
+def _dispatcher_evidence(run_dir: Path, agent_intents) -> dict:
+    completed = agent_intents.list_intents(run_dir, "completed")
+    blocked = agent_intents.list_intents(run_dir, "blocked")
+    pending = agent_intents.list_intents(run_dir, "pending")
+    manifest = _read_json(run_dir / "manifest.json")
+    manifest_dispatcher = manifest.get("dispatcher")
+    if not isinstance(manifest_dispatcher, dict):
+        manifest_dispatcher = {}
+    return {
+        "status": "delivered" if not pending and not blocked else "blocked" if blocked else "pending",
+        "manifest_status": str(manifest_dispatcher.get("status") or ""),
+        "completed_intent_types": [str(item.get("type") or "") for item in completed],
+        "blocked_intent_types": [str(item.get("type") or "") for item in blocked],
+        "pending_intent_types": [str(item.get("type") or "") for item in pending],
+    }
+
+
 def _story_evidence(run_dir: Path) -> Dict[str, Any]:
     story_output = _read_json(run_dir / "story.output.json")
     dialogues = story_output.get("character_dialogues", [])
@@ -798,6 +809,7 @@ def _story_evidence(run_dir: Path) -> Dict[str, Any]:
 def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
+    import agent_dispatcher
     import agent_interactions
     import agent_intents
     import agent_lifecycle
@@ -811,7 +823,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     import round_state
     import subgm_threads
 
-    with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-", dir=_smoke_temp_parent(repo)) as tmp:
         temp_root = Path(tmp)
         card = temp_root / "smoke_card"
         styles_dir = temp_root / "repo" / "skills" / "styles"
@@ -854,18 +866,94 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             raise RuntimeError(f"expected round-000006, got {run_dir.name}")
 
         import input_analysis
-        import input_analysis_apply
 
         analysis = _build_input_analysis_fixture(run_dir, input_payload, input_analysis)
         _write_json(run_dir / "input_analysis.output.json", analysis)
-        applied_analysis = input_analysis_apply.apply_current_run(card, repo)
-        _ensure_smoke_character_contexts(run_dir)
+        agent_intents.create_intent(
+            run_dir,
+            {
+                "requested_by": "control_plane_smoke",
+                "type": "analyze_input",
+                "payload": {"artifact": "input_analysis.output.json"},
+            },
+        )
 
-        captured_loop = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
-        _promote_loop_outputs_to_artifacts(run_dir)
-        _schedule_suli_memory_summary(card, run_dir, agent_memory)
-        _write_story_and_critic_outputs(run_dir)
-        delivery = agent_outputs.prepare_delivery(card, styles_dir)
+        captured_loop: Dict[str, Any] = {}
+        delivery: Dict[str, Any] = {}
+        original_loop = agent_dispatcher.rp_generate_cli._run_interactive_agent_loop
+        original_dispatch = agent_dispatcher.rp_generate_cli._dispatch_agent_payload
+        original_delivery = agent_dispatcher.rp_generate_cli._run_delivery
+
+        def fake_loop(loop_run_dir, manifest, root, run_claude, repair_context=None):
+            captured = _run_deterministic_gm_loop(Path(loop_run_dir), agent_turn_loop)
+            captured_loop.update(captured)
+            return captured["loop_result"]
+
+        def fake_dispatch(agent_key, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            if agent_key == "story":
+                return _story_output_fixture(run_dir)
+            if agent_key == "critic":
+                return _critic_report_fixture()
+            raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
+
+        def fake_delivery(card_folder, root_dir, run_command):
+            result = agent_outputs.prepare_delivery(card_folder, styles_dir)
+            delivery.clear()
+            delivery.update(result)
+            return result
+
+        try:
+            agent_dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+            agent_dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+            agent_dispatcher.rp_generate_cli._run_delivery = fake_delivery
+
+            analyze_result = agent_dispatcher.dispatch_next(run_dir, card, repo)
+            if not analyze_result.get("ok") or analyze_result.get("intent_type") != "analyze_input":
+                raise RuntimeError(f"analyze_input dispatch failed: {analyze_result}")
+            applied_analysis = analyze_result.get("detail", {}).get("applied", {})
+            _ensure_smoke_character_contexts(run_dir)
+
+            gm_result = agent_dispatcher.dispatch_next(
+                run_dir,
+                card,
+                repo,
+                run_claude=lambda *args: "",
+            )
+            if not gm_result.get("ok") or gm_result.get("intent_type") != "run_gm_turn":
+                raise RuntimeError(f"run_gm_turn dispatch failed: {gm_result}")
+            _schedule_suli_memory_summary(card, run_dir, agent_memory)
+
+            story_result = agent_dispatcher.dispatch_next(
+                run_dir,
+                card,
+                repo,
+                run_claude=lambda *args: "",
+            )
+            if not story_result.get("ok") or story_result.get("intent_type") != "compose_story":
+                raise RuntimeError(f"compose_story dispatch failed: {story_result}")
+
+            critic_result = agent_dispatcher.dispatch_next(
+                run_dir,
+                card,
+                repo,
+                run_claude=lambda *args: "",
+            )
+            if not critic_result.get("ok") or critic_result.get("intent_type") != "review_critic":
+                raise RuntimeError(f"review_critic dispatch failed: {critic_result}")
+
+            delivery_result = agent_dispatcher.dispatch_next(
+                run_dir,
+                card,
+                repo,
+                run_command=lambda *args, **kwargs: None,
+            )
+            if not delivery_result.get("ok") or delivery_result.get("status") != "delivered":
+                raise RuntimeError(f"deliver_round dispatch failed: {delivery_result}")
+        finally:
+            agent_dispatcher.rp_generate_cli._run_interactive_agent_loop = original_loop
+            agent_dispatcher.rp_generate_cli._dispatch_agent_payload = original_dispatch
+            agent_dispatcher.rp_generate_cli._run_delivery = original_delivery
+
         if not delivery.get("ok"):
             raise RuntimeError(f"delivery failed: {delivery}")
 
@@ -876,7 +964,6 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         )
         scheduled_summaries = _write_scheduled_memory_summaries(run_dir)
         memory_summary = agent_memory.ingest_memory_summaries(card, run_dir)
-        delivered = agent_outputs.mark_delivered(card)
         post_round_jobs = agent_memory.schedule_post_round_memory_jobs(card, run_dir)
         round_state.write_progress_state(
             styles_dir,
@@ -961,8 +1048,9 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "ok": bool(delivery.get("ok")),
                 "mode": delivery.get("mode"),
             },
+            "dispatcher": _dispatcher_evidence(run_dir, agent_intents),
             "story": _story_evidence(run_dir),
-            "manifest_stage": manifest.get("stage") or delivered.get("stage"),
+            "manifest_stage": manifest.get("stage"),
             "progress": {
                 "schema_version": progress.get("schema_version"),
                 "state": progress.get("state") or progress.get("stage"),
