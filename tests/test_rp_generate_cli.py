@@ -67,19 +67,10 @@ def _gm_output(
     actor_calls=None,
     world_state_delta=None,
     decision_point=None,
-    stop_reason="player_decision",
+    stop_reason="complete",
 ):
     if actor_calls is None:
-        actor_calls = [
-            {
-                "call_id": "call-player-1",
-                "actor_id": "player",
-                "prompt": "Respond to the current player action.",
-                "reason": "The player is the only required actor for this turn.",
-                "metadata": {},
-                "visibility_basis": _visibility_basis("player"),
-            }
-        ]
+        actor_calls = []
     return {
         "agent": "gm",
         "scene_beats": scene_beats if scene_beats is not None else [{"content": "The alley light flickers."}],
@@ -87,8 +78,20 @@ def _gm_output(
         "actor_calls": actor_calls,
         "parallel_groups": [],
         "world_state_delta": world_state_delta if world_state_delta is not None else [],
-        "decision_point": decision_point if decision_point is not None else {"prompt": "What do you do next?"},
+        "perception_responses": [],
+        "decision_point": decision_point,
         "stop_reason": stop_reason,
+    }
+
+
+def _gm_player_call(call_id="call-player-1"):
+    return {
+        "call_id": call_id,
+        "actor_id": "player",
+        "prompt": "Respond to the current player action.",
+        "reason": "The player is the only required actor for this turn.",
+        "metadata": {},
+        "visibility_basis": _visibility_basis("player"),
     }
 
 
@@ -518,7 +521,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(result["dispatcher"]["reason"], "dispatcher_step_limit")
         self.assertEqual(len(result["dispatcher_results"]), self.module.MAX_DISPATCHER_STEPS)
 
-    def test_run_round_legacy_writes_subagent_artifacts_and_invokes_delivery(self):
+    def test_run_round_native_gm_only_writes_artifacts_and_invokes_delivery(self):
         self._queue_run_gm_turn()
         responses = _basic_responses(
             player=_player_output("I follow the noise."),
@@ -543,9 +546,9 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual([call[0] for call in calls], ["gm", "player", "story", "critic"])
+        self.assertEqual([call[0] for call in calls], ["gm", "story", "critic"])
         self.assertTrue((self.run_dir / "gm.output.json").exists())
-        self.assertTrue((self.run_dir / "actor.outputs.json").exists())
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
         self.assertTrue((self.run_dir / "interaction.trace.json").exists())
         self.assertTrue((self.run_dir / "artifacts" / "story.input.json").exists())
         self.assertTrue((self.run_dir / "artifacts" / "story.output.json").exists())
@@ -557,10 +560,8 @@ class RpGenerateCliTest(unittest.TestCase):
             ["run_gm_turn", "compose_story", "review_critic", "deliver_round"],
         )
         gm_loop = json.loads((self.run_dir / "gm.output.json").read_text(encoding="utf-8"))
-        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(gm_loop["agent"], "gm_loop")
-        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I follow the noise.")
         self.assertEqual(trace["schema_version"], 2)
         self.assertTrue(any("round_deliver.py" in " ".join(command) for command in delivery_calls))
 
@@ -590,7 +591,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(debug_round.exists())
         records = sorted(debug_round.glob("*.json"))
         payloads = [json.loads(path.read_text(encoding="utf-8")) for path in records]
-        self.assertEqual([payload["agent_key"] for payload in payloads], ["gm", "player", "story", "critic"])
+        self.assertEqual([payload["agent_key"] for payload in payloads], ["gm", "story", "critic"])
         self.assertTrue(all(payload["raw_input"]["prompt"].startswith("You are the Claude Code general-purpose agent") for payload in payloads))
         self.assertIn('"type": "system"', payloads[0]["raw_output"]["stdout"])
         self.assertEqual(payloads[0]["raw_output"]["stderr"], "")
@@ -598,7 +599,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         index_path = self.card / "debug" / "model_calls" / "index.jsonl"
         index_items = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual([item["agent_key"] for item in index_items], ["gm", "player", "story", "critic"])
+        self.assertEqual([item["agent_key"] for item in index_items], ["gm", "story", "critic"])
 
     def test_run_round_model_debug_mode_accepts_utf8_bom_settings(self):
         self._queue_run_gm_turn()
@@ -720,7 +721,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order[:3], ["gm", "player", "story"])
+        self.assertEqual(order[:3], ["gm", "story", "critic"])
         applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
         applied_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertNotIn("input_analysis", applied_input)
@@ -898,7 +899,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order[:3], ["gm", "player", "story"])
+        self.assertEqual(order[:3], ["gm", "story", "critic"])
         applied_input = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
         self.assertNotIn("input_analysis", applied_input)
 
@@ -943,7 +944,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertNotIn("input_analyst", order)
-        self.assertEqual(order[:2], ["gm", "player"])
+        self.assertEqual(order[:2], ["gm", "story"])
 
     def test_run_round_reuses_existing_input_analysis_after_blocked_without_reapply(self):
         (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
@@ -1049,7 +1050,7 @@ class RpGenerateCliTest(unittest.TestCase):
                 self.module.input_analysis_apply = original_apply
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order, ["gm", "player", "story", "critic"])
+        self.assertEqual(order, ["gm", "story", "critic"])
 
     def test_run_round_accepts_direct_agent_plain_json_output(self):
         self._queue_run_gm_turn()
@@ -1069,8 +1070,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        actor_outputs = json.loads((self.run_dir / "actor.outputs.json").read_text(encoding="utf-8"))
-        self.assertEqual(actor_outputs["player"][0]["events"][0]["content"], "I wait.")
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
         self.assertFalse((self.run_dir / "player.output.json").exists())
 
     def test_run_round_treats_delivery_retry_as_not_ok(self):
@@ -1268,7 +1268,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "delivery_failed")
         self.assertEqual(calls.count("gm"), 1)
-        self.assertEqual(calls.count("player"), 1)
+        self.assertEqual(calls.count("player"), 0)
         self.assertEqual(calls.count("story"), 1)
         self.assertEqual(calls.count("critic"), 1)
 
@@ -1372,11 +1372,26 @@ class RpGenerateCliTest(unittest.TestCase):
     def test_run_round_retries_actor_output_with_wrong_agent_id(self):
         self._queue_run_gm_turn()
         calls = []
+        gm_payloads = [
+            _gm_output(
+                actor_calls=[
+                    {
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "Respond to the current player action.",
+                        "reason": "The player is the only required actor for this turn.",
+                        "metadata": {},
+                        "visibility_basis": _visibility_basis("player"),
+                    }
+                ],
+            ),
+            _gm_output(actor_calls=[]),
+        ]
 
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = _gm_output()
+                payload = gm_payloads.pop(0)
             elif agent_key == "player" and calls.count("player") == 1:
                 payload = dict(_player_output("I wait."))
                 payload["agent_id"] = "character:Ada"
@@ -1415,23 +1430,26 @@ class RpGenerateCliTest(unittest.TestCase):
         _write_json(self.run_dir / "input.json", input_payload)
 
         calls = []
-        gm_payload = _gm_output(
-            actor_calls=[
-                {
-                    "call_id": "call-character-Ada-1",
-                    "actor_id": "character:Ada",
-                    "prompt": "Ada sees the player enter.",
-                    "reason": "Ada is present.",
-                    "metadata": {},
-                    "visibility_basis": _visibility_basis("character:Ada"),
-                }
-            ],
-        )
+        gm_payloads = [
+            _gm_output(
+                actor_calls=[
+                    {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "Ada sees the player enter.",
+                        "reason": "Ada is present.",
+                        "metadata": {},
+                        "visibility_basis": _visibility_basis("character:Ada"),
+                    }
+                ],
+            ),
+            _gm_output(actor_calls=[]),
+        ]
 
         def fake_run_claude(agent_key, prompt, cwd):
             calls.append(agent_key)
             if agent_key == "gm":
-                payload = gm_payload
+                payload = gm_payloads.pop(0)
             elif agent_key == "character:Ada" and calls.count("character:Ada") == 1:
                 payload = _character_output("character:Bob", "This should be retried.")
             elif agent_key == "character:Ada":

@@ -1714,36 +1714,113 @@ def _execute_run_gm_turn(
             raise AgentDispatcherError("run_claude is required for run_gm_turn")
         payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
         repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
-        manifest = _load_manifest(run_dir)
-        loop_result = rp_generate_cli._run_interactive_agent_loop(
-            run_dir,
-            manifest,
-            root_dir,
-            run_claude,
-            repair_context=repair_context,
-        )
-        artifacts = [
-            _refresh_root_artifact_to_authority(run_dir, "gm.output.json"),
-            _refresh_root_artifact_to_authority(run_dir, "actor.outputs.json"),
+
+        def dispatch(agent_key: str, packet: dict[str, Any]) -> dict[str, Any]:
+            extra_context: dict[str, Any] = {
+                "packet": packet,
+                "loop_packet": packet,
+                "intent_type": "run_gm_turn",
+                "source_intent_id": intent_id,
+            }
+            if repair_context is not None and agent_key == "gm":
+                extra_context["repair_context"] = repair_context
+            return _dispatch_agent_payload(agent_key, run_dir, root_dir, run_claude, extra_context)
+
+        loop_result = agent_turn_loop.run_gm_only_step(run_dir, dispatch)
+        artifacts = [_refresh_root_artifact_to_authority(run_dir, "gm.output.json")]
+
+        created_messages: list[str] = []
+        created_projection_intents: list[str] = []
+        created_subgm_intents: list[str] = []
+        created_progression_intents: list[str] = []
+        follow_up_id = ""
+
+        player_decision_required = str(loop_result.get("stop_reason") or "") == "player_decision"
+        actor_calls = [call for call in loop_result.get("actor_calls", []) if isinstance(call, dict)]
+        runnable_side_threads = [
+            summary for summary in loop_result.get("runnable_side_threads", []) if isinstance(summary, dict)
         ]
-        follow_up_payload: dict[str, Any] = {"loop_result": loop_result}
-        if repair_context is not None:
-            follow_up_payload["repair_context"] = repair_context
-        follow_up = _ensure_follow_up_intent(
-            run_dir,
-            intent_id,
-            {
-                "requested_by": "gm",
-                "type": "compose_story",
-                "payload": follow_up_payload,
-                "policy": {"source_intent_id": intent_id},
-            },
-        )
+
+        if not player_decision_required:
+            for call in actor_calls:
+                actor_id = str(call.get("actor_id") or "")
+                if not actor_id:
+                    continue
+                message_id, projection_intent_id = agent_actor_runtime.record_request_actor(
+                    run_dir,
+                    "gm",
+                    actor_id,
+                    call,
+                    source_intent_id=intent_id,
+                )
+                created_messages.append(message_id)
+                created_projection_intents.append(projection_intent_id)
+
+            for summary in runnable_side_threads:
+                thread_id = str(summary.get("thread_id") or "")
+                if not thread_id:
+                    continue
+                follow_up = _ensure_follow_up_intent_by_payload(
+                    run_dir,
+                    intent_id,
+                    {
+                        "requested_by": "gm",
+                        "type": "run_subgm_thread",
+                        "payload": {
+                            "thread_id": thread_id,
+                            "reason": "gm_requested_side_thread",
+                        },
+                        "policy": {"source_intent_id": intent_id},
+                    },
+                    payload_keys=("thread_id",),
+                )
+                subgm_intent_id = str(follow_up.get("id") or "")
+                if follow_up.get("created"):
+                    created_subgm_intents.append(subgm_intent_id)
+
+            if not created_projection_intents and not created_subgm_intents:
+                stop_reason = str(loop_result.get("stop_reason") or "")
+                if stop_reason in {"complete", "word_target", "max_steps"}:
+                    follow_up_payload: dict[str, Any] = {
+                        "reason": "gm_step_complete",
+                        "loop_result": loop_result,
+                    }
+                    if repair_context is not None:
+                        follow_up_payload["repair_context"] = repair_context
+                    follow_up = _ensure_follow_up_intent(
+                        run_dir,
+                        intent_id,
+                        {
+                            "requested_by": "gm",
+                            "type": "compose_story",
+                            "payload": follow_up_payload,
+                            "policy": {"source_intent_id": intent_id},
+                        },
+                    )
+                    follow_up_id = str(follow_up.get("id") or "")
+                    if follow_up.get("created"):
+                        created_progression_intents.append(follow_up_id)
+                else:
+                    follow_up = _ensure_follow_up_intent(
+                        run_dir,
+                        intent_id,
+                        {
+                            "requested_by": "gm",
+                            "type": "run_gm_turn",
+                            "payload": {
+                                "reason": "gm_step_continue",
+                                "loop_result": loop_result,
+                            },
+                            "policy": {"source_intent_id": intent_id},
+                        },
+                    )
+                    follow_up_id = str(follow_up.get("id") or "")
+                    if follow_up.get("created"):
+                        created_progression_intents.append(follow_up_id)
     except Exception as exc:
         return _block_executor_failure(run_dir, intent_id, "run_gm_turn", "run_gm_turn_failed", exc, artifacts)
 
-    follow_up_id = str(follow_up.get("id") or "")
-    created_intents = [follow_up_id] if follow_up.get("created") else []
+    created_intents = [*created_projection_intents, *created_subgm_intents, *created_progression_intents]
     agent_intents.complete_intent(
         run_dir,
         intent_id,
@@ -1751,6 +1828,11 @@ def _execute_run_gm_turn(
             "executor": "run_gm_turn",
             "loop_result": loop_result,
             "follow_up_intent_id": follow_up_id,
+            "player_decision_required": player_decision_required,
+            "created_projection_intents": created_projection_intents,
+            "created_subgm_intents": created_subgm_intents,
+            "created_progression_intents": created_progression_intents,
+            "created_messages": created_messages,
             "artifacts": artifacts,
         },
     )
@@ -1761,9 +1843,17 @@ def _execute_run_gm_turn(
         intent_type="run_gm_turn",
         reason="",
         created_intents=created_intents,
-        created_messages=[],
+        created_messages=created_messages,
         artifacts=artifacts,
-        detail={"loop_result": loop_result, "follow_up_intent_id": follow_up_id},
+        detail={
+            "loop_result": loop_result,
+            "follow_up_intent_id": follow_up_id,
+            "player_decision_required": player_decision_required,
+            "created_projection_intents": created_projection_intents,
+            "created_subgm_intents": created_subgm_intents,
+            "created_progression_intents": created_progression_intents,
+            "created_messages": created_messages,
+        },
     )
 
 
@@ -1782,6 +1872,35 @@ def _ensure_follow_up_intent(
             if existing.get("type") != payload.get("type"):
                 continue
             return {"id": existing.get("id"), "created": False, "intent": existing}
+
+    created = agent_intents.create_intent(run_dir, payload)["intent"]
+    return {"id": created.get("id"), "created": True, "intent": created}
+
+
+def _ensure_follow_up_intent_by_payload(
+    run_dir: Path,
+    source_intent_id: str,
+    payload: dict[str, Any],
+    *,
+    payload_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    expected_payload = payload.get("payload")
+    if not isinstance(expected_payload, dict):
+        expected_payload = {}
+    for state in agent_intents.VALID_STATES:
+        for existing in agent_intents.list_intents(run_dir, state):
+            policy = existing.get("policy")
+            if not isinstance(policy, dict):
+                continue
+            if policy.get("source_intent_id") != source_intent_id:
+                continue
+            if existing.get("type") != payload.get("type"):
+                continue
+            existing_payload = existing.get("payload")
+            if not isinstance(existing_payload, dict):
+                continue
+            if all(existing_payload.get(key) == expected_payload.get(key) for key in payload_keys):
+                return {"id": existing.get("id"), "created": False, "intent": existing}
 
     created = agent_intents.create_intent(run_dir, payload)["intent"]
     return {"id": created.get("id"), "created": True, "intent": created}

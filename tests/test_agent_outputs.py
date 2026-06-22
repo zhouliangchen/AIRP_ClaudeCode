@@ -715,6 +715,38 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_blocks_missing_required_actor_outputs(self):
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The alley light flickers."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "Respond to the current player action.",
+                                "reason": "The player is directly addressed by this prompt.",
+                                "metadata": {},
+                                "visibility_basis": {
+                                    "mode": "direct",
+                                    "summary": "player is directly addressed by this prompt.",
+                                    "target_actor": "player",
+                                    "visible_to": ["player"],
+                                },
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
         (self.run_dir / "artifacts" / "actor.outputs.json").unlink()
         _write_json(
             self.run_dir / "player.output.json",

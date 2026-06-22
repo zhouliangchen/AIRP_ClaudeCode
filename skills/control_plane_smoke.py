@@ -880,7 +880,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
 
         captured_loop: Dict[str, Any] = {}
         delivery: Dict[str, Any] = {}
-        original_loop = agent_dispatcher.rp_generate_cli._run_interactive_agent_loop
+        original_loop = agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop
         original_dispatch = agent_dispatcher.rp_generate_cli._dispatch_agent_payload
         original_delivery = agent_dispatcher.rp_generate_cli._run_delivery
 
@@ -890,6 +890,27 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             return captured["loop_result"]
 
         def fake_dispatch(agent_key, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+            if agent_key == "gm":
+                if not captured_loop:
+                    captured = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
+                    captured_loop.update(captured)
+                    actor_root = run_dir / "actor.outputs.json"
+                    if actor_root.exists():
+                        _write_json(
+                            run_dir / "artifacts" / "actor.outputs.json",
+                            json.loads(actor_root.read_text(encoding="utf-8")),
+                        )
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The classroom settles after Ada's warning."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "perception_responses": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
             if agent_key == "story":
                 return _story_output_fixture(run_dir)
             if agent_key == "critic":
@@ -903,7 +924,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             return result
 
         try:
-            agent_dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+            agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop = fake_loop
             agent_dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
             agent_dispatcher.rp_generate_cli._run_delivery = fake_delivery
 
@@ -950,7 +971,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if not delivery_result.get("ok") or delivery_result.get("status") != "delivered":
                 raise RuntimeError(f"deliver_round dispatch failed: {delivery_result}")
         finally:
-            agent_dispatcher.rp_generate_cli._run_interactive_agent_loop = original_loop
+            agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop = original_loop
             agent_dispatcher.rp_generate_cli._dispatch_agent_payload = original_dispatch
             agent_dispatcher.rp_generate_cli._run_delivery = original_delivery
 

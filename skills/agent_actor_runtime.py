@@ -32,7 +32,14 @@ class AgentActorDispatchError(AgentActorRuntimeError):
         self.detail = detail or {}
 
 
-def record_request_actor(run_dir: Path, sender: str, actor_id: str, call: dict) -> tuple[str, str]:
+def record_request_actor(
+    run_dir: Path,
+    sender: str,
+    actor_id: str,
+    call: dict,
+    *,
+    source_intent_id: str = "",
+) -> tuple[str, str]:
     """Record a GM/subGM request for an actor-facing projection."""
 
     try:
@@ -54,21 +61,21 @@ def record_request_actor(run_dir: Path, sender: str, actor_id: str, call: dict) 
                 },
             ),
         )
+        intent_payload = {
+            "requested_by": sender,
+            "type": "request_projection",
+            "source_message_id": str(request_message["id"]),
+            "payload": {
+                "actor_id": actor_id,
+                "source_message_id": str(request_message["id"]),
+                "source_call_id": call_id,
+            },
+        }
+        if source_intent_id:
+            intent_payload["policy"] = {"source_intent_id": source_intent_id}
         intent = _require_intent_result(
             "create request_projection intent",
-            agent_intents.create_intent(
-                run_dir,
-                {
-                    "requested_by": sender,
-                    "type": "request_projection",
-                    "source_message_id": str(request_message["id"]),
-                    "payload": {
-                        "actor_id": actor_id,
-                        "source_message_id": str(request_message["id"]),
-                        "source_call_id": call_id,
-                    },
-                },
-            ),
+            agent_intents.create_intent(run_dir, intent_payload),
         )
         intent_id = str(intent["id"])
         return str(request_message["id"]), intent_id

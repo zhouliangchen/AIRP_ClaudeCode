@@ -998,6 +998,170 @@ def _write_outputs(run_dir: Path, gm_outputs: list[dict], actor_outputs: dict[st
     agent_run.write_json(run_dir / "actor.outputs.json", actor_outputs)
 
 
+def _read_gm_outputs(run_dir: Path) -> list[dict]:
+    source = run_dir / "artifacts" / "gm.output.json"
+    if not source.exists():
+        source = run_dir / "gm.output.json"
+    payload = agent_run.read_json(source, {})
+    if not isinstance(payload, dict):
+        return []
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list):
+        return []
+    return [item for item in outputs if isinstance(item, dict)]
+
+
+def _seed_actor_call_ids_from_outputs(gm_outputs: list[dict]) -> tuple[dict[str, int], set[str]]:
+    counts: dict[str, int] = {}
+    used: set[str] = set()
+    for output in gm_outputs:
+        for call in output.get("actor_calls", []) or []:
+            if not isinstance(call, dict):
+                continue
+            actor_id = str(call.get("actor_id") or "")
+            call_id = str(call.get("call_id") or "")
+            if not actor_id or not call_id:
+                continue
+            used.add(call_id)
+            index = _actor_call_id_index(actor_id, call_id)
+            if index is not None:
+                counts[actor_id] = max(counts.get(actor_id, 0), index)
+    return counts, used
+
+
+def _append_gm_output(run_dir: Path, gm_output: dict) -> list[dict]:
+    outputs = _read_gm_outputs(run_dir)
+    outputs.append(gm_output)
+    payload = {"agent": "gm_loop", "outputs": outputs}
+    agent_run.write_json(run_dir / "gm.output.json", payload)
+    agent_run.write_json(run_dir / "artifacts" / "gm.output.json", payload)
+    return outputs
+
+
+def _runnable_side_thread_summaries(run_dir: Path) -> list[dict]:
+    runnable_statuses = getattr(subgm_turn_loop, "RUNNABLE_STATUSES", {"running", "merging", "needs_gm", "blocked"})
+    try:
+        summaries = subgm_threads.load_thread_summaries(run_dir)
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM side-thread state: {exc}") from exc
+    return [
+        summary
+        for summary in summaries
+        if str(summary.get("thread_id") or "") and str(summary.get("status") or "") in runnable_statuses
+    ]
+
+
+def run_gm_only_step(
+    run_dir: str | Path,
+    dispatch: DispatchFn,
+) -> dict:
+    """Run one GM dispatch/validation/persist step without actor, subGM, or story dispatch."""
+
+    root = Path(run_dir)
+    input_payload = _read_input(root)
+    _ensure_trace(root, input_payload)
+
+    existing_gm_outputs = _read_gm_outputs(root)
+    step_index = len(existing_gm_outputs)
+    world_state = _initial_world_state(input_payload)
+    for prior_output in existing_gm_outputs:
+        _apply_world_state_delta(world_state, prior_output)
+    _refresh_side_thread_state(root, world_state)
+    _update_visible_events(root, world_state)
+
+    _write_progress_safe(
+        "gm_loop.gm_dispatch",
+        "GM 正在推进剧情",
+        percent=47,
+        detail={"run_id": root.name, "step": step_index + 1},
+    )
+    raw_gm_payload = dispatch("gm", _gm_packet(root, world_state, step_index))
+    raw_gm_output = _validate_gm(raw_gm_payload)
+    _restore_actor_call_source_call_ids(raw_gm_output, raw_gm_payload)
+
+    gm_output = agent_visibility_guard.sanitize_gm_output(raw_gm_output, input_payload)
+    gm_output = _normalize_subgm_command_actor_ids(gm_output, input_payload)
+    _prevalidate_subgm_commands(root, gm_output, input_payload)
+    _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
+    _apply_character_promotions(root, input_payload, gm_output)
+    registered_actor_targets = _registered_actor_targets(input_payload)
+    gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
+
+    generated_call_counts, used_actor_call_ids = _seed_actor_call_ids_from_outputs(existing_gm_outputs)
+    _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
+    _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
+    _apply_subgm_commands(root, gm_output, input_payload)
+    _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
+    _assert_complete_handles_existing_side_threads(root, gm_output)
+
+    _record_gm_output(root, gm_output, step_index)
+    _apply_world_state_delta(world_state, gm_output)
+    _refresh_side_thread_state(root, world_state)
+    _update_visible_events(root, world_state)
+
+    hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
+    perception_feedback_calls = _resolve_perception_responses(
+        root,
+        gm_output,
+        world_state,
+        generated_call_counts,
+        used_actor_call_ids,
+        hidden_phrases,
+    )
+    _update_visible_events(root, world_state)
+    all_gm_outputs = _append_gm_output(root, gm_output)
+
+    gm_stop = str(gm_output.get("stop_reason") or "continue")
+    gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
+    decision_point: Any = None
+    if gm_has_decision:
+        decision_point = _mark_decision(
+            root,
+            gm_output.get("decision_point"),
+            "The player must make the next decision.",
+        )
+        _write_progress_safe(
+            "gm_loop.waiting_player_decision",
+            "等待玩家决策",
+            percent=60,
+            detail={"reason": "gm_decision_point"},
+        )
+
+    actor_calls = []
+    actor_calls.extend(perception_feedback_calls)
+    actor_calls.extend([call for call in gm_output.get("actor_calls", []) or [] if isinstance(call, dict)])
+    actor_work = []
+    for call in actor_calls:
+        actor_id = str(call.get("actor_id") or "")
+        if not actor_id:
+            continue
+        call_for_projection = dict(call)
+        call_for_projection["packet"] = _actor_packet(
+            input_payload,
+            world_state,
+            actor_id,
+            str(call.get("prompt") or ""),
+            hidden_phrases,
+            actor_call=call,
+        )
+        actor_work.append(call_for_projection)
+    runnable_side_threads = _runnable_side_thread_summaries(root)
+    stop_reason = "player_decision" if gm_has_decision else (gm_stop if gm_stop in STOP_REASONS else "continue")
+
+    return {
+        "ok": True,
+        "gm_steps": len(all_gm_outputs),
+        "step_index": step_index,
+        "gm_output": gm_output,
+        "actor_calls": actor_work,
+        "runnable_side_threads": runnable_side_threads,
+        "called_actors": [],
+        "stop_reason": stop_reason,
+        "decision_point": decision_point,
+        "side_thread_results": [],
+    }
+
+
 def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) -> dict:
     filtered = dict(gm_output)
     filtered["actor_calls"] = [
@@ -1513,4 +1677,4 @@ def run_interactive_loop(
     }
 
 
-__all__ = ["AgentTurnLoopError", "run_interactive_loop"]
+__all__ = ["AgentTurnLoopError", "run_gm_only_step", "run_interactive_loop"]

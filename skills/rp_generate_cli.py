@@ -470,13 +470,15 @@ def _read_loop_prompt(
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
 
 
-def _run_interactive_agent_loop(
+def _run_legacy_interactive_agent_loop(
     run_dir: Path,
     manifest: Dict[str, Any],
     root: Path,
     run_claude: Callable[[str, str, str | Path], str],
     repair_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """Compatibility helper for regression coverage of the old broad GM loop."""
+
     def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         extra_context = {"loop_packet": packet}
         if repair_context and agent_key == "gm":

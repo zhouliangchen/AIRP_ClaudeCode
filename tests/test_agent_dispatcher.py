@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import json
 import sys
 import tempfile
@@ -38,7 +39,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             self.dispatcher.agent_snapshots = _load("agent_snapshots")
         self._restore_after_test(self.dispatcher.input_analysis_apply, "apply_current_run")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_dispatch_agent_payload")
-        self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_interactive_agent_loop")
+        self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_legacy_interactive_agent_loop")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_delivery")
         self._restore_after_test(self.dispatcher.agent_outputs, "build_story_input")
         self._restore_after_test(self.dispatcher, "_dispatch_agent_payload")
@@ -257,6 +258,76 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "character_name": "SuLi",
             "events": [{"type": "dialogue", "target": "", "content": "I found chalk dust.", "metadata": {}}],
             "stop_reason": "continue",
+        }
+
+    def _write_gm_actor_input(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I listen.",
+                "routed_input": {"role_channel": "I listen."},
+                "character_contexts": {
+                    "characters": [
+                        {
+                            "name": "Ada",
+                            "role": "archive guard",
+                            "location": "hall",
+                            "sensory_channels": ["visual", "auditory"],
+                        }
+                    ]
+                },
+            },
+        )
+
+    def _gm_actor_call(self, actor_id="character:Ada", call_id="call-character-Ada-1"):
+        return {
+            "call_id": call_id,
+            "actor_id": actor_id,
+            "prompt": "You hear a quiet knock near the archive door.",
+            "reason": "Ada is standing beside the archive door.",
+            "metadata": {},
+            "visibility_basis": {
+                "mode": "direct",
+                "summary": f"{actor_id} can directly hear the knock.",
+                "target_actor": actor_id,
+                "visible_to": [actor_id],
+            },
+        }
+
+    def _gm_output(
+        self,
+        *,
+        actor_calls=None,
+        subgm_commands=None,
+        decision_point=None,
+        stop_reason="complete",
+    ):
+        return {
+            "agent": "gm",
+            "scene_beats": [{"content": "The archive door clicks once."}],
+            "events": [],
+            "actor_calls": actor_calls if actor_calls is not None else [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "perception_responses": [],
+            "decision_point": decision_point,
+            "stop_reason": stop_reason,
+            "subgm_commands": subgm_commands if subgm_commands is not None else [],
+        }
+
+    def _subgm_start_command(self, thread_id="side_ada_archive"):
+        return {
+            "action": "start",
+            "thread_id": thread_id,
+            "title": "Ada checks the archive",
+            "outline": "Ada checks a noise off screen.",
+            "time_window": "same minute",
+            "location": "archive door",
+            "objective": "Find whether the archive is occupied.",
+            "allowed_characters": ["character:Ada"],
+            "forbidden_characters": ["player"],
+            "message": "Start the archive side thread.",
+            "metadata": {},
         }
 
     def test_dispatch_agent_payload_uses_loop_prompt_for_subgm_packets(self):
@@ -1676,22 +1747,25 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )
 
-    def test_run_gm_turn_writes_artifacts_and_creates_compose_story(self):
+    def test_run_gm_turn_actor_call_creates_projection_intent_without_actor_dispatch(self):
         self._install_dispatcher_dependencies()
+        self._write_gm_actor_input()
         created = self.intents.create_intent(
             self.run_dir,
             {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
         )["intent"]
-        loop_calls = []
+        dispatch_calls = []
 
-        def fake_loop(run_dir, manifest, root, run_claude, repair_context=None):
-            loop_calls.append((Path(run_dir), manifest, Path(root), run_claude, repair_context))
-            _write_json(run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": []})
-            _write_json(run_dir / "actor.outputs.json", {"actor_outputs": {}})
-            _write_json(run_dir / "interaction.trace.json", {"schema_version": 2, "status": "decision_point", "events": []})
-            return {"gm_steps": 1, "called_actors": []}
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            dispatch_calls.append(agent_key)
+            if agent_key != "gm":
+                self.fail(f"run_gm_turn should not dispatch {agent_key}")
+            return self._gm_output(actor_calls=[self._gm_actor_call()], stop_reason="continue")
 
-        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+        self.dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop = lambda *_args, **_kwargs: self.fail(
+            "run_gm_turn must not use the broad interactive GM loop by default"
+        )
 
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
 
@@ -1699,23 +1773,21 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["intent_id"], created["id"])
         self.assertTrue((self.run_dir / "artifacts" / "gm.output.json").exists())
-        self.assertTrue((self.run_dir / "artifacts" / "actor.outputs.json").exists())
-        self.assertEqual(
-            result["artifacts"],
-            ["artifacts/gm.output.json", "artifacts/actor.outputs.json"],
-        )
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "actor.outputs.json").exists())
+        self.assertEqual(result["artifacts"], ["artifacts/gm.output.json"])
         pending = self.intents.list_intents(self.run_dir, "pending")
-        self.assertEqual([item["type"] for item in pending], ["compose_story"])
-        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
-        self.assertEqual(pending[0]["payload"], {"loop_result": {"gm_steps": 1, "called_actors": []}})
+        self.assertEqual([item["type"] for item in pending], ["request_projection"])
+        self.assertEqual(pending[0]["payload"]["actor_id"], "character:Ada")
+        self.assertEqual(pending[0]["payload"]["source_call_id"], "call-character-Ada-1")
+        self.assertEqual(pending[0]["requested_by"], "gm")
+        self.assertEqual(result["detail"]["created_projection_intents"], [pending[0]["id"]])
+        self.assertEqual(result["detail"]["loop_result"]["called_actors"], [])
         completed = self.intents.list_intents(self.run_dir, "completed")
         self.assertEqual([item["id"] for item in completed], [created["id"]])
-        self.assertEqual(len(loop_calls), 1)
-        self.assertEqual(loop_calls[0][0], self.run_dir)
-        self.assertEqual(loop_calls[0][2], ROOT)
-        self.assertIsNone(loop_calls[0][4])
+        self.assertEqual(dispatch_calls, ["gm"])
 
-    def test_run_gm_turn_passes_repair_context_to_gm_loop(self):
+    def test_run_gm_turn_passes_repair_context_to_gm_only_dispatch(self):
         self._install_dispatcher_dependencies()
         repair_context = {
             "critic_report_path": "artifacts/critic.report.json",
@@ -1734,34 +1806,115 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             self.run_dir,
             {"requested_by": "rollback", "type": "run_gm_turn", "payload": {"repair_context": repair_context}},
         )
-        loop_calls = []
+        dispatch_contexts = []
 
-        def fake_loop(run_dir, manifest, root, run_claude, repair_context=None):
-            loop_calls.append(repair_context)
-            _write_json(run_dir / "gm.output.json", {"agent": "gm_loop", "outputs": []})
-            _write_json(run_dir / "actor.outputs.json", {"actor_outputs": {}})
-            return {"gm_steps": 1, "called_actors": []}
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, extra_context):
+            dispatch_contexts.append((agent_key, extra_context))
+            return self._gm_output(actor_calls=[], stop_reason="complete")
 
-        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
 
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
 
         self.assertTrue(result["ok"])
-        self.assertEqual(loop_calls, [repair_context])
+        self.assertEqual(dispatch_contexts[0][0], "gm")
+        self.assertEqual(dispatch_contexts[0][1]["repair_context"], repair_context)
 
-    def test_run_gm_turn_rejects_stale_authoritative_artifacts_without_current_root_outputs(self):
+    def test_run_gm_turn_runnable_side_thread_creates_run_subgm_thread_intent(self):
+        self._install_dispatcher_dependencies()
+        self._write_gm_actor_input()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            self.assertEqual(agent_key, "gm")
+            return self._gm_output(
+                actor_calls=[],
+                subgm_commands=[self._subgm_start_command("side_ada_archive")],
+                stop_reason="continue",
+            )
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_subgm_thread"])
+        self.assertEqual(pending[0]["requested_by"], "gm")
+        self.assertEqual(pending[0]["payload"]["thread_id"], "side_ada_archive")
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(result["detail"]["created_subgm_intents"], [pending[0]["id"]])
+
+    def test_run_gm_turn_without_collaboration_creates_compose_story(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(
             self.run_dir,
             {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
         )["intent"]
-        self.dispatcher.write_artifact(self.run_dir, "gm.output.json", {"agent": "stale_gm", "outputs": []})
-        self.dispatcher.write_artifact(self.run_dir, "actor.outputs.json", {"stale_actor": []})
 
-        def fake_loop(_run_dir, _manifest, _root, _run_claude, repair_context=None):
-            return {"gm_steps": 1, "called_actors": []}
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            self.assertEqual(agent_key, "gm")
+            return self._gm_output(actor_calls=[], stop_reason="word_target")
 
-        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["reason"], "gm_step_complete")
+        self.assertEqual(pending[0]["payload"]["loop_result"]["stop_reason"], "word_target")
+        self.assertFalse((self.run_dir / "actor.outputs.json").exists())
+
+    def test_run_gm_turn_player_decision_marks_terminal_without_story_follow_up(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+        decision_point = {"reason": "Choose the archive door response.", "options": ["Knock", "Leave"]}
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            self.assertEqual(agent_key, "gm")
+            return self._gm_output(
+                actor_calls=[],
+                decision_point=decision_point,
+                stop_reason="player_decision",
+            )
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        self.assertTrue(result["detail"]["player_decision_required"])
+        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["status"], "decision_point")
+
+    def test_run_gm_turn_default_path_does_not_reference_broad_loop_helper(self):
+        source = inspect.getsource(self.dispatcher._execute_run_gm_turn)
+        self.assertNotIn("_run_interactive_agent_loop", source)
+
+    def test_run_gm_turn_blocks_when_gm_only_dispatch_raises_after_accept(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+
+        def fake_dispatch(_agent_key, _run_dir, _root, _run_claude, _extra_context):
+            raise RuntimeError("fixture gm dispatch exploded")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
 
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
 
@@ -1772,57 +1925,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
-        self.assertIn("gm.output.json", blocked[0]["result"]["outputs"]["error"])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
-
-    def test_run_gm_turn_rejects_non_object_current_root_artifact(self):
-        self._install_dispatcher_dependencies()
-        created = self.intents.create_intent(
-            self.run_dir,
-            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
-        )["intent"]
-
-        def fake_loop(run_dir, _manifest, _root, _run_claude, repair_context=None):
-            _write_json(run_dir / "gm.output.json", [])
-            _write_json(run_dir / "actor.outputs.json", {"actor_outputs": {}})
-            return {"gm_steps": 1, "called_actors": []}
-
-        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
-
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["intent_id"], created["id"])
-        self.assertEqual(result["reason"], "run_gm_turn_failed")
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
-        blocked = self.intents.list_intents(self.run_dir, "blocked")
-        self.assertEqual([item["id"] for item in blocked], [created["id"]])
-        self.assertIn("gm.output.json", blocked[0]["result"]["outputs"]["error"])
-        self.assertIn("JSON object", blocked[0]["result"]["outputs"]["error"])
-
-    def test_run_gm_turn_blocks_when_loop_raises_after_accept(self):
-        self._install_dispatcher_dependencies()
-        created = self.intents.create_intent(
-            self.run_dir,
-            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
-        )["intent"]
-
-        def fake_loop(_run_dir, _manifest, _root, _run_claude, repair_context=None):
-            raise RuntimeError("fixture gm loop exploded")
-
-        self.dispatcher.rp_generate_cli._run_interactive_agent_loop = fake_loop
-
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["intent_id"], created["id"])
-        self.assertEqual(result["reason"], "run_gm_turn_failed")
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
-        blocked = self.intents.list_intents(self.run_dir, "blocked")
-        self.assertEqual([item["id"] for item in blocked], [created["id"]])
-        self.assertIn("fixture gm loop exploded", blocked[0]["result"]["outputs"]["error"])
+        self.assertIn("fixture gm dispatch exploded", blocked[0]["result"]["outputs"]["error"])
         self.assertEqual(self.intents.list_intents(self.run_dir, "accepted"), [])
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "blocked")

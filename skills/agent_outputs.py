@@ -525,7 +525,6 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
     gm_path = _artifact_path(root, "gm.output.json")
     actor_path = _artifact_path(root, "actor.outputs.json")
     gm_loop = _read_json_required(gm_path)
-    actor_outputs = _read_json_required(actor_path)
 
     if gm_loop.get("agent") != "gm_loop":
         raise AgentOutputError(f"{gm_path}: agent must be 'gm_loop'")
@@ -540,6 +539,14 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
             normalized_gm_outputs.append(agent_schemas.validate_gm_output(item))
         except agent_schemas.ValidationError as exc:
             raise AgentOutputError(f"{gm_path}.outputs[{index}]: {exc}") from exc
+
+    required_actor_counts = _required_actor_call_counts(normalized_gm_outputs)
+    if actor_path.exists():
+        actor_outputs = _read_json_required(actor_path)
+    elif any(counts for counts in required_actor_counts.values()):
+        raise AgentOutputError(f"{actor_path.as_posix()}: required artifact is missing")
+    else:
+        actor_outputs = {}
 
     normalized_actor_outputs = {}
     for actor_id, outputs in actor_outputs.items():
