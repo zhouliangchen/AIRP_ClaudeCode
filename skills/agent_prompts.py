@@ -245,6 +245,10 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "GM remains the only root authority: subGM agents cannot create/promote "
         "important characters or spawn other subGMs; treat subGM requests as proposals "
         "to accept, reject, or revise.\n"
+        "\nCompletion rule: GM must not set `stop_reason` to `complete` while active subGM side threads remain. "
+        "If `side_thread_summaries` contains `running`, `merging`, `needs_gm`, or `blocked` threads, "
+        "use `subgm_commands` to message, accelerate, pause, merge, or close each active thread. "
+        "If any side thread still needs work after that, keep `stop_reason` as `continue` or stop at a real player decision.\n"
     )
 
 

@@ -3624,6 +3624,85 @@ class AgentTurnLoopTest(unittest.TestCase):
         gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
         self.assertEqual(len(gm_outputs["outputs"][0]["subgm_commands"]), 2)
 
+    def test_gm_loop_rejects_complete_with_unresolved_active_subgm_thread(self):
+        self.register_characters("Ada")
+        calls = []
+
+        def subgm_output():
+            return {
+                "agent": "subGM",
+                "thread_id": "side_a",
+                "status": "needs_gm",
+                "scene_beats": [{"content": "Ada reaches the locked side door."}],
+                "events": [],
+                "actor_calls": [],
+                "messages_to_gm": [
+                    {"content": "Ada needs GM direction before this side thread can finish.", "status": "needs_gm"}
+                ],
+                "world_state_delta": [],
+                "character_usage": ["character:Ada"],
+                "promotion_requests": [],
+                "boundary_requests": [],
+                "notes_for_story": ["Do not merge the side thread yet."],
+                "next_resume_point": "at the locked side door",
+            }
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                gm_count = calls.count("gm")
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The main room has settled."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "subgm_commands": [
+                            {
+                                "action": "start",
+                                "thread_id": "side_a",
+                                "title": "Ada checks the side door",
+                                "outline": "Ada investigates a locked door away from the player.",
+                                "time_window": "same scene",
+                                "location": "side corridor",
+                                "objective": "Find whether the locked door can be opened.",
+                                "allowed_characters": ["character:Ada"],
+                                "forbidden_characters": ["player"],
+                                "message": "Start Ada side thread.",
+                                "metadata": {},
+                            }
+                        ],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                self.assertEqual(packet["world_state"]["side_thread_summaries"][0]["status"], "needs_gm")
+                self.assertIn(
+                    "Ada needs GM direction",
+                    packet["world_state"]["subgm_messages"][-1]["content"],
+                )
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The main room seems ready to close."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "subgm_commands": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "subGM:side_a":
+                return subgm_output()
+            self.fail(f"unexpected dispatch {agent_key}")
+
+        with self.assertRaisesRegex(self.agent_turn_loop.AgentTurnLoopError, "unresolved subGM side thread.*side_a"):
+            self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertIn("subGM:side_a", calls)
+        self.assertFalse((self.run_dir / "gm.output.json").exists())
+
     def test_gm_loop_rejects_main_actor_call_conflicting_with_active_side_thread(self):
         self.register_characters("SuLi")
         calls = []

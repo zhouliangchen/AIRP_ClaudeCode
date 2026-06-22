@@ -46,6 +46,12 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn('"summary": "why this actor can perceive or receive this prompt"', prompt)
         self.assertIn("Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`", prompt)
 
+    def test_gm_prompt_forbids_complete_with_unresolved_active_subgm_threads(self):
+        prompt = self.agent_prompts._gm_prompt({})
+
+        self.assertIn("must not set `stop_reason` to `complete` while active subGM side threads remain", prompt)
+        self.assertIn("message, accelerate, pause, merge, or close", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1299,6 +1299,69 @@ def _run_ready_side_threads(root: Path, dispatch: DispatchFn) -> list[dict]:
         raise AgentTurnLoopError(f"subGM side-thread failed: {exc}") from exc
 
 
+def _active_side_thread_summaries(root: Path) -> list[dict]:
+    try:
+        summaries = subgm_threads.load_thread_summaries(root)
+    except subgm_threads.SubgmThreadError as exc:
+        raise AgentTurnLoopError(f"invalid subGM side-thread state: {exc}") from exc
+    return [
+        summary
+        for summary in summaries
+        if str(summary.get("status") or "") in ACTIVE_SIDE_THREAD_STATUSES
+    ]
+
+
+def _handled_subgm_thread_ids(gm_output: dict) -> set[str]:
+    handled: set[str] = set()
+    for command in _list(gm_output.get("subgm_commands")):
+        if not isinstance(command, dict):
+            continue
+        action = str(command.get("action") or "")
+        thread_id = str(command.get("thread_id") or "")
+        if action in {"message", "accelerate", "pause", "resume", "merge", "close"} and thread_id:
+            handled.add(thread_id)
+    return handled
+
+
+def _format_side_threads(summaries: list[dict]) -> str:
+    return ", ".join(
+        f"{summary.get('thread_id', '')}({summary.get('status', '')})"
+        for summary in summaries
+    )
+
+
+def _assert_complete_handles_existing_side_threads(root: Path, gm_output: dict) -> None:
+    if str(gm_output.get("stop_reason") or "") != "complete":
+        return
+    active = _active_side_thread_summaries(root)
+    if not active:
+        return
+    handled = _handled_subgm_thread_ids(gm_output)
+    unhandled = [
+        summary
+        for summary in active
+        if str(summary.get("thread_id") or "") not in handled
+    ]
+    if unhandled:
+        raise AgentTurnLoopError(
+            "unresolved subGM side thread before complete: "
+            f"{_format_side_threads(unhandled)}; GM must message, accelerate, pause, merge, "
+            "or close each active side thread, or keep stop_reason as continue while waiting."
+        )
+
+
+def _assert_complete_leaves_no_active_side_threads(root: Path, gm_output: dict) -> None:
+    if str(gm_output.get("stop_reason") or "") != "complete":
+        return
+    active = _active_side_thread_summaries(root)
+    if active:
+        raise AgentTurnLoopError(
+            "unresolved subGM side thread remains before complete: "
+            f"{_format_side_threads(active)}; GM must continue the loop, stop for player decision, "
+            "or explicitly pause/close the side thread."
+        )
+
+
 def _assert_main_actor_calls_do_not_conflict(root: Path, actor_calls: list[dict]) -> None:
     try:
         subgm_threads.assert_main_actor_calls_do_not_conflict(root, actor_calls)
@@ -1357,8 +1420,10 @@ def run_interactive_loop(
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_subgm_commands(root, gm_output, input_payload)
         _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
+        _assert_complete_handles_existing_side_threads(root, gm_output)
         side_thread_results.extend(_run_ready_side_threads(root, dispatch))
         _refresh_side_thread_state(root, world_state)
+        _assert_complete_leaves_no_active_side_threads(root, gm_output)
         gm_outputs.append(gm_output)
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
