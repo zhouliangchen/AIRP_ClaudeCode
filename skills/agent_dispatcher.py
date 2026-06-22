@@ -18,6 +18,8 @@ import agent_turn_loop
 import input_analysis_apply
 import rp_generate_cli
 import self_repair
+import subgm_threads
+import subgm_turn_loop
 
 
 SUPPORTED_INTENT_TYPES = {
@@ -130,6 +132,8 @@ def _execute_supported_intent(
         return _execute_request_projection(run_dir, intent)
     if intent_type == "run_actor":
         return _execute_run_actor(run_dir, root_dir, intent, run_claude)
+    if intent_type == "run_subgm_thread":
+        return _execute_run_subgm_thread(run_dir, root_dir, intent, run_claude)
     if intent_type == "compose_story":
         return _execute_compose_story(run_dir, root_dir, intent, run_claude)
     if intent_type == "review_critic":
@@ -195,7 +199,18 @@ def _dispatch_agent_payload(
 ) -> dict[str, Any]:
     if run_claude is None:
         raise AgentDispatcherError(f"run_claude is required for {agent_key}")
-    prompt = _read_prompt(run_dir, agent_key)
+    packet = None
+    if isinstance(extra_context, dict):
+        candidate = extra_context.get("packet")
+        if isinstance(candidate, dict):
+            packet = candidate
+    if agent_key.startswith("subGM:") or agent_key.startswith("character:") or agent_key == "player":
+        try:
+            prompt = rp_generate_cli._read_loop_prompt(run_dir, _load_manifest(run_dir), agent_key, packet)
+        except Exception:
+            prompt = _read_prompt(run_dir, agent_key)
+    else:
+        prompt = _read_prompt(run_dir, agent_key)
     return rp_generate_cli._dispatch_agent_payload(
         agent_key,
         prompt,
@@ -648,6 +663,164 @@ def _execute_run_actor(
         created_intents=created_intents,
         created_messages=created_messages,
         artifacts=artifacts,
+        detail=outputs,
+    )
+
+
+def _execute_run_subgm_thread(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    thread_id = str(payload.get("thread_id") or "")
+    requested_reason = str(payload.get("reason") or "")
+
+    accept_failure = _run_subgm_thread_transition_failure(
+        run_dir,
+        intent_id,
+        "run_subgm_thread_accept_failed",
+        _call_intent_transition(
+            agent_intents.accept_intent,
+            run_dir,
+            intent_id,
+            outputs={"executor": "run_subgm_thread"},
+        ),
+    )
+    if accept_failure is not None:
+        return accept_failure
+
+    created_intents: list[str] = []
+
+    def dispatch(agent_key: str, packet: dict[str, Any]) -> dict[str, Any]:
+        return _dispatch_agent_payload(
+            agent_key,
+            run_dir,
+            root_dir,
+            run_claude,
+            {
+                "packet": packet,
+                "subgm_thread_id": thread_id,
+                "source_intent_id": intent_id,
+                "intent_type": "run_subgm_thread",
+            },
+        )
+
+    try:
+        if not thread_id:
+            raise subgm_threads.SubgmThreadError("thread_id must not be empty")
+        side_result = subgm_turn_loop.run_side_thread(run_dir, thread_id, dispatch)
+    except (subgm_threads.SubgmThreadError, subgm_turn_loop.SubgmTurnLoopError, AgentDispatcherError) as exc:
+        return _block_run_subgm_thread_failure(
+            run_dir,
+            intent_id,
+            "subgm_dispatch_failed",
+            {
+                "intent_id": intent_id,
+                "thread_id": thread_id,
+                "error": f"{type(exc).__name__}: {exc}",
+                "exception_type": type(exc).__name__,
+            },
+        )
+    except Exception as exc:
+        return _block_run_subgm_thread_failure(
+            run_dir,
+            intent_id,
+            "subgm_dispatch_failed",
+            {
+                "intent_id": intent_id,
+                "thread_id": thread_id,
+                "error": f"{type(exc).__name__}: {exc}",
+                "exception_type": type(exc).__name__,
+            },
+        )
+
+    if not isinstance(side_result, dict) or not side_result.get("ok"):
+        return _block_run_subgm_thread_failure(
+            run_dir,
+            intent_id,
+            "subgm_dispatch_failed",
+            {
+                "intent_id": intent_id,
+                "thread_id": thread_id,
+                "error": "subGM side-thread runner returned failure",
+                "runner_result": side_result if isinstance(side_result, dict) else repr(side_result),
+            },
+        )
+
+    safe_thread_id = str(side_result.get("thread_id") or thread_id)
+    side_status = str(side_result.get("status") or "")
+    called_actors = [
+        str(actor_id)
+        for actor_id in side_result.get("called_actors", [])
+        if isinstance(actor_id, str) and actor_id
+    ]
+    try:
+        steps = int(side_result.get("steps") or 0)
+    except (TypeError, ValueError):
+        steps = 0
+    noop = steps == 0 and side_status in {"paused", "completed"}
+
+    follow_up_id = ""
+    if side_status not in {"completed", "paused"}:
+        follow_up = _ensure_follow_up_intent(
+            run_dir,
+            intent_id,
+            {
+                "requested_by": f"subGM:{safe_thread_id}",
+                "type": "run_gm_turn",
+                "payload": {
+                    "thread_id": safe_thread_id,
+                    "status": side_status,
+                    "called_actors": called_actors,
+                    "reason": "subgm_thread_needs_gm_arbitration",
+                },
+                "policy": {"source_intent_id": intent_id},
+            },
+        )
+        follow_up_id = str(follow_up.get("id") or "")
+        if follow_up.get("created"):
+            created_intents.append(follow_up_id)
+
+    outputs = {
+        "executor": "run_subgm_thread",
+        "intent_type": "run_subgm_thread",
+        "thread_id": safe_thread_id,
+        "requested_reason": requested_reason,
+        "side_thread_status": side_status,
+        "steps": steps,
+        "noop": noop,
+        "called_actors": called_actors,
+        "follow_up_intent_id": follow_up_id,
+        "created_intents": created_intents,
+        "side_thread_result": side_result,
+    }
+    complete_failure = _run_subgm_thread_transition_failure(
+        run_dir,
+        intent_id,
+        "run_subgm_thread_complete_failed",
+        _call_intent_transition(
+            agent_intents.complete_intent,
+            run_dir,
+            intent_id,
+            outputs=outputs,
+        ),
+        outputs=outputs,
+        created_intents=created_intents,
+    )
+    if complete_failure is not None:
+        return complete_failure
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_subgm_thread",
+        reason="",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=[],
         detail=outputs,
     )
 
@@ -1315,6 +1488,121 @@ def _block_run_actor_failure(
         created_intents=[],
         created_messages=created_messages or [],
         artifacts=artifacts,
+        detail=blocked.get("result", {}),
+    )
+
+
+def _run_subgm_thread_transition_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    transition_result: dict[str, Any],
+    *,
+    outputs: dict[str, Any] | None = None,
+    created_intents: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if transition_result.get("ok"):
+        return None
+
+    if reason == "run_subgm_thread_complete_failed" and outputs is not None:
+        recovered = _recover_completed_run_subgm_thread_transition(
+            run_dir,
+            intent_id,
+            reason,
+            outputs,
+            created_intents=created_intents or [],
+        )
+        if recovered is not None:
+            return recovered
+
+    detail = {
+        "intent_id": intent_id,
+        "reason": reason,
+        "transition_reason": str(transition_result.get("reason") or "intent_transition_failed"),
+    }
+    exception_type = transition_result.get("exception_type")
+    if isinstance(exception_type, str) and exception_type:
+        detail["exception_type"] = exception_type
+    result_type = transition_result.get("result_type")
+    if isinstance(result_type, str) and result_type:
+        detail["result_type"] = result_type
+    if outputs is not None:
+        detail["attempted_outputs"] = outputs
+
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "run_subgm_thread", **detail},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="run_subgm_thread",
+        reason=reason,
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=[],
+        detail=blocked.get("result", {}),
+    )
+
+
+def _recover_completed_run_subgm_thread_transition(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    outputs: dict[str, Any],
+    *,
+    created_intents: list[str],
+) -> dict[str, Any] | None:
+    completed_intent = _find_intent_in_state(run_dir, intent_id, "completed")
+    if not completed_intent:
+        return None
+
+    follow_up_intent_id = str(outputs.get("follow_up_intent_id") or "")
+    if follow_up_intent_id and not _intent_exists(run_dir, follow_up_intent_id):
+        return None
+
+    detail = dict(outputs)
+    detail["transition_failure_recovered"] = reason
+    detail["completed_intent_state"] = str(completed_intent.get("state") or "")
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="run_subgm_thread",
+        reason="run_subgm_thread_complete_recovered",
+        created_intents=created_intents,
+        created_messages=[],
+        artifacts=[],
+        detail=detail,
+    )
+
+
+def _block_run_subgm_thread_failure(
+    run_dir: Path,
+    intent_id: str,
+    reason: str,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    blocked = agent_intents.block_intent(
+        run_dir,
+        intent_id,
+        reason,
+        outputs={"executor": "run_subgm_thread", "reason": reason, **detail},
+    )
+    _mark_blocked(run_dir, reason, detail)
+    return _result(
+        False,
+        "blocked",
+        intent_id=intent_id,
+        intent_type="run_subgm_thread",
+        reason=reason,
+        created_intents=[],
+        created_messages=[],
+        artifacts=[],
         detail=blocked.get("result", {}),
     )
 

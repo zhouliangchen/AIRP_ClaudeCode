@@ -151,6 +151,114 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
+    def _write_subgm_input(self):
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I stay in class.",
+                "routed_input": {"role_channel": "I stay in class."},
+                "character_contexts": {
+                    "characters": [
+                        {
+                            "name": "SuLi",
+                            "role": "quiet classmate",
+                            "location": "school rooftop",
+                            "sensory_channels": ["visual", "auditory"],
+                        },
+                        {
+                            "name": "Bert",
+                            "role": "distant witness",
+                            "location": "library",
+                            "sensory_channels": ["visual"],
+                        },
+                    ]
+                },
+            },
+        )
+
+    def _start_subgm_thread(self, *, thread_id="side_suli_rooftop", status="running"):
+        self._write_subgm_input()
+        subgm_threads = _load("subgm_threads")
+        subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [
+                {
+                    "action": "start",
+                    "thread_id": thread_id,
+                    "title": "Rooftop warning",
+                    "outline": "SuLi checks the rooftop sigil.",
+                    "time_window": "same morning",
+                    "location": "school rooftop",
+                    "objective": "Advance the off-screen clue.",
+                    "allowed_characters": ["character:SuLi"],
+                    "forbidden_characters": ["player"],
+                    "priority": "normal",
+                    "message": "Start now.",
+                    "metadata": {},
+                }
+            ],
+        )
+        if status == "paused":
+            subgm_threads.apply_gm_commands(
+                self.run_dir,
+                [{"action": "pause", "thread_id": thread_id, "message": "Pause.", "metadata": {}}],
+            )
+        elif status == "completed":
+            subgm_threads.apply_gm_commands(
+                self.run_dir,
+                [{"action": "close", "thread_id": thread_id, "message": "Done.", "metadata": {}}],
+            )
+
+    def _create_run_subgm_thread_intent(self, thread_id="side_suli_rooftop"):
+        return self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "run_subgm_thread",
+                "payload": {"thread_id": thread_id, "reason": "gm_requested_side_thread"},
+            },
+        )["intent"]
+
+    def _subgm_output(self, *, status="completed", actor_calls=None):
+        return {
+            "agent": "subGM",
+            "thread_id": "side_suli_rooftop",
+            "status": status,
+            "scene_beats": [{"content": "SuLi sees chalk dust beside the rooftop vent."}],
+            "events": [{"type": "scene", "content": "A chalk line glows on the vent."}],
+            "actor_calls": actor_calls or [],
+            "messages_to_gm": [{"content": "The rooftop clue is ready."}],
+            "world_state_delta": [{"scope": "rooftop", "fact": "chalk dust found"}],
+            "character_usage": ["character:SuLi"],
+            "promotion_requests": [],
+            "boundary_requests": [],
+            "notes_for_story": ["Use only after GM merges it."],
+            "next_resume_point": "resume at the rooftop vent",
+        }
+
+    def _subgm_actor_call(self, actor_id="character:SuLi", call_id="call-character-SuLi-1"):
+        return {
+            "call_id": call_id,
+            "actor_id": actor_id,
+            "prompt": "You notice chalk dust near the vent.",
+            "reason": "The actor is present in the side thread.",
+            "visibility_basis": {
+                "mode": "direct",
+                "summary": f"{actor_id} is directly addressed by this side-thread prompt.",
+                "target_actor": actor_id,
+                "visible_to": [actor_id],
+            },
+        }
+
+    def _subgm_character_output(self):
+        return {
+            "agent": "character",
+            "agent_id": "character:SuLi",
+            "character_name": "SuLi",
+            "events": [{"type": "dialogue", "target": "", "content": "I found chalk dust.", "metadata": {}}],
+            "stop_reason": "continue",
+        }
+
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,
@@ -1372,6 +1480,155 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
         self.assertEqual(blocked[0]["result"]["outputs"]["reason"], "projection_append_missing_id")
         self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Ada"), [])
+
+    def test_run_subgm_thread_dispatches_ready_thread_and_completes(self):
+        self._start_subgm_thread()
+        created = self._create_run_subgm_thread_intent()
+        dispatch_calls = []
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            dispatch_calls.append((agent_key, Path(run_dir), Path(root_dir), extra_context.get("packet")))
+            if agent_key == "subGM:side_suli_rooftop":
+                return self._subgm_output(actor_calls=[self._subgm_actor_call()])
+            if agent_key == "character:SuLi":
+                return self._subgm_character_output()
+            raise AssertionError(agent_key)
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["intent_type"], "run_subgm_thread")
+        self.assertEqual(result["detail"]["side_thread_status"], "completed")
+        self.assertEqual(result["detail"]["called_actors"], ["character:SuLi"])
+        self.assertFalse(result["detail"]["noop"])
+        self.assertEqual([item[0] for item in dispatch_calls], ["subGM:side_suli_rooftop", "character:SuLi"])
+        self.assertEqual(dispatch_calls[0][1], self.run_dir)
+        self.assertEqual(dispatch_calls[0][2], ROOT)
+        self.assertEqual(dispatch_calls[0][3]["thread_id"], "side_suli_rooftop")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+
+    def test_run_subgm_thread_paused_and_completed_threads_complete_as_noop(self):
+        self._start_subgm_thread(thread_id="side_paused", status="paused")
+        self._start_subgm_thread(thread_id="side_completed", status="completed")
+        paused_intent = self._create_run_subgm_thread_intent("side_paused")
+        completed_intent = self._create_run_subgm_thread_intent("side_completed")
+
+        def fake_dispatch(*_args, **_kwargs):
+            raise AssertionError("noop side thread must not dispatch")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        paused_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+        completed_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(paused_result["ok"])
+        self.assertEqual(paused_result["intent_id"], paused_intent["id"])
+        self.assertEqual(paused_result["detail"]["side_thread_status"], "paused")
+        self.assertTrue(paused_result["detail"]["noop"])
+        self.assertTrue(completed_result["ok"])
+        self.assertEqual(completed_result["intent_id"], completed_intent["id"])
+        self.assertEqual(completed_result["detail"]["side_thread_status"], "completed")
+        self.assertTrue(completed_result["detail"]["noop"])
+
+    def test_run_subgm_thread_missing_thread_blocks_as_dispatch_failed(self):
+        created = self._create_run_subgm_thread_intent("side_missing")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "subgm_dispatch_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertIn("side_missing", blocked[0]["result"]["outputs"]["error"])
+
+    def test_run_subgm_thread_invalid_thread_id_blocks_as_dispatch_failed(self):
+        created = self._create_run_subgm_thread_intent("Bad Thread")
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "subgm_dispatch_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertIn("thread_id", blocked[0]["result"]["outputs"]["error"])
+
+    def test_run_subgm_thread_blocks_when_side_thread_calls_player(self):
+        self._start_subgm_thread()
+        created = self._create_run_subgm_thread_intent()
+
+        def fake_dispatch(agent_key, _run_dir, _root_dir, _run_claude, extra_context):
+            if agent_key == "subGM:side_suli_rooftop":
+                call = self._subgm_actor_call(actor_id="player", call_id="call-character-SuLi-1")
+                return self._subgm_output(actor_calls=[call])
+            raise AssertionError((agent_key, extra_context))
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "subgm_dispatch_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertIn("player", blocked[0]["result"]["outputs"]["error"])
+
+    def test_run_subgm_thread_blocks_when_side_thread_calls_out_of_boundary_character(self):
+        self._start_subgm_thread()
+        created = self._create_run_subgm_thread_intent()
+
+        def fake_dispatch(agent_key, _run_dir, _root_dir, _run_claude, extra_context):
+            if agent_key == "subGM:side_suli_rooftop":
+                call = self._subgm_actor_call(actor_id="character:Bert", call_id="call-character-Bert-1")
+                return self._subgm_output(actor_calls=[call])
+            raise AssertionError((agent_key, extra_context))
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "subgm_dispatch_failed")
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertIn("allowed_characters", blocked[0]["result"]["outputs"]["error"])
+
+    def test_run_subgm_thread_needs_gm_creates_run_gm_turn_follow_up(self):
+        self._start_subgm_thread()
+        created = self._create_run_subgm_thread_intent()
+
+        def fake_dispatch(agent_key, _run_dir, _root_dir, _run_claude, extra_context):
+            self.assertEqual(agent_key, "subGM:side_suli_rooftop")
+            self.assertEqual(extra_context["packet"]["thread_id"], "side_suli_rooftop")
+            return self._subgm_output(status="needs_gm")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["detail"]["side_thread_status"], "needs_gm")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "thread_id": "side_suli_rooftop",
+                "status": "needs_gm",
+                "called_actors": [],
+                "reason": "subgm_thread_needs_gm_arbitration",
+            },
+        )
 
     def test_run_gm_turn_writes_artifacts_and_creates_compose_story(self):
         self._install_dispatcher_dependencies()
