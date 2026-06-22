@@ -171,7 +171,7 @@ cd skills; npm install
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_workflow.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
+- `python -m py_compile skills/agent_dispatcher.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
 - 启动 `python skills/start_server.py .`，确认 `http://localhost:8765` 可访问。
 - 用手机或其他同一局域网设备访问启动输出中的 LAN URL。
 - 在 Claude Code 中对空白文件夹运行 `/rp`，完成至少 5 个玩家回合；检查玩家输入即时显示、重要角色独立对话框、进度更新、UI/图片热刷新，以及在玩家决策点停止。

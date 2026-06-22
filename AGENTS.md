@@ -20,7 +20,7 @@ This repository runs a Claude Code-driven local RP engine. Core Python runtime l
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_workflow.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py`
+- `python -m py_compile skills/agent_dispatcher.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py`
 - Start `python skills/start_server.py .` and verify `http://localhost:8765`.
 - Verify the printed LAN URL from a phone or other LAN device.
 - In Claude Code, run `/rp` against a blank folder and complete at least five player turns, checking immediate player-input display, independent important-character dialogue boxes, progress updates, hot UI/image refresh, and stopping at player decisions.
