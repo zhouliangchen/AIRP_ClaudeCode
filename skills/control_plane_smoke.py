@@ -237,8 +237,8 @@ def _ensure_smoke_character_contexts(run_dir: Path) -> None:
     _write_json(run_dir / "input.json", input_json)
 
 
-def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]:
-    raw_gm_output = {
+def _initial_gm_output_fixture() -> Dict[str, Any]:
+    output = {
         "agent": "gm",
         "scene_beats": [{"content": "Ada notices the pendant before the player can hide it."}],
         "events": [],
@@ -282,150 +282,100 @@ def _run_deterministic_gm_loop(run_dir: Path, agent_turn_loop) -> Dict[str, Any]
         "decision_point": None,
         "stop_reason": "continue",
     }
-    _assert_actor_calls_have_visibility_basis(raw_gm_output, "raw_gm_output")
-    captured: Dict[str, Any] = {"raw_gm_output": raw_gm_output, "actor_packets": [], "gm_packets": []}
+    _assert_actor_calls_have_visibility_basis(output, "raw_gm_output")
+    return output
 
-    def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
-        if agent_key == "gm":
-            captured["gm_packets"].append(packet)
-            if not packet.get("pending_perception_requests"):
-                return raw_gm_output
-            pending = packet["pending_perception_requests"][0]
-            return {
-                "agent": "gm",
-                "scene_beats": [{"content": "Ada listens while the pendant remains still."}],
-                "events": [],
-                "actor_calls": [],
-                "parallel_groups": [],
-                "world_state_delta": [{"scope": "pendant", "fact": "The pendant makes no audible sound."}],
-                "perception_responses": [
-                    {
-                        "request_id": pending["request_id"],
-                        "actor_id": "character:Ada",
-                        "source_call_id": pending["source_call_id"],
-                        "status": "answered",
-                        "channel": "auditory",
-                        "content": "You hear no hum from the pendant, only the classroom lights buzzing above it.",
-                        "visibility_basis": {
-                            "mode": "direct",
-                            "summary": "Ada receives an auditory answer to her own perception request.",
-                            "target_actor": "character:Ada",
-                            "visible_to": ["character:Ada"],
-                            "sensory_channels": ["auditory"],
-                        },
-                    }
-                ],
-                "decision_point": {
-                    "reason": "The player must choose whether to show Ada the pendant.",
-                    "options": ["show the pendant", "hide the pendant"],
+
+def _continuation_gm_output_fixture() -> Dict[str, Any]:
+    return {
+        "agent": "gm",
+        "scene_beats": [{"content": "The classroom settles after Ada's warning."}],
+        "events": [],
+        "actor_calls": [],
+        "parallel_groups": [],
+        "world_state_delta": [{"scope": "pendant", "fact": "Ada's visible warning has been acknowledged."}],
+        "perception_responses": [],
+        "decision_point": None,
+        "stop_reason": "complete",
+    }
+
+
+def _actor_output_fixture() -> Dict[str, Any]:
+    return {
+        "agent": "character",
+        "agent_id": "character:Ada",
+        "character_name": "Ada",
+        "events": [
+            {
+                "type": "dialogue",
+                "target": "",
+                "content": "That pendant is older than this school.",
+            },
+            {
+                "type": "custom_action",
+                "target": "pendant",
+                "content": "I angle the pendant toward the classroom light.",
+                "metadata": {
+                    "category": "physical",
+                    "visible_content": "I angle the pendant toward the classroom light.",
+                    "requires_gm_resolution": True,
+                    "risk_level": "medium",
                 },
-                "stop_reason": "player_decision",
-            }
-        if agent_key == "subGM:side_suli_rooftop":
-            return {
-                "agent": "subGM",
-                "thread_id": "side_suli_rooftop",
-                "status": "completed",
-                "scene_beats": [{"content": "SuLi finds chalk dust beside the rooftop vent."}],
-                "events": [{"type": "scene", "content": "The rooftop sigil no longer glows."}],
-                "actor_calls": [],
-                "messages_to_gm": [{"content": "The rooftop clue is complete and ready to merge."}],
-                "world_state_delta": [{"scope": "rooftop", "fact": "The rooftop sigil is dormant."}],
-                "character_usage": ["character:SuLi"],
-                "promotion_requests": [],
-                "boundary_requests": [],
-                "notes_for_story": ["Use only if GM merges the side-thread clue."],
-                "next_resume_point": "",
-            }
-        if agent_key == "subGM:side_gate_noise":
-            return {
-                "agent": "subGM",
-                "thread_id": "side_gate_noise",
-                "status": "paused",
-                "scene_beats": [{"content": "GateKeeper hears metal scrape behind the locked gate."}],
-                "events": [{"type": "scene", "content": "The gate noise stops before anyone arrives."}],
-                "actor_calls": [],
-                "messages_to_gm": [{"content": "Gate thread paused at the locked gate."}],
-                "world_state_delta": [{"scope": "gate", "fact": "A metal scrape came from behind the gate."}],
-                "character_usage": ["character:GateKeeper"],
-                "promotion_requests": [],
-                "boundary_requests": [],
-                "notes_for_story": ["Resume only when GM wants to reveal the gate clue."],
-                "next_resume_point": "resume when the main scene moves toward the school gate",
-            }
-        if agent_key == "character:Ada":
-            captured["actor_packets"].append(packet)
-            if len(captured["actor_packets"]) > 1:
-                return {
-                    "agent": "character",
-                    "agent_id": "character:Ada",
-                    "character_name": "Ada",
-                    "events": [
-                        {
-                            "type": "action",
-                            "target": "pendant",
-                            "content": "I hold still after hearing only the classroom lights.",
-                        }
-                    ],
-                    "stop_reason": "continue",
-                }
-            return {
-                "agent": "character",
-                "agent_id": "character:Ada",
-                "character_name": "Ada",
-                "events": [
-                    {
-                        "type": "dialogue",
-                        "target": "",
-                        "content": "That pendant is older than this school.",
-                    },
-                    {
-                        "type": "custom_action",
-                        "target": "pendant",
-                        "content": "I angle the pendant toward the classroom light.",
-                        "metadata": {
-                            "category": "physical",
-                            "visible_content": "I angle the pendant toward the classroom light.",
-                            "requires_gm_resolution": True,
-                            "risk_level": "medium",
-                        },
-                    },
-                    {
-                        "type": "perceive_request",
-                        "target": "pendant",
-                        "content": "I listen for a hum from the pendant.",
-                        "metadata": {"channel": "auditory"},
-                    },
-                    {
-                        "type": "memory_delta",
-                        "target": "self",
-                        "content": "I noticed the player carrying a pendant tied to old rites.",
-                    },
-                    {
-                        "type": "goal_update",
-                        "target": "self",
-                        "content": "Find out why the pendant reacted near the archive.",
-                    },
-                    {
-                        "type": "wait_for_gm",
-                        "target": "",
-                        "content": "I wait for the GM to confirm what my senses can safely know.",
-                    },
-                ],
-                "stop_reason": "continue",
-            }
-        raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
+            },
+            {
+                "type": "memory_delta",
+                "target": "self",
+                "content": "I noticed the player carrying a pendant tied to old rites.",
+            },
+            {
+                "type": "goal_update",
+                "target": "self",
+                "content": "Find out why the pendant reacted near the archive.",
+            },
+            {
+                "type": "wait_for_gm",
+                "target": "",
+                "content": "I wait for the GM to confirm what my senses can safely know.",
+            },
+        ],
+        "stop_reason": "continue",
+    }
 
-    captured["loop_result"] = agent_turn_loop.run_interactive_loop(run_dir, dispatch, max_steps=2)
-    if not captured["actor_packets"]:
-        raise RuntimeError("deterministic actor dispatch did not capture actor packets")
-    actor_packet = captured["actor_packets"][0]
-    _assert_actor_packet_visibility_basis(actor_packet)
-    if actor_packet.get("gm_prompt") != VISIBLE_ADA_PROMPT:
-        raise RuntimeError(f"actor packet prompt is not the expected visible-only prompt: {actor_packet.get('gm_prompt')!r}")
-    if "burns identity" in json.dumps(captured["actor_packets"], ensure_ascii=False).lower():
-        raise RuntimeError("hidden pendant identity text leaked into actor packets")
-    return captured
+
+def _side_thread_output_fixture(thread_id: str) -> Dict[str, Any]:
+    if thread_id == "side_suli_rooftop":
+        return {
+            "agent": "subGM",
+            "thread_id": "side_suli_rooftop",
+            "status": "completed",
+            "scene_beats": [{"content": "SuLi finds chalk dust beside the rooftop vent."}],
+            "events": [{"type": "scene", "content": "The rooftop sigil no longer glows."}],
+            "actor_calls": [],
+            "messages_to_gm": [{"content": "The rooftop clue is complete and ready to merge."}],
+            "world_state_delta": [{"scope": "rooftop", "fact": "The rooftop sigil is dormant."}],
+            "character_usage": ["character:SuLi"],
+            "promotion_requests": [],
+            "boundary_requests": [],
+            "notes_for_story": ["Use only if GM merges the side-thread clue."],
+            "next_resume_point": "",
+        }
+    if thread_id == "side_gate_noise":
+        return {
+            "agent": "subGM",
+            "thread_id": "side_gate_noise",
+            "status": "paused",
+            "scene_beats": [{"content": "GateKeeper hears metal scrape behind the locked gate."}],
+            "events": [{"type": "scene", "content": "The gate noise stops before anyone arrives."}],
+            "actor_calls": [],
+            "messages_to_gm": [{"content": "Gate thread paused at the locked gate."}],
+            "world_state_delta": [{"scope": "gate", "fact": "A metal scrape came from behind the gate."}],
+            "character_usage": ["character:GateKeeper"],
+            "promotion_requests": [],
+            "boundary_requests": [],
+            "notes_for_story": ["Resume only when GM wants to reveal the gate clue."],
+            "next_resume_point": "resume when the main scene moves toward the school gate",
+        }
+    raise RuntimeError(f"unexpected deterministic side-thread target: {thread_id}")
 
 
 def _story_output_fixture(run_dir: Path) -> Dict[str, Any]:
@@ -819,7 +769,6 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     import agent_packets
     import agent_schemas
     import agent_snapshots
-    import agent_turn_loop
     import round_state
     import subgm_threads
 
@@ -878,39 +827,54 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             },
         )
 
-        captured_loop: Dict[str, Any] = {}
+        captured_loop: Dict[str, Any] = {
+            "raw_gm_output": _initial_gm_output_fixture(),
+            "actor_packets": [],
+            "gm_packets": [],
+            "loop_result": {
+                "ok": True,
+                "gm_steps": 0,
+                "called_actors": [],
+                "stop_reason": "",
+                "side_thread_results": [],
+            },
+        }
         delivery: Dict[str, Any] = {}
-        original_loop = agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop
-        original_dispatch = agent_dispatcher.rp_generate_cli._dispatch_agent_payload
+        original_dispatch = agent_dispatcher._dispatch_agent_payload
         original_delivery = agent_dispatcher.rp_generate_cli._run_delivery
 
-        def fake_loop(loop_run_dir, manifest, root, run_claude, repair_context=None):
-            captured = _run_deterministic_gm_loop(Path(loop_run_dir), agent_turn_loop)
-            captured_loop.update(captured)
-            return captured["loop_result"]
-
-        def fake_dispatch(agent_key, prompt_text, cwd, run_claude, extra_context=None, attempts=2):
+        def fake_dispatch(agent_key, dispatch_run_dir, root_dir, run_claude, extra_context=None):
+            context = extra_context if isinstance(extra_context, dict) else {}
             if agent_key == "gm":
-                if not captured_loop:
-                    captured = _run_deterministic_gm_loop(run_dir, agent_turn_loop)
-                    captured_loop.update(captured)
-                    actor_root = run_dir / "actor.outputs.json"
-                    if actor_root.exists():
-                        _write_json(
-                            run_dir / "artifacts" / "actor.outputs.json",
-                            json.loads(actor_root.read_text(encoding="utf-8")),
-                        )
-                return {
-                    "agent": "gm",
-                    "scene_beats": [{"content": "The classroom settles after Ada's warning."}],
-                    "events": [],
-                    "actor_calls": [],
-                    "parallel_groups": [],
-                    "world_state_delta": [],
-                    "perception_responses": [],
-                    "decision_point": None,
-                    "stop_reason": "complete",
-                }
+                packet = context.get("packet")
+                if isinstance(packet, dict):
+                    captured_loop["gm_packets"].append(packet)
+                loop_result = captured_loop["loop_result"]
+                loop_result["gm_steps"] = int(loop_result.get("gm_steps") or 0) + 1
+                if loop_result["gm_steps"] == 1:
+                    return captured_loop["raw_gm_output"]
+                loop_result["stop_reason"] = "complete"
+                return _continuation_gm_output_fixture()
+            if agent_key.startswith("subGM:"):
+                thread_id = agent_key.split(":", 1)[1]
+                return _side_thread_output_fixture(thread_id)
+            if agent_key == "character:Ada":
+                actor_packet = context.get("actor_packet")
+                if not isinstance(actor_packet, dict):
+                    actor_packet = context.get("packet")
+                if not isinstance(actor_packet, dict):
+                    raise RuntimeError("deterministic actor dispatch did not receive an actor packet")
+                captured_loop["actor_packets"].append(actor_packet)
+                _assert_actor_packet_visibility_basis(actor_packet)
+                if actor_packet.get("gm_prompt") != VISIBLE_ADA_PROMPT:
+                    raise RuntimeError(
+                        "actor packet prompt is not the expected visible-only prompt: "
+                        f"{actor_packet.get('gm_prompt')!r}"
+                    )
+                if "burns identity" in json.dumps(actor_packet, ensure_ascii=False).lower():
+                    raise RuntimeError("hidden pendant identity text leaked into actor packet")
+                captured_loop["loop_result"].setdefault("called_actors", []).append("character:Ada")
+                return _actor_output_fixture()
             if agent_key == "story":
                 return _story_output_fixture(run_dir)
             if agent_key == "critic":
@@ -924,8 +888,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             return result
 
         try:
-            agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop = fake_loop
-            agent_dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+            agent_dispatcher._dispatch_agent_payload = fake_dispatch
             agent_dispatcher.rp_generate_cli._run_delivery = fake_delivery
 
             analyze_result = agent_dispatcher.dispatch_next(run_dir, card, repo)
@@ -944,14 +907,34 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 raise RuntimeError(f"run_gm_turn dispatch failed: {gm_result}")
             _schedule_suli_memory_summary(card, run_dir, agent_memory)
 
-            story_result = agent_dispatcher.dispatch_next(
-                run_dir,
-                card,
-                repo,
-                run_claude=lambda *args: "",
-            )
+            story_result: Dict[str, Any] = {}
+            for _index in range(12):
+                dispatch_result = agent_dispatcher.dispatch_next(
+                    run_dir,
+                    card,
+                    repo,
+                    run_claude=lambda *args: "",
+                )
+                if not dispatch_result.get("ok"):
+                    raise RuntimeError(f"dispatcher collaboration dispatch failed: {dispatch_result}")
+                intent_type = str(dispatch_result.get("intent_type") or "")
+                if intent_type == "run_subgm_thread":
+                    side_result = (
+                        dispatch_result.get("detail", {}).get("side_thread_result")
+                        if isinstance(dispatch_result.get("detail"), dict)
+                        else None
+                    )
+                    if isinstance(side_result, dict):
+                        captured_loop["loop_result"].setdefault("side_thread_results", []).append(side_result)
+                if intent_type == "run_gm_turn":
+                    captured_loop["loop_result"]["stop_reason"] = str(
+                        dispatch_result.get("detail", {}).get("stop_reason") or ""
+                    )
+                if intent_type == "compose_story":
+                    story_result = dispatch_result
+                    break
             if not story_result.get("ok") or story_result.get("intent_type") != "compose_story":
-                raise RuntimeError(f"compose_story dispatch failed: {story_result}")
+                raise RuntimeError(f"compose_story dispatch was not reached: {story_result}")
 
             critic_result = agent_dispatcher.dispatch_next(
                 run_dir,
@@ -971,8 +954,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if not delivery_result.get("ok") or delivery_result.get("status") != "delivered":
                 raise RuntimeError(f"deliver_round dispatch failed: {delivery_result}")
         finally:
-            agent_dispatcher.rp_generate_cli._run_legacy_interactive_agent_loop = original_loop
-            agent_dispatcher.rp_generate_cli._dispatch_agent_payload = original_dispatch
+            agent_dispatcher._dispatch_agent_payload = original_dispatch
             agent_dispatcher.rp_generate_cli._run_delivery = original_delivery
 
         if not delivery.get("ok"):
