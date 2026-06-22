@@ -462,7 +462,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "story", "type": "assets_task", "payload": {"target": "scene"}},
+            {"requested_by": "story", "type": "paint_scene", "payload": {"target": "scene"}},
         )["intent"]
 
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
@@ -473,6 +473,43 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["reason"], "unsupported_intent_type")
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
+
+    def test_assets_task_records_deferred_nonblocking_artifact_and_message(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "story",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene",
+                    "target": "rainy_pier",
+                    "prompt": "Rainy pier at dusk.",
+                    "source": "story.output.json",
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "nonblocking_assets_task_deferred")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        self.assertEqual(completed[0]["result"]["outputs"]["status"], "deferred")
+        self.assertTrue(completed[0]["result"]["outputs"]["nonblocking"])
+        artifact_path = self.run_dir / "artifacts" / "assets_tasks" / f"{created['id']}.json"
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(artifact["status"], "deferred")
+        self.assertEqual(artifact["intent_id"], created["id"])
+        self.assertEqual(artifact["kind"], "scene")
+        self.assertEqual(artifact["target"], "rainy_pier")
+        self.assertTrue(artifact["nonblocking"])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        self.assertEqual([message["type"] for message in messages], ["assets_task"])
+        self.assertEqual(messages[0]["payload"]["status"], "deferred")
+        self.assertEqual(messages[0]["payload"]["artifact"], f"artifacts/assets_tasks/{created['id']}.json")
 
     def test_dispatch_next_uses_oldest_pending_intent(self):
         first = self.intents.create_intent(
@@ -523,7 +560,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def test_dispatch_next_preserves_existing_blocked_manifest_reason(self):
         created = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "story", "type": "assets_task", "payload": {"target": "scene"}},
+            {"requested_by": "story", "type": "paint_scene", "payload": {"target": "scene"}},
         )["intent"]
 
         first_result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
@@ -2966,6 +3003,37 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         completed = self.intents.list_intents(self.run_dir, "completed")
         self.assertEqual([item["id"] for item in completed], [created["id"]])
         self.assertEqual(len(delivery_calls), 1)
+
+    def test_deliver_round_does_not_wait_for_pending_assets_task(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        deliver = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+        asset = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "critic",
+                "type": "assets_task",
+                "payload": {"kind": "scene", "target": "after_delivery", "prompt": "Optional scene image."},
+            },
+        )["intent"]
+
+        def fake_run_delivery(_card_folder, _root_dir, _run_command):
+            return {"ok": True, "result": {"ok": True, "mode": "agent_run"}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(result["intent_id"], deliver["id"])
+        self.assertEqual([item["id"] for item in self.intents.list_intents(self.run_dir, "completed")], [deliver["id"]])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["id"] for item in pending], [asset["id"]])
+        self.assertEqual(pending[0]["type"], "assets_task")
 
     def test_deliver_round_blocks_when_delivery_command_fails(self):
         self._install_dispatcher_dependencies()

@@ -34,6 +34,7 @@ SUPPORTED_INTENT_TYPES = {
     "rollback_request",
     "system_request",
     "deliver_round",
+    "assets_task",
 }
 
 
@@ -148,7 +149,7 @@ def _execute_supported_intent(
     if intent_type == "deliver_round":
         return _execute_deliver_round(run_dir, card_folder, root_dir, intent, run_command)
     if intent_type == "assets_task":
-        raise AgentDispatcherError("assets_task is not included in SUPPORTED_INTENT_TYPES")
+        return _execute_assets_task(run_dir, intent)
     blocked = agent_intents.block_intent(
         run_dir,
         str(intent.get("id") or ""),
@@ -1297,6 +1298,74 @@ def _execute_system_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
         created_messages=[],
         artifacts=[],
         detail=blocked.get("result", {}),
+    )
+
+
+def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    intent_id = str(intent.get("id") or "")
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "assets_task"})
+
+    kind = str(payload.get("kind") or "scene").strip() or "scene"
+    target = str(payload.get("target") or intent_id or "asset").strip() or "asset"
+    prompt = str(payload.get("prompt") or "").strip()
+    source = str(payload.get("source") or "").strip()
+    artifact_relative = f"assets_tasks/{intent_id}.json"
+    artifact_payload = {
+        "schema_version": 1,
+        "executor": "assets_task",
+        "intent_id": intent_id,
+        "requested_by": str(intent.get("requested_by") or ""),
+        "kind": kind,
+        "target": target,
+        "prompt": prompt,
+        "source": source,
+        "status": "deferred",
+        "nonblocking": True,
+        "reason": "external_asset_generation_not_run_by_dispatcher",
+    }
+    write_artifact(run_dir, artifact_relative, artifact_payload)
+
+    message_result = agent_messages.append_message(
+        run_dir,
+        {
+            "from": "dispatcher",
+            "to": ["assets"],
+            "type": "assets_task",
+            "visibility": "public",
+            "payload": {
+                "intent_id": intent_id,
+                "artifact": f"artifacts/{artifact_relative}",
+                "status": "deferred",
+                "nonblocking": True,
+                "kind": kind,
+                "target": target,
+                "reason": "external_asset_generation_not_run_by_dispatcher",
+            },
+        },
+    )
+    created_messages = []
+    if message_result.get("ok") and isinstance(message_result.get("message"), dict):
+        created_messages.append(str(message_result["message"].get("id") or ""))
+
+    outputs = {
+        "executor": "assets_task",
+        "status": "deferred",
+        "nonblocking": True,
+        "artifact": f"artifacts/{artifact_relative}",
+        "message_ids": created_messages,
+    }
+    agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
+    return _result(
+        True,
+        "completed",
+        intent_id=intent_id,
+        intent_type="assets_task",
+        reason="nonblocking_assets_task_deferred",
+        created_intents=[],
+        created_messages=created_messages,
+        artifacts=[f"artifacts/{artifact_relative}"],
+        detail=outputs,
     )
 
 

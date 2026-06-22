@@ -79,6 +79,8 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 也可在卡片文件夹、项目根目录或 `skills/` 下放置 `image_config.local.json`，或在项目根目录使用 `.image_api.json` 配置 `api_key`、`base_url`、`model`。这些文件已被忽略，不要提交。生成图片会写入当前卡片文件夹的 `generated/images/` 和 `.card_assets.json`，脚本会重建 `content.js`，已打开的浏览器会自动看到新图片。
 
+图片与 UI 工作永远是正文交付后的异步增强。story、critic、GM 或主 agent 可以把视觉需求记录成非阻塞 `assets_task`，dispatcher 会写入 `artifacts/assets_tasks/<intent_id>.json` 与消息状态；在没有外部图片/UI worker 时会标记为 `deferred`，不会阻塞已经通过 critic 的文本交付，也不会调用真实图片模型。
+
 单存档 UI 定制请写在卡片文件夹内的 `.beautify_template.html`、`.beautify.json`、`.regex_scripts.json` 和 `ui_manifest.json`。不要把全局 `skills/styles/index.html` 当作某张卡的定制层。
 
 ## 核心角色 subagent

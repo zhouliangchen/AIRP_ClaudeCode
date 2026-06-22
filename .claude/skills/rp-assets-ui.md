@@ -10,6 +10,7 @@ This skill improves immersion after the text turn is safe. It is optional and mu
 ## Rules
 
 - Text delivery has priority. 图片生成 and UI customization must be 异步 and 不得阻塞正文交付.
+- If the story, critic, GM, or main agent requests image/UI work before delivery, record it as a nonblocking `assets_task`. The dispatcher may mark it `deferred` when no external asset worker is configured; this is not a delivery failure.
 - Use existing adapters instead of ad hoc API calls:
 
 ```powershell
@@ -20,6 +21,7 @@ python "{ROOT}/skills/image_generate.py" "<card_folder>" --prompt "..." --kind s
 - Per-card UI customization belongs in `ui_manifest.json`, `.beautify_template.html`, `.beautify.json`, `.regex_scripts.json`, or generated card assets.
 - Do not edit global `skills/styles/index.html` for a single card's custom atmosphere.
 - If image or UI work fails, record the issue and keep the RP loop running.
+- `assets_task` statuses are `pending`, `completed`, `failed`, or `deferred`; none of these statuses has authority to block `deliver_round`.
 
 ## When To Trigger
 
