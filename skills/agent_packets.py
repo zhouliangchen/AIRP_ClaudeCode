@@ -12,6 +12,7 @@ import agent_prompts
 import agent_memory
 import agent_lifecycle
 import agent_messages
+import objective_world
 import input_analysis
 import postprocess_outputs
 import runtime_settings
@@ -397,15 +398,22 @@ def build_gm_packet(
     character_contexts=None,
     hidden_setting_records=None,
     runtime_settings_payload=None,
+    objective_world_payload=None,
 ):
     """Build GM packet with both role and instruction channels."""
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
+    objective_payload = (
+        objective_world_payload
+        if isinstance(objective_world_payload, dict)
+        else objective_world.read_objective_world(card_folder)
+    )
     return {
         "agent": "gm",
         "card_folder": str(card_folder),
         "role_channel": _to_text(routed_input.get("role_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
         "gm_only_hidden_settings": hidden_setting_records or [],
+        "objective_world": objective_payload,
         "recent_chat": recent_chat or [],
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts or [],
@@ -617,6 +625,7 @@ def prepare_agent_run(
         character_contexts=character_contexts,
     )
     model_input_request = _input_analysis_model_request(input_request)
+    objective_payload = objective_world.read_objective_world(card_folder)
     agent_run.write_json(run_dir / "input.raw.json", _input_raw_record(input_request))
     agent_run.write_text(run_dir / "input_analysis.request.md", _input_analysis_request_markdown(model_input_request))
 
@@ -625,6 +634,7 @@ def prepare_agent_run(
     input_json["raw_text"] = _to_text(input_json.get("raw_text", user_text))
     input_json["routed_input"] = routed_input
     input_json["gm_only_hidden_settings"] = hidden_setting_records
+    input_json["objective_world"] = objective_payload
     input_json["recent_chat"] = chat_log or []
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
@@ -676,6 +686,7 @@ def prepare_agent_run(
         character_contexts,
         hidden_setting_records=hidden_setting_records,
         runtime_settings_payload=runtime_payload,
+        objective_world_payload=objective_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
@@ -754,6 +765,7 @@ def rebuild_agent_run_from_analysis(
         card_data=card_data,
         character_contexts=character_contexts,
     )
+    objective_payload = objective_world.read_objective_world(card_folder)
     _clear_generated_character_files(root)
 
     input_json = {
@@ -764,6 +776,7 @@ def rebuild_agent_run_from_analysis(
         "source_integrity": raw_request.get("source_integrity", {}),
         "recent_chat": chat_log,
         "gm_only_hidden_settings": hidden_setting_records,
+        "objective_world": objective_payload,
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts,
         "visible_events": world_state["visible_events"],
@@ -795,6 +808,7 @@ def rebuild_agent_run_from_analysis(
         character_contexts,
         hidden_setting_records=hidden_setting_records,
         runtime_settings_payload=runtime_payload,
+        objective_world_payload=objective_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(raw_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)

@@ -60,6 +60,35 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertIn("chat_log.json", metadata["copied"])
         self.assertIn(".card_data.json", metadata["copied"])
         self.assertIn("memory", metadata["copied"])
+        self.assertFalse(metadata["objective_world_included"])
+
+    def test_create_snapshot_records_and_copies_objective_world_archive(self):
+        self._write_card_state()
+        write_json(
+            self.card / "memory" / "objective_world.json",
+            {
+                "facts": [
+                    {
+                        "scope": "archive",
+                        "fact": "The locked door leads to a moon base.",
+                        "source": "fixture",
+                    }
+                ],
+                "sources": [],
+            },
+        )
+
+        result = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_input",
+        )
+
+        snapshot_dir = Path(result["snapshot_dir"])
+        metadata = json.loads((snapshot_dir / "snapshot.json").read_text(encoding="utf-8"))
+        copied_payload = json.loads((snapshot_dir / "memory" / "objective_world.json").read_text(encoding="utf-8"))
+        self.assertTrue(metadata["objective_world_included"])
+        self.assertEqual(copied_payload["facts"][0]["fact"], "The locked door leads to a moon base.")
 
     def test_restore_snapshot_restores_files(self):
         self._write_card_state()
