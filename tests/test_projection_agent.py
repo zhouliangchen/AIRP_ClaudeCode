@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -7,24 +8,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_projection_agent():
+def _load_module(name):
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location(
-        "projection_agent",
-        ROOT / "skills" / "projection_agent.py",
+        name,
+        ROOT / "skills" / f"{name}.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_projection_agent():
+    return _load_module("projection_agent")
 
 
 def _load_rp_generate_cli():
-    spec = importlib.util.spec_from_file_location(
-        "rp_generate_cli",
-        ROOT / "skills" / "rp_generate_cli.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load_module("rp_generate_cli")
 
 
 class ProjectionAgentTest(unittest.TestCase):
