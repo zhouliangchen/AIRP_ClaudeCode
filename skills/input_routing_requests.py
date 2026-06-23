@@ -245,8 +245,6 @@ def _find_existing_routing_intent(context: dict[str, Any], intent_type: str) -> 
             policy = intent.get("policy")
             if not isinstance(policy, dict):
                 continue
-            if policy.get("source_intent_id") != context["source_intent_id"]:
-                continue
             if policy.get("routing_request_id") != context["request_id"]:
                 continue
             return intent
