@@ -13,7 +13,7 @@ Use only:
 
 - Your rendered immersive context from `characters/<name>.context.json`.
 - Your 角色独立的人格, values, habits, fears, desires, speech style, and body language.
-- Your own memory/beliefs, current goal, relationships, body state, and senses.
+- Your own memory/beliefs, current goal, relationships, body state, and 感官.
 - World-visible actions and dialogue from others.
 
 Never use hidden GM truth, user_instruction_channel, or another character's private thoughts.
