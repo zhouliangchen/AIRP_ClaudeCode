@@ -15,6 +15,7 @@ class ReplayCapabilityError(ValueError):
 
 
 PLAN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
 ROUND_ID_RE = re.compile(r"^round-[0-9]{6}$")
 OPTIONAL_STRING_FIELDS = ("reason", "requested_by", "source_capability_request_id")
 REPLAY_DISCARD_ALLOWLIST = {
@@ -32,8 +33,7 @@ def validate_replay_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize a replay plan without mutating caller data."""
 
     data = _require_dict(plan, "replay_plan")
-    schema_version = data.get("schema_version", 1)
-    if schema_version != 1:
+    if data.get("schema_version") != 1:
         raise ReplayCapabilityError("replay_plan.schema_version must be 1")
 
     scope = _coalesce_nonempty_str(data, ("scope", "mode"), "replay_plan")
@@ -45,7 +45,7 @@ def validate_replay_plan(plan: dict[str, Any]) -> dict[str, Any]:
         raise ReplayCapabilityError("replay_plan.requires_manual_confirmation must be true")
 
     plan_id = _require_safe_id(data, "plan_id", "replay_plan")
-    snapshot_id = _require_safe_id(data, "snapshot_id", "replay_plan")
+    snapshot_id = _require_snapshot_id(data, "snapshot_id", "replay_plan")
     affected_rounds = _require_round_list(data, "affected_rounds", "replay_plan")
     preserved_inputs = _require_preserved_inputs(
         data,
@@ -78,6 +78,7 @@ def materialize_replay_plan(agent_run: str | Path, plan: dict[str, Any]) -> dict
     """Write a validated replay plan under the run artifact root."""
 
     normalized = validate_replay_plan(plan)
+    _require_existing_snapshot(agent_run, normalized["snapshot_id"])
     artifact_path = f"replay_plans/{normalized['plan_id']}.json"
     path = _artifact_path(agent_run, artifact_path)
     agent_run_io.write_json(path, normalized)
@@ -125,6 +126,23 @@ def _require_safe_id(payload: dict[str, Any], key: str, path: str) -> str:
     return value
 
 
+def _require_snapshot_id(payload: dict[str, Any], key: str, path: str) -> str:
+    value = _require_nonempty_str(payload, key, path)
+    if not SNAPSHOT_ID_RE.fullmatch(value):
+        raise ReplayCapabilityError(f"{path}.{key} contains invalid snapshot id")
+    return value
+
+
+def _require_existing_snapshot(run_dir: str | Path, snapshot_id: str) -> Path:
+    snapshots_root = (Path(run_dir).parent / "snapshots").resolve()
+    snapshot_dir = (snapshots_root / snapshot_id).resolve()
+    if snapshot_dir == snapshots_root or snapshots_root not in snapshot_dir.parents:
+        raise ReplayCapabilityError("replay_plan.snapshot_id escapes snapshots directory")
+    if not snapshot_dir.is_dir():
+        raise ReplayCapabilityError("replay_plan.snapshot_id does not exist")
+    return snapshot_dir
+
+
 def _require_round_list(payload: dict[str, Any], key: str, path: str) -> list[str]:
     values = _require_nonempty_list(payload, key, path)
     normalized = []
@@ -153,7 +171,7 @@ def _require_preserved_inputs(payload: dict[str, Any], keys: tuple[str, ...], pa
     for item in values:
         if isinstance(item, str):
             if not item.strip():
-                raise ReplayCapabilityError(f"{path}.{key} must contain non-empty strings or objects")
+                raise ReplayCapabilityError(f"{path}.{keys[0]} must contain non-empty strings or objects")
             normalized.append(item.strip())
             continue
         if not isinstance(item, dict):
@@ -163,9 +181,16 @@ def _require_preserved_inputs(payload: dict[str, Any], keys: tuple[str, ...], pa
         if not ROUND_ID_RE.fullmatch(round_id):
             raise ReplayCapabilityError(f"{path}.{keys[0]}[].round_id contains invalid round id: {round_id}")
         input_id = _require_nonempty_str(entry, "input_id", f"{path}.{keys[0]}[]")
-        raw_text = _require_nonempty_str(entry, "raw_text", f"{path}.{keys[0]}[]")
+        raw_text = _require_nonempty_raw_text(entry, "raw_text", f"{path}.{keys[0]}[]")
         normalized.append({"round_id": round_id, "input_id": input_id, "raw_text": raw_text})
     return normalized
+
+
+def _require_nonempty_raw_text(payload: dict[str, Any], key: str, path: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ReplayCapabilityError(f"{path}.{key} must be a non-empty string")
+    return value
 
 
 def _require_artifact_list(payload: dict[str, Any], keys: tuple[str, ...], path: str) -> list[str]:

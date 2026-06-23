@@ -87,6 +87,22 @@ class ReplayCapabilitiesTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "requires_manual_confirmation must be true"):
             self.mod.validate_replay_plan(plan)
 
+    def test_validate_replay_plan_requires_schema_version(self):
+        plan = self._valid_plan()
+        del plan["schema_version"]
+
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "schema_version must be 1"):
+            self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_rejects_invalid_snapshot_id(self):
+        for snapshot_id in ("..", "not-a-snapshot"):
+            with self.subTest(snapshot_id=snapshot_id):
+                plan = self._valid_plan()
+                plan["snapshot_id"] = snapshot_id
+
+                with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "snapshot_id"):
+                    self.mod.validate_replay_plan(plan)
+
     def test_validate_replay_plan_rejects_unsafe_artifact_paths(self):
         plan = self._valid_plan()
         plan["discard_ai_artifacts"] = ["../story.output.json"]
@@ -107,6 +123,21 @@ class ReplayCapabilitiesTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "preserved_player_input_ids"):
             self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_rejects_blank_preserved_input_strings(self):
+        plan = self._valid_plan()
+        plan["preserved_player_input_ids"] = ["   "]
+
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "preserved_player_input_ids"):
+            self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_preserves_raw_player_text_exactly(self):
+        plan = self._valid_plan()
+        plan["preserved_player_input_ids"][0]["raw_text"] = "  exact player text  "
+
+        normalized = self.mod.validate_replay_plan(plan)
+
+        self.assertEqual(normalized["preserved_player_input_ids"][0]["raw_text"], "  exact player text  ")
 
     def test_validate_replay_plan_accepts_aliases_but_normalizes_output(self):
         plan = self._valid_plan()
@@ -146,6 +177,12 @@ class ReplayCapabilitiesTest(unittest.TestCase):
         self.assertNotIn("discard_artifacts", payload)
         self.assertTrue(snapshot_dir.is_dir())
         self.assertEqual(existing_artifact.read_text(encoding="utf-8"), '{"keep": true}')
+
+    def test_materialize_replay_plan_requires_existing_snapshot_inside_agent_runs(self):
+        plan = self._valid_plan()
+
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "snapshot"):
+            self.mod.materialize_replay_plan(self.run_dir, plan)
 
 
 if __name__ == "__main__":
