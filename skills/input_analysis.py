@@ -65,6 +65,21 @@ FALLBACK_HIGH_RISK_TYPES = {
     "edit_request",
     "system_command",
 }
+ROUTING_REQUEST_TYPES = {
+    "assets_ui_task",
+    "story_retcon_consult",
+    "card_data_edit",
+    "source_feature_request",
+}
+ROUTING_REQUEST_SOURCE_CHANNELS = {
+    "user_instruction",
+    "role_input",
+    "raw_input",
+}
+ROUTING_REQUEST_AUTHORIZATION_GATES = {
+    "none",
+    "allowSourceCodeSelfRepair",
+}
 
 
 class InputAnalysisError(RuntimeError):
@@ -141,6 +156,7 @@ def validate_input_analysis(
         raw_text=raw_text,
         explicit_payload=explicit_payload,
     )
+    _validate_routing_requests(data.get("routing_requests"))
 
     if analysis_mode == "fallback":
         _validate_fallback_has_no_high_risk_persistence(
@@ -254,6 +270,7 @@ def build_fallback_analysis(
             "player": bool(role_text),
             "characters": [],
         },
+        "routing_requests": [],
         "risks": [
             "fallback: semantic persistence blocked; raw input preserved for downstream handling"
         ],
@@ -348,6 +365,82 @@ def _validate_routing(routing):
 
     if not isinstance(routing.get("characters"), list):
         raise InputAnalysisError("routing.characters must be a list")
+
+
+def _validate_routing_requests(routing_requests):
+    if routing_requests is None:
+        raise InputAnalysisError("routing_requests must be a list")
+    if not isinstance(routing_requests, list):
+        raise InputAnalysisError("routing_requests must be a list")
+
+    seen_ids = set()
+    for index, request in enumerate(routing_requests):
+        path = f"routing_requests[{index}]"
+        if not isinstance(request, dict):
+            raise InputAnalysisError(f"{path} must be an object")
+
+        request_id = _nonblank(request, "id", path)
+        if request_id in seen_ids:
+            raise InputAnalysisError(f"{path}.id must be unique")
+        seen_ids.add(request_id)
+
+        request_type = _nonblank(request, "type", path)
+        _nonblank(request, "source_channel", path)
+        _nonblank(request, "summary", path)
+        _nonblank(request, "target", path)
+
+        if request_type not in ROUTING_REQUEST_TYPES:
+            raise InputAnalysisError(f"{path}.type is invalid")
+
+        source_channel = request.get("source_channel").strip()
+        if source_channel not in ROUTING_REQUEST_SOURCE_CHANNELS:
+            raise InputAnalysisError(f"{path}.source_channel is invalid")
+
+        if not isinstance(request.get("payload"), dict):
+            raise InputAnalysisError(f"{path}.payload must be an object")
+
+        requires_authorization = request.get("requires_authorization")
+        if not isinstance(requires_authorization, bool):
+            raise InputAnalysisError(
+                f"{path}.requires_authorization must be a bool"
+            )
+
+        authorization_gate = request.get("authorization_gate")
+        if authorization_gate not in ROUTING_REQUEST_AUTHORIZATION_GATES:
+            raise InputAnalysisError(f"{path}.authorization_gate is invalid")
+
+        _validate_routing_request_evidence(request.get("evidence"), path)
+
+        if request_type == "source_feature_request":
+            if (
+                not requires_authorization
+                or authorization_gate != "allowSourceCodeSelfRepair"
+            ):
+                raise InputAnalysisError(
+                    f"{path}.source_feature_request requires "
+                    "allowSourceCodeSelfRepair authorization"
+                )
+        elif authorization_gate != "none":
+            raise InputAnalysisError(f"{path}.authorization_gate must be none")
+
+
+def _validate_routing_request_evidence(evidence, path):
+    evidence_path = f"{path}.evidence"
+    if not isinstance(evidence, dict):
+        raise InputAnalysisError(f"{evidence_path} must be an object")
+
+    raw_excerpt = evidence.get("raw_excerpt")
+    if not isinstance(raw_excerpt, str) or not raw_excerpt.strip():
+        raise InputAnalysisError(f"{evidence_path}.raw_excerpt is required")
+
+    if "semantic_unit_ids" in evidence:
+        semantic_unit_ids = evidence.get("semantic_unit_ids")
+        if not isinstance(semantic_unit_ids, list) or not all(
+            isinstance(unit_id, str) for unit_id in semantic_unit_ids
+        ):
+            raise InputAnalysisError(
+                f"{evidence_path}.semantic_unit_ids must be a list of strings"
+            )
 
 
 def _explicit_dual_channel_payload(explicit_payload):

@@ -91,6 +91,7 @@ class InputAnalysisTest(unittest.TestCase):
                 "player": True,
                 "characters": [],
             },
+            "routing_requests": [],
             "risks": [],
         }
 
@@ -115,6 +116,7 @@ class InputAnalysisTest(unittest.TestCase):
             "important_characters": [],
             "retcon_requests": [],
         }
+        data["routing_requests"] = []
         data["risks"] = ["fallback: persistence blocked"]
         return data
 
@@ -410,6 +412,121 @@ class InputAnalysisTest(unittest.TestCase):
 
                 with self.assertRaises(self.mod.InputAnalysisError):
                     self._validate(data)
+
+    def test_validate_accepts_user_requested_routing_requests(self):
+        data = self._analysis()
+        data["routing_requests"] = [
+            {
+                "id": "route-001",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a rainy street image for this scene.",
+                "target": "assets-ui",
+                "payload": {
+                    "kind": "scene",
+                    "target": "scene_illustration",
+                    "prompt": "rainy street at midnight",
+                },
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {
+                    "semantic_unit_ids": ["u2"],
+                    "raw_excerpt": self.instruction,
+                },
+            },
+            {
+                "id": "route-002",
+                "type": "source_feature_request",
+                "source_channel": "user_instruction",
+                "summary": "Implement a new save export feature.",
+                "target": "main_agent",
+                "payload": {
+                    "feature": "save_export",
+                    "requested_behavior": "Add an export button for current save data.",
+                },
+                "requires_authorization": True,
+                "authorization_gate": "allowSourceCodeSelfRepair",
+                "evidence": {
+                    "semantic_unit_ids": ["u2"],
+                    "raw_excerpt": self.instruction,
+                },
+            },
+        ]
+
+        result = self._validate(data)
+
+        self.assertEqual(len(result["routing_requests"]), 2)
+        self.assertEqual(result["routing_requests"][0]["type"], "assets_ui_task")
+        self.assertEqual(
+            result["routing_requests"][1]["authorization_gate"],
+            "allowSourceCodeSelfRepair",
+        )
+
+    def test_validate_rejects_unknown_routing_request_type(self):
+        data = self._analysis()
+        data["routing_requests"] = [
+            {
+                "id": "route-001",
+                "type": "unknown_request",
+                "source_channel": "user_instruction",
+                "summary": "Invalid request.",
+                "target": "main_agent",
+                "payload": {},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"raw_excerpt": self.instruction},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"routing_requests\[0\]\.type",
+        ):
+            self._validate(data)
+
+    def test_validate_rejects_source_request_without_source_gate(self):
+        data = self._analysis()
+        data["routing_requests"] = [
+            {
+                "id": "route-001",
+                "type": "source_feature_request",
+                "source_channel": "user_instruction",
+                "summary": "Implement a source change.",
+                "target": "main_agent",
+                "payload": {"feature": "demo"},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"raw_excerpt": self.instruction},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"source_feature_request",
+        ):
+            self._validate(data)
+
+    def test_validate_rejects_non_source_request_with_source_gate(self):
+        data = self._analysis()
+        data["routing_requests"] = [
+            {
+                "id": "route-001",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a scene image.",
+                "target": "assets-ui",
+                "payload": {"prompt": "rain"},
+                "requires_authorization": True,
+                "authorization_gate": "allowSourceCodeSelfRepair",
+                "evidence": {"raw_excerpt": self.instruction},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"authorization_gate",
+        ):
+            self._validate(data)
 
     def test_validate_rejects_missing_or_mistyped_narrative_directive_keys(self):
         required_keys = (
@@ -720,6 +837,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 "player": True,
                 "characters": ["Suli"],
             },
+            "routing_requests": [],
             "risks": [],
         }
 
