@@ -1139,6 +1139,39 @@ class InputAnalysisApplyTest(unittest.TestCase):
             original,
         )
 
+    def test_apply_current_run_rejects_unknown_legacy_routing_type_without_rewrite(self):
+        analysis = self._analysis()
+        analysis.pop("capability_requests", None)
+        analysis["routing_requests"] = [
+            {
+                "id": "route-unknown",
+                "type": "unknown_request",
+                "source_channel": "user_instruction",
+                "summary": "Unknown legacy route.",
+                "target": "main_agent",
+                "payload": {},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"raw_excerpt": self.hidden_text},
+            }
+        ]
+        original = json.dumps(analysis, ensure_ascii=False, indent=2)
+        (self.run_dir / "input_analysis.output.json").write_text(
+            original,
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            self.InputAnalysisError,
+            r"routing_requests\[0\]\.type",
+        ):
+            self.apply_mod.apply_current_run(self.card, self.root)
+
+        self.assertEqual(
+            (self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"),
+            original,
+        )
+
     def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
         card_data = {
             "mode": "story",

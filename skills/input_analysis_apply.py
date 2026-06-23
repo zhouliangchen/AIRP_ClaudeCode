@@ -441,11 +441,6 @@ def apply_current_run(card_folder, root_dir=None):
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
     analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
     normalized = normalized or normalized_routing_requests
-    if normalized:
-        (run_dir / "input_analysis.output.json").write_text(
-            json.dumps(analysis, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
     input_analysis.validate_input_analysis(
         analysis,
         raw_text=str(raw_request.get("raw_text") or ""),
@@ -453,6 +448,11 @@ def apply_current_run(card_folder, root_dir=None):
         user_instruction_text=str(raw_request.get("user_instruction_text") or ""),
         explicit_payload=raw_request.get("explicit_payload"),
     )
+    if normalized:
+        (run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     routed_input = input_analysis.analysis_to_routed_input(
         analysis,
         explicit_payload=raw_request.get("explicit_payload"),
