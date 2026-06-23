@@ -3,6 +3,8 @@ import json
 import math
 from pathlib import Path
 
+import capability_registry
+
 
 SCHEMA_VERSION = 1
 ANALYSIS_MODES = {"ai", "fallback", "fixture"}
@@ -157,6 +159,7 @@ def validate_input_analysis(
         explicit_payload=explicit_payload,
     )
     _validate_routing_requests(data.get("routing_requests"))
+    _validate_capability_requests(data.get("capability_requests", []))
 
     if analysis_mode == "fallback":
         _validate_fallback_has_no_high_risk_persistence(
@@ -271,6 +274,7 @@ def build_fallback_analysis(
             "characters": [],
         },
         "routing_requests": [],
+        "capability_requests": [],
         "risks": [
             "fallback: semantic persistence blocked; raw input preserved for downstream handling"
         ],
@@ -422,6 +426,31 @@ def _validate_routing_requests(routing_requests):
                 )
         elif authorization_gate != "none":
             raise InputAnalysisError(f"{path}.authorization_gate must be none")
+
+
+def _validate_capability_requests(capability_requests):
+    if not isinstance(capability_requests, list):
+        raise InputAnalysisError("capability_requests must be a list")
+
+    seen_ids = set()
+    for index, request in enumerate(capability_requests):
+        path = f"capability_requests[{index}]"
+        if not isinstance(request, dict):
+            raise InputAnalysisError(f"{path} must be an object")
+
+        request_id = request.get("id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise InputAnalysisError(f"{path}.id must be a non-empty string")
+        request_id = request_id.strip()
+        if request_id in seen_ids:
+            raise InputAnalysisError(f"{path}.id must be unique")
+        seen_ids.add(request_id)
+
+        try:
+            capability_registry.normalize_capability_request(request)
+        except capability_registry.CapabilityRegistryError as exc:
+            message = str(exc).replace("capability_request", path, 1)
+            raise InputAnalysisError(message) from exc
 
 
 def _validate_routing_request_evidence(evidence, path):

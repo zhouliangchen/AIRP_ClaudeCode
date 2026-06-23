@@ -202,6 +202,7 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
             "characters": [],
         },
         "routing_requests": [],
+        "capability_requests": [],
         "risks": [],
     })
     return _base_prompt(
@@ -223,16 +224,23 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "\nInvalid semantic unit visibility aliases: public, private, player, "
         "character, world_visible, actor_visible. Do not write these aliases in "
         "`input_analysis.output.json`.\n"
-        "\nRouting request contract: use top-level `routing_requests[]` only for "
-        "explicit user-requested system, UI, save-data, retcon, or source-feature "
-        "work that should be routed outside ordinary GM/story handling. Allowed "
-        "`routing_requests[].type` values: `assets_ui_task`, "
-        "`story_retcon_consult`, `card_data_edit`, `source_feature_request`. "
-        "A `source_feature_request` must use `authorization_gate: "
-        "\"allowSourceCodeSelfRepair\"` and `requires_authorization: true`; it "
-        "does not require `selfRepairMode`. Non-source routing requests must use "
-        "`authorization_gate: \"none\"`. Do not use routing requests for normal "
-        "player actions.\n"
+        "\nCapability request contract: use top-level `capability_requests[]` "
+        "for explicit user-requested system, UI, save-data, retcon/replay, or "
+        "source-feature work that should be routed outside ordinary GM/story "
+        "handling. Each request must include `id`, `requested_by`, `target`, "
+        "`capability`, `summary`, `reason`, `source_channel`, `risk`, "
+        "`authorization_gate`, object `payload`, and object `evidence` with a "
+        "non-empty `raw_excerpt`. Current registered capabilities include "
+        "`assets.generate_image`, `source.change_request`, `retcon.consult`, "
+        "`replay.plan`, and `card.patch_data`; unsupported capability names may "
+        "be emitted only when the player explicitly requested that capability "
+        "and will be audited by the registry. `source.change_request` must use "
+        "`authorization_gate: \"allowSourceCodeSelfRepair\"`; `replay.plan` and "
+        "`card.patch_data` require `manual_confirmation`. Keep legacy "
+        "`routing_requests[]` as an empty compatibility field unless preserving "
+        "an existing legacy route such as `assets_ui_task` or "
+        "`source_feature_request`. Prefer `capability_requests[]` for new work. "
+        "Do not use capability requests for normal player actions.\n"
     )
 
 

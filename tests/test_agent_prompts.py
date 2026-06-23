@@ -112,6 +112,21 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn(".claude/skills/rp-projection-agent.md", prompt)
         self.assertNotIn("(missing skill file:", prompt)
 
+    def test_input_analyst_prompt_prefers_capability_requests(self):
+        prompt = self.agent_prompts._input_analyst_prompt({
+            "round_id": "round-000001",
+            "source_integrity": {
+                "raw_text_sha256": "raw",
+                "role_text_sha256": "role",
+                "user_instruction_text_sha256": "instruction",
+            },
+        })
+
+        self.assertIn('"capability_requests": []', prompt)
+        self.assertIn("capability_requests[]", prompt)
+        self.assertIn("assets.generate_image", prompt)
+        self.assertNotIn("Allowed `routing_requests[].type` values", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

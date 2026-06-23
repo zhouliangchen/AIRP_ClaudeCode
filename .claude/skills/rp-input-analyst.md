@@ -84,6 +84,16 @@ Invalid semantic unit visibility aliases: public, private, player, character, wo
 
 If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.
 
+## Capability Requests
+
+Use `capability_requests[]` only when the player explicitly asks for system/UI/image, save-data, retcon/replay, card-data, or source-feature work outside ordinary GM/story handling.
+
+Each request must include `id`, `requested_by`, `target`, `capability`, `summary`, `reason`, `source_channel`, `risk`, `authorization_gate`, object `payload`, and object `evidence` with a non-empty player-authored `raw_excerpt`.
+
+Current registered capabilities include `assets.generate_image`, `source.change_request`, `retcon.consult`, `replay.plan`, and `card.patch_data`. Unknown capability names may be emitted only when semantically justified by explicit player input; the registry will keep them audit-only rather than executing them.
+
+Keep legacy `routing_requests[]` as a migration compatibility field for older route names such as `assets_ui_task` and `source_feature_request`. Prefer `capability_requests[]` for new work and leave both arrays empty when no out-of-band capability is requested.
+
 ## Output
 
 Write exactly one JSON object to `input_analysis.output.json`. No prose, Markdown, or code fences.
@@ -121,6 +131,8 @@ Required shape:
     "player": true,
     "characters": []
   },
+  "routing_requests": [],
+  "capability_requests": [],
   "risks": []
 }
 ```

@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 import agent_packets
 import agent_run
+import capability_registry
 import character_registry
 import hidden_settings
 import input_analysis
@@ -247,10 +248,26 @@ def _normalize_legacy_semantic_units(
 
 
 def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
-    if "routing_requests" in analysis:
-        return analysis, False
     normalized = dict(analysis)
-    normalized["routing_requests"] = []
+    changed = False
+
+    if "routing_requests" not in normalized:
+        normalized["routing_requests"] = []
+        changed = True
+
+    if "capability_requests" not in normalized:
+        routing_requests = normalized.get("routing_requests")
+        capability_requests = []
+        if isinstance(routing_requests, list):
+            capability_requests = [
+                capability_registry.legacy_routing_request_to_capability(request)
+                for request in routing_requests
+            ]
+        normalized["capability_requests"] = capability_requests
+        changed = True
+
+    if not changed:
+        return analysis, False
     return normalized, True
 
 
@@ -510,6 +527,7 @@ def apply_current_run(card_folder, root_dir=None):
         ],
         "routed_input": routed_input,
         "routing_requests": analysis.get("routing_requests", []),
+        "capability_requests": analysis.get("capability_requests", []),
         "manifest": manifest,
     }
 

@@ -462,6 +462,96 @@ class InputAnalysisTest(unittest.TestCase):
             "allowSourceCodeSelfRepair",
         )
 
+    def test_validate_accepts_capability_requests(self):
+        data = self._analysis()
+        data["routing_requests"] = []
+        data["capability_requests"] = [
+            {
+                "id": "cap-001",
+                "requested_by": "input_analyst",
+                "target": "assets-ui",
+                "capability": "assets.generate_image",
+                "summary": "Create a pendant illustration.",
+                "reason": "The instruction channel explicitly requested an image.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {"prompt": "silver pendant"},
+                "evidence": {
+                    "semantic_unit_ids": ["u2"],
+                    "raw_excerpt": self.instruction,
+                },
+            }
+        ]
+
+        validated = self._validate(data)
+
+        self.assertEqual(
+            validated["capability_requests"][0]["capability"],
+            "assets.generate_image",
+        )
+
+    def test_validate_rejects_capability_request_without_evidence_excerpt(self):
+        data = self._analysis()
+        data["capability_requests"] = [
+            {
+                "id": "cap-bad",
+                "requested_by": "input_analyst",
+                "target": "assets-ui",
+                "capability": "assets.generate_image",
+                "summary": "Create image.",
+                "reason": "User asked for image.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {},
+                "evidence": {"semantic_unit_ids": ["u2"], "raw_excerpt": ""},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"capability_requests\[0\]\.evidence\.raw_excerpt",
+        ):
+            self._validate(data)
+
+    def test_validate_rejects_duplicate_capability_request_ids(self):
+        data = self._analysis()
+        data["capability_requests"] = [
+            {
+                "id": "cap-dup",
+                "requested_by": "input_analyst",
+                "target": "assets-ui",
+                "capability": "assets.generate_image",
+                "summary": "Create image.",
+                "reason": "User asked for image.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {},
+                "evidence": {"raw_excerpt": self.instruction},
+            },
+            {
+                "id": "cap-dup",
+                "requested_by": "input_analyst",
+                "target": "weather",
+                "capability": "external.weather_lookup",
+                "summary": "Unsupported request for audit.",
+                "reason": "User asked for weather.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {},
+                "evidence": {"raw_excerpt": self.instruction},
+            },
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"capability_requests\[1\]\.id",
+        ):
+            self._validate(data)
+
     def test_validate_rejects_unknown_routing_request_type(self):
         data = self._analysis()
         data["routing_requests"] = [
@@ -675,6 +765,7 @@ class InputAnalysisTest(unittest.TestCase):
         )
 
         self.assertEqual(result["routing_requests"], [])
+        self.assertEqual(result["capability_requests"], [])
 
     def test_validate_rejects_fallback_world_update_persistence(self):
         blocked_updates = {
@@ -943,9 +1034,10 @@ class InputAnalysisApplyTest(unittest.TestCase):
             self.input_payload["user_instruction_text"],
         )
 
-    def test_apply_current_run_normalizes_missing_routing_requests_to_empty_list(self):
+    def test_apply_current_run_normalizes_missing_request_lists_to_empty_lists(self):
         analysis = self._analysis()
         analysis.pop("routing_requests", None)
+        analysis.pop("capability_requests", None)
         (self.run_dir / "input_analysis.output.json").write_text(
             json.dumps(analysis, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -955,7 +1047,47 @@ class InputAnalysisApplyTest(unittest.TestCase):
 
         normalized = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
         self.assertEqual(normalized["routing_requests"], [])
+        self.assertEqual(normalized["capability_requests"], [])
         self.assertEqual(result["routing_requests"], [])
+        self.assertEqual(result["capability_requests"], [])
+
+    def test_apply_current_run_maps_legacy_routing_requests_to_capability_requests(self):
+        analysis = self._analysis()
+        analysis.pop("capability_requests", None)
+        analysis["routing_requests"] = [
+            {
+                "id": "route-legacy-assets",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a pendant image.",
+                "target": "assets-ui",
+                "payload": {
+                    "kind": "scene",
+                    "target": "scene_illustration",
+                    "prompt": "silver pendant",
+                },
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {
+                    "semantic_unit_ids": ["unit-hidden-1"],
+                    "raw_excerpt": self.hidden_text,
+                },
+            }
+        ]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card, self.root)
+
+        normalized = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            normalized["capability_requests"][0]["capability"],
+            "assets.generate_image",
+        )
+        self.assertEqual(
+            normalized["capability_requests"][0]["legacy_type"],
+            "assets_ui_task",
+        )
+        self.assertEqual(result["capability_requests"], normalized["capability_requests"])
 
     def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
         card_data = {
