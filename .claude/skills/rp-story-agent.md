@@ -23,7 +23,7 @@ Read from current `.agent_runs/<round>/`:
 - `story_input.player_inputs.routed_input.role_channel` and raw player input outrank `story_input.loop_outputs`. If any GM or actor artifact continues an obsolete scene, invents player dialogue/actions, or reveals hidden user-instruction facts against the current role_channel, discard that conflicting part and follow player authority.
 - If player supplied an action, briefly reflect the action's immediate consequence, then continue.
 - If player supplied a synopsis, expand that synopsis using scene detail, then stop or advance only where natural.
-- If user supplied omniscient setting, incorporate consequences through GM/story and variables, not through impossible character knowledge.
+- If user supplied omniscient setting, incorporate consequences through GM/story and postprocess-owned variable commands, not through impossible character knowledge.
 - If the input plan or GM handoff says prior AI-derived content must be repaired, emit `<derived_content_edits>` with precise JSON edits for the affected earlier turn before delivery. These edits may replace `ai`, `summary`, or the first paragraph, but must never modify player input.
 - For dream/rewind/false-branch repairs, the first visible scene of the new turn must start from the player's latest time/place. Do not skip ahead to prior NPC hooks until the current action has been resolved and a new player decision point is reached.
 - Integrate important character dialogue in `<character_dialogues>` when it came from a character subagent.
@@ -42,6 +42,7 @@ Read from current `.agent_runs/<round>/`:
 - Do not emit `<summary>`; postprocess owns summary.
 - Do not emit `<options>`; postprocess owns action options.
 - Do not emit current-goal or other frontend support data; postprocess owns that data after critic pass.
+- Do not emit `<UpdateVariable>`; postprocess owns MVU variable update commands.
 
 ## Output
 
@@ -65,9 +66,7 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
 - `<content>` for main prose.
 - `<character_dialogues>` for independent subagent dialogue boxes.
 - Do not write `<summary>` or `<options>` in `story.output.json`; keep old tags only as parser compatibility for existing chat logs, not as live story output.
-- `<UpdateVariable>` when variables must change.
-  - Do not emit `<Analysis>` inside `<UpdateVariable>`; it is not display prose and repeatedly triggers critic meta-exposure repairs.
-  - Use `<UpdateVariable><JSONPatch>[...]</JSONPatch></UpdateVariable>` only, with valid JSON Patch-style operations for machine parsing. Put any assembly rationale in top-level `metadata`, not in response tags.
+- Do not write `<UpdateVariable>` in `story.output.json`; postprocess owns MVU variable update commands in `postprocess.output.json.mvu.commands`.
 - `<derived_content_edits>` when player authority requires correcting, reframing, or rewriting earlier AI-derived content.
   - Must be a JSON array of actionable handler edits, for example:
     `[{"turn_index":0,"summary":"上一轮课堂段落改定为梦境预示","first_paragraph":"你在梦里站在熟悉教室中，所有人都一如往常。","reason":"玩家梦醒回拨"}]`

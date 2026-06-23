@@ -449,10 +449,11 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         contract,
         run_summary,
         contract_notes=(
-            "Story writes only prose, source-backed character dialogues, variable patches, "
+            "Story writes only prose, source-backed character dialogues, "
             "and derived-content repair edits. Do not write `<summary>` or `<options>` "
             "in `story.output.json`; postprocess owns summary, options, current goal, "
-            "and frontend data after critic pass."
+            "and frontend data after critic pass; postprocess also owns MVU variable update commands. "
+            "Do not write `<UpdateVariable>`; postprocess owns MVU variable update commands."
         ),
     ) + _story_runtime_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
@@ -527,6 +528,11 @@ def build_postprocess_prompt(run_summary: Dict[str, Any]) -> str:
             "status": "ok",
             "issues": [],
         },
+        "mvu": {
+            "commands": [],
+            "status": "ok",
+            "issues": [],
+        },
         "repair_requests": [],
         "metadata": {},
     })
@@ -544,6 +550,7 @@ Required frontend data contract:
 - `core.state_patch`
 - `ui_extensions`
 - `ui_extension_status`
+- `mvu.commands`
 - `repair_requests`
 - `metadata`
 
@@ -551,6 +558,7 @@ Do not rewrite story prose.
 Do not review prose quality.
 Do not write progress.json.
 Do not write `<content>`, `<summary>`, or `<options>` tags.
+Write MVU variable update commands only in `mvu.commands`; do not append `<UpdateVariable>` to story prose.
 
 ## Required Output Contract
 

@@ -115,6 +115,9 @@ def _process_assets_ui_task(context: dict[str, Any]) -> dict[str, Any]:
         "source": f"{SOURCE_NAME}.{request_id}",
         "routing_request": _routing_request_reference(request),
     }
+    for key in ("ui_schema", "postprocess_contract"):
+        if isinstance(payload.get(key), dict):
+            intent_payload[key] = payload[key]
     intent = _create_intent(
         context,
         {

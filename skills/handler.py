@@ -522,6 +522,19 @@ def _apply_postprocess_state(raw, postprocess):
     return raw
 
 
+def _postprocess_mvu_command_text(postprocess):
+    if not isinstance(postprocess, dict):
+        return None
+    mvu = postprocess.get("mvu")
+    if not isinstance(mvu, dict):
+        return ""
+    commands = mvu.get("commands")
+    if not isinstance(commands, list):
+        return ""
+    cleaned = [item.strip() for item in commands if isinstance(item, str) and item.strip()]
+    return "\n".join(cleaned)
+
+
 def _normalize_character_dialogues(dialogues):
     if isinstance(dialogues, str):
         try:
@@ -1673,6 +1686,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     log = read_chat_log(card_folder)
     next_index = len(log)
     pending_user_turn = read_pending_user_turn(card_folder)
+    postprocess = _load_postprocess_output(card_folder)
 
     # ── MVU: Compute current variables ──
     prev_vars = compute_current_variables(log)
@@ -1681,7 +1695,9 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     var_schema = _load_var_schema(card_folder, prev_vars)
 
     # ── MVU: Extract commands from full response text ──
-    commands = extract_commands(full_text or content)
+    postprocess_mvu_text = _postprocess_mvu_command_text(postprocess)
+    command_text = postprocess_mvu_text if postprocess_mvu_text is not None else (full_text or content)
+    commands = extract_commands(command_text)
     # On first turn, try loading .initvar.json as baseline
     if not prev_vars:
         initvar_path = Path(card_folder) / ".initvar.json"
@@ -1768,8 +1784,6 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     write_chat_log(card_folder, log)
     if pending_user_turn:
         clear_pending_user_turn(card_folder)
-    postprocess = _load_postprocess_output(card_folder)
-
     try:
         evolve_blank_profile(
             card_folder,

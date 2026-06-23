@@ -19,6 +19,8 @@ python "{ROOT}/skills/image_generate.py" "<card_folder>" --prompt "..." --kind s
 
 - Generated image metadata belongs in `.card_assets.json` and files under `generated/images/`.
 - Per-card UI customization belongs in `ui_manifest.json`, `.beautify_template.html`, `.beautify.json`, `.regex_scripts.json`, or generated card assets.
+- If you update save-level UI schema in `ui_manifest.json`, update `postprocess_contract.json` at the same time so `rp-postprocess-agent` knows which `ui_extensions` data to provide.
+- If the UI schema requires postprocess data but the contract cannot be updated, record a nonblocking postprocess repair queue item; the next round should attempt to complete the missing contract/data.
 - Do not edit global `skills/styles/index.html` for a single card's custom atmosphere.
 - If image or UI work fails, record the issue and keep the RP loop running.
 - `assets_task` statuses are `pending`, `completed`, `failed`, or `deferred`; none of these statuses has authority to block `deliver_round`.

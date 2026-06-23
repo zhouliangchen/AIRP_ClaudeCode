@@ -8,6 +8,12 @@ from pathlib import Path
 
 ALLOWED_STATE_PATCH_KEYS = {"quest", "stage", "time", "location", "env", "actions"}
 DEFAULT_UI_EXTENSIONS = {"status_panels": {}, "custom_cards": {}, "asset_bindings": {}}
+DEFAULT_MVU = {"commands": [], "status": "ok", "issues": []}
+DEFAULT_POSTPROCESS_CONTRACT = {
+    "schema_version": 1,
+    "ui_extensions": {"status_panels": {}, "custom_cards": {}, "asset_bindings": {}},
+    "metadata": {},
+}
 
 
 class PostprocessOutputError(ValueError):
@@ -56,6 +62,7 @@ def validate_postprocess_output(payload, *, critical_action_evidence=None):
         "ui_extension_status": payload.get("ui_extension_status")
         if isinstance(payload.get("ui_extension_status"), dict)
         else {"status": "ok", "issues": []},
+        "mvu": _normalize_mvu(payload.get("mvu")),
         "repair_requests": payload.get("repair_requests")
         if isinstance(payload.get("repair_requests"), list)
         else [],
@@ -161,6 +168,32 @@ def _normalize_ui_extensions(value):
     return normalized
 
 
+def _normalize_mvu(value):
+    normalized = dict(DEFAULT_MVU)
+    if not isinstance(value, dict):
+        return normalized
+
+    commands = []
+    if isinstance(value.get("commands"), list):
+        for item in value["commands"]:
+            text = _clean_text(item)
+            if text:
+                commands.append(text)
+    normalized["commands"] = commands
+
+    status = _clean_text(value.get("status"))
+    if status:
+        normalized["status"] = status
+
+    issues = value.get("issues")
+    if isinstance(issues, list):
+        normalized["issues"] = [
+            item for item in issues
+            if (isinstance(item, dict) and item) or _clean_text(item)
+        ]
+    return normalized
+
+
 def _clean_string_list(value):
     if not isinstance(value, list):
         return []
@@ -232,7 +265,7 @@ def ui_extension_required_keys(postprocess):
     return keys
 
 
-def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, source_artifacts):
+def _record_postprocess_repair(run_dir, card_dir, *, scope, reason, required_keys, source_artifacts):
     root = Path(run_dir)
     card_root = Path(card_dir)
     repair_id = f"postprocess-repair-{uuid.uuid4().hex}"
@@ -241,7 +274,7 @@ def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, sour
         "id": repair_id,
         "round_id": root.name,
         "status": "pending",
-        "scope": "ui_extensions",
+        "scope": _clean_text(scope),
         "reason": _clean_text(reason),
         "required_keys": _clean_string_list(required_keys),
         "source_artifacts": _clean_string_list(source_artifacts),
@@ -253,3 +286,162 @@ def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, sour
     repair_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     _append_jsonl(card_root / ".agent_runs" / "postprocess_repair_queue.jsonl", record)
     return record
+
+
+def record_ui_extension_repair(run_dir, card_dir, *, reason, required_keys, source_artifacts):
+    return _record_postprocess_repair(
+        run_dir,
+        card_dir,
+        scope="ui_extensions",
+        reason=reason,
+        required_keys=required_keys,
+        source_artifacts=source_artifacts,
+    )
+
+
+def record_postprocess_contract_repair(run_dir, card_dir, *, reason, required_keys, source_artifacts):
+    return _record_postprocess_repair(
+        run_dir,
+        card_dir,
+        scope="postprocess_contract",
+        reason=reason,
+        required_keys=required_keys,
+        source_artifacts=source_artifacts,
+    )
+
+
+def load_postprocess_contract(card_dir):
+    path = Path(card_dir) / "postprocess_contract.json"
+    contract = json.loads(json.dumps(DEFAULT_POSTPROCESS_CONTRACT))
+    if not path.exists():
+        return contract
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return contract
+    if isinstance(data, dict):
+        _deep_merge(contract, data)
+    return contract
+
+
+def apply_ui_schema_contract_update(card_dir, payload):
+    """Apply a structured assets-ui UI schema update and optional postprocess contract."""
+
+    card_root = Path(card_dir)
+    data = payload if isinstance(payload, dict) else {}
+    ui_schema = data.get("ui_schema") if isinstance(data.get("ui_schema"), dict) else None
+    postprocess_contract = (
+        data.get("postprocess_contract")
+        if isinstance(data.get("postprocess_contract"), dict)
+        else None
+    )
+    if ui_schema is None and postprocess_contract is None:
+        return {
+            "applied": False,
+            "ui_schema_status": "not_applicable",
+            "postprocess_contract_status": "not_applicable",
+            "required_keys": [],
+            "missing_keys": [],
+            "artifacts": [],
+        }
+
+    artifacts = []
+    ui_schema_status = "not_applicable"
+    if ui_schema is not None:
+        manifest_path = card_root / "ui_manifest.json"
+        manifest = _read_json_object(manifest_path)
+        if not manifest:
+            manifest = {"version": 1, "mode": "autonomous", "generated_assets": []}
+        existing_schema = manifest.get("ui_schema")
+        if not isinstance(existing_schema, dict):
+            existing_schema = {}
+        _deep_merge(existing_schema, ui_schema)
+        manifest["ui_schema"] = existing_schema
+        _write_json(manifest_path, manifest)
+        artifacts.append("ui_manifest.json")
+        ui_schema_status = "applied"
+
+    required_keys = ui_schema_required_postprocess_keys(ui_schema)
+    contract_status = "not_required"
+    contract = load_postprocess_contract(card_root)
+    if postprocess_contract is not None:
+        _deep_merge(contract, postprocess_contract)
+        metadata = contract.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata["source"] = _clean_text(data.get("source")) or "assets-ui"
+        _write_json(card_root / "postprocess_contract.json", contract)
+        artifacts.append("postprocess_contract.json")
+        contract_status = "synced"
+
+    missing_keys = [
+        key for key in required_keys
+        if not postprocess_contract_covers_key(contract, key)
+    ]
+    if missing_keys:
+        contract_status = "repair_pending"
+    elif required_keys and postprocess_contract is None:
+        contract_status = "not_required"
+
+    return {
+        "applied": True,
+        "ui_schema_status": ui_schema_status,
+        "postprocess_contract_status": contract_status,
+        "required_keys": required_keys,
+        "missing_keys": missing_keys,
+        "artifacts": artifacts,
+    }
+
+
+def ui_schema_required_postprocess_keys(ui_schema):
+    if not isinstance(ui_schema, dict):
+        return []
+    keys = _clean_string_list(ui_schema.get("postprocess_data_required"))
+    data_requirements = ui_schema.get("data_requirements")
+    if isinstance(data_requirements, list):
+        for item in data_requirements:
+            if isinstance(item, dict):
+                key = _clean_text(item.get("postprocess_key") or item.get("key"))
+            else:
+                key = _clean_text(item)
+            if key:
+                keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def postprocess_contract_covers_key(contract, key):
+    if not isinstance(contract, dict):
+        return False
+    text = _clean_text(key)
+    if not text:
+        return False
+    current = contract
+    for part in text.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def _read_json_object(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _deep_merge(base, incoming):
+    if not isinstance(base, dict) or not isinstance(incoming, dict):
+        return base
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base

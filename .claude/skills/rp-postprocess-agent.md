@@ -24,6 +24,7 @@ Read the current run and card context:
 - `critic.report.json`
 - `interaction.trace.json`
 - `ui_manifest.json`
+- `postprocess_contract.json`
 - generated asset metadata
 - pending postprocess repair queue
 - current state.js values
@@ -58,6 +59,13 @@ Write `postprocess.output.json` as a JSON object:
     "status": "ok",
     "issues": []
   },
+  "mvu": {
+    "commands": [
+      "<UpdateVariable><JSONPatch>[{\"op\":\"replace\",\"path\":\"/scene/mood\",\"value\":\"tense\"}]</JSONPatch></UpdateVariable>"
+    ],
+    "status": "ok",
+    "issues": []
+  },
   "repair_requests": [],
   "metadata": {
     "round_id": "round-000001",
@@ -66,7 +74,7 @@ Write `postprocess.output.json` as a JSON object:
 }
 ```
 
-Required contract fields: `schema_version`, `core.summary`, `core.options`, `core.current_goal`, `core.state_patch`, `ui_extensions`, `ui_extension_status`, `repair_requests`, and `metadata`.
+Required contract fields: `schema_version`, `core.summary`, `core.options`, `core.current_goal`, `core.state_patch`, `ui_extensions`, `ui_extension_status`, `mvu`, `repair_requests`, and `metadata`.
 
 ## Rules
 
@@ -76,4 +84,7 @@ Required contract fields: `schema_version`, `core.summary`, `core.options`, `cor
 - Do not invent new story events to justify UI fields.
 - Do not write `<content>`, `<summary>`, or `<options>` tags.
 - Postprocess must not write `<content>`, `<summary>`, or `<options>` tags.
+- Write MVU variable update commands only in `mvu.commands`. Do not modify `story.output.json`.
+- Use `<UpdateVariable><JSONPatch>[...]</JSONPatch></UpdateVariable>` strings in `mvu.commands` when variables must change.
+- If `postprocess_contract.json` or Runtime Input `postprocess_contract` declares additional UI data requirements, fill those fields under `ui_extensions`.
 - If UI extension data is incomplete, write structured `repair_requests` instead of blocking valid core data.

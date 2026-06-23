@@ -254,7 +254,7 @@ class TurnStateTest(unittest.TestCase):
         self.handler.STYLES = self.old_styles
         self.tmp.cleanup()
 
-    def _write_postprocess_output(self, core=None, ui_extensions=None, path=None):
+    def _write_postprocess_output(self, core=None, ui_extensions=None, path=None, mvu=None):
         payload = {
             "schema_version": 1,
             "core": core or {
@@ -270,6 +270,8 @@ class TurnStateTest(unittest.TestCase):
             },
             "ui_extension_status": {"status": "ok", "issues": []},
         }
+        if mvu is not None:
+            payload["mvu"] = mvu
         output_path = Path(path) if path is not None else self.card / "postprocess.output.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
@@ -1338,6 +1340,41 @@ class TurnStateTest(unittest.TestCase):
         state_js = (self.card / "state.js").read_text(encoding="utf-8")
         self.assertIn('quest: "Current goal fallback quest"', state_js)
         self.assertIn('stage: "Archive"', state_js)
+
+    def test_append_turn_applies_mvu_commands_from_postprocess_output(self):
+        self._write_postprocess_output(
+            mvu={
+                "commands": [
+                    '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/mood","value":"alert"}]</JSONPatch></UpdateVariable>'
+                ],
+                "status": "ok",
+                "issues": [],
+            }
+        )
+
+        self.handler.append_turn(str(self.card), content="<p>Main narration.</p>", summary="Legacy summary")
+
+        log = self.handler.read_chat_log(str(self.card))
+        self.assertEqual(log[0]["variables"]["stat_data"]["mood"], "alert")
+        self.assertEqual(log[0]["variables"]["delta"]["mood"]["new"], "alert")
+
+    def test_append_turn_ignores_story_mvu_commands_when_postprocess_controls_mvu(self):
+        self._write_postprocess_output(
+            mvu={
+                "commands": [],
+                "status": "ok",
+                "issues": [],
+            }
+        )
+        story_text = (
+            "<p>Main narration.</p>"
+            '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/mood","value":"story"}]</JSONPatch></UpdateVariable>'
+        )
+
+        self.handler.append_turn(str(self.card), content=story_text, summary="Legacy summary")
+
+        log = self.handler.read_chat_log(str(self.card))
+        self.assertNotIn("variables", log[0])
 
     def test_docs_describe_character_dialogues_contract(self):
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")

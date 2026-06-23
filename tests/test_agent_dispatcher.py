@@ -566,6 +566,96 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(messages[0]["payload"]["status"], "deferred")
         self.assertEqual(messages[0]["payload"]["artifact"], f"artifacts/assets_tasks/{created['id']}.json")
 
+    def test_assets_task_updates_ui_schema_and_postprocess_contract(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "assets-ui",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "ui_schema",
+                    "target": "relationship_panel",
+                    "ui_schema": {
+                        "version": 1,
+                        "postprocess_data_required": ["ui_extensions.status_panels.relationships"],
+                        "elements": {
+                            "relationships": {"data_key": "ui_extensions.status_panels.relationships"}
+                        },
+                    },
+                    "postprocess_contract": {
+                        "ui_extensions": {
+                            "status_panels": {
+                                "relationships": {
+                                    "type": "object",
+                                    "description": "Visible relationship status panel data",
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        self.assertEqual([item["id"] for item in completed], [created["id"]])
+        outputs = completed[0]["result"]["outputs"]
+        self.assertEqual(outputs["status"], "completed")
+        self.assertEqual(outputs["ui_schema_status"], "applied")
+        self.assertEqual(outputs["postprocess_contract_status"], "synced")
+        ui_manifest = json.loads((self.card / "ui_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(ui_manifest["ui_schema"]["elements"]["relationships"]["data_key"], "ui_extensions.status_panels.relationships")
+        contract = json.loads((self.card / "postprocess_contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            contract["ui_extensions"]["status_panels"]["relationships"]["type"],
+            "object",
+        )
+        artifact_path = self.run_dir / "artifacts" / "assets_tasks" / f"{created['id']}.json"
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(artifact["status"], "completed")
+        self.assertEqual(artifact["postprocess_contract_status"], "synced")
+
+    def test_assets_task_records_postprocess_contract_repair_when_ui_schema_requires_data_without_contract(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "assets-ui",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "ui_schema",
+                    "target": "relationship_panel",
+                    "ui_schema": {
+                        "version": 1,
+                        "postprocess_data_required": ["ui_extensions.status_panels.relationships"],
+                    },
+                },
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        outputs = completed[0]["result"]["outputs"]
+        self.assertEqual(outputs["status"], "deferred")
+        self.assertEqual(outputs["ui_schema_status"], "applied")
+        self.assertEqual(outputs["postprocess_contract_status"], "repair_pending")
+        queue_path = self.card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+        queue_items = [
+            json.loads(line)
+            for line in queue_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(queue_items[0]["scope"], "postprocess_contract")
+        self.assertEqual(
+            queue_items[0]["required_keys"],
+            ["ui_extensions.status_panels.relationships"],
+        )
+
     def test_dispatch_next_uses_oldest_pending_intent(self):
         first = self.intents.create_intent(
             self.run_dir,
@@ -801,7 +891,17 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "source_channel": "user_instruction",
             "summary": "Create a scene image.",
             "target": "assets-ui",
-            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "misty bridge"},
+            "payload": {
+                "kind": "scene",
+                "target": "scene_illustration",
+                "prompt": "misty bridge",
+                "ui_schema": {"postprocess_data_required": ["ui_extensions.status_panels.weather"]},
+                "postprocess_contract": {
+                    "ui_extensions": {
+                        "status_panels": {"weather": {"type": "object"}}
+                    }
+                },
+            },
             "requires_authorization": False,
             "authorization_gate": "none",
             "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw bridge"},
@@ -818,6 +918,18 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
         self.assertIn("assets_task", pending_types)
         self.assertIn("run_gm_turn", pending_types)
+        assets_intent = [
+            item for item in self.intents.list_intents(self.run_dir, "pending")
+            if item["type"] == "assets_task"
+        ][0]
+        self.assertEqual(
+            assets_intent["payload"]["ui_schema"]["postprocess_data_required"],
+            ["ui_extensions.status_panels.weather"],
+        )
+        self.assertEqual(
+            assets_intent["payload"]["postprocess_contract"]["ui_extensions"]["status_panels"]["weather"]["type"],
+            "object",
+        )
         completed = self.intents.list_intents(self.run_dir, "completed")
         analyze = [item for item in completed if item["id"] == created["id"]][0]
         self.assertEqual(analyze["result"]["outputs"]["routing_requests"]["processed_count"], 1)

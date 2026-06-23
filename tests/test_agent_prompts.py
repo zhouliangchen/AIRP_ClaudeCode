@@ -64,6 +64,7 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("core.summary", prompt)
         self.assertIn("core.options", prompt)
         self.assertIn("core.current_goal", prompt)
+        self.assertIn("mvu.commands", prompt)
         self.assertIn("Do not rewrite story prose", prompt)
         self.assertIn("Do not write progress.json", prompt)
         self.assertIn("Runtime Input JSON", prompt)
@@ -74,6 +75,8 @@ class AgentPromptsTest(unittest.TestCase):
 
         self.assertIn("Do not write `<summary>` or `<options>` in `story.output.json`", prompt)
         self.assertIn("postprocess owns summary, options, current goal, and frontend data", prompt)
+        self.assertIn("Do not write `<UpdateVariable>`", prompt)
+        self.assertIn("postprocess owns MVU variable update commands", prompt)
 
 
 if __name__ == "__main__":

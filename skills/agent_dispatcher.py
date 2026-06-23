@@ -154,7 +154,7 @@ def _execute_supported_intent(
     if intent_type == "deliver_round":
         return _execute_deliver_round(run_dir, card_folder, root_dir, intent, run_command)
     if intent_type == "assets_task":
-        return _execute_assets_task(run_dir, intent)
+        return _execute_assets_task(run_dir, card_folder, intent)
     blocked = agent_intents.block_intent(
         run_dir,
         str(intent.get("id") or ""),
@@ -1076,6 +1076,8 @@ def _execute_run_postprocess(
             "critic_report": critic_report,
             "critical_action_evidence": critical_evidence,
             "pending_repairs": postprocess_outputs.read_pending_repairs(card_folder),
+            "ui_manifest": agent_run.read_json(card_folder / "ui_manifest.json") or {},
+            "postprocess_contract": postprocess_outputs.load_postprocess_contract(card_folder),
         }
         raw_output = _dispatch_agent_payload(
             "postprocess",
@@ -1437,7 +1439,7 @@ def _execute_system_request(run_dir: Path, intent: dict[str, Any]) -> dict[str, 
     )
 
 
-def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+def _execute_assets_task(run_dir: Path, card_folder: Path, intent: dict[str, Any]) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "assets_task"})
@@ -1447,6 +1449,13 @@ def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any
     prompt = str(payload.get("prompt") or "").strip()
     source = str(payload.get("source") or "").strip()
     artifact_relative = f"assets_tasks/{intent_id}.json"
+    schema_update = postprocess_outputs.apply_ui_schema_contract_update(card_folder, payload)
+    status = "completed" if schema_update.get("postprocess_contract_status") == "synced" else "deferred"
+    reason = (
+        "assets_ui_schema_contract_synced"
+        if status == "completed"
+        else "external_asset_generation_not_run_by_dispatcher"
+    )
     artifact_payload = {
         "schema_version": 1,
         "executor": "assets_task",
@@ -1456,10 +1465,24 @@ def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any
         "target": target,
         "prompt": prompt,
         "source": source,
-        "status": "deferred",
+        "status": status,
         "nonblocking": True,
-        "reason": "external_asset_generation_not_run_by_dispatcher",
+        "reason": reason,
     }
+    for key in ("ui_schema_status", "postprocess_contract_status", "required_keys", "missing_keys"):
+        if key in schema_update:
+            artifact_payload[key] = schema_update[key]
+
+    repair_record = None
+    if schema_update.get("missing_keys"):
+        repair_record = postprocess_outputs.record_postprocess_contract_repair(
+            run_dir,
+            card_folder,
+            reason="ui schema requires postprocess data but contract is missing or incomplete",
+            required_keys=schema_update.get("missing_keys", []),
+            source_artifacts=[f"artifacts/{artifact_relative}", "ui_manifest.json"],
+        )
+        artifact_payload["postprocess_contract_repair_id"] = repair_record.get("id")
     write_artifact(run_dir, artifact_relative, artifact_payload)
 
     message_result = agent_messages.append_message(
@@ -1472,11 +1495,11 @@ def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any
             "payload": {
                 "intent_id": intent_id,
                 "artifact": f"artifacts/{artifact_relative}",
-                "status": "deferred",
+                "status": status,
                 "nonblocking": True,
                 "kind": kind,
                 "target": target,
-                "reason": "external_asset_generation_not_run_by_dispatcher",
+                "reason": reason,
             },
         },
     )
@@ -1486,18 +1509,23 @@ def _execute_assets_task(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any
 
     outputs = {
         "executor": "assets_task",
-        "status": "deferred",
+        "status": status,
         "nonblocking": True,
         "artifact": f"artifacts/{artifact_relative}",
         "message_ids": created_messages,
     }
+    for key in ("ui_schema_status", "postprocess_contract_status", "required_keys", "missing_keys"):
+        if key in schema_update:
+            outputs[key] = schema_update[key]
+    if repair_record is not None:
+        outputs["postprocess_contract_repair_id"] = repair_record.get("id")
     agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
     return _result(
         True,
         "completed",
         intent_id=intent_id,
         intent_type="assets_task",
-        reason="nonblocking_assets_task_deferred",
+        reason="assets_ui_schema_contract_synced" if status == "completed" else "nonblocking_assets_task_deferred",
         created_intents=[],
         created_messages=created_messages,
         artifacts=[f"artifacts/{artifact_relative}"],

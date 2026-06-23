@@ -48,6 +48,15 @@ class PostprocessOutputTest(unittest.TestCase):
                 "unsafe": {"drop": True},
             },
             "ui_extension_status": {"status": "ok", "issues": []},
+            "mvu": {
+                "commands": [
+                    "<UpdateVariable><JSONPatch>[{\"op\":\"replace\",\"path\":\"/mood\",\"value\":\"alert\"}]</JSONPatch></UpdateVariable>",
+                    "   ",
+                    123,
+                ],
+                "status": "ok",
+                "issues": [],
+            },
             "repair_requests": [{"target": "story"}],
             "metadata": {"round_id": "round-000001"},
         }
@@ -85,6 +94,16 @@ class PostprocessOutputTest(unittest.TestCase):
         self.assertEqual(output["ui_extensions"]["asset_bindings"], {"scene": {"asset": "door"}})
         self.assertNotIn("unsafe", output["ui_extensions"])
         self.assertEqual(output["ui_extension_status"], {"status": "ok", "issues": []})
+        self.assertEqual(
+            output["mvu"],
+            {
+                "commands": [
+                    "<UpdateVariable><JSONPatch>[{\"op\":\"replace\",\"path\":\"/mood\",\"value\":\"alert\"}]</JSONPatch></UpdateVariable>"
+                ],
+                "status": "ok",
+                "issues": [],
+            },
+        )
         self.assertEqual(output["repair_requests"], [{"target": "story"}])
         self.assertEqual(output["metadata"], {"round_id": "round-000001"})
 
@@ -330,6 +349,44 @@ class PostprocessOutputTest(unittest.TestCase):
             )
             self.assertEqual(artifact["source_artifacts"], ["artifacts/postprocess.output.json"])
             self.assertEqual(artifact["attempts"], 1)
+
+            queue_path = card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+            queue_items = [
+                json.loads(line)
+                for line in queue_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(queue_items, [artifact])
+
+    def test_record_postprocess_contract_repair_writes_contract_scope_queue_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            card = root / "card"
+            run_dir = card / ".agent_runs" / "round-000001"
+            run_dir.mkdir(parents=True)
+
+            record = self.mod.record_postprocess_contract_repair(
+                run_dir,
+                card,
+                reason="ui schema data contract missing",
+                required_keys=["ui_extensions.status_panels.relationships"],
+                source_artifacts=["artifacts/assets_tasks/intent-1.json", "ui_manifest.json"],
+            )
+
+            repair_path = run_dir / "artifacts" / "postprocess_repairs" / f"{record['id']}.json"
+            self.assertTrue(repair_path.exists())
+            artifact = json.loads(repair_path.read_text(encoding="utf-8"))
+            self.assertEqual(artifact["status"], "pending")
+            self.assertEqual(artifact["scope"], "postprocess_contract")
+            self.assertEqual(artifact["reason"], "ui schema data contract missing")
+            self.assertEqual(
+                artifact["required_keys"],
+                ["ui_extensions.status_panels.relationships"],
+            )
+            self.assertEqual(
+                artifact["source_artifacts"],
+                ["artifacts/assets_tasks/intent-1.json", "ui_manifest.json"],
+            )
 
             queue_path = card / ".agent_runs" / "postprocess_repair_queue.jsonl"
             queue_items = [

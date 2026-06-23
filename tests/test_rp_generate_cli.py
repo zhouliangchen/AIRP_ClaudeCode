@@ -2275,11 +2275,12 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("Do not emit `<tokens>`", skill)
         self.assertIn("delivery/handler appends the real token block", skill)
 
-    def test_story_skill_forbids_update_variable_analysis_blocks(self):
+    def test_story_skill_assigns_mvu_commands_to_postprocess(self):
         skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
 
-        self.assertIn("Do not emit `<Analysis>` inside `<UpdateVariable>`", skill)
-        self.assertIn("<UpdateVariable><JSONPatch>", skill)
+        self.assertIn("Do not emit `<UpdateVariable>`", skill)
+        self.assertIn("postprocess owns MVU variable update commands", skill)
+        self.assertNotIn("Use `<UpdateVariable><JSONPatch>", skill)
 
     def test_run_delivery_forces_utf8_python_stdio(self):
         captured = {}
