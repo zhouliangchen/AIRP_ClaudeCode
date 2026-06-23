@@ -17,6 +17,16 @@ def _load_projection_agent():
     return module
 
 
+def _load_rp_generate_cli():
+    spec = importlib.util.spec_from_file_location(
+        "rp_generate_cli",
+        ROOT / "skills" / "rp_generate_cli.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class ProjectionAgentTest(unittest.TestCase):
     def setUp(self):
         self.projection = _load_projection_agent()
@@ -228,6 +238,59 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertNotIn("misconception", packet["actor_context"].lower())
         self.assertNotIn("false", packet["actor_context"].lower())
         self.assertNotIn("framed by the king", packet["actor_context"].lower())
+
+    def test_rp_generate_cli_validates_projection_output(self):
+        cli = _load_rp_generate_cli()
+
+        output = cli._validate(
+            "projection",
+            {
+                "decision": "edited",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-bob-1",
+                "final_actor_message": "You see a black-robed figure.",
+                "feedback": "Changed label to Bob-visible wording.",
+            },
+        )
+
+        self.assertEqual(output["decision"], "edited")
+        self.assertEqual(output["target_actor_id"], "character:Bob")
+        self.assertEqual(output["source_call_id"], "call-bob-1")
+        self.assertEqual(output["final_actor_message"], "You see a black-robed figure.")
+        self.assertEqual(output["feedback"], "Changed label to Bob-visible wording.")
+
+    def test_rp_generate_cli_unwraps_projection_output_wrapper(self):
+        cli = _load_rp_generate_cli()
+
+        output = cli._validate(
+            "projection",
+            {
+                "projection_output": {
+                    "decision": "pass",
+                    "target_actor_id": "character:Bob",
+                    "source_call_id": "call-bob-1",
+                    "final_actor_message": "You hear Alice whisper from the hall.",
+                    "feedback": "",
+                }
+            },
+        )
+
+        self.assertEqual(output["decision"], "pass")
+        self.assertEqual(output["final_actor_message"], "You hear Alice whisper from the hall.")
+
+    def test_rp_generate_cli_converts_projection_validation_error(self):
+        cli = _load_rp_generate_cli()
+
+        with self.assertRaisesRegex(cli.AgentExecutionError, "projection returned invalid artifact"):
+            cli._validate(
+                "projection",
+                {
+                    "decision": "edited",
+                    "target_actor_id": "character:Bob",
+                    "source_call_id": "call-bob-1",
+                    "feedback": "Missing final actor message.",
+                },
+            )
 
 
 if __name__ == "__main__":

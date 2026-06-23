@@ -20,6 +20,7 @@ import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
 import model_debug
+import projection_agent
 import self_repair
 
 try:
@@ -335,6 +336,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "critic_report"
     elif agent_key == "postprocess":
         wrapper = "postprocess_output"
+    elif agent_key == "projection":
+        wrapper = "projection_output"
 
     nested = payload.get(wrapper) if wrapper else None
     if isinstance(nested, dict):
@@ -392,7 +395,17 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             return payload
         if agent_key == "input_analyst":
             return payload
+        if agent_key == "projection":
+            actor_id = str(payload.get("target_actor_id") or "")
+            source_call_id = str(payload.get("source_call_id") or "")
+            return projection_agent.validate_projection_output(
+                payload,
+                actor_id=actor_id,
+                source_call_id=source_call_id,
+            )
     except agent_schemas.ValidationError as exc:
+        raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
+    except projection_agent.ProjectionValidationError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     raise AgentExecutionError(f"Unknown agent key: {agent_key}")
 
