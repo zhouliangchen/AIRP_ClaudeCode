@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+from agent_executors import actor_executor, delivery_executor, input_executor
 import agent_prompts
 import agent_outputs
 import agent_snapshots
@@ -45,6 +46,17 @@ SUPPORTED_INTENT_TYPES = {
 
 class AgentDispatcherError(RuntimeError):
     """Raised when dispatcher execution cannot continue safely."""
+
+
+class _DispatcherModuleProxy:
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return globals()[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+_DISPATCHER_MODULE = _DispatcherModuleProxy()
 
 
 def dispatch_next(
@@ -247,6 +259,15 @@ def _execute_analyze_input(
     root_dir: Path,
     intent: dict[str, Any],
 ) -> dict[str, Any]:
+    return input_executor.execute(_DISPATCHER_MODULE, run_dir, card_folder, root_dir, intent)
+
+
+def _execute_analyze_input_impl(
+    run_dir: Path,
+    card_folder: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "analyze_input"})
 
@@ -433,6 +454,15 @@ def _execute_compose_story(
 
 
 def _execute_request_projection(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    return actor_executor.execute_request_projection(_DISPATCHER_MODULE, run_dir, root_dir, intent, run_claude)
+
+
+def _execute_request_projection_impl(
     run_dir: Path,
     root_dir: Path,
     intent: dict[str, Any],
@@ -740,6 +770,15 @@ def _gm_fanout_has_player_decision_required(run_dir: Path, batch_id: str) -> boo
 
 
 def _execute_run_actor(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
+    return actor_executor.execute_run_actor(_DISPATCHER_MODULE, run_dir, root_dir, intent, run_claude)
+
+
+def _execute_run_actor_impl(
     run_dir: Path,
     root_dir: Path,
     intent: dict[str, Any],
@@ -1681,6 +1720,16 @@ def _execute_assets_task(run_dir: Path, card_folder: Path, intent: dict[str, Any
 
 
 def _execute_deliver_round(
+    run_dir: Path,
+    card_folder: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_command: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    return delivery_executor.execute(_DISPATCHER_MODULE, run_dir, card_folder, root_dir, intent, run_command)
+
+
+def _execute_deliver_round_impl(
     run_dir: Path,
     card_folder: Path,
     root_dir: Path,

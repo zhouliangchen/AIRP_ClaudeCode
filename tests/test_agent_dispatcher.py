@@ -62,6 +62,11 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         registry = _load("capability_registry")
         return [registry.legacy_routing_request_to_capability(item) for item in requests]
 
+    def test_dispatcher_exposes_executor_modules(self):
+        self.assertTrue(hasattr(self.dispatcher, "input_executor"))
+        self.assertTrue(hasattr(self.dispatcher, "actor_executor"))
+        self.assertTrue(hasattr(self.dispatcher, "delivery_executor"))
+
     def _stub_apply_result_with_routing_requests(self, requests, settings=None):
         capability_requests = self._legacy_to_capability_requests(requests)
         _write_json(
