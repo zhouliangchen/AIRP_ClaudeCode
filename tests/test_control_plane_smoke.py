@@ -106,6 +106,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertIn("dispatcher", payload)
         self.assertEqual(payload["dispatcher"]["status"], "delivered")
         self.assertEqual(payload["dispatcher"]["manifest_status"], "delivered")
+        completed_intents = payload["dispatcher"]["completed_intent_types"]
         self.assertIn("analyze_input", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("run_gm_turn", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("request_projection", payload["dispatcher"]["completed_intent_types"])
@@ -113,7 +114,34 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertIn("run_subgm_thread", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("compose_story", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("review_critic", payload["dispatcher"]["completed_intent_types"])
+        self.assertIn("run_postprocess", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("deliver_round", payload["dispatcher"]["completed_intent_types"])
+        critic_index = completed_intents.index("review_critic")
+        postprocess_index = completed_intents.index("run_postprocess")
+        delivery_index = completed_intents.index("deliver_round")
+        self.assertLess(critic_index, postprocess_index)
+        self.assertLess(postprocess_index, delivery_index)
+        self.assertEqual(
+            completed_intents[critic_index : delivery_index + 1],
+            ["review_critic", "run_postprocess", "deliver_round"],
+        )
+        self.assertEqual(
+            payload["postprocess"]["core"]["summary"],
+            "Ada warns you about the pendant as the next decision waits.",
+        )
+        self.assertEqual(
+            [item["label"] for item in payload["postprocess"]["core"]["options"]],
+            ["Ask Ada what she knows", "Hide the pendant again"],
+        )
+        self.assertEqual(
+            payload["postprocess"]["core"]["current_goal"],
+            "Decide how to respond to Ada's warning.",
+        )
+        self.assertEqual(
+            payload["postprocess"]["core"]["state_patch"]["location"],
+            "classroom",
+        )
+        self.assertEqual(payload["postprocess"]["ui_extension_status"]["status"], "ok")
         self.assertNotIn("story_preflight", payload["progress"]["states"])
         self.assertIn("quality_metrics", payload)
         self.assertIn("word_count", payload["quality_metrics"])

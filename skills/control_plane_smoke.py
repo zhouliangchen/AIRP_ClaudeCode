@@ -405,6 +405,44 @@ def _critic_report_fixture() -> Dict[str, Any]:
     }
 
 
+def _postprocess_output_fixture(run_dir: Path) -> Dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "core": {
+            "summary": "Ada warns you about the pendant as the next decision waits.",
+            "options": [
+                {
+                    "label": "Ask Ada what she knows",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
+                {
+                    "label": "Hide the pendant again",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
+            ],
+            "current_goal": "Decide how to respond to Ada's warning.",
+            "state_patch": {
+                "quest": "Archive threshold",
+                "stage": "player_decision",
+                "time": "same morning",
+                "location": "classroom",
+                "env": {"lighting": "classroom light"},
+                "actions": ["Ask Ada what she knows", "Hide the pendant again"],
+            },
+        },
+        "ui_extensions": {
+            "status_panels": {},
+            "custom_cards": {},
+            "asset_bindings": {},
+        },
+        "ui_extension_status": {"status": "ok", "issues": []},
+        "repair_requests": [],
+        "metadata": {"round_id": run_dir.name, "source": "control_plane_smoke"},
+    }
+
+
 def _summary_payload(agent_id: str) -> Dict[str, Any]:
     goals = {"active": [], "paused": [], "resolved": []}
     if agent_id == "player":
@@ -832,6 +870,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "actor_packets": [],
             "gm_packets": [],
             "critic_context": {},
+            "postprocess_context": {},
             "loop_result": {
                 "ok": True,
                 "gm_steps": 0,
@@ -881,6 +920,12 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if agent_key == "critic":
                 captured_loop["critic_context"] = context
                 return _critic_report_fixture()
+            if agent_key == "postprocess":
+                postprocess_context = context.get("postprocess_context")
+                captured_loop["postprocess_context"] = (
+                    postprocess_context if isinstance(postprocess_context, dict) else {}
+                )
+                return _postprocess_output_fixture(run_dir)
             raise RuntimeError(f"unexpected deterministic dispatch target: {agent_key}")
 
         def fake_delivery(card_folder, root_dir, run_command):
@@ -956,6 +1001,15 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if not critic_result.get("ok") or critic_result.get("intent_type") != "review_critic":
                 raise RuntimeError(f"review_critic dispatch failed: {critic_result}")
 
+            postprocess_result = agent_dispatcher.dispatch_next(
+                run_dir,
+                card,
+                repo,
+                run_claude=lambda *args: "",
+            )
+            if not postprocess_result.get("ok") or postprocess_result.get("intent_type") != "run_postprocess":
+                raise RuntimeError(f"run_postprocess dispatch failed: {postprocess_result}")
+
             delivery_result = agent_dispatcher.dispatch_next(
                 run_dir,
                 card,
@@ -1023,6 +1077,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             else {}
         )
         gm_output = _read_json(run_dir / "gm.output.json")
+        postprocess_output = _read_json(run_dir / "artifacts" / "postprocess.output.json")
         perception_responses = [
             response
             for output in gm_output.get("outputs", [])
@@ -1065,6 +1120,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "dispatcher": _dispatcher_evidence(run_dir, agent_intents),
             "quality_metrics": captured_loop.get("critic_context", {}).get("quality_metrics", {}),
             "story": _story_evidence(run_dir),
+            "postprocess": postprocess_output,
             "manifest_stage": manifest.get("stage"),
             "progress": {
                 "schema_version": progress.get("schema_version"),
