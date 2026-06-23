@@ -333,6 +333,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "story_output"
     elif agent_key == "critic":
         wrapper = "critic_report"
+    elif agent_key == "postprocess":
+        wrapper = "postprocess_output"
 
     nested = payload.get(wrapper) if wrapper else None
     if isinstance(nested, dict):
@@ -386,6 +388,8 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             return agent_schemas.validate_story_output(payload)
         if agent_key == "critic":
             return agent_schemas.validate_critic_report(payload)
+        if agent_key == "postprocess":
+            return payload
         if agent_key == "input_analyst":
             return payload
     except agent_schemas.ValidationError as exc:

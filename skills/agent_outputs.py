@@ -16,6 +16,7 @@ import agent_messages
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import postprocess_outputs
 import runtime_settings
 import self_repair
 
@@ -968,6 +969,37 @@ def _blocked_result(reason: str, message: str, detail: Any = None) -> Dict[str, 
     return result
 
 
+def _load_valid_postprocess(run_dir: Path, story_input: Dict[str, Any]) -> Dict[str, Any]:
+    postprocess_path = _artifact_path(run_dir, "postprocess.output.json")
+    if not postprocess_path.exists():
+        raise AgentOutputError("postprocess_missing")
+    payload = _read_json_required(postprocess_path)
+    critical_evidence = extract_player_critical_action_evidence(story_input)
+    result = postprocess_outputs.validate_postprocess_output(
+        payload,
+        critical_action_evidence=critical_evidence,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        errors = result.get("errors") if isinstance(result, dict) else []
+        detail = {
+            "reason": (result.get("reason") if isinstance(result, dict) else "postprocess_core_invalid")
+            or "postprocess_core_invalid",
+            "errors": errors if isinstance(errors, list) else [str(errors)],
+        }
+        raise AgentOutputError(json.dumps(detail, ensure_ascii=False))
+    output = result.get("output")
+    if not isinstance(output, dict):
+        raise AgentOutputError(json.dumps(
+            {
+                "reason": "postprocess_core_invalid",
+                "errors": ["normalized postprocess output must be an object"],
+            },
+            ensure_ascii=False,
+        ))
+    agent_run.write_json(postprocess_path, output)
+    return output
+
+
 def _increment_retry(run_dir: Path, manifest: Dict[str, Any], stage: str) -> None:
     manifest["retry_count"] = int(manifest.get("retry_count", 0) or 0) + 1
     agent_run.append_manifest_stage(manifest, stage, "Agent run is blocked pending revision.")
@@ -1254,7 +1286,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         }
 
     try:
-        build_story_input(run_dir)
+        story_input = build_story_input(run_dir)
     except AgentOutputError as exc:
         _increment_retry(run_dir, manifest, "blocked")
         return _retry_result("agent_outputs", "Required agent outputs are missing or invalid.", str(exc))
@@ -1306,10 +1338,29 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         _increment_critic_retry(run_dir, manifest)
         return _retry_result("critic_revise", "Critic requested revision.", critic_report)
 
+    try:
+        postprocess = _load_valid_postprocess(run_dir, story_input)
+    except AgentOutputError as exc:
+        _increment_retry(run_dir, manifest, "blocked")
+        detail_text = str(exc)
+        if detail_text == "postprocess_missing":
+            return _retry_result(
+                "postprocess_missing",
+                "Required postprocess artifact is missing.",
+                f"{_artifact_path(run_dir, 'postprocess.output.json').as_posix()}: required artifact is missing",
+            )
+        try:
+            detail_payload = json.loads(detail_text)
+        except json.JSONDecodeError:
+            detail_payload = {"reason": "postprocess_core_invalid", "errors": [detail_text]}
+        reason = str(detail_payload.get("reason") or "postprocess_core_invalid")
+        return _retry_result(reason, "Postprocess core is missing or invalid.", detail_payload)
+
     response_path = Path(styles_dir) / "response.txt"
     export_delivery_artifact(run_dir, "story.input.json")
     export_delivery_artifact(run_dir, "story.output.json")
     export_delivery_artifact(run_dir, "critic.report.json")
+    export_delivery_artifact(run_dir, "postprocess.output.json")
     agent_run.write_text(response_path, story_output["content"])
     agent_run.append_manifest_stage(manifest, "critic_passed", "Critic passed and story output was mirrored to response.txt.")
     _write_manifest(run_dir, manifest)
@@ -1319,6 +1370,7 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
         "run_dir": str(run_dir),
         "story_output": story_output,
         "critic_report": critic_report,
+        "postprocess": postprocess,
     }
 
 

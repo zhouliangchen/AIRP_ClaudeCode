@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -252,6 +253,34 @@ class TurnStateTest(unittest.TestCase):
     def tearDown(self):
         self.handler.STYLES = self.old_styles
         self.tmp.cleanup()
+
+    def _write_postprocess_output(self, core=None, ui_extensions=None):
+        payload = {
+            "schema_version": 1,
+            "core": core or {
+                "summary": "Postprocess summary",
+                "current_goal": "Follow the postprocess goal",
+                "options": ["Postprocess option"],
+                "state_patch": {},
+            },
+            "ui_extensions": ui_extensions or {
+                "status_panels": {"weather": "rain"},
+                "custom_cards": {},
+                "asset_bindings": {},
+            },
+            "ui_extension_status": {"status": "ok", "issues": []},
+        }
+        (self.card / "postprocess.output.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return payload
+
+    def _content_window_var(self, name):
+        content_js = (self.styles / "content.js").read_text(encoding="utf-8")
+        match = re.search(rf"window\.{re.escape(name)} = (.*?);\n", content_js)
+        self.assertIsNotNone(match, name)
+        return json.loads(match.group(1))
 
     def test_pending_user_turn_is_rendered_before_ai_reply(self):
         self.handler.write_pending_user_turn(str(self.card), "我把地点改成雨夜码头。")
@@ -1155,6 +1184,73 @@ class TurnStateTest(unittest.TestCase):
         after_idx = content_js.index("After.", before_idx)
         self.assertLess(before_idx, dialogue_idx)
         self.assertLess(dialogue_idx, after_idx)
+
+    def test_write_content_js_prefers_postprocess_core_and_exposes_ui_extensions(self):
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "<p>Main narration.</p><summary>Legacy summary</summary><options>\nLegacy option\n</options>",
+            "summary": "Legacy summary",
+        }])
+        self._write_postprocess_output(
+            core={
+                "summary": "Postprocess preferred summary",
+                "current_goal": "Postprocess goal",
+                "options": [
+                    {"label": "Postprocess option A", "source": "postprocess"},
+                    "Postprocess option B",
+                ],
+                "state_patch": {},
+            },
+            ui_extensions={
+                "status_panels": {"weather": "rain"},
+                "custom_cards": {"focus": {"title": "Door"}},
+                "asset_bindings": {},
+            },
+        )
+
+        self.handler.write_content_js(str(self.card))
+
+        self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Postprocess preferred summary")
+        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Postprocess option A", "Postprocess option B"])
+        self.assertEqual(
+            self._content_window_var("POSTPROCESS_UI"),
+            {
+                "status_panels": {"weather": "rain"},
+                "custom_cards": {"focus": {"title": "Door"}},
+                "asset_bindings": {},
+            },
+        )
+
+    def test_append_turn_applies_postprocess_state_patch_quest(self):
+        self._write_postprocess_output(
+            core={
+                "summary": "Postprocess summary",
+                "current_goal": "Fallback current goal",
+                "options": ["Continue"],
+                "state_patch": {"quest": "Quest from state patch"},
+            }
+        )
+
+        self.handler.append_turn(str(self.card), content="<p>Main narration.</p>", summary="Legacy summary")
+
+        state_js = (self.card / "state.js").read_text(encoding="utf-8")
+        self.assertIn('quest: "Quest from state patch"', state_js)
+
+    def test_append_turn_uses_postprocess_current_goal_when_quest_patch_missing(self):
+        self._write_postprocess_output(
+            core={
+                "summary": "Postprocess summary",
+                "current_goal": "Current goal fallback quest",
+                "options": ["Continue"],
+                "state_patch": {"stage": "Archive"},
+            }
+        )
+
+        self.handler.append_turn(str(self.card), content="<p>Main narration.</p>", summary="Legacy summary")
+
+        state_js = (self.card / "state.js").read_text(encoding="utf-8")
+        self.assertIn('quest: "Current goal fallback quest"', state_js)
+        self.assertIn('stage: "Archive"', state_js)
 
     def test_docs_describe_character_dialogues_contract(self):
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")

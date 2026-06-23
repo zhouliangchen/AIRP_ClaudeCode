@@ -31,6 +31,11 @@ try:
 except Exception:
     round_state = None
 
+try:
+    import postprocess_outputs
+except Exception:
+    postprocess_outputs = None
+
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
 _PROGRESS_WRITE_LOCK = threading.RLock()
@@ -411,6 +416,80 @@ def write_state(js, card_folder=None):
 def _strip_html(text):
     text = re.sub(r"<[^>]+>", "", text or "")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _load_postprocess_output(card_folder):
+    if postprocess_outputs is None:
+        return None
+    path = Path(card_folder) / "postprocess.output.json"
+    if not path.exists():
+        return None
+    try:
+        data = _read_json_file(path, None)
+        result = postprocess_outputs.validate_postprocess_output(data)
+    except Exception:
+        return None
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    output = result.get("output")
+    return output if isinstance(output, dict) else None
+
+
+def _postprocess_option_labels(postprocess):
+    if not isinstance(postprocess, dict):
+        return []
+    core = postprocess.get("core")
+    if not isinstance(core, dict):
+        return []
+    labels = []
+    options = core.get("options")
+    if not isinstance(options, list):
+        return labels
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        label = str(option.get("label") or "").strip()
+        if label:
+            labels.append(label)
+    return labels
+
+
+def _replace_state_field(raw, key, value):
+    key_pattern = re.escape(str(key))
+    if isinstance(value, str):
+        return re.sub(
+            rf'(\s+{key_pattern}:\s*)"[^"]*"',
+            lambda match: match.group(1) + json.dumps(value, ensure_ascii=False),
+            raw,
+        )
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return re.sub(rf'(\s+{key_pattern}:\s*)\d+', rf'\g<1>{value}', raw)
+    if isinstance(value, list):
+        return re.sub(
+            rf'(\s+{key_pattern}:\s*)\[.*?\]',
+            lambda match: match.group(1) + json.dumps(value, ensure_ascii=False),
+            raw,
+            flags=re.DOTALL,
+        )
+    return raw
+
+
+def _apply_postprocess_state(raw, postprocess):
+    if not isinstance(postprocess, dict):
+        return raw
+    core = postprocess.get("core")
+    if not isinstance(core, dict):
+        return raw
+    patch = core.get("state_patch")
+    if not isinstance(patch, dict):
+        patch = {}
+    applied = dict(patch)
+    current_goal = str(core.get("current_goal") or "").strip()
+    if current_goal and not str(applied.get("quest") or "").strip():
+        applied["quest"] = current_goal
+    for key, value in applied.items():
+        raw = _replace_state_field(raw, key, value)
+    return raw
 
 
 def _normalize_character_dialogues(dialogues):
@@ -909,6 +988,7 @@ def write_content_js(card_folder):
     pending_turn = read_pending_user_turn(card_folder)
     player_inputs = read_player_inputs(card_folder)
     frontend_inputs = frontend_player_inputs(card_folder)
+    postprocess = _load_postprocess_output(card_folder)
 
     html_parts = []
     turn_tokens = {}  # { "N": {"in": X, "out": Y, "total": Z}, ... }
@@ -1039,13 +1119,16 @@ def write_content_js(card_folder):
     # Strip <StatusPlaceHolderImpl/> markers from narrative content
     content_html = content_html.replace("<StatusPlaceHolderImpl/>", "")
 
-    latest_summary = log[-1].get("summary", "") if log else ""
+    postprocess_core = postprocess.get("core", {}) if isinstance(postprocess, dict) else {}
+    latest_summary = str(postprocess_core.get("summary") or "").strip()
+    if not latest_summary:
+        latest_summary = log[-1].get("summary", "") if log else ""
     latest_ai = log[-1].get("ai", "") if log else ""
 
     # Extract options from latest AI content
+    options = _postprocess_option_labels(postprocess)
     opts_match = re.search(r"<options>(.*?)</options>", latest_ai, re.DOTALL)
-    options = []
-    if opts_match:
+    if not options and opts_match:
         for line in opts_match.group(1).strip().split("\n"):
             line = line.strip()
             if line:
@@ -1064,12 +1147,18 @@ def write_content_js(card_folder):
     # Load per-card UI manifest and generated assets for autonomous UI evolution.
     ui_manifest = _load_ui_manifest(card_folder)
     card_assets = _load_card_assets(card_folder)
+    postprocess_ui = (
+        postprocess.get("ui_extensions", {})
+        if isinstance(postprocess, dict) and isinstance(postprocess.get("ui_extensions"), dict)
+        else {}
+    )
 
     js = (
         "window.CONTENT_HTML = " + json.dumps(content_html, ensure_ascii=False) + ";\n"
         "window.BEAUTIFY_HTML = " + json.dumps(beautify_html, ensure_ascii=False) + ";\n"
         "window.SUMMARY_TEXT = " + json.dumps(latest_summary, ensure_ascii=False) + ";\n"
         "window.TURN_OPTIONS = " + json.dumps(options, ensure_ascii=False) + ";\n"
+        "window.POSTPROCESS_UI = " + json.dumps(postprocess_ui, ensure_ascii=False) + ";\n"
         "window.TURN_TOKENS = " + json.dumps(turn_tokens, ensure_ascii=False) + ";\n"
         "window.STARTUP_COST = " + json.dumps(startup_cost, ensure_ascii=False) + ";\n"
         "window.PLAYER_INPUTS = " + json.dumps(frontend_inputs, ensure_ascii=False) + ";\n"
@@ -1649,6 +1738,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     write_chat_log(card_folder, log)
     if pending_user_turn:
         clear_pending_user_turn(card_folder)
+    postprocess = _load_postprocess_output(card_folder)
 
     try:
         evolve_blank_profile(
@@ -1675,6 +1765,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
 
     # Update state: increment generatedCount and accumulate totalTokens
     state_raw = read_state()
+    state_raw = _apply_postprocess_state(state_raw, postprocess)
     new_count = (next_index + 1)
     state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
     if tokens:

@@ -164,12 +164,37 @@ def _critic_revise_with_routing(stage, rollback, *, risk="medium"):
     }
 
 
-def _basic_responses(*, gm=None, player=None, story=None, critic=None):
+def _postprocess_output(
+    *,
+    summary="Postprocess summary.",
+    current_goal="Follow the noise.",
+    options=None,
+    state_patch=None,
+):
+    return {
+        "schema_version": 1,
+        "core": {
+            "summary": summary,
+            "current_goal": current_goal,
+            "options": options if options is not None else ["Continue following the noise."],
+            "state_patch": state_patch if state_patch is not None else {"quest": current_goal},
+        },
+        "ui_extensions": {
+            "status_panels": {},
+            "custom_cards": {},
+            "asset_bindings": {},
+        },
+        "ui_extension_status": {"status": "ok", "issues": []},
+    }
+
+
+def _basic_responses(*, gm=None, player=None, story=None, critic=None, postprocess=None):
     return {
         "gm": gm if gm is not None else _gm_output(),
         "player": player if player is not None else _player_output(),
         "story": story if story is not None else _story_output(),
         "critic": critic if critic is not None else _critic_pass(),
+        "postprocess": postprocess if postprocess is not None else _postprocess_output(),
     }
 
 
@@ -184,7 +209,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.styles_dir.mkdir(parents=True)
         (self.card / ".agent_runs" / "current").write_text(str(self.run_dir.resolve()), encoding="utf-8")
         (self.run_dir / "prompts").mkdir()
-        for name in ["gm", "player", "story", "critic"]:
+        for name in ["gm", "player", "story", "critic", "postprocess"]:
             (self.run_dir / "prompts" / f"{name}.prompt.md").write_text(f"# {name}\n", encoding="utf-8")
         _write_json(
             self.run_dir / "manifest.json",
@@ -546,7 +571,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual([call[0] for call in calls], ["gm", "story", "critic"])
+        self.assertEqual([call[0] for call in calls], ["gm", "story", "critic", "postprocess"])
         self.assertTrue((self.run_dir / "gm.output.json").exists())
         self.assertFalse((self.run_dir / "actor.outputs.json").exists())
         self.assertTrue((self.run_dir / "interaction.trace.json").exists())
@@ -557,7 +582,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(result["dispatcher"]["status"], "delivered")
         self.assertEqual(
             [item.get("intent_type") for item in result["dispatcher_results"]],
-            ["run_gm_turn", "compose_story", "review_critic", "deliver_round"],
+            ["run_gm_turn", "compose_story", "review_critic", "run_postprocess", "deliver_round"],
         )
         gm_loop = json.loads((self.run_dir / "gm.output.json").read_text(encoding="utf-8"))
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
@@ -591,7 +616,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertTrue(debug_round.exists())
         records = sorted(debug_round.glob("*.json"))
         payloads = [json.loads(path.read_text(encoding="utf-8")) for path in records]
-        self.assertEqual([payload["agent_key"] for payload in payloads], ["gm", "story", "critic"])
+        self.assertEqual([payload["agent_key"] for payload in payloads], ["gm", "story", "critic", "postprocess"])
         self.assertTrue(all(payload["raw_input"]["prompt"].startswith("You are the Claude Code general-purpose agent") for payload in payloads))
         self.assertIn('"type": "system"', payloads[0]["raw_output"]["stdout"])
         self.assertEqual(payloads[0]["raw_output"]["stderr"], "")
@@ -599,7 +624,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
         index_path = self.card / "debug" / "model_calls" / "index.jsonl"
         index_items = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual([item["agent_key"] for item in index_items], ["gm", "story", "critic"])
+        self.assertEqual([item["agent_key"] for item in index_items], ["gm", "story", "critic", "postprocess"])
 
     def test_run_round_model_debug_mode_accepts_utf8_bom_settings(self):
         self._queue_run_gm_turn()
@@ -1048,7 +1073,7 @@ class RpGenerateCliTest(unittest.TestCase):
                 self.module.input_analysis_apply = original_apply
 
         self.assertTrue(result["ok"])
-        self.assertEqual(order, ["gm", "story", "critic"])
+        self.assertEqual(order, ["gm", "story", "critic", "postprocess"])
 
     def test_run_round_accepts_direct_agent_plain_json_output(self):
         self._queue_run_gm_turn()
@@ -1232,8 +1257,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = player_payloads.pop(0)
             elif agent_key == "story":
                 payload = story_payloads.pop(0)
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1350,8 +1377,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output()
             elif agent_key == "story":
                 payload = _story_output()
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1397,8 +1426,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output("I correct myself.")
             elif agent_key == "story":
                 payload = _story_output()
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1456,8 +1487,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output("I stay close.")
             elif agent_key == "story":
                 payload = _story_output()
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1503,8 +1536,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output()
             elif agent_key == "story":
                 payload = story_payloads.pop(0)
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1576,8 +1611,10 @@ class RpGenerateCliTest(unittest.TestCase):
             elif agent_key == "story":
                 story_prompts.append(prompt)
                 payload = story_payloads.pop(0)
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1648,8 +1685,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output()
             elif agent_key == "story":
                 payload = story_payloads.pop(0)
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []
@@ -1714,8 +1753,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output()
             elif agent_key == "story":
                 payload = stories.pop(0)
-            else:
+            elif agent_key == "critic":
                 payload = _critic_pass()
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1813,6 +1854,8 @@ class RpGenerateCliTest(unittest.TestCase):
             payload = _story_output("<content>I kept listening near the flickering alley light.</content>")
             if agent_key == "critic":
                 payload = _critic_pass()
+            elif agent_key == "postprocess":
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         def fake_delivery(command, **kwargs):
@@ -1826,7 +1869,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(calls, ["story", "critic"])
+        self.assertEqual(calls, ["story", "critic", "postprocess"])
         self.assertEqual(result["dispatcher"]["status"], "delivered")
 
     def test_normalize_story_output_orders_dialogues_and_removes_tokens(self):
@@ -1876,8 +1919,10 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _player_output()
             elif agent_key == "story":
                 payload = dict(story)
-            else:
+            elif agent_key == "critic":
                 payload = dict(stale_critic)
+            else:
+                payload = _postprocess_output()
             return _agent_stream(json.dumps(payload, ensure_ascii=False))
 
         delivery_attempts = []

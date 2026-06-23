@@ -22,6 +22,7 @@ ROUND_ARTIFACT_NAMES = {
     "actor.outputs.json",
     "critic.report.json",
     "gm.output.json",
+    "postprocess.output.json",
     "story.input.json",
     "story.output.json",
 }
@@ -212,6 +213,8 @@ class AgentOutputsTest(unittest.TestCase):
         system_iteration_suggestion="",
         repair_routing=None,
         repair_instruction=None,
+        include_postprocess=True,
+        postprocess_payload=None,
     ):
         _write_json(
             self.run_dir / "artifacts" / "story.output.json",
@@ -236,6 +239,61 @@ class AgentOutputsTest(unittest.TestCase):
                 ),
                 "system_iteration_suggestion": system_iteration_suggestion,
                 **({"repair_routing": repair_routing} if repair_routing is not None else {}),
+            },
+        )
+        if decision == "pass" and include_postprocess:
+            self._write_postprocess(postprocess_payload)
+
+    def _write_postprocess(self, payload=None):
+        if payload is None:
+            payload = {
+                "schema_version": 1,
+                "core": {
+                    "summary": "Postprocess summary.",
+                    "current_goal": "Keep moving through the archive.",
+                    "options": ["Step deeper into the archive."],
+                    "state_patch": {"quest": "Explore the archive"},
+                },
+                "ui_extensions": {
+                    "status_panels": {"mood": "tense"},
+                    "custom_cards": {},
+                    "asset_bindings": {},
+                },
+                "ui_extension_status": {"status": "ok", "issues": []},
+            }
+        _write_json(self.run_dir / "artifacts" / "postprocess.output.json", payload)
+
+    def _add_player_critical_action(self):
+        actor_outputs = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
+        actor_outputs["player"][0]["events"].append(
+            {
+                "type": "custom_action",
+                "target": "sealed door",
+                "content": "Pry open the sealed door",
+                "metadata": {
+                    "category": "force",
+                    "visible_content": "Pry open the sealed door",
+                    "requires_gm_resolution": True,
+                    "risk_level": "critical",
+                },
+            }
+        )
+        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="player",
+            visibility="world_visible",
+            event_type="custom_action",
+            content="Pry open the sealed door",
+            target="",
+            source_call_id="call-player-1",
+            public_metadata={
+                "actor_id": "player",
+                "category": "force",
+                "visible_content": "Pry open the sealed door",
+                "requires_gm_resolution": True,
+                "risk_level": "critical",
+                "target": "sealed door",
             },
         )
 
@@ -2992,6 +3050,95 @@ class AgentOutputsTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "critic_passed")
         self.assertIn("critic_passed", [item["stage"] for item in manifest["status"]])
+
+    def test_prepare_delivery_blocks_when_postprocess_missing_after_critic_pass(self):
+        self._write_story_and_critic(decision="pass", include_postprocess=False)
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        self.assertEqual(result["reason"], "postprocess_missing")
+        self.assertFalse((self.styles_dir / "response.txt").exists())
+
+    def test_prepare_delivery_blocks_when_postprocess_core_invalid(self):
+        self._write_story_and_critic(
+            decision="pass",
+            postprocess_payload={
+                "schema_version": 1,
+                "core": {
+                    "summary": "",
+                    "current_goal": "",
+                    "options": [],
+                },
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "retry")
+        self.assertEqual(result["reason"], "postprocess_core_invalid")
+        self.assertIn("core.summary is required", result["detail"]["errors"])
+        self.assertIn("core.current_goal is required", result["detail"]["errors"])
+        self.assertFalse((self.styles_dir / "response.txt").exists())
+
+    def test_prepare_delivery_validates_critical_action_postprocess_options(self):
+        self._add_player_critical_action()
+        self._write_story_and_critic(
+            decision="pass",
+            postprocess_payload={
+                "schema_version": 1,
+                "core": {
+                    "summary": "The sealed door resists.",
+                    "current_goal": "Confirm the risky door action.",
+                    "options": ["Look around instead."],
+                },
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "postprocess_core_invalid")
+        self.assertIn("missing fixed option for critical action", "\n".join(result["detail"]["errors"]))
+
+    def test_prepare_delivery_success_includes_and_exports_normalized_postprocess(self):
+        self._add_player_critical_action()
+        self._write_story_and_critic(
+            decision="pass",
+            postprocess_payload={
+                "schema_version": 1,
+                "core": {
+                    "summary": "The sealed door yields a breath of cold air.",
+                    "current_goal": "Decide whether to commit to opening the sealed door.",
+                    "options": [
+                        {
+                            "label": "Confirm: Pry open the sealed door",
+                            "source": "player_agent_critical_action",
+                            "requires_confirmation": True,
+                        },
+                        "Step back and listen.",
+                    ],
+                    "state_patch": {
+                        "quest": "Resolve the sealed door",
+                        "actions": ["Confirm the risky action"],
+                        "unsupported": "drop me",
+                    },
+                },
+                "ui_extensions": {"status_panels": {"risk": "critical"}},
+                "ui_extension_status": {"status": "ok", "issues": []},
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["postprocess"]["core"]["summary"], "The sealed door yields a breath of cold air.")
+        self.assertEqual(result["postprocess"]["core"]["options"][1]["label"], "Step back and listen.")
+        self.assertNotIn("unsupported", result["postprocess"]["core"]["state_patch"])
+        root_postprocess = json.loads((self.run_dir / "postprocess.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(root_postprocess, result["postprocess"])
 
     def test_prepare_delivery_pass_exports_root_files_only_after_pass(self):
         self.agent_outputs.build_story_input(self.run_dir)
