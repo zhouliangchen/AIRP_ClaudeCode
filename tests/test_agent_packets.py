@@ -1579,6 +1579,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertLessEqual(prompt.count(input_payload["user_instruction_text"]), 2)
         self.assertTrue("source_integrity" in prompt or "raw_text_sha256" in prompt)
         self.assertIn("semantic_units", prompt)
+        self.assertIn('"routing_requests": []', prompt)
+        self.assertIn("assets_ui_task", prompt)
+        self.assertIn("source_feature_request", prompt)
+        self.assertIn("allowSourceCodeSelfRepair", prompt)
         for visibility in (
             "gm_only",
             "public_world",

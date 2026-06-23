@@ -246,6 +246,14 @@ def _normalize_legacy_semantic_units(
     return normalized_analysis, True
 
 
+def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    if "routing_requests" in analysis:
+        return analysis, False
+    normalized = dict(analysis)
+    normalized["routing_requests"] = []
+    return normalized, True
+
+
 def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
     names: set[str] = set()
     if not isinstance(card_data, dict):
@@ -406,6 +414,8 @@ def apply_current_run(card_folder, root_dir=None):
     raw_request = _read_json_required(run_dir / "input.raw.json")
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
+    analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
+    normalized = normalized or normalized_routing_requests
     if normalized:
         (run_dir / "input_analysis.output.json").write_text(
             json.dumps(analysis, ensure_ascii=False, indent=2),
@@ -499,6 +509,7 @@ def apply_current_run(card_folder, root_dir=None):
             item.get("name") for item in character_records if isinstance(item, dict)
         ],
         "routed_input": routed_input,
+        "routing_requests": analysis.get("routing_requests", []),
         "manifest": manifest,
     }
 

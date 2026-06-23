@@ -179,6 +179,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
             "player": True,
             "characters": [],
         },
+        "routing_requests": [],
         "risks": [],
     }
     return input_analysis.validate_input_analysis(

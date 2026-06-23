@@ -16,6 +16,7 @@ import agent_messages
 import agent_run
 import agent_turn_loop
 import input_analysis_apply
+import input_routing_requests
 import postprocess_outputs
 import rp_generate_cli
 import self_repair
@@ -293,6 +294,18 @@ def _execute_analyze_input(
             message = message_result.get("message", {})
 
         message_id = str(message.get("id") or "")
+        applied_manifest = applied.get("manifest") if isinstance(applied.get("manifest"), dict) else {}
+        runtime_settings = applied_manifest.get("runtime_settings")
+        if not isinstance(runtime_settings, dict):
+            loaded_runtime_settings = _load_manifest(run_dir).get("runtime_settings")
+            runtime_settings = loaded_runtime_settings if isinstance(loaded_runtime_settings, dict) else {}
+        routing_result = input_routing_requests.process_routing_requests(
+            run_dir,
+            applied.get("routing_requests", []) if isinstance(applied.get("routing_requests"), list) else [],
+            runtime_settings=runtime_settings,
+            source_intent_id=intent_id,
+        )
+        artifacts.extend(routing_result.get("artifacts", []))
         follow_up = _ensure_follow_up_intent(
             run_dir,
             intent_id,
@@ -307,7 +320,11 @@ def _execute_analyze_input(
         return _block_analyze_input_failure(run_dir, intent_id, exc)
 
     follow_up_id = str(follow_up.get("id") or "")
-    created_intents = [follow_up_id] if follow_up.get("created") else []
+    created_intents = list(routing_result.get("created_intents", []))
+    if follow_up.get("created"):
+        created_intents.append(follow_up_id)
+    created_messages = [message_id] if message_id else []
+    created_messages.extend(routing_result.get("created_messages", []))
     agent_intents.complete_intent(
         run_dir,
         intent_id,
@@ -315,6 +332,7 @@ def _execute_analyze_input(
             "executor": "analyze_input",
             "applied": applied,
             "follow_up_intent_id": follow_up_id,
+            "routing_requests": routing_result,
             "artifacts": artifacts,
             "message_id": message_id,
         },
@@ -326,9 +344,9 @@ def _execute_analyze_input(
         intent_type="analyze_input",
         reason="",
         created_intents=created_intents,
-        created_messages=[message_id] if message_id else [],
+        created_messages=created_messages,
         artifacts=artifacts,
-        detail={"applied": applied, "follow_up_intent_id": follow_up_id},
+        detail={"applied": applied, "follow_up_intent_id": follow_up_id, "routing_requests": routing_result},
     )
 
 

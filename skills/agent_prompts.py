@@ -200,6 +200,7 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
             "player": True,
             "characters": [],
         },
+        "routing_requests": [],
         "risks": [],
     })
     return _base_prompt(
@@ -221,6 +222,16 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "\nInvalid semantic unit visibility aliases: public, private, player, "
         "character, world_visible, actor_visible. Do not write these aliases in "
         "`input_analysis.output.json`.\n"
+        "\nRouting request contract: use top-level `routing_requests[]` only for "
+        "explicit user-requested system, UI, save-data, retcon, or source-feature "
+        "work that should be routed outside ordinary GM/story handling. Allowed "
+        "`routing_requests[].type` values: `assets_ui_task`, "
+        "`story_retcon_consult`, `card_data_edit`, `source_feature_request`. "
+        "A `source_feature_request` must use `authorization_gate: "
+        "\"allowSourceCodeSelfRepair\"` and `requires_authorization: true`; it "
+        "does not require `selfRepairMode`. Non-source routing requests must use "
+        "`authorization_gate: \"none\"`. Do not use routing requests for normal "
+        "player actions.\n"
     )
 
 
