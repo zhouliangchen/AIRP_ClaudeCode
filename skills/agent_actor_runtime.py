@@ -96,8 +96,57 @@ def project_actor_request(
     actor_id: str,
     source_message_id: str,
     source_call_id: str,
+    projection_result: dict | None = None,
 ) -> dict:
     """Project a request_actor message into the target actor inbox."""
+
+    request = inspect_projection_request(
+        run_dir,
+        actor_id=actor_id,
+        source_message_id=source_message_id,
+        source_call_id=source_call_id,
+    )
+    call = request["call"]
+    resolved_call_id = request["source_call_id"]
+    packet = _projection_packet(actor_id, request["payload"], call, projection_result=projection_result)
+    existing_projected_message = request["existing_projected_message"]
+    if existing_projected_message is not None:
+        return {
+            "actor_id": actor_id,
+            "source_message_id": source_message_id,
+            "source_call_id": resolved_call_id,
+            "projected_message_id": str(existing_projected_message["id"]),
+            "projected_message": existing_projected_message,
+            "projected_message_created": False,
+        }
+
+    projected_message = _append_projected_message(
+        run_dir,
+        actor_id,
+        call,
+        packet,
+        resolved_call_id,
+        source_message_id,
+        projection_result=projection_result,
+    )
+    return {
+        "actor_id": actor_id,
+        "source_message_id": source_message_id,
+        "source_call_id": resolved_call_id,
+        "projected_message_id": str(projected_message["id"]),
+        "projected_message": projected_message,
+        "projected_message_created": True,
+    }
+
+
+def inspect_projection_request(
+    run_dir: Path,
+    *,
+    actor_id: str,
+    source_message_id: str,
+    source_call_id: str,
+) -> dict:
+    """Validate and describe a request_actor projection without appending messages."""
 
     source_message = _find_source_message(run_dir, source_message_id)
     if source_message is None:
@@ -169,31 +218,15 @@ def project_actor_request(
         source_message_id=source_message_id,
         call=call,
     )
-    if existing_projected_message is not None:
-        return {
-            "actor_id": actor_id,
-            "source_message_id": source_message_id,
-            "source_call_id": resolved_call_id,
-            "projected_message_id": str(existing_projected_message["id"]),
-            "projected_message": existing_projected_message,
-            "projected_message_created": False,
-        }
-
-    projected_message = _append_projected_message(
-        run_dir,
-        actor_id,
-        call,
-        packet,
-        resolved_call_id,
-        source_message_id,
-    )
     return {
         "actor_id": actor_id,
         "source_message_id": source_message_id,
         "source_call_id": resolved_call_id,
-        "projected_message_id": str(projected_message["id"]),
-        "projected_message": projected_message,
-        "projected_message_created": True,
+        "source_message": source_message,
+        "payload": payload,
+        "call": call,
+        "packet": packet,
+        "existing_projected_message": existing_projected_message,
     }
 
 
@@ -533,15 +566,33 @@ def _resolve_source_call_id(source_message: dict, call: dict) -> str:
     return str(source_message.get("source_call_id") or call.get("call_id") or "")
 
 
-def _projection_packet(actor_id: str, payload: dict, call: dict) -> dict:
+def _projection_packet(
+    actor_id: str,
+    payload: dict,
+    call: dict,
+    *,
+    projection_result: dict | None = None,
+) -> dict:
     packet = payload.get("packet")
     if not isinstance(packet, dict):
         packet = call.get("packet")
     if isinstance(packet, dict):
         projected = dict(packet)
         projected.setdefault("actor_id", actor_id)
-        return projected
-    return {"actor_id": actor_id, "call": call}
+    else:
+        projected = {"actor_id": actor_id, "call": call}
+    final_actor_message = _projection_final_actor_message(call, projection_result)
+    if final_actor_message:
+        projected["gm_prompt"] = final_actor_message
+    return projected
+
+
+def _projection_final_actor_message(call: dict, projection_result: dict | None) -> str:
+    if isinstance(projection_result, dict):
+        final_actor_message = projection_result.get("final_actor_message")
+        if isinstance(final_actor_message, str) and final_actor_message.strip():
+            return final_actor_message.strip()
+    return str(call.get("prompt") or "")
 
 
 def _append_projected_message(
@@ -551,7 +602,18 @@ def _append_projected_message(
     packet: dict,
     source_call_id: str,
     source_message_id: str,
+    *,
+    projection_result: dict | None = None,
 ) -> dict:
+    final_actor_message = _projection_final_actor_message(call, projection_result)
+    payload = {
+        "actor_id": actor_id,
+        "source_message_id": source_message_id,
+        "packet": packet,
+        "gm_prompt": final_actor_message,
+    }
+    if isinstance(projection_result, dict):
+        payload["projection"] = dict(projection_result)
     result = agent_messages.append_message(
         run_dir,
         {
@@ -560,12 +622,7 @@ def _append_projected_message(
             "type": "projected_message",
             "visibility": "actor_facing",
             "source_call_id": source_call_id,
-            "payload": {
-                "actor_id": actor_id,
-                "source_message_id": source_message_id,
-                "packet": packet,
-                "gm_prompt": str(call.get("prompt") or ""),
-            },
+            "payload": payload,
         },
     )
     if not isinstance(result, dict) or not result.get("ok"):

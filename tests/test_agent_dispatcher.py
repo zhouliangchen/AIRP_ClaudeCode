@@ -171,6 +171,21 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )["intent"]
 
+    def _install_projection_stub(self, decision="pass", final_actor_message="Listen at the door.", feedback=""):
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            self.assertEqual(agent_key, "projection")
+            packet = extra_context.get("projection_packet")
+            self.assertIsInstance(packet, dict)
+            return {
+                "decision": decision,
+                "target_actor_id": packet.get("target_actor_id", ""),
+                "source_call_id": packet.get("source_call_id", ""),
+                "final_actor_message": final_actor_message,
+                "feedback": feedback,
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
     def _actor_resolution_output(self, actor_id="character:Ada"):
         return {
             "agent": "player" if actor_id == "player" else "character",
@@ -247,6 +262,15 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
             if agent_key == "gm":
                 return self._gm_output(actor_calls=actor_calls, stop_reason="continue")
+            if agent_key == "projection":
+                packet = _extra_context["projection_packet"]
+                return {
+                    "decision": "pass",
+                    "target_actor_id": packet["target_actor_id"],
+                    "source_call_id": packet["source_call_id"],
+                    "final_actor_message": packet["requested_actor_message"],
+                    "feedback": "",
+                }
             return self._actor_outputs_by_agent[agent_key]
 
         self._actor_outputs_by_agent = {}
@@ -259,8 +283,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "request_projection",
             "request_projection",
         ])
-        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)["ok"])
-        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)["ok"])
+        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")["ok"])
+        self.assertTrue(self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")["ok"])
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([intent["type"] for intent in pending], ["run_actor", "run_actor"])
         return created
@@ -1028,7 +1052,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             },
         )["intent"]
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")
@@ -1060,6 +1086,186 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(completed[0]["result"]["outputs"]["intent_type"], "request_projection")
         self.assertEqual(completed[0]["result"]["outputs"]["created_messages"], [projected["id"]])
         self.assertEqual(completed[0]["result"]["outputs"]["created_intents"], [pending[0]["id"]])
+
+    def test_request_projection_dispatches_projection_agent_and_uses_edited_message(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Bob-1",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "call": {
+                        "call_id": "call-character-Bob-1",
+                        "actor_id": "character:Bob",
+                        "prompt": "You see a vampire at Alice's door.",
+                    },
+                    "packet": {
+                        "actor_id": "character:Bob",
+                        "immersive_context": "Bob only knows black-robed strangers.",
+                        "visible_events": [],
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Bob-1",
+                },
+            },
+        )["intent"]
+        dispatch_calls = []
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            dispatch_calls.append((agent_key, extra_context))
+            self.assertEqual(agent_key, "projection")
+            review_packet = extra_context["projection_packet"]
+            self.assertEqual(review_packet["target_actor_id"], "character:Bob")
+            self.assertEqual(review_packet["source_call_id"], "call-character-Bob-1")
+            self.assertEqual(review_packet["source_message_id"], request["id"])
+            self.assertEqual(review_packet["requested_actor_message"], "You see a vampire at Alice's door.")
+            self.assertEqual(review_packet["actor_context"], "Bob only knows black-robed strangers.")
+            return {
+                "decision": "edited",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-character-Bob-1",
+                "final_actor_message": "You see a black-robed figure at Alice's door.",
+                "feedback": "Removed objective vampire knowledge.",
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([call[0] for call in dispatch_calls], ["projection"])
+        inbox = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Bob")
+        self.assertEqual([message["type"] for message in inbox], ["projected_message"])
+        projected = inbox[0]
+        self.assertEqual(projected["payload"]["packet"]["gm_prompt"], "You see a black-robed figure at Alice's door.")
+        self.assertEqual(projected["payload"]["gm_prompt"], "You see a black-robed figure at Alice's door.")
+        self.assertEqual(projected["payload"]["projection"]["decision"], "edited")
+        self.assertTrue((self.run_dir / "artifacts" / "projections" / f"{created['id']}.json").exists())
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+
+    def test_request_projection_needs_rewrite_creates_gm_follow_up_without_actor_dispatch(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Bob-1",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "call": {
+                        "call_id": "call-character-Bob-1",
+                        "actor_id": "character:Bob",
+                        "prompt": "You see a vampire at Alice's door.",
+                    },
+                    "packet": {"actor_id": "character:Bob", "immersive_context": "Bob knows only rumors."},
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Bob-1",
+                },
+            },
+        )["intent"]
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            return {
+                "decision": "needs_rewrite",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-character-Bob-1",
+                "final_actor_message": "",
+                "feedback": "Rewrite without naming the hidden vampire.",
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Bob"), [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["run_gm_turn"])
+        self.assertEqual(pending[0]["payload"]["reason"], "projection_needs_rewrite")
+        self.assertEqual(pending[0]["payload"]["projection_feedback"], "Rewrite without naming the hidden vampire.")
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(result["created_messages"], [])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+
+    def test_request_projection_blocks_when_projection_agent_blocks(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Bob-1",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "call": {
+                        "call_id": "call-character-Bob-1",
+                        "actor_id": "character:Bob",
+                        "prompt": "You see a vampire at Alice's door.",
+                    },
+                },
+            },
+        )["message"]
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Bob-1",
+                },
+            },
+        )["intent"]
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            return {
+                "decision": "blocked",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-character-Bob-1",
+                "final_actor_message": "",
+                "feedback": "Projection request contains unrecoverable hidden facts.",
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "projection_agent_blocked")
+        self.assertEqual(self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Bob"), [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
 
     def test_request_projection_reuses_existing_projected_message_on_retry(self):
         request = self.dispatcher.agent_messages.append_message(
@@ -1115,6 +1321,10 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 },
             },
         )["intent"]
+
+        self.dispatcher._dispatch_agent_payload = lambda *_args, **_kwargs: self.fail(
+            "projection agent should not run when projected message already exists"
+        )
 
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
 
@@ -1245,6 +1455,15 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
             if agent_key == "gm":
                 return self._gm_output(actor_calls=actor_calls, stop_reason="continue")
+            if agent_key == "projection":
+                packet = _extra_context["projection_packet"]
+                return {
+                    "decision": "pass",
+                    "target_actor_id": packet["target_actor_id"],
+                    "source_call_id": packet["source_call_id"],
+                    "final_actor_message": packet["requested_actor_message"],
+                    "feedback": "",
+                }
             return self._actor_resolution_output(agent_key)
 
         self.dispatcher._dispatch_agent_payload = fake_dispatch
@@ -1255,8 +1474,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([intent["type"] for intent in pending], ["request_projection", "request_projection"])
 
-        first_projection = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
-        second_projection = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        first_projection = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        second_projection = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
         self.assertTrue(first_projection["ok"])
         self.assertTrue(second_projection["ok"])
         pending = self.intents.list_intents(self.run_dir, "pending")
@@ -1702,7 +1921,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         )
         self.addCleanup(setattr, self.dispatcher.agent_intents, "accept_intent", original_accept)
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
@@ -1753,7 +1974,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.dispatcher.agent_intents.accept_intent = raise_accept
         self.addCleanup(setattr, self.dispatcher.agent_intents, "accept_intent", original_accept)
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
@@ -1805,7 +2028,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         )
         self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
@@ -1858,7 +2083,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.dispatcher.agent_intents.complete_intent = complete_then_raise
         self.addCleanup(setattr, self.dispatcher.agent_intents, "complete_intent", original_complete)
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
@@ -2016,7 +2243,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
 
         self.dispatcher.agent_actor_runtime.agent_messages.append_message = reject_projected_message
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
@@ -2068,7 +2297,9 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
 
         self.dispatcher.agent_actor_runtime.agent_messages.append_message = missing_projected_message_id
 
-        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+        self._install_projection_stub()
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "blocked")
