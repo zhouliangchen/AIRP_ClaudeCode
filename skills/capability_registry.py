@@ -59,6 +59,9 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
 
 LEGACY_TYPE_MAP = {
     "assets_ui_task": "assets.generate_image",
+    "source_feature_request": "source.change_request",
+    "story_retcon_consult": "retcon.consult",
+    "card_data_edit": "card.patch_data",
 }
 
 
@@ -92,9 +95,29 @@ def normalize_capability_request(request: dict[str, Any]) -> dict[str, Any]:
         )
         return normalized
 
-    normalized["target"] = str(definition.get("target") or normalized["target"])
-    normalized["authorization_gate"] = str(definition.get("authorization_gate") or normalized["authorization_gate"])
     normalized["registry"] = deepcopy(definition)
+
+    expected_target = str(definition.get("target") or "")
+    if expected_target and normalized["target"] != expected_target:
+        normalized.update(
+            {
+                "status": "target_mismatch",
+                "action": "audit_only",
+                "expected_target": expected_target,
+            }
+        )
+        return normalized
+
+    expected_gate = str(definition.get("authorization_gate") or "")
+    if expected_gate and normalized["authorization_gate"] != expected_gate:
+        normalized.update(
+            {
+                "status": "authorization_gate_mismatch",
+                "action": "audit_only",
+                "expected_authorization_gate": expected_gate,
+            }
+        )
+        return normalized
 
     if normalized["requested_by"] not in definition["allowed_requesters"]:
         normalized.update({"status": "requester_not_allowed", "action": "audit_only"})
@@ -124,13 +147,13 @@ def legacy_routing_request_to_capability(route: dict[str, Any]) -> dict[str, Any
     return {
         "id": _require_nonempty_str(data, "id", "routing_request"),
         "requested_by": "input_analyst",
-        "target": str(data.get("target") or definition.get("target") or "legacy"),
+        "target": str(definition.get("target") or data.get("target") or "legacy"),
         "capability": capability,
         "summary": _require_nonempty_str(data, "summary", "routing_request"),
         "reason": str(data.get("reason") or data.get("summary") or "").strip(),
         "source_channel": _require_nonempty_str(data, "source_channel", "routing_request"),
-        "risk": str(data.get("risk") or "low").strip(),
-        "authorization_gate": str(data.get("authorization_gate") or definition.get("authorization_gate") or "none").strip(),
+        "risk": str(data.get("risk") or _default_risk(capability)).strip(),
+        "authorization_gate": str(definition.get("authorization_gate") or data.get("authorization_gate") or "none").strip(),
         "payload": _optional_dict(data, "payload", "routing_request"),
         "evidence": _optional_dict(data, "evidence", "routing_request"),
         "legacy_type": legacy_type,
@@ -145,11 +168,21 @@ def authorize_capability(
 
     data = _require_dict(normalized, "normalized_capability")
     gate = _require_nonempty_str(data, "authorization_gate", "normalized_capability")
+    status = str(data.get("status") or "")
+    if status and status != "recognized":
+        return {"allowed": False, "status": status, "authorization_gate": gate}
     if gate == "none":
         return {"allowed": True, "status": "authorized", "authorization_gate": gate}
+    if gate == "manual_confirmation":
+        return {
+            "allowed": False,
+            "status": "authorization_required",
+            "authorization_gate": gate,
+            "manual_confirmation_required": True,
+        }
 
     settings = runtime_settings if isinstance(runtime_settings, dict) else {}
-    allowed = bool(settings.get(gate))
+    allowed = settings.get(gate) is True
     result = {
         "allowed": allowed,
         "status": "authorized" if allowed else "authorization_required",
@@ -158,6 +191,14 @@ def authorize_capability(
     if gate == "allowSourceCodeSelfRepair":
         result["allowSourceCodeSelfRepair"] = allowed
     return result
+
+
+def _default_risk(capability: str) -> str:
+    if capability == "source.change_request":
+        return "high"
+    if capability.startswith("legacy."):
+        return "low"
+    return "medium"
 
 
 def _validate_request_shape(normalized: dict[str, Any]) -> None:
