@@ -13,7 +13,7 @@ Projection decides what each agent is allowed to know. It is the main defense fo
 | --- | --- | --- |
 | GM | complete剧情, hidden facts, user_instruction_channel, memory, variables, worldbook, all prior summaries | none, except private real-user data unrelated to the RP |
 | Player | strict first-person player knowledge, role_channel, perceived scene, body state, remembered facts, current choices | user_instruction_channel, GM plans, hidden world truth, "玩家/Claude Code/系统" framing |
-| Character | strict first-person character knowledge, own memory, own goals, own senses, own misconceptions, visible player action | player private intent, user_instruction_channel, GM notes, other characters' hidden thoughts |
+| Character | strict first-person character knowledge, own memory/beliefs, own goals, own senses, subjective memory, visible player action | player private intent, user_instruction_channel, GM notes, other characters' hidden thoughts |
 | Story | all subagent outputs and delivery contract | raw hidden chain-of-thought |
 | Critic | full candidate, all contracts, full context needed for audit | none within project data |
 
@@ -23,7 +23,8 @@ Projection decides what each agent is allowed to know. It is the main defense fo
 - Player and character agents get 严格独立的第一人称视角.
 - Never leak `user_instruction_channel` into player/character packets unless the instruction has become a world-visible fact; 换言之, 不得泄露出戏指令、GM 隐藏真相或 Claude Code 工作流信息。
 - Use `world-visible` labels for facts that characters can perceive this turn.
-- Preserve wrong beliefs. If a character misunderstands something, pass the misconception, not the omniscient truth.
+- Never tell an actor that a belief is a misconception. Preserve false beliefs as in-world subjective memory.
+- Actor-facing projection should render wrong beliefs inside `immersive_context` and `subjective_memory`, not as diagnostic labels.
 - Include sensory affordances: what the role can see, hear, touch, smell, remember, and plausibly infer.
 - Include memory from `memory/characters/<safe_name>/` only for that character.
 - Keep packets compact. Prefer local facts over long global summaries for speed.
@@ -33,9 +34,9 @@ Projection decides what each agent is allowed to know. It is the main defense fo
 For each projected packet, state:
 
 - `visibility`: `full_story`, `first_person_player`, or `first_person_character`.
-- `known_facts`
+- `immersive_context`
 - `sensory_context`
 - `private_memory`
-- `misconceptions`
+- `subjective_memory`
 - `forbidden_knowledge_removed`
 - `world_visible_changes`

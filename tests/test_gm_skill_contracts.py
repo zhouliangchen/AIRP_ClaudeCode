@@ -107,6 +107,39 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("risk_level", combined)
         self.assertIn("high or critical", combined)
 
+    def test_context_projector_preserves_false_beliefs_as_immersive_memory(self):
+        text = self.read(".claude/skills/rp-context-projector.md")
+
+        self.assertIn("immersive_context", text)
+        self.assertIn("subjective_memory", text)
+        self.assertIn(
+            "Never tell an actor that a belief is a misconception. Preserve false beliefs as in-world subjective memory.",
+            text,
+        )
+        self.assertNotIn("own misconceptions", text)
+        self.assertNotIn("- `misconceptions`", text)
+
+    def test_gm_and_subgm_actor_requests_use_immersive_second_person_labels(self):
+        combined = "\n".join([
+            self.read(".claude/skills/rp-gm-agent.md"),
+            self.read(".claude/skills/rp-subgm-agent.md"),
+        ])
+
+        self.assertIn("immersive second-person natural language", combined)
+        self.assertIn("objective world truth", combined)
+        self.assertIn("target actor memory, perception, training, and in-world reports", combined)
+        self.assertIn("appearance-level or belief-level label", combined)
+
+    def test_actor_skills_do_not_receive_misconceptions_label(self):
+        combined = "\n".join([
+            self.read(".claude/skills/rp-player-agent.md"),
+            self.read(".claude/skills/rp-character-agent.md"),
+        ])
+
+        self.assertNotIn("misconceptions", combined)
+        self.assertIn("rendered immersive context", combined)
+        self.assertIn("own memory/beliefs", combined)
+
     def test_delivery_skill_documents_post_round_memory_jobs(self):
         text = self.read(".claude/skills/rp-delivery.md")
         self.assertIn("post-round actor memory jobs", text)
