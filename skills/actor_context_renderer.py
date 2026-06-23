@@ -16,7 +16,11 @@ PROJECTION_CONTROL_MARKERS = {
     "projection_review",
     "belief_is_false",
     "visibility_basis",
-    "audit",
+    "audit_trail",
+    "projection_audit",
+    "audit_log",
+    "audit_note",
+    "audit_trace",
 }
 
 ACTOR_FACING_FORBIDDEN_MARKERS = set(agent_visibility.HIDDEN_MARKERS) | PROJECTION_CONTROL_MARKERS
@@ -95,11 +99,30 @@ def _clean_value(value: Any) -> Any:
     return _clean_text(value)
 
 
+def _display_key(value: Any) -> str:
+    return str(value).strip().replace("_", " ")
+
+
+def _render_value(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = []
+        for key, child in sorted(value.items(), key=lambda item: str(item[0])):
+            rendered = _render_value(child)
+            if rendered:
+                parts.append(f"{_display_key(key)}: {rendered}")
+        return "; ".join(parts)
+    if isinstance(value, (list, tuple)):
+        parts = [_render_value(item) for item in value]
+        return "; ".join(part for part in parts if part)
+    text = _clean_text(value)
+    return text
+
+
 def _append_line(lines: list[str], prefix: str, value: Any) -> None:
     cleaned = _clean_value(value)
     if isinstance(cleaned, dict) and "content" in cleaned:
         cleaned = cleaned.get("content")
-    text = _clean_text(cleaned)
+    text = _render_value(cleaned)
     if text:
         lines.append(f"{prefix}{text}")
 

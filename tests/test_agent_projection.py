@@ -544,6 +544,19 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("audit this branch", serialized)
         self.assertNotIn("You should not see this", serialized)
 
+    def test_gm_prompt_preserves_in_world_audit_text(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {},
+            {"name": "Ada"},
+            "You see the audit office. The audit clerk opens the ledger.",
+        )
+
+        self.assertEqual(
+            packet["gm_prompt"],
+            "You see the audit office. The audit clerk opens the ledger.",
+        )
+
     def test_gm_prompt_drops_multi_sentence_hidden_blocks(self):
         packet = self.agent_projection.project_actor_context(
             "player",

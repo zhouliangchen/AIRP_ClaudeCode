@@ -71,7 +71,7 @@ class ActorContextRendererTest(unittest.TestCase):
                 "visibility_basis": "direct proof should not face the actor",
                 "projection_control": "dispatcher trace should not face the actor",
                 "pulse": "GMOnlyText says the door is a trap",
-                "stance": {"content": "balanced", "audit": "packet trace"},
+                "stance": {"content": "balanced", "audit_trace": "packet trace"},
             },
             "relationships": {
                 "player": {"content": "trusted", "projection_review": "approved"},
@@ -94,7 +94,7 @@ class ActorContextRendererTest(unittest.TestCase):
                     "omniscient note: the king framed the hero",
                 ],
                 "short_term": ["I saw a blue cloak.", "projectionReview: edited"],
-                "goals": ["Keep civilians safe.", "audit trail: pending"],
+                "goals": ["Keep civilians safe.", "audit_trail: pending"],
             },
         }
 
@@ -116,7 +116,8 @@ class ActorContextRendererTest(unittest.TestCase):
         for forbidden in (
             "visibility_basis",
             "visibility basis",
-            "audit",
+            "audit_trail",
+            "audit_trace",
             "projection_control",
             "projection control",
             "control_note",
@@ -146,3 +147,50 @@ class ActorContextRendererTest(unittest.TestCase):
             "pending",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_render_context_preserves_in_world_audit_text(self):
+        actor = {
+            "name": "Ada",
+            "body_state": {"location": "I stand outside the audit office."},
+            "relationships": {"clerk": "The audit clerk trusts me."},
+            "sensory_context": {"sight": "You see the audit office."},
+            "memory": {
+                "long_term": ["I once worked in the audit office."],
+                "goals": ["Find the audit ledger."],
+            },
+        }
+
+        rendered = self.renderer.render_actor_context("character:Ada", actor, {})
+
+        self.assertIn("audit office", rendered["immersive_context"])
+        self.assertIn("audit clerk", rendered["immersive_context"])
+        self.assertIn("audit ledger", rendered["immersive_context"])
+
+    def test_render_nested_actor_state_as_natural_language(self):
+        actor = {
+            "name": "Ada",
+            "body_state": {
+                "injuries": {"left_arm": "sore", "right_leg": "bruised"},
+                "fatigue": ["tired", "hungry"],
+            },
+            "relationships": {
+                "Mira": {
+                    "trust": "fragile",
+                    "history": {"last_meeting": "market argument"},
+                }
+            },
+            "sensory_context": {
+                "sight": {"near": "lantern light", "far": ["rain", "crowd"]},
+            },
+        }
+
+        rendered = self.renderer.render_actor_context("character:Ada", actor, {})
+        text = rendered["immersive_context"]
+
+        self.assertIn("Your injuries: left arm: sore; right leg: bruised", text)
+        self.assertIn("Your fatigue: tired; hungry", text)
+        self.assertIn("Your relationship with Mira: history: last meeting: market argument; trust: fragile", text)
+        self.assertIn("You can sense through sight: far: rain; crowd; near: lantern light", text)
+        self.assertNotIn("{", text)
+        self.assertNotIn("}", text)
+        self.assertNotIn("'", text)
