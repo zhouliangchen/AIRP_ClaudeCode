@@ -1734,12 +1734,12 @@ class RpGenerateCliTest(unittest.TestCase):
         progress_calls = []
         self.module.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
         short_story = {
-            "content": "<content>太短。</content><summary>s</summary><options>o</options>",
+            "content": "<content>太短。</content>",
             "character_dialogues": [],
             "metadata": {"attempt": 1},
         }
         long_story = {
-            "content": "<content>" + ("长" * 90) + "</content><summary>s</summary><options>o</options>",
+            "content": "<content>" + ("长" * 90) + "</content>",
             "character_dialogues": [],
             "metadata": {"attempt": 2},
         }
@@ -1898,7 +1898,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self._queue_run_gm_turn()
         calls = []
         story = {
-            "content": "<content>The repaired scene continues without placeholder tokens.</content><summary>Clean.</summary><options>Wait</options>",
+            "content": "<content>The repaired scene continues without placeholder tokens.</content>",
             "character_dialogues": [],
             "metadata": {"attempt": 1},
             "tokens": {"in": "NNNN"},
@@ -1968,7 +1968,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>Draft.</content><tokens>in: NNNN</tokens><summary>Draft.</summary><options>Wait</options>",
+            "content": "<content>Draft.</content><tokens>in: NNNN</tokens>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -1990,7 +1990,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+            "content": "<content>Clean story without token placeholders.</content>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2013,7 +2013,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+            "content": "<content>Clean story without token placeholders.</content>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2033,7 +2033,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>Draft.</content><tokens>in: 0\nout: 0\ntotal: 0</tokens><summary>Draft.</summary><options>Wait</options>",
+            "content": "<content>Draft.</content><tokens>in: 0\nout: 0\ntotal: 0</tokens>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2052,7 +2052,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>Draft.</content><tokens>in: 0\nout: 900\ntotal: 900</tokens><summary>Draft.</summary><options>Wait</options>",
+            "content": "<content>Draft.</content><tokens>in: 0\nout: 900\ntotal: 900</tokens>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2076,7 +2076,7 @@ class RpGenerateCliTest(unittest.TestCase):
             "system_iteration_suggestion": "",
         }
         story = {
-            "content": "<content>" + ("你站在校门前，粉色花朵吊坠贴着掌心。" * 20) + "</content><summary>可读。</summary><options>等待</options>",
+            "content": "<content>" + ("你站在校门前，粉色花朵吊坠贴着掌心。" * 20) + "</content>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2091,7 +2091,7 @@ class RpGenerateCliTest(unittest.TestCase):
         story = {
             "content": (
                 "<polished_input>玩家以第一人称提供开局设定：这是内部分析。</polished_input>"
-                "<content>你在教室里醒来。</content><summary>醒来</summary><options>观察</options>"
+                "<content>你在教室里醒来。</content>"
             ),
             "character_dialogues": [],
             "metadata": {},
@@ -2110,7 +2110,6 @@ class RpGenerateCliTest(unittest.TestCase):
                 "<content>你走向苏黎。</content>"
                 "<UpdateVariable><Analysis>时间推进到走廊，状态发生变化。</Analysis>"
                 "<JSONPatch>[]</JSONPatch></UpdateVariable>"
-                "<summary>接触苏黎</summary><options>继续</options>"
             ),
             "character_dialogues": [],
             "metadata": {},
@@ -2125,7 +2124,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
     def test_normalize_story_output_fills_dialogues_from_character_outputs(self):
         story = {
-            "content": "<content>你靠近苏黎。</content><summary>接触</summary><options>继续</options>",
+            "content": "<content>你靠近苏黎。</content>",
             "character_dialogues": [],
             "metadata": {},
         }
@@ -2183,7 +2182,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
     def test_normalize_story_output_does_not_expose_private_actor_events_as_dialogue_aside(self):
         story = {
-            "content": "<content>你靠近苏黎。</content><summary>接触</summary><options>继续</options>",
+            "content": "<content>你靠近苏黎。</content>",
             "character_dialogues": [],
             "metadata": {},
         }

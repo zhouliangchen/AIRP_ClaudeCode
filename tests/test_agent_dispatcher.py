@@ -2330,7 +2330,6 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 "content": (
                     "<content>Story text.</content>"
                     "<TOKENS>in: NNNN\nout: NNNN\ntotal: NNNN</TOKENS>"
-                    "<summary>Summary.</summary><options>Wait</options>"
                 ),
                 "character_dialogues": "not a list",
                 "tokens": {"in": "NNNN"},
@@ -2425,7 +2424,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         _write_json(
             self.run_dir / "artifacts" / "story.output.json",
             {
-                "content": "<content>Clean story without token placeholders.</content><summary>Clean.</summary><options>Wait</options>",
+                "content": "<content>Clean story without token placeholders.</content>",
                 "character_dialogues": [],
                 "metadata": {},
             },

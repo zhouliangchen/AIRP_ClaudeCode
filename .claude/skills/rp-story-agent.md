@@ -41,6 +41,7 @@ Read from current `.agent_runs/<round>/`:
 - Stop at the first real player choice unless the requested chapter word target requires safe continuation.
 - Do not emit `<summary>`; postprocess owns summary.
 - Do not emit `<options>`; postprocess owns action options.
+- Do not emit current-goal or other frontend support data; postprocess owns that data after critic pass.
 
 ## Output
 
@@ -63,6 +64,7 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
 - Do not emit `<polished_input>` for normal story turns. If a legacy repair path explicitly requires it, it must contain only player-visible action reflection, never internal analysis.
 - `<content>` for main prose.
 - `<character_dialogues>` for independent subagent dialogue boxes.
+- Do not write `<summary>` or `<options>` in `story.output.json`; keep old tags only as parser compatibility for existing chat logs, not as live story output.
 - `<UpdateVariable>` when variables must change.
   - Do not emit `<Analysis>` inside `<UpdateVariable>`; it is not display prose and repeatedly triggers critic meta-exposure repairs.
   - Use `<UpdateVariable><JSONPatch>[...]</JSONPatch></UpdateVariable>` only, with valid JSON Patch-style operations for machine parsing. Put any assembly rationale in top-level `metadata`, not in response tags.

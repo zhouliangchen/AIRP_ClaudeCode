@@ -437,6 +437,12 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "story.output.json",
         contract,
         run_summary,
+        contract_notes=(
+            "Story writes only prose, source-backed character dialogues, variable patches, "
+            "and derived-content repair edits. Do not write `<summary>` or `<options>` "
+            "in `story.output.json`; postprocess owns summary, options, current goal, "
+            "and frontend data after critic pass."
+        ),
     ) + _story_runtime_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
 
 

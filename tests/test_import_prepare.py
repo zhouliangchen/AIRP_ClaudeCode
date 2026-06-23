@@ -76,6 +76,32 @@ class ImportPrepareTest(unittest.TestCase):
         self.assertNotIn("<content>", openings[0]["content"])
         self.assertNotIn("<summary>", openings[0]["content"])
 
+    def test_run_import_prefills_response_without_summary_or_options_tags(self):
+        import_card = _load_import_card()
+        card_dir = Path(self.tmp.name) / "json_card"
+        card_dir.mkdir()
+        (card_dir / "card.json").write_text(
+            json.dumps(
+                {
+                    "name": "Json Card",
+                    "data": {
+                        "name": "Json Card",
+                        "first_mes": "<p>第一段剧情。</p>",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = import_card.run_import(str(card_dir), self.tmp.name)
+
+        self.assertEqual(result["source_type"], "json")
+        response_text = (self.styles_dir / "response.txt").read_text(encoding="utf-8")
+        self.assertIn("<content>", response_text)
+        self.assertNotIn("<summary>", response_text)
+        self.assertNotIn("<options>", response_text)
+
     def test_run_import_creates_missing_blank_card_folder(self):
         import_card = _load_import_card()
         card_dir = Path(self.tmp.name) / "new_blank_card"

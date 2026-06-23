@@ -69,6 +69,12 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("Runtime Input JSON", prompt)
         self.assertIn('"quest": "Old goal"', prompt)
 
+    def test_story_prompt_assigns_frontend_data_to_postprocess(self):
+        prompt = self.agent_prompts._story_prompt({})
+
+        self.assertIn("Do not write `<summary>` or `<options>` in `story.output.json`", prompt)
+        self.assertIn("postprocess owns summary, options, current goal, and frontend data", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

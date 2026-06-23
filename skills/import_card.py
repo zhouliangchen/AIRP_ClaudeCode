@@ -1476,8 +1476,7 @@ def run_import(card_dir, root_dir):
     if openings:
         opening = openings[0]
         content_html = opening["content"]
-        summary_text = opening["label"][:60] if opening["label"] else ""
-        resp_txt = f"<content>\n{content_html}\n</content>\n<summary>{summary_text}</summary>\n<options>\n</options>\n"
+        resp_txt = f"<content>\n{content_html}\n</content>\n"
         resp_path = os.path.join(styles_dir, "response.txt")
         with open(resp_path, "w", encoding="utf-8") as f:
             f.write(resp_txt)
