@@ -92,6 +92,8 @@ Each request must include `id`, `requested_by`, `target`, `capability`, `summary
 
 Current registered capabilities include `assets.generate_image`, `source.change_request`, `retcon.consult`, `replay.plan`, and `card.patch_data`. Unknown capability names may be emitted only when semantically justified by explicit player input; the registry will keep them audit-only rather than executing them.
 
+Use these canonical targets for registered capabilities: `assets.generate_image -> assets-ui`, `source.change_request -> main-agent`, `retcon.consult -> story`, `replay.plan -> replay`, and `card.patch_data -> card-data`.
+
 Keep legacy `routing_requests[]` as a migration compatibility field for older route names such as `assets_ui_task` and `source_feature_request`. Prefer `capability_requests[]` for new work and leave both arrays empty when no out-of-band capability is requested.
 
 ## Output

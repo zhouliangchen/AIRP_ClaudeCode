@@ -125,6 +125,9 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn('"capability_requests": []', prompt)
         self.assertIn("capability_requests[]", prompt)
         self.assertIn("assets.generate_image", prompt)
+        self.assertIn("source.change_request -> main-agent", prompt)
+        self.assertIn("assets.generate_image -> assets-ui", prompt)
+        self.assertIn("card.patch_data -> card-data", prompt)
         self.assertNotIn("Allowed `routing_requests[].type` values", prompt)
 
 
