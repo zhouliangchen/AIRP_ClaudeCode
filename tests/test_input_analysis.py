@@ -666,6 +666,16 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(fallback["world_updates"]["important_characters"], [])
         self.assertIn("fallback", fallback["risks"][0])
 
+    def test_build_fallback_analysis_outputs_empty_routing_requests(self):
+        result = self.mod.build_fallback_analysis(
+            raw_text=self.raw,
+            role_text=self.role,
+            user_instruction_text=self.instruction,
+            round_id="round-000002",
+        )
+
+        self.assertEqual(result["routing_requests"], [])
+
     def test_validate_rejects_fallback_world_update_persistence(self):
         blocked_updates = {
             "hidden_facts": [
@@ -705,6 +715,7 @@ class InputAnalysisTest(unittest.TestCase):
 class InputAnalysisApplyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
         self.card = Path(self.tmp.name) / "card"
         self.card.mkdir()
         self.agent_packets = _load_module("agent_packets")
@@ -931,6 +942,20 @@ class InputAnalysisApplyTest(unittest.TestCase):
             normalized["semantic_units"][1]["raw_excerpt"],
             self.input_payload["user_instruction_text"],
         )
+
+    def test_apply_current_run_normalizes_missing_routing_requests_to_empty_list(self):
+        analysis = self._analysis()
+        analysis.pop("routing_requests", None)
+        (self.run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        result = self.apply_mod.apply_current_run(self.card, self.root)
+
+        normalized = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(normalized["routing_requests"], [])
+        self.assertEqual(result["routing_requests"], [])
 
     def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
         card_data = {
