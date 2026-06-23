@@ -822,6 +822,65 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         analyze = [item for item in completed if item["id"] == created["id"]][0]
         self.assertEqual(analyze["result"]["outputs"]["routing_requests"]["processed_count"], 1)
 
+    def test_analyze_input_card_data_edit_is_audit_only(self):
+        request = {
+            "id": "route-card",
+            "type": "card_data_edit",
+            "source_channel": "user_instruction",
+            "summary": "Change Ada's title.",
+            "target": "character:Ada",
+            "payload": {"field": "title", "value": "Captain"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "Ada is Captain"},
+        }
+        self._stub_apply_result_with_routing_requests([request])
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
+        self.assertNotIn("card_data_edit", pending_types)
+        artifacts_dir = self.run_dir / "artifacts" / "input_routing_requests"
+        artifacts = list(artifacts_dir.glob("*.json"))
+        self.assertEqual(len(artifacts), 1)
+        artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
+        self.assertEqual(artifact["status"], "audit_only")
+
+    def test_analyze_input_story_retcon_consult_is_deferred_message(self):
+        request = {
+            "id": "route-retcon",
+            "type": "story_retcon_consult",
+            "source_channel": "user_instruction",
+            "summary": "Discuss whether to replay the previous scene.",
+            "target": "gm_story",
+            "payload": {"scope": "previous_scene", "preferred_action": "consult"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "replay previous scene"},
+        }
+        self._stub_apply_result_with_routing_requests([request])
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        artifacts_dir = self.run_dir / "artifacts" / "input_routing_requests"
+        artifacts = list(artifacts_dir.glob("*.json"))
+        self.assertEqual(len(artifacts), 1)
+        artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
+        self.assertEqual(artifact["status"], "deferred")
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        routing_messages = [item for item in messages if item.get("type") == "routing_request"]
+        self.assertTrue(any("gm" in item.get("to", []) for item in routing_messages))
+
     def test_analyze_input_source_request_without_source_gate_is_authorization_required(self):
         request = {
             "id": "route-source",
