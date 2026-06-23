@@ -192,6 +192,37 @@ class PostprocessOutputTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
+    def test_validate_rejects_plain_postprocess_option_for_critical_player_action(self):
+        payload = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You brace at the sealed door.",
+                "options": [
+                    {
+                        "label": "Confirm action: push open the sealed door",
+                        "source": "postprocess",
+                        "requires_confirmation": False,
+                    }
+                ],
+                "current_goal": "Confirm the risky action before continuing.",
+            },
+        }
+        evidence = [
+            {
+                "id": "critical-action-1",
+                "required_label": "push open the sealed door",
+                "risk_level": "critical",
+            }
+        ]
+
+        result = self.mod.validate_postprocess_output(payload, critical_action_evidence=evidence)
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "missing fixed option for critical action: critical-action-1",
+            result["errors"],
+        )
+
     def test_validate_requires_each_critical_player_action_to_match_option_label(self):
         payload = {
             "schema_version": 1,
