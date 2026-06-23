@@ -18,7 +18,7 @@
 
 - 不把系统改成 agent 任意读写文件或绕过 Python gate。
 - 不允许 player/character agent 直接和其他 actor 或 story/critic 自由通信；它们仍只能通过 GM/subGM 与 projection 保护的路径参与。
-- 不在第一阶段实现任意多轮历史重演；先实现可审计的 replay plan 和单轮/当前轮 replay 能力。
+- 不在第一阶段实现自动 replay 执行或任意多轮历史重演；先实现可审计的 replay plan，单轮/当前轮 replay 执行留给后续确认路径。
 - 不把 Claude Code 直驱架构替换成后台 LLM API 调度器。
 
 ## 核心设计
@@ -83,16 +83,13 @@ Python 只做机械匹配和安全校验：request 的 `capability` 命中 regis
 
 ### 4. Dispatcher 拆分 executor，不改变外部协议
 
-`agent_dispatcher.py` 保留公共入口 `dispatch_next()`、artifact helper 和统一 result/blocker。具体 intent executor 逐步迁移到小模块：
+`agent_dispatcher.py` 保留公共入口 `dispatch_next()`、artifact helper 和统一 result/blocker。当前第一阶段只拆出低风险 executor 边界：
 
-- `agent_executors/input.py`：`analyze_input` 和 capability adapter 调用。
-- `agent_executors/gm.py`：`run_gm_turn` 和 GM continuation。
-- `agent_executors/actor.py`：`request_projection`、`run_actor`。
-- `agent_executors/subgm.py`：`run_subgm_thread`。
-- `agent_executors/story.py`：`compose_story`、`review_critic`、`run_postprocess`。
-- `agent_executors/repair.py`：`repair_request`、`rollback_request`、`system_request`。
-- `agent_executors/delivery.py`：`deliver_round`、postprocess gate。
-- `agent_executors/assets.py`：`assets_task` 和后续 asset worker 接口。
+- `agent_executors/input_executor.py`：`analyze_input` 和 capability adapter 调用。
+- `agent_executors/actor_executor.py`：`request_projection`、`run_actor`。
+- `agent_executors/delivery_executor.py`：`deliver_round`。
+
+GM/subGM/story/repair/assets 等 executor 仍是后续拆分方向，不应在当前实现说明里被描述为已落地模块。
 
 拆分原则是行为保持不变，先移动代码和测试，再引入新 capability 行为。
 
@@ -102,9 +99,9 @@ retcon/replay 不由 Python 从文本判断触发。agent 可以请求：
 
 - `retcon.consult`：story/GM 咨询前文冲突和安全修正方式。
 - `replay.plan`：生成结构化 replay plan，包括回滚点、受影响轮次、每轮需要保留的玩家原文、需要丢弃的 AI 派生内容。
-- `replay.execute_round`：在授权和 snapshot 存在时重演一轮。
+- `replay.execute_round`：未来在授权和 snapshot 存在时重演一轮。
 
-第一阶段只执行单轮或当前轮 replay；多轮 replay 先写 plan 和 audit，不自动连续执行，避免污染历史与记忆。
+当前阶段只生成和校验 `replay.plan` 产物，并在未确认时写 audit/message；`replay_plan` intent 仍会被 dispatcher 作为 unsupported 阻断，未接入自动 replay executor。单轮/当前轮 replay 执行和多轮 replay 都留到后续显式确认与执行路径实现，避免污染历史与记忆。
 
 ### 6. 安全不变量保留在 Python
 
@@ -147,9 +144,9 @@ retcon/replay 不由 Python 从文本判断触发。agent 可以请求：
 
 ### 第二阶段：可执行 retcon/replay
 
-1. 实现 `retcon.consult` 和 `replay.plan` capability。
+1. 补齐 `retcon.consult` 的执行边界，并把当前 `replay.plan` audit 产物接入显式确认流程。
 2. 实现单轮/当前轮 `replay.execute_round`，必须依赖 snapshot。
-3. 增加 replay plan artifact 和对应测试。
+3. 在确认路径可用后，再开放 replay executor；多轮 replay 继续保持 plan-only，直到有独立安全设计。
 
 ### 第三阶段：assets 与更多能力
 
@@ -164,3 +161,7 @@ retcon/replay 不由 Python 从文本判断触发。agent 可以请求：
 - `python -m py_compile` 覆盖 dispatcher、executor、capability、input analysis、routing adapter、repair/delivery 相关文件。
 - 新 capability request 不允许绕过 projection、snapshot、source authorization 或 delivery gate。
 - 文档中不再把具体路由策略描述成 Python 固定分类，而是描述为 agent-driven capability request。
+
+## 实现状态说明
+
+第一阶段已经引入 `capability_requests[]`、声明式 capability registry、旧 `routing_requests[]` 兼容映射、低风险 dispatcher executor 边界，以及对未知或未确认能力的 audit-only/deferred 处理。多轮 replay 在单独的确认和执行路径落地前仍保持 plan-only，不会自动执行。

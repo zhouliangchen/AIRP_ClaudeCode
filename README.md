@@ -93,7 +93,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 `input_analysis_apply.py` 只接受通过校验的结构化输入分析；若 live model 返回旧式 `semantic_units[].content` 形态，会在严格校验前只补齐结构字段（如 `id`、`source_channel`、`raw_excerpt`、`derived_summary`、`confidence`、`persist`），不会从玩家原文额外推断语义。重要角色设定必须区分公开档案、角色本人私有自知和 GM-only 隐藏事实：例如角色明确保留记忆、真实身份或能力时，input analyst 应同时写入该角色的 `character_private_and_gm` 记录，而不是只写公开 facade 或全局 hidden fact。
 
-当用户在指令通道主动请求系统能力、UI/图片更新、剧情回滚/重演协商、存档角色数据调整或源码功能实现时，input analyst 可以在 `input_analysis.output.json.routing_requests[]` 中写入结构化路由请求。该路径不是 critic/delivery 失败导致的自我修复，因此不受 `selfRepairMode` 控制；但 `source_feature_request` 仍必须经过 `allowSourceCodeSelfRepair` 授权。非源码请求会进入受控 intent、消息或审计 artifact；第一版不会允许任意 agent 直接写源码或任意存档文件。
+当用户在指令通道主动请求系统能力、UI/图片更新、剧情回滚/重演协商、存档角色数据调整或源码功能实现时，input analyst 可以在 `input_analysis.output.json.capability_requests[]` 中写入 agent 自主判断后的能力请求。Python 不再通过固定关键词或固定 request type 判断路由语义，只根据 capability registry 校验能力是否存在、授权门是否满足、目标 agent/executor 是否可用，以及 artifact 路径、snapshot、projection、delivery gate 等安全不变量。源码能力 `source.change_request` 仍必须经过 `allowSourceCodeSelfRepair` 授权；需要存档改写或 replay 的能力在未确认前只写 audit/message，不直接改文件。
 
 每轮会为已注册的重要角色生成隔离上下文；`max_parallel_subagents` 只限制运行时同一安全批次最多并行调度多少角色，不限制已注册重要角色的上下文数量。GM 输出的 `parallel_groups` 会被控制面校验；互不依赖、不同角色的合法 actor calls 可并行执行，不安全的并行声明会降级为串行并写入路由警告；若 actor call 与活跃 subGM 占用冲突，则会在批次调度前被拒绝。默认 live path 中，GM turn 不再隐藏调用 actor/subGM：GM 只产出 actor call、支线命令或停止原因，`agent_dispatcher.py` 随后显式创建并执行 `request_projection`、`run_actor`、`run_subgm_thread` 和必要的 GM continuation intents。`agent_actor_runtime.py` 提供共享 actor 协作 helper，统一处理投影包、actor 输出校验、trace 和物化产物写入。Claude Code 工作流会在场景强相关时最多并行调用配置允许数量的核心角色 subagent，让它们只从角色自身立场返回反应、隐藏意图、行动/台词候选、变量建议和记忆 delta。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 
@@ -153,7 +153,7 @@ critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退
 
 如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须同时满足 `selfRepairMode: "full"` 和 `allowSourceCodeSelfRepair: true`；普通游玩中不会因为 critic 报告而自动修改关键项目源码。未授权时，本轮会以 `source_code_self_repair_not_authorized` 阻断并保留 repair intent；已授权时，运行时只创建有边界的 `system_request` intent/message，交给主 agent 按显式工作流诊断和修改源码，dispatcher 本身不会执行任意源码编辑。
 
-与此相对，用户主动在指令通道提出的源码功能实现请求会被记录为 `source_feature_request`，它不要求 `selfRepairMode: "full"`，但仍要求 `allowSourceCodeSelfRepair: true`。未授权时系统只写入需要授权的审计记录和消息，不创建可执行源码修改 intent。
+与此相对，用户主动在指令通道提出的源码功能实现请求会被记录为 `source.change_request` capability，它不要求 `selfRepairMode: "full"`，但仍要求 `allowSourceCodeSelfRepair: true`。未授权时系统只写入需要授权的审计记录和消息，不创建可执行源码修改 intent。
 
 ## 模型调用调试日志
 
@@ -188,7 +188,7 @@ cd skills; npm install
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_dispatcher.py skills/agent_actor_runtime.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py`
+- `python -m py_compile skills/agent_dispatcher.py skills/agent_actor_runtime.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/input_routing_requests.py skills/capability_registry.py skills/replay_capabilities.py skills/character_registry.py skills/rp_generate_cli.py skills/self_repair.py skills/agent_executors/__init__.py skills/agent_executors/input_executor.py skills/agent_executors/actor_executor.py skills/agent_executors/delivery_executor.py`
 - 启动 `python skills/start_server.py .`，确认 `http://localhost:8765` 可访问。
 - 用手机或其他同一局域网设备访问启动输出中的 LAN URL。
 - 在 Claude Code 中对空白文件夹运行 `/rp`，完成至少 5 个玩家回合；检查玩家输入即时显示、重要角色独立对话框、进度更新、UI/图片热刷新，以及在玩家决策点停止。
