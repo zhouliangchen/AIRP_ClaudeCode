@@ -1420,6 +1420,99 @@ class AgentPacketTest(unittest.TestCase):
             "forbidden summary marker world_truth",
         )
 
+    def test_prepare_agent_run_includes_pending_postprocess_repairs(self):
+        queue_path = self.card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+        queue_path.parent.mkdir(parents=True)
+        pending = {
+            "schema_version": 1,
+            "id": "postprocess-repair-1",
+            "round_id": "round-000001",
+            "status": "pending",
+            "scope": "ui_extensions",
+            "reason": "missing relationship panel data",
+            "required_keys": ["ui_extensions.status_panels.relationships"],
+        }
+        completed = {
+            "schema_version": 1,
+            "id": "postprocess-repair-2",
+            "round_id": "round-000001",
+            "status": "completed",
+            "scope": "ui_extensions",
+            "reason": "already handled",
+            "required_keys": ["ui_extensions.custom_cards.map"],
+        }
+        queue_path.write_text(
+            json.dumps(pending, ensure_ascii=False) + "\n"
+            + "not-json\n"
+            + json.dumps(completed, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I wait by the archive door.",
+            chat_log=[],
+            card_data={"title": "Pending Postprocess Repair Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+        )
+
+        run_dir = Path(result["run_dir"])
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        self.assertEqual(input_json["postprocess_repairs"], [pending])
+
+    def test_rebuild_agent_run_from_analysis_preserves_pending_postprocess_repairs(self):
+        queue_path = self.card / ".agent_runs" / "postprocess_repair_queue.jsonl"
+        queue_path.parent.mkdir(parents=True)
+        pending = {
+            "schema_version": 1,
+            "id": "postprocess-repair-1",
+            "round_id": "round-000001",
+            "status": "pending",
+            "scope": "ui_extensions",
+            "reason": "missing status panel data",
+            "required_keys": ["ui_extensions.status_panels.relationships"],
+        }
+        queue_path.write_text(json.dumps(pending, ensure_ascii=False) + "\n", encoding="utf-8")
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I check whether Ada notices the seal.",
+            "role_text": "I check whether Ada notices the seal.",
+            "user_instruction_text": "",
+        }
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=[],
+            card_data={"title": "Analysis Applied Repair Context Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+        run_dir = Path(result["run_dir"])
+        raw_request = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+
+        self.agent_packets.rebuild_agent_run_from_analysis(
+            self.card,
+            run_dir,
+            {"analysis_mode": "fixture", "source_integrity": raw_request["source_integrity"]},
+            {
+                "input_schema": "analysis_v1",
+                "role_channel": input_payload["role_text"],
+                "user_instruction_channel": "",
+                "components": [{"channel": "role", "text": input_payload["role_text"]}],
+                "characters": [],
+            },
+            raw_request,
+            chat_log=[],
+            card_data={"title": "Analysis Applied Repair Context Test"},
+            character_contexts={"characters": []},
+        )
+
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        self.assertEqual(input_json["postprocess_repairs"], [pending])
+
     def test_prepare_agent_run_writes_input_analysis_request_and_prompt(self):
         input_payload = {
             "input_schema": "dual_channel_v1",

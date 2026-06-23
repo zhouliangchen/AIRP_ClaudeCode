@@ -13,6 +13,7 @@ import agent_memory
 import agent_lifecycle
 import agent_messages
 import input_analysis
+import postprocess_outputs
 import runtime_settings
 
 
@@ -630,6 +631,7 @@ def prepare_agent_run(
     input_json["visible_events"] = world_state["visible_events"]
     input_json["runtime_settings"] = runtime_payload["settings"]
     input_json["style_profile"] = runtime_payload["style_profile"]
+    input_json["postprocess_repairs"] = postprocess_outputs.read_pending_repairs(card_folder)
     degraded_memory_state = agent_memory.previous_post_round_memory_state(card_folder)
     if degraded_memory_state:
         input_json["degraded_memory_state"] = degraded_memory_state
@@ -767,6 +769,7 @@ def rebuild_agent_run_from_analysis(
         "visible_events": world_state["visible_events"],
         "runtime_settings": runtime_payload["settings"],
         "style_profile": runtime_payload["style_profile"],
+        "postprocess_repairs": postprocess_outputs.read_pending_repairs(card_folder),
     }
     agent_run.write_json(root / "input.json", input_json)
     _append_required_message(
