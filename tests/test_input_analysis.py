@@ -491,6 +491,35 @@ class InputAnalysisTest(unittest.TestCase):
             "assets.generate_image",
         )
 
+    def test_validate_accepts_unknown_capability_request_for_later_audit(self):
+        data = self._analysis()
+        data["routing_requests"] = []
+        data["capability_requests"] = [
+            {
+                "id": "cap-weather",
+                "requested_by": "input_analyst",
+                "target": "weather",
+                "capability": "external.weather_lookup",
+                "summary": "Look up weather.",
+                "reason": "The instruction channel explicitly requested weather.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {},
+                "evidence": {
+                    "semantic_unit_ids": ["u2"],
+                    "raw_excerpt": self.instruction,
+                },
+            }
+        ]
+
+        validated = self._validate(data)
+
+        self.assertEqual(
+            validated["capability_requests"][0]["capability"],
+            "external.weather_lookup",
+        )
+
     def test_validate_rejects_capability_request_without_evidence_excerpt(self):
         data = self._analysis()
         data["capability_requests"] = [
@@ -1088,6 +1117,27 @@ class InputAnalysisApplyTest(unittest.TestCase):
             "assets_ui_task",
         )
         self.assertEqual(result["capability_requests"], normalized["capability_requests"])
+
+    def test_apply_current_run_wraps_malformed_legacy_routing_request_error_without_rewrite(self):
+        analysis = self._analysis()
+        analysis.pop("capability_requests", None)
+        analysis["routing_requests"] = [{"id": "route-bad"}]
+        original = json.dumps(analysis, ensure_ascii=False, indent=2)
+        (self.run_dir / "input_analysis.output.json").write_text(
+            original,
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            self.InputAnalysisError,
+            r"routing_requests\[0\]\.type",
+        ):
+            self.apply_mod.apply_current_run(self.card, self.root)
+
+        self.assertEqual(
+            (self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"),
+            original,
+        )
 
     def test_apply_current_run_includes_existing_routed_character_without_profile_creation(self):
         card_data = {

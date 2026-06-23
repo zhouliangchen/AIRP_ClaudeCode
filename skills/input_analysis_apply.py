@@ -259,10 +259,18 @@ def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[s
         routing_requests = normalized.get("routing_requests")
         capability_requests = []
         if isinstance(routing_requests, list):
-            capability_requests = [
-                capability_registry.legacy_routing_request_to_capability(request)
-                for request in routing_requests
-            ]
+            for index, request in enumerate(routing_requests):
+                try:
+                    capability_requests.append(
+                        capability_registry.legacy_routing_request_to_capability(request)
+                    )
+                except capability_registry.CapabilityRegistryError as exc:
+                    message = str(exc).replace(
+                        "routing_request",
+                        f"routing_requests[{index}]",
+                        1,
+                    )
+                    raise input_analysis.InputAnalysisError(message) from exc
         normalized["capability_requests"] = capability_requests
         changed = True
 
