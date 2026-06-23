@@ -58,7 +58,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         _write_json(settings_path, settings)
         return root
 
+    def _legacy_to_capability_requests(self, requests):
+        registry = _load("capability_registry")
+        return [registry.legacy_routing_request_to_capability(item) for item in requests]
+
     def _stub_apply_result_with_routing_requests(self, requests, settings=None):
+        capability_requests = self._legacy_to_capability_requests(requests)
         _write_json(
             self.run_dir / "manifest.json",
             {
@@ -77,6 +82,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "routing_requests": requests,
+                    "capability_requests": capability_requests,
                 },
             )
             return {
@@ -96,6 +102,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                     },
                 },
                 "routing_requests": requests,
+                "capability_requests": capability_requests,
             }
 
         self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
@@ -924,6 +931,121 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
 
+    def test_analyze_input_processes_capability_requests_and_preserves_migration_output_keys(self):
+        request = {
+            "id": "cap-assets",
+            "requested_by": "input_analyst",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "Create a scene image.",
+            "reason": "User requested a visual update.",
+            "source_channel": "user_instruction",
+            "risk": "low",
+            "authorization_gate": "none",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "misty bridge"},
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw bridge"},
+        }
+
+        def fake_apply(card_folder, root_dir):
+            _write_json(
+                self.run_dir / "input_analysis.output.json",
+                {
+                    "schema_version": 1,
+                    "routing_requests": [],
+                    "capability_requests": [request],
+                },
+            )
+            return {
+                "ok": True,
+                "stage": "analysis_applied",
+                "run_dir": str(self.run_dir),
+                "root_dir": str(root_dir),
+                "manifest": {
+                    "round_id": "round-000001",
+                    "stage": "analysis_applied",
+                    "runtime_settings": {"selfRepairMode": "limited", "allowSourceCodeSelfRepair": False},
+                },
+                "routing_requests": [],
+                "capability_requests": [request],
+            }
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
+        self.assertIn("assets_task", pending_types)
+        self.assertIn("run_gm_turn", pending_types)
+        self.assertIn("capability_requests", result["detail"])
+        self.assertIn("routing_requests", result["detail"])
+        self.assertEqual(result["detail"]["capability_requests"], result["detail"]["routing_requests"])
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        analyze = [item for item in completed if item["id"] == created["id"]][0]
+        self.assertIn("capability_requests", analyze["result"]["outputs"])
+        self.assertIn("routing_requests", analyze["result"]["outputs"])
+        self.assertEqual(
+            analyze["result"]["outputs"]["capability_requests"],
+            analyze["result"]["outputs"]["routing_requests"],
+        )
+        artifact = json.loads(
+            (self.run_dir / analyze["result"]["outputs"]["capability_requests"]["results"][0]["artifact"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(artifact["capability"], "assets.generate_image")
+
+    def test_analyze_input_missing_capability_requests_does_not_double_process_legacy_routes(self):
+        request = {
+            "id": "route-assets",
+            "type": "assets_ui_task",
+            "source_channel": "user_instruction",
+            "summary": "Create a scene image.",
+            "target": "assets-ui",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "misty bridge"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw bridge"},
+        }
+
+        def fake_apply(card_folder, root_dir):
+            _write_json(
+                self.run_dir / "input_analysis.output.json",
+                {
+                    "schema_version": 1,
+                    "routing_requests": [request],
+                },
+            )
+            return {
+                "ok": True,
+                "stage": "analysis_applied",
+                "run_dir": str(self.run_dir),
+                "root_dir": str(root_dir),
+                "manifest": {
+                    "round_id": "round-000001",
+                    "stage": "analysis_applied",
+                    "runtime_settings": {"selfRepairMode": "limited", "allowSourceCodeSelfRepair": False},
+                },
+                "routing_requests": [request],
+            }
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
+        self.assertEqual(pending_types, ["run_gm_turn"])
+        self.assertEqual(result["detail"]["capability_requests"]["processed_count"], 0)
+
     def test_analyze_input_creates_assets_task_from_routing_request(self):
         request = {
             "id": "route-assets",
@@ -973,8 +1095,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         completed = self.intents.list_intents(self.run_dir, "completed")
         analyze = [item for item in completed if item["id"] == created["id"]][0]
         self.assertEqual(analyze["result"]["outputs"]["routing_requests"]["processed_count"], 1)
+        self.assertEqual(
+            analyze["result"]["outputs"]["capability_requests"],
+            analyze["result"]["outputs"]["routing_requests"],
+        )
 
-    def test_analyze_input_card_data_edit_is_audit_only(self):
+    def test_analyze_input_card_data_edit_requires_authorization(self):
         request = {
             "id": "route-card",
             "type": "card_data_edit",
@@ -997,11 +1123,11 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
         self.assertNotIn("card_data_edit", pending_types)
-        artifacts_dir = self.run_dir / "artifacts" / "input_routing_requests"
+        artifacts_dir = self.run_dir / "artifacts" / "capability_requests"
         artifacts = list(artifacts_dir.glob("*.json"))
         self.assertEqual(len(artifacts), 1)
         artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
-        self.assertEqual(artifact["status"], "audit_only")
+        self.assertEqual(artifact["status"], "authorization_required")
 
     def test_analyze_input_story_retcon_consult_is_deferred_message(self):
         request = {
@@ -1024,13 +1150,13 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
 
         self.assertTrue(result["ok"])
-        artifacts_dir = self.run_dir / "artifacts" / "input_routing_requests"
+        artifacts_dir = self.run_dir / "artifacts" / "capability_requests"
         artifacts = list(artifacts_dir.glob("*.json"))
         self.assertEqual(len(artifacts), 1)
         artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
         self.assertEqual(artifact["status"], "deferred")
         messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
-        routing_messages = [item for item in messages if item.get("type") == "routing_request"]
+        routing_messages = [item for item in messages if item.get("type") == "capability_request"]
         self.assertTrue(any("gm" in item.get("to", []) for item in routing_messages))
 
     def test_analyze_input_source_request_without_source_gate_is_authorization_required(self):
@@ -1105,6 +1231,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "authorization_gate": "allowSourceCodeSelfRepair",
             "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "add export"},
         }
+        capability_requests = self._legacy_to_capability_requests([request])
         _write_json(
             self.run_dir / "manifest.json",
             {
@@ -1120,6 +1247,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "routing_requests": [request],
+                    "capability_requests": capability_requests,
                 },
             )
             return {
@@ -1129,6 +1257,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 "root_dir": str(root_dir),
                 "manifest": {"round_id": "round-000001", "stage": "analysis_applied"},
                 "routing_requests": [request],
+                "capability_requests": capability_requests,
             }
 
         self.dispatcher.input_analysis_apply.apply_current_run = fake_apply

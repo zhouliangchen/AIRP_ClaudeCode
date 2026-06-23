@@ -38,6 +38,149 @@ class InputRoutingRequestsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_process_capability_request_creates_assets_intent_and_capability_audit(self):
+        request = {
+            "id": "cap-assets",
+            "requested_by": "input_analyst",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "Create a rainy street image.",
+            "reason": "User asked for a visual update.",
+            "source_channel": "user_instruction",
+            "risk": "low",
+            "authorization_gate": "none",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "rainy street"},
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "make an image"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        self.assertEqual(result["created_intents_count"], 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "assets_task")
+        self.assertEqual(pending[0]["payload"]["prompt"], "rainy street")
+        artifact = _read_first_audit(self.run_dir, result)
+        self.assertEqual(artifact["capability"], "assets.generate_image")
+        self.assertEqual(artifact["status"], "queued")
+
+    def test_unknown_capability_writes_audit_and_message_without_intent(self):
+        request = {
+            "id": "cap-unknown",
+            "requested_by": "input_analyst",
+            "target": "weather",
+            "capability": "external.weather_lookup",
+            "summary": "Look up weather.",
+            "reason": "User asked for weather.",
+            "source_channel": "user_instruction",
+            "risk": "low",
+            "authorization_gate": "none",
+            "payload": {},
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "weather"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        self.assertEqual(result["created_intents_count"], 0)
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        messages = self.messages.read_messages(self.run_dir)
+        self.assertEqual(messages[0]["type"], "unsupported_capability")
+        artifact = _read_first_audit(self.run_dir, result)
+        self.assertEqual(artifact["status"], "unsupported_capability")
+
+    def test_registry_mismatch_statuses_are_preserved_in_audit_and_message(self):
+        requests = [
+            {
+                "id": "cap-target-mismatch",
+                "requested_by": "input_analyst",
+                "target": "gm",
+                "capability": "assets.generate_image",
+                "summary": "Create a rainy street image.",
+                "reason": "User asked for a visual update.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {"prompt": "rainy street"},
+                "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "make an image"},
+            },
+            {
+                "id": "cap-gate-mismatch",
+                "requested_by": "input_analyst",
+                "target": "main-agent",
+                "capability": "source.change_request",
+                "summary": "Add save export.",
+                "reason": "User asked for source work.",
+                "source_channel": "user_instruction",
+                "risk": "high",
+                "authorization_gate": "none",
+                "payload": {"feature": "save_export"},
+                "evidence": {"semantic_unit_ids": ["u2"], "raw_excerpt": "add export"},
+            },
+        ]
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            requests,
+            runtime_settings={"allowSourceCodeSelfRepair": True},
+            source_intent_id="intent_000001",
+        )
+
+        self.assertEqual(result["created_intents_count"], 0)
+        self.assertEqual([item["status"] for item in result["results"]], [
+            "target_mismatch",
+            "authorization_gate_mismatch",
+        ])
+        messages = self.messages.read_messages(self.run_dir)
+        self.assertEqual([item["type"] for item in messages], [
+            "target_mismatch",
+            "authorization_gate_mismatch",
+        ])
+        for item in result["results"]:
+            artifact = _read_json(Path(self.run_dir) / item["artifact"])
+            self.assertEqual(artifact["status"], item["status"])
+
+    def test_manual_confirmation_returns_authorization_required_without_intent(self):
+        request = {
+            "id": "cap-replay",
+            "requested_by": "input_analyst",
+            "target": "replay",
+            "capability": "replay.plan",
+            "summary": "Plan a replay from the previous round.",
+            "reason": "Player reframed the previous answer as a dream.",
+            "source_channel": "user_instruction",
+            "risk": "high",
+            "authorization_gate": "manual_confirmation",
+            "payload": {
+                "snapshot_id": "round-000001-20260623T000000000000Z-abc123def456",
+                "affected_rounds": ["round-000001"],
+                "preserved_player_input_ids": ["input-1"],
+                "discard_ai_artifacts": ["gm.output.json", "story.input.json"],
+            },
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "previous scene was a dream"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        self.assertEqual(result["created_intents_count"], 0)
+        self.assertEqual(result["results"][0]["status"], "authorization_required")
+        artifact = _read_first_audit(self.run_dir, result)
+        self.assertEqual(artifact["status"], "authorization_required")
+        self.assertEqual(artifact["authorization"]["authorization_gate"], "manual_confirmation")
+
     def test_process_assets_ui_task_creates_assets_intent_and_audit_artifact(self):
         request = {
             "id": "route-001",
@@ -87,7 +230,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual(
             pending[0]["policy"],
-            {"source_intent_id": "", "routing_request_id": "route-default"},
+            {"source_intent_id": "", "capability_request_id": "route-default"},
         )
 
     def test_process_assets_ui_task_is_idempotent_for_existing_audit_artifact(self):
@@ -121,7 +264,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(second["created_intents"], [pending_assets[0]["id"]])
         self.assertEqual(second["results"][0]["created_intents"], [pending_assets[0]["id"]])
         routing_messages = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(routing_messages), 1)
         artifact = _read_first_audit(self.run_dir, first)
@@ -174,10 +317,10 @@ class InputRoutingRequestsTest(unittest.TestCase):
         pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
         self.assertEqual(len(pending_assets), 3)
         routing_messages = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(routing_messages), 3)
-        artifact_files = sorted((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json"))
+        artifact_files = sorted((self.run_dir / "artifacts" / "capability_requests").glob("*.json"))
         self.assertEqual(len(artifact_files), 3)
         self.assertEqual(len({item.name for item in artifact_files}), 3)
         self.assertEqual(result["created_intents_count"], 3)
@@ -210,7 +353,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
 
         pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
         self.assertEqual(len(pending_assets), 1)
-        artifact_files = list((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json"))
+        artifact_files = list((self.run_dir / "artifacts" / "capability_requests").glob("*.json"))
         self.assertEqual(len(artifact_files), 1)
         self.assertLess(len(artifact_files[0].name), 120)
         self.assertEqual(second["created_intents"], first["created_intents"])
@@ -245,11 +388,11 @@ class InputRoutingRequestsTest(unittest.TestCase):
         finally:
             self.mod.agent_intents.attach_source_message = original_attach
 
-        self.assertEqual(list((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json")), [])
+        self.assertEqual(list((self.run_dir / "artifacts" / "capability_requests").glob("*.json")), [])
         pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
         self.assertEqual(len(pending_assets), 1)
         routing_messages = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(routing_messages), 1)
 
@@ -264,7 +407,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
             item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"
         ]
         routing_messages_after_retry = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(pending_assets_after_retry), 1)
         self.assertEqual(len(routing_messages_after_retry), 1)
@@ -289,7 +432,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         failure_injected = {"done": False}
 
         def fail_first_audit_write(path, payload):
-            if not failure_injected["done"] and "input_routing_requests" in str(path):
+            if not failure_injected["done"] and "capability_requests" in str(path):
                 failure_injected["done"] = True
                 raise OSError("injected audit failure")
             return original_write_json(path, payload)
@@ -306,11 +449,11 @@ class InputRoutingRequestsTest(unittest.TestCase):
         finally:
             self.mod.agent_run.write_json = original_write_json
 
-        self.assertEqual(list((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json")), [])
+        self.assertEqual(list((self.run_dir / "artifacts" / "capability_requests").glob("*.json")), [])
         pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
         self.assertEqual(len(pending_assets), 1)
         routing_messages = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(routing_messages), 1)
 
@@ -325,7 +468,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
             item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"
         ]
         routing_messages_after_retry = [
-            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "capability_request"
         ]
         self.assertEqual(len(pending_assets_after_retry), 1)
         self.assertEqual(len(routing_messages_after_retry), 1)
@@ -385,7 +528,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(pending[0]["payload"]["reason"], "user_requested_source_feature")
         self.assertFalse(pending[0]["payload"]["selfRepairMode_required"])
 
-    def test_card_data_edit_is_audit_only_and_does_not_write_card_files(self):
+    def test_card_data_edit_requires_authorization_and_does_not_write_card_files(self):
         request = {
             "id": "route-004",
             "type": "card_data_edit",
@@ -407,5 +550,5 @@ class InputRoutingRequestsTest(unittest.TestCase):
 
         self.assertEqual(result["created_intents_count"], 0)
         artifact = _read_first_audit(self.run_dir, result)
-        self.assertEqual(artifact["status"], "audit_only")
+        self.assertEqual(artifact["status"], "authorization_required")
         self.assertFalse((self.run_dir.parents[1] / "memory" / "characters" / "Ada").exists())

@@ -304,9 +304,12 @@ def _execute_analyze_input(
         if not isinstance(runtime_settings, dict):
             loaded_runtime_settings = _load_manifest(run_dir).get("runtime_settings")
             runtime_settings = loaded_runtime_settings if isinstance(loaded_runtime_settings, dict) else {}
-        routing_result = input_routing_requests.process_routing_requests(
+        capability_requests = applied.get("capability_requests")
+        if not isinstance(capability_requests, list):
+            capability_requests = []
+        routing_result = input_routing_requests.process_capability_requests(
             run_dir,
-            applied.get("routing_requests", []) if isinstance(applied.get("routing_requests"), list) else [],
+            capability_requests,
             runtime_settings=runtime_settings,
             source_intent_id=intent_id,
         )
@@ -338,6 +341,7 @@ def _execute_analyze_input(
             "applied": applied,
             "follow_up_intent_id": follow_up_id,
             "routing_requests": routing_result,
+            "capability_requests": routing_result,
             "artifacts": artifacts,
             "message_id": message_id,
         },
@@ -351,7 +355,12 @@ def _execute_analyze_input(
         created_intents=created_intents,
         created_messages=created_messages,
         artifacts=artifacts,
-        detail={"applied": applied, "follow_up_intent_id": follow_up_id, "routing_requests": routing_result},
+        detail={
+            "applied": applied,
+            "follow_up_intent_id": follow_up_id,
+            "routing_requests": routing_result,
+            "capability_requests": routing_result,
+        },
     )
 
 
