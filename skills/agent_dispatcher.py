@@ -1498,6 +1498,27 @@ def _execute_deliver_round(
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "deliver_round"})
 
     try:
+        gate = _validate_deliver_postprocess_gate(run_dir, intent)
+        if not gate.get("ok"):
+            reason = str(gate.get("reason") or "postprocess_core_invalid")
+            blocked = agent_intents.block_intent(
+                run_dir,
+                intent_id,
+                reason,
+                outputs={"executor": "deliver_round", **gate},
+            )
+            _mark_blocked(run_dir, reason, {"intent_id": intent_id, **gate})
+            return _result(
+                False,
+                "blocked",
+                intent_id=intent_id,
+                intent_type="deliver_round",
+                reason=reason,
+                created_intents=[],
+                created_messages=[],
+                artifacts=[],
+                detail=blocked.get("result", {}),
+            )
         if run_command is None:
             raise AgentDispatcherError("run_command is required for deliver_round")
         delivery = rp_generate_cli._run_delivery(card_folder, root_dir, run_command)
@@ -1540,6 +1561,55 @@ def _execute_deliver_round(
         artifacts=[],
         detail={"delivery": delivery},
     )
+
+
+def _validate_deliver_postprocess_gate(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+    payload = intent.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+
+    postprocess_path = str(payload.get("postprocess_output_path") or "")
+    if intent.get("requested_by") != "postprocess" or postprocess_path != "artifacts/postprocess.output.json":
+        return {
+            "ok": False,
+            "reason": "postprocess_missing",
+            "postprocess_output_path": postprocess_path,
+        }
+
+    try:
+        postprocess = read_artifact(run_dir, "postprocess.output.json")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "postprocess_missing",
+            "postprocess_output_path": postprocess_path,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    critical_evidence = []
+    try:
+        story_input = read_artifact(run_dir, "story.input.json")
+        critical_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
+    except Exception:
+        critical_evidence = []
+
+    validation = postprocess_outputs.validate_postprocess_output(
+        postprocess,
+        critical_action_evidence=critical_evidence,
+    )
+    if not validation.get("ok"):
+        return {
+            "ok": False,
+            "reason": "postprocess_core_invalid",
+            "postprocess_output_path": postprocess_path,
+            "validation": validation,
+        }
+
+    return {
+        "ok": True,
+        "reason": "",
+        "postprocess_output_path": postprocess_path,
+    }
 
 
 def _read_critic_report(run_dir: Path, report_path: str) -> dict[str, Any]:

@@ -82,13 +82,15 @@ def validate_critical_action_options(options, evidence):
 def option_matches_evidence(option, evidence):
     if not isinstance(option, dict):
         return False
-    if option.get("source") == "player_agent_critical_action" and option.get("requires_confirmation") is True:
-        return True
     if not isinstance(evidence, dict):
         return False
     required_label = _clean_text(evidence.get("required_label")).lower()
     option_label = _clean_text(option.get("label")).lower()
-    return bool(required_label and required_label in option_label)
+    if not required_label or required_label not in option_label:
+        return False
+    if option.get("source") == "player_agent_critical_action":
+        return option.get("requires_confirmation") is True
+    return True
 
 
 def _clean_text(value):

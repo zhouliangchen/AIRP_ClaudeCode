@@ -64,6 +64,19 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         if not hasattr(self.dispatcher, "rp_generate_cli"):
             self.dispatcher.rp_generate_cli = _load("rp_generate_cli")
 
+    def _write_valid_postprocess_artifact(self):
+        postprocess = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You reach the sealed door.",
+                "current_goal": "Confirm whether to force the door.",
+                "options": ["Step back and reassess"],
+            },
+            "ui_extension_status": {"status": "ok", "issues": []},
+        }
+        _write_json(self.run_dir / "artifacts" / "postprocess.output.json", postprocess)
+        return postprocess
+
     def _append_projected_actor_message(
         self,
         *,
@@ -3133,9 +3146,17 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def test_deliver_round_marks_delivered_when_delivery_command_passes(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        self._write_valid_postprocess_artifact()
         created = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+            {
+                "requested_by": "postprocess",
+                "type": "deliver_round",
+                "payload": {
+                    "reason": "postprocess_core_valid",
+                    "postprocess_output_path": "artifacts/postprocess.output.json",
+                },
+            },
         )["intent"]
         delivery_calls = []
 
@@ -3157,12 +3178,89 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in completed], [created["id"]])
         self.assertEqual(len(delivery_calls), 1)
 
+    def test_deliver_round_blocks_critic_origin_without_running_delivery(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+        )["intent"]
+        delivery_calls = []
+
+        def fake_run_delivery(card_folder, root_dir, run_command):
+            delivery_calls.append((Path(card_folder), Path(root_dir), run_command))
+            return {"ok": True, "result": {"ok": True, "mode": "agent_run"}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "postprocess_missing")
+        self.assertEqual(delivery_calls, [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "postprocess_missing")
+
+    def test_deliver_round_blocks_invalid_postprocess_artifact_without_running_delivery(self):
+        self._install_dispatcher_dependencies()
+        _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        _write_json(
+            self.run_dir / "artifacts" / "postprocess.output.json",
+            {"schema_version": 1, "core": {"summary": "Only a summary."}},
+        )
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "postprocess",
+                "type": "deliver_round",
+                "payload": {
+                    "reason": "postprocess_core_valid",
+                    "postprocess_output_path": "artifacts/postprocess.output.json",
+                },
+            },
+        )["intent"]
+        delivery_calls = []
+
+        def fake_run_delivery(card_folder, root_dir, run_command):
+            delivery_calls.append((Path(card_folder), Path(root_dir), run_command))
+            return {"ok": True, "result": {"ok": True, "mode": "agent_run"}}
+
+        self.dispatcher.rp_generate_cli._run_delivery = fake_run_delivery
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_command=lambda *args, **kwargs: None)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "postprocess_core_invalid")
+        self.assertEqual(delivery_calls, [])
+        self.assertEqual(self.intents.list_intents(self.run_dir, "completed"), [])
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "blocked")
+        self.assertEqual(manifest["dispatcher"]["reason"], "postprocess_core_invalid")
+
     def test_deliver_round_does_not_wait_for_pending_assets_task(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        self._write_valid_postprocess_artifact()
         deliver = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+            {
+                "requested_by": "postprocess",
+                "type": "deliver_round",
+                "payload": {
+                    "reason": "postprocess_core_valid",
+                    "postprocess_output_path": "artifacts/postprocess.output.json",
+                },
+            },
         )["intent"]
         asset = self.intents.create_intent(
             self.run_dir,
@@ -3191,9 +3289,17 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def test_deliver_round_blocks_when_delivery_command_fails(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        self._write_valid_postprocess_artifact()
         created = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+            {
+                "requested_by": "postprocess",
+                "type": "deliver_round",
+                "payload": {
+                    "reason": "postprocess_core_valid",
+                    "postprocess_output_path": "artifacts/postprocess.output.json",
+                },
+            },
         )["intent"]
 
         def fake_run_delivery(_card_folder, _root_dir, _run_command):
@@ -3216,9 +3322,17 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
     def test_deliver_round_blocks_when_delivery_requests_retry_with_outer_ok(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "critic.report.json", {"decision": "pass"})
+        self._write_valid_postprocess_artifact()
         created = self.intents.create_intent(
             self.run_dir,
-            {"requested_by": "critic", "type": "deliver_round", "payload": {"reason": "critic_passed"}},
+            {
+                "requested_by": "postprocess",
+                "type": "deliver_round",
+                "payload": {
+                    "reason": "postprocess_core_valid",
+                    "postprocess_output_path": "artifacts/postprocess.output.json",
+                },
+            },
         )["intent"]
 
         def fake_run_delivery(_card_folder, _root_dir, _run_command):

@@ -192,6 +192,83 @@ class PostprocessOutputTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
+    def test_validate_requires_each_critical_player_action_to_match_option_label(self):
+        payload = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You face two risky choices.",
+                "options": [
+                    {
+                        "label": "Confirm critical player action",
+                        "source": "player_agent_critical_action",
+                        "requires_confirmation": True,
+                    }
+                ],
+                "current_goal": "Confirm each risky action before continuing.",
+            },
+        }
+        evidence = [
+            {
+                "id": "critical-action-1",
+                "required_label": "push open the sealed door",
+                "risk_level": "critical",
+            },
+            {
+                "id": "critical-action-2",
+                "required_label": "pull the alarm lever",
+                "risk_level": "critical",
+            },
+        ]
+
+        result = self.mod.validate_postprocess_output(payload, critical_action_evidence=evidence)
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "missing fixed option for critical action: critical-action-1",
+            result["errors"],
+        )
+        self.assertIn(
+            "missing fixed option for critical action: critical-action-2",
+            result["errors"],
+        )
+
+    def test_validate_accepts_two_critical_player_actions_with_two_matching_options(self):
+        payload = {
+            "schema_version": 1,
+            "core": {
+                "summary": "You face two risky choices.",
+                "options": [
+                    {
+                        "label": "Confirm action: push open the sealed door",
+                        "source": "player_agent_critical_action",
+                        "requires_confirmation": True,
+                    },
+                    {
+                        "label": "Confirm action: pull the alarm lever",
+                        "source": "player_agent_critical_action",
+                        "requires_confirmation": True,
+                    },
+                ],
+                "current_goal": "Confirm each risky action before continuing.",
+            },
+        }
+        evidence = [
+            {
+                "id": "critical-action-1",
+                "required_label": "push open the sealed door",
+                "risk_level": "critical",
+            },
+            {
+                "id": "critical-action-2",
+                "required_label": "pull the alarm lever",
+                "risk_level": "critical",
+            },
+        ]
+
+        result = self.mod.validate_postprocess_output(payload, critical_action_evidence=evidence)
+
+        self.assertTrue(result["ok"])
+
     def test_record_ui_extension_repair_writes_run_artifact_and_queue(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
