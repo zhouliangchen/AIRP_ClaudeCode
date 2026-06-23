@@ -120,6 +120,58 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertEqual(output["final_actor_message"], "")
         self.assertEqual(output["feedback"], "The message reveals objective truth Bob cannot know.")
 
+    def test_blank_feedback_uses_projection_feedback_alias(self):
+        output = self.projection.validate_projection_output(
+            {
+                "decision": "blocked",
+                "feedback": "   ",
+                "projection_feedback": "Projection cannot reconcile the target actor.",
+            },
+            actor_id="character:Bob",
+            source_call_id="call-bob-1",
+        )
+
+        self.assertEqual(output["feedback"], "Projection cannot reconcile the target actor.")
+
+    def test_final_actor_message_rejects_non_string_values(self):
+        for value in ({"content": "You see the gate."}, ["You see the gate."]):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.projection.ProjectionValidationError, "final_actor_message"):
+                    self.projection.validate_projection_output(
+                        {
+                            "decision": "pass",
+                            "final_actor_message": value,
+                        },
+                        actor_id="character:Bob",
+                        source_call_id="call-bob-1",
+                    )
+
+    def test_feedback_rejects_non_string_values(self):
+        for value in ({"reason": "unsafe"}, ["unsafe"]):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.projection.ProjectionValidationError, "feedback"):
+                    self.projection.validate_projection_output(
+                        {
+                            "decision": "blocked",
+                            "feedback": value,
+                        },
+                        actor_id="character:Bob",
+                        source_call_id="call-bob-1",
+                    )
+
+    def test_projection_feedback_rejects_non_string_values(self):
+        for value in ({"reason": "unsafe"}, ["unsafe"]):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(self.projection.ProjectionValidationError, "projection_feedback"):
+                    self.projection.validate_projection_output(
+                        {
+                            "decision": "blocked",
+                            "projection_feedback": value,
+                        },
+                        actor_id="character:Bob",
+                        source_call_id="call-bob-1",
+                    )
+
     def test_build_review_packet_keeps_contexts_separate_and_deep_copies_inputs(self):
         actor_packet = {
             "immersive_context": "You remember: I was taught that cursed heroes endanger civilians.",

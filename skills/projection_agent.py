@@ -25,6 +25,14 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _optional_text_field(data: dict[str, Any], field: str) -> str:
+    if field not in data or data[field] is None:
+        return ""
+    if not isinstance(data[field], str):
+        raise ProjectionValidationError(f"{field} must be a string when present")
+    return data[field].strip()
+
+
 def build_review_packet(
     *,
     actor_id: str,
@@ -64,8 +72,11 @@ def validate_projection_output(
     if decision not in ALLOWED_DECISIONS:
         raise ProjectionValidationError("decision must be pass, edited, needs_rewrite, or blocked")
 
-    final_actor_message = _text(data.get("final_actor_message"))
-    feedback = _text(data.get("feedback") or data.get("projection_feedback"))
+    final_actor_message = _optional_text_field(data, "final_actor_message")
+    feedback = _optional_text_field(data, "feedback")
+    projection_feedback = _optional_text_field(data, "projection_feedback")
+    if not feedback:
+        feedback = projection_feedback
 
     if decision in {"pass", "edited"} and not final_actor_message:
         raise ProjectionValidationError("final_actor_message is required for pass or edited")
