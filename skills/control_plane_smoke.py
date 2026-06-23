@@ -159,6 +159,16 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
                 "visibility": "gm_only",
                 "persist": False,
             },
+            {
+                "id": "fixture-unsupported-capability-1",
+                "source_channel": "user_instruction",
+                "type": "system_command",
+                "raw_excerpt": "weather",
+                "derived_summary": "The input asks for an unsupported external weather lookup.",
+                "confidence": 1.0,
+                "visibility": "gm_only",
+                "persist": False,
+            },
         ],
         "world_updates": {
             "hidden_facts": [],
@@ -180,6 +190,21 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
             "characters": [],
         },
         "routing_requests": [],
+        "capability_requests": [
+            {
+                "id": "unknown-capability",
+                "requested_by": "input_analyst",
+                "target": "weather",
+                "capability": "external.weather_lookup",
+                "summary": "Unsupported capability smoke fixture.",
+                "reason": "Prove unsupported capabilities are audited without breaking delivery.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {},
+                "evidence": {"semantic_unit_ids": ["fixture-unsupported-capability-1"], "raw_excerpt": "weather"},
+            }
+        ],
         "risks": [],
     }
     return input_analysis.validate_input_analysis(
@@ -858,11 +883,11 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "input_schema": "dual_channel_v1",
             "raw_text": (
                 "I notice the old pendant in my hand.\n\n[USER_INSTRUCTION]\n"
-                f"Hidden truth: {HIDDEN_SMOKE_PHRASE}."
+                f"Hidden truth: {HIDDEN_SMOKE_PHRASE}. Also check the weather."
             ),
             "display_text": "I notice the old pendant in my hand.",
             "role_text": "I notice the old pendant in my hand.",
-            "user_instruction_text": f"Hidden truth: {HIDDEN_SMOKE_PHRASE}.",
+            "user_instruction_text": f"Hidden truth: {HIDDEN_SMOKE_PHRASE}. Also check the weather.",
         }
         prepared = agent_packets.prepare_agent_run(
             card_folder=card,
@@ -978,6 +1003,9 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if not analyze_result.get("ok") or analyze_result.get("intent_type") != "analyze_input":
                 raise RuntimeError(f"analyze_input dispatch failed: {analyze_result}")
             applied_analysis = analyze_result.get("detail", {}).get("applied", {})
+            capability_result = analyze_result.get("detail", {}).get("capability_requests", {})
+            if not isinstance(capability_result, dict):
+                capability_result = {}
             _ensure_smoke_character_contexts(run_dir)
             _write_smoke_actor_context_packets(run_dir)
 
@@ -1125,6 +1153,22 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         post_round_manifest = manifest.get("post_round_memory_jobs", {})
         if not isinstance(post_round_manifest, dict):
             post_round_manifest = {}
+        capability_artifacts = capability_result.get("artifacts", [])
+        if not isinstance(capability_artifacts, list):
+            capability_artifacts = []
+        capability_results = capability_result.get("results", [])
+        if not isinstance(capability_results, list):
+            capability_results = []
+        capability_audits = []
+        for artifact in capability_artifacts:
+            audit = _read_json(run_dir / artifact)
+            capability_audits.append(
+                {
+                    "artifact": artifact,
+                    "status": audit.get("status"),
+                    "capability": audit.get("capability"),
+                }
+            )
         messages = agent_messages.read_messages(run_dir)
         intent_counts = {
             "pending": len(agent_intents.list_intents(run_dir, "pending")),
@@ -1155,6 +1199,16 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "mode": delivery.get("mode"),
             },
             "dispatcher": _dispatcher_evidence(run_dir, agent_intents),
+            "capability_requests": {
+                "unsupported_count": sum(
+                    1
+                    for item in capability_results
+                    if isinstance(item, dict)
+                    if item.get("status") == "unsupported_capability"
+                ),
+                "artifacts": capability_artifacts,
+                "audits": capability_audits,
+            },
             "quality_metrics": captured_loop.get("critic_context", {}).get("quality_metrics", {}),
             "story": _story_evidence(run_dir),
             "postprocess": postprocess_output,

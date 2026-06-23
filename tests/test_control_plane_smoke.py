@@ -106,6 +106,22 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertIn("dispatcher", payload)
         self.assertEqual(payload["dispatcher"]["status"], "delivered")
         self.assertEqual(payload["dispatcher"]["manifest_status"], "delivered")
+        self.assertIn("capability_requests", payload)
+        self.assertEqual(payload["capability_requests"]["unsupported_count"], 1)
+        self.assertEqual(len(payload["capability_requests"]["artifacts"]), 1)
+        capability_artifact = payload["capability_requests"]["artifacts"][0]
+        self.assertTrue(capability_artifact.startswith("artifacts/capability_requests/unknown-capability-"))
+        self.assertTrue(capability_artifact.endswith(".json"))
+        self.assertEqual(
+            payload["capability_requests"]["audits"],
+            [
+                {
+                    "artifact": capability_artifact,
+                    "status": "unsupported_capability",
+                    "capability": "external.weather_lookup",
+                }
+            ],
+        )
         completed_intents = payload["dispatcher"]["completed_intent_types"]
         self.assertIn("analyze_input", payload["dispatcher"]["completed_intent_types"])
         self.assertIn("run_gm_turn", payload["dispatcher"]["completed_intent_types"])
