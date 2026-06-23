@@ -581,6 +581,27 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         blocked = self.intents.list_intents(self.run_dir, "blocked")
         self.assertEqual([item["id"] for item in blocked], [created["id"]])
 
+    def test_replay_plan_intent_is_blocked_as_unsupported_until_executor_is_wired(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "replay_plan",
+                "payload": {"reason": "manual test"},
+            },
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(result["reason"], "unsupported_intent_type")
+        self.assertFalse((self.run_dir / "artifacts" / "replay_plans").exists())
+        blocked = self.intents.list_intents(self.run_dir, "blocked")
+        self.assertEqual([item["id"] for item in blocked], [created["id"]])
+        self.assertEqual(blocked[0]["result"]["outputs"]["intent_type"], "replay_plan")
+
     def test_assets_task_records_deferred_nonblocking_artifact_and_message(self):
         created = self.intents.create_intent(
             self.run_dir,

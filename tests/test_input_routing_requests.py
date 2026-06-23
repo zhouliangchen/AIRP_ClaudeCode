@@ -148,7 +148,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
             artifact = _read_json(Path(self.run_dir) / item["artifact"])
             self.assertEqual(artifact["status"], item["status"])
 
-    def test_manual_confirmation_returns_authorization_required_without_intent(self):
+    def test_replay_plan_requires_manual_confirmation_and_does_not_create_intent_without_it(self):
         request = {
             "id": "cap-replay",
             "requested_by": "input_analyst",
@@ -176,10 +176,17 @@ class InputRoutingRequestsTest(unittest.TestCase):
         )
 
         self.assertEqual(result["created_intents_count"], 0)
+        self.assertEqual(result["created_messages_count"], 1)
         self.assertEqual(result["results"][0]["status"], "authorization_required")
+        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        messages = self.messages.read_messages(self.run_dir)
+        self.assertEqual(messages[0]["type"], "authorization_required")
+        self.assertEqual(messages[0]["payload"]["capability"], "replay.plan")
         artifact = _read_first_audit(self.run_dir, result)
         self.assertEqual(artifact["status"], "authorization_required")
         self.assertEqual(artifact["authorization"]["authorization_gate"], "manual_confirmation")
+        self.assertEqual(artifact["created_intent_ids"], [])
+        self.assertEqual(artifact["created_message_ids"], [messages[0]["id"]])
 
     def test_process_assets_ui_task_creates_assets_intent_and_audit_artifact(self):
         request = {
