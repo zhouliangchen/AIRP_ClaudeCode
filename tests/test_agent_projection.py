@@ -223,15 +223,16 @@ class AgentProjectionTest(unittest.TestCase):
 
         self.assertIn("steady", actor_serialized)
         self.assertIn("trusted", actor_serialized)
-        self.assertIn("The hallway is safe.", actor_serialized)
         self.assertIn("chalk dust in the light", actor_serialized)
         self.assertIn("The bell rings.", actor_serialized)
         self.assertNotIn("A chalk line glows.", actor_serialized)
         for hidden in (
+            "misconceptions",
             "private_notes",
             "hidden_text",
             "gm_only_text",
             "hidden_fact",
+            "The hallway is safe.",
             "pulse reveals the lock",
             "forbidden pact",
             "floor will collapse",
@@ -300,11 +301,12 @@ class AgentProjectionTest(unittest.TestCase):
         )
         serialized = _packet_json(packet).lower()
 
-        self.assertIn("The hallway is safe.", _packet_json(packet))
         self.assertIn("students whisper nearby", _packet_json(packet))
         self.assertIn("The bell rings.", _packet_json(packet))
         self.assertEqual(packet["gm_prompt"], "You see chalk dust.")
         for hidden in (
+            "misconceptions",
+            "the hallway is safe.",
             "gmonlyroom",
             "worldtruthactor",
             "hiddenfactwitness",
@@ -364,7 +366,8 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertIn("Avoid attention", serialized)
         self.assertIn("He closes his hand", serialized)
         self.assertIn("chair beside you", serialized)
-        self.assertIn("only a trinket", serialized)
+        self.assertIn("You are SuLi.", packet["immersive_context"])
+        self.assertNotIn("misconceptions", serialized)
         self.assertNotIn("former magical girl", serialized)
         self.assertNotIn("I am scared", serialized)
         self.assertNotIn("betray SuLi", serialized)
@@ -436,6 +439,7 @@ class AgentProjectionTest(unittest.TestCase):
                 "gm_prompt": "",
                 "gm_visibility_basis": {},
                 "address_mode": "second_person_gm_narration",
+                "immersive_context": "You are Missing.",
                 "self_knowledge": {
                     "name": "",
                     "identity": "",
@@ -451,7 +455,6 @@ class AgentProjectionTest(unittest.TestCase):
                 },
                 "sensory_context": {},
                 "visible_events": [],
-                "misconceptions": [],
                 "role_channel_anchor": "",
             },
         )

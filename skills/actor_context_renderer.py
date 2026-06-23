@@ -1,0 +1,134 @@
+"""Immersive actor context rendering for player and character packets."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+FORBIDDEN_ACTOR_KEYS = {
+    "misconceptions",
+    "objective_truth",
+    "gm_only",
+    "gm_notes",
+    "projection_review",
+    "belief_is_false",
+    "hidden_facts",
+    "hidden_truth",
+    "hidden_fact",
+    "hidden_note",
+    "hidden_text",
+    "hiddenfact",
+    "gm_only_text",
+    "gmonly",
+    "private_notes",
+    "out_of_character",
+    "outofcharacter",
+    "world_truth",
+    "worldtruth",
+}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _clean_text(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    for marker in FORBIDDEN_ACTOR_KEYS:
+        if marker.lower() in text.lower():
+            return ""
+    return text
+
+
+def _is_forbidden_key(value: Any) -> bool:
+    text = str(value).lower()
+    return any(marker.lower() in text for marker in FORBIDDEN_ACTOR_KEYS)
+
+
+def _clean_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned = {
+            key: _clean_value(child)
+            for key, child in value.items()
+            if not _is_forbidden_key(key)
+        }
+        return {key: child for key, child in cleaned.items() if child not in ("", {}, [])}
+    if isinstance(value, (list, tuple)):
+        cleaned = [_clean_value(item) for item in value]
+        return [item for item in cleaned if item not in ("", {}, [])]
+    return _clean_text(value)
+
+
+def _append_line(lines: list[str], prefix: str, value: Any) -> None:
+    cleaned = _clean_value(value)
+    if isinstance(cleaned, dict) and "content" in cleaned:
+        cleaned = cleaned.get("content")
+    text = _clean_text(cleaned)
+    if text:
+        lines.append(f"{prefix}{text}")
+
+
+def _memory_lines(memory: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for value in _as_list(memory.get("long_term")):
+        _append_line(lines, "You remember: ", value)
+    for value in _as_list(memory.get("key_memories")):
+        _append_line(lines, "Important to you: ", value)
+    for value in _as_list(memory.get("short_term")):
+        _append_line(lines, "Recently, you remember: ", value)
+    for value in _as_list(memory.get("goals")):
+        _append_line(lines, "Your current goal is: ", value)
+    return lines
+
+
+def render_actor_context(actor_id: str, actor_state: dict[str, Any] | None, world_state: dict[str, Any] | None) -> dict[str, Any]:
+    actor = _as_dict(actor_state)
+    world = _as_dict(world_state)
+    memory = _as_dict(actor.get("memory"))
+    lines: list[str] = []
+
+    if actor_id == "player":
+        lines.append("You are the player character.")
+        _append_line(lines, "Current first-person anchor: ", world.get("role_channel"))
+    else:
+        name = _clean_text(actor.get("name") or actor.get("character_name") or actor_id.split(":", 1)[-1])
+        role = _clean_text(actor.get("role") or actor.get("identity"))
+        lines.append(f"You are {name}." if name else "You are this character.")
+        if role:
+            lines.append(f"You understand yourself as: {role}.")
+
+    body_state = _as_dict(actor.get("body_state"))
+    for key, value in sorted(body_state.items()):
+        if _is_forbidden_key(key):
+            continue
+        _append_line(lines, f"Your {key}: ", value)
+
+    relationships = _as_dict(actor.get("relationships"))
+    for key, value in sorted(relationships.items()):
+        if _is_forbidden_key(key):
+            continue
+        _append_line(lines, f"Your relationship with {key}: ", value)
+
+    sensory = _as_dict(actor.get("sensory_context") or world.get("sensory_context"))
+    for key, value in sorted(sensory.items()):
+        if _is_forbidden_key(key):
+            continue
+        _append_line(lines, f"You can sense through {key}: ", value)
+
+    lines.extend(_memory_lines(memory))
+
+    return {
+        "actor_id": str(actor_id or ""),
+        "immersive_context": "\n".join(line for line in lines if line).strip(),
+    }

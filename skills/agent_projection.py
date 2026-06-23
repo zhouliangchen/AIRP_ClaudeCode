@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict
 
 import agent_visibility
+import actor_context_renderer
 
 
 ADDRESS_MODE = "second_person_gm_narration"
@@ -222,6 +223,7 @@ def project_actor_context(
     actor_key = _text(actor_id)
     world = _as_dict(world_state)
     actor = _as_dict(actor_state)
+    rendered = actor_context_renderer.render_actor_context(actor_key, actor, world)
 
     return {
         "actor_id": actor_key,
@@ -232,11 +234,11 @@ def project_actor_context(
             agent_visibility.normalize_visibility_basis(gm_visibility_basis or {})
         ),
         "address_mode": ADDRESS_MODE,
+        "immersive_context": rendered.get("immersive_context", ""),
         "self_knowledge": _self_knowledge(actor),
         "memory": _memory(actor),
         "sensory_context": _sensory_context(world, actor, actor_key),
         "visible_events": _visible_events(world, actor_key, actor),
-        "misconceptions": _as_list(actor.get("misconceptions")),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
     }
 
