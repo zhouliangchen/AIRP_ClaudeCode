@@ -80,6 +80,38 @@ def _structured_memory_summary_payload(agent_id, *, character_name="", key_memor
     return payload
 
 
+def _write_valid_postprocess_artifact(run_dir, *, round_id):
+    _write_json(
+        run_dir / "artifacts" / "postprocess.output.json",
+        {
+            "schema_version": 1,
+            "core": {
+                "summary": f"Postprocess summary for {round_id}.",
+                "options": [
+                    {
+                        "label": "Pause at the archive threshold.",
+                        "source": "postprocess",
+                        "requires_confirmation": False,
+                    }
+                ],
+                "current_goal": "Decide whether to enter the archive.",
+                "state_patch": {
+                    "quest": "Explore the archive threshold",
+                    "location": "archive threshold",
+                    "actions": ["Pause and decide the next step"],
+                },
+            },
+            "ui_extensions": {
+                "status_panels": {},
+                "custom_cards": {},
+                "asset_bindings": {},
+            },
+            "ui_extension_status": {"status": "ok", "issues": []},
+            "repair_requests": [],
+        },
+    )
+
+
 class MultiAgentRoundE2ETest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -246,6 +278,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             run_dir / "artifacts" / "critic.report.json",
             {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": ""},
         )
+        _write_valid_postprocess_artifact(run_dir, round_id="round-000001")
 
         delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
         memory = self.agent_memory.ingest_memory_deltas(self.card, run_dir, date_str="2026-06-16 12:00")
@@ -369,6 +402,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             run_dir / "artifacts" / "critic.report.json",
             {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
         )
+        _write_valid_postprocess_artifact(run_dir, round_id="round-000006")
         delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
         for agent_id, path in manifest["expected_outputs"]["memory_summaries"].items():
