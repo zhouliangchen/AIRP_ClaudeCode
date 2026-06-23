@@ -1107,6 +1107,11 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                         "actor_id": "character:Bob",
                         "immersive_context": "Bob only knows black-robed strangers.",
                         "visible_events": [],
+                        "call": {
+                            "call_id": "call-character-Bob-1",
+                            "actor_id": "character:Bob",
+                            "prompt": "You see a vampire at Alice's door.",
+                        },
                     },
                 },
             },
@@ -1153,6 +1158,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         projected = inbox[0]
         self.assertEqual(projected["payload"]["packet"]["gm_prompt"], "You see a black-robed figure at Alice's door.")
         self.assertEqual(projected["payload"]["gm_prompt"], "You see a black-robed figure at Alice's door.")
+        projected_prompt = projected["payload"]["packet"]["gm_prompt"]
+        self.assertNotIn("vampire", projected_prompt.lower())
+        self.assertIn("black-robed figure", projected_prompt)
+        nested_prompt = projected["payload"]["packet"]["call"]["prompt"]
+        self.assertNotIn("vampire", nested_prompt.lower())
+        self.assertIn("black-robed figure", nested_prompt)
         self.assertEqual(projected["payload"]["projection"]["decision"], "edited")
         self.assertTrue((self.run_dir / "artifacts" / "projections" / f"{created['id']}.json").exists())
         pending = self.intents.list_intents(self.run_dir, "pending")

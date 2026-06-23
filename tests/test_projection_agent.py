@@ -242,6 +242,78 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertNotIn("false", packet["actor_context"].lower())
         self.assertNotIn("framed by the king", packet["actor_context"].lower())
 
+    def test_bob_edited_projection_replaces_unsupported_vampire_label(self):
+        packet = self.projection.build_review_packet(
+            actor_id="character:Bob",
+            source_call_id="call-bob-1",
+            source_message_id="msg-bob-1",
+            requested_actor_message="You see a vampire at Alice's door.",
+            actor_packet={
+                "immersive_context": "You only know the stranger as a black-robed figure.",
+                "visible_events": [{"content": "A black-robed figure stands at Alice's door."}],
+            },
+            objective_context={"gm_notes": ["The figure is a vampire."]},
+        )
+        output = self.projection.validate_projection_output(
+            {
+                "decision": "edited",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-bob-1",
+                "final_actor_message": "You see a black-robed figure at Alice's door.",
+                "feedback": "Changed the label to Bob-visible wording.",
+            },
+            actor_id=packet["target_actor_id"],
+            source_call_id=packet["source_call_id"],
+        )
+
+        self.assertNotIn("vampire", output["final_actor_message"].lower())
+        self.assertIn("black-robed figure", output["final_actor_message"])
+
+    def test_alice_pass_projection_preserves_supported_private_vampire_label(self):
+        packet = self.projection.build_review_packet(
+            actor_id="character:Alice",
+            source_call_id="call-alice-1",
+            source_message_id="msg-alice-1",
+            requested_actor_message="You recognize the vampire at your door.",
+            actor_packet={
+                "immersive_context": "Your private memory: the black-robed visitor is the vampire who spared you.",
+                "visible_events": [{"content": "The black-robed visitor returns to your door."}],
+            },
+            objective_context={"gm_notes": ["Alice privately knows the visitor is a vampire."]},
+        )
+        output = self.projection.validate_projection_output(
+            {
+                "decision": "pass",
+                "target_actor_id": "character:Alice",
+                "source_call_id": "call-alice-1",
+                "final_actor_message": "You recognize the vampire at your door.",
+                "feedback": "",
+            },
+            actor_id=packet["target_actor_id"],
+            source_call_id=packet["source_call_id"],
+        )
+
+        self.assertIn("vampire", output["final_actor_message"].lower())
+
+    def test_paladin_pass_projection_preserves_subjective_cursed_hero_label(self):
+        output = self.projection.validate_projection_output(
+            {
+                "decision": "pass",
+                "target_actor_id": "character:CurrentPaladin",
+                "source_call_id": "call-paladin-1",
+                "final_actor_message": "You confront the cursed hero in the market.",
+                "feedback": "",
+            },
+            actor_id="character:CurrentPaladin",
+            source_call_id="call-paladin-1",
+        )
+        serialized = json.dumps(output, ensure_ascii=False).lower()
+
+        self.assertIn("cursed hero", output["final_actor_message"])
+        self.assertNotIn("misconception", serialized)
+        self.assertNotIn("false", serialized)
+        self.assertNotIn("framed by the king", serialized)
+
     def test_rp_generate_cli_validates_projection_output(self):
         cli = _load_rp_generate_cli()
 
