@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import agent_intents
@@ -39,6 +40,7 @@ def record_request_actor(
     actor_id: str,
     call: dict,
     *,
+    packet: dict | None = None,
     source_intent_id: str = "",
     fanout: dict | None = None,
 ) -> tuple[str, str]:
@@ -46,6 +48,15 @@ def record_request_actor(
 
     try:
         call_id = str(call.get("call_id") or "")
+        request_payload = {
+            "actor_id": actor_id,
+            "call": copy.deepcopy(call),
+        }
+        context_packet = _validated_actor_context_packet(actor_id, packet)
+        if context_packet is None:
+            context_packet = load_actor_context_packet(run_dir, actor_id)
+        if context_packet is not None:
+            request_payload["packet"] = context_packet
         request_message = _require_message_result(
             "append request_actor message",
             agent_messages.append_message(
@@ -56,10 +67,7 @@ def record_request_actor(
                     "type": "request_actor",
                     "visibility": "gm_only",
                     "source_call_id": call_id,
-                    "payload": {
-                        "actor_id": actor_id,
-                        "call": call,
-                    },
+                    "payload": request_payload,
                 },
             ),
         )
@@ -89,6 +97,35 @@ def record_request_actor(
         raise
     except Exception as exc:
         raise _runtime_write_error("record request_actor intent", exc) from exc
+
+
+def load_actor_context_packet(run_dir: str | Path, actor_id: str) -> dict | None:
+    """Load the current round actor packet if it has already been rendered."""
+
+    path = _actor_context_packet_path(Path(run_dir), actor_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AgentActorProjectionError(
+            "actor_context_packet_invalid",
+            {"actor_id": actor_id, "path": str(path), "error": str(exc)},
+        ) from exc
+    return _validated_actor_context_packet(actor_id, payload)
+
+
+def require_actor_context_packet(run_dir: str | Path, actor_id: str) -> dict:
+    """Load the current actor packet or block projection before context is lost."""
+
+    packet = load_actor_context_packet(run_dir, actor_id)
+    if packet is None:
+        path = _actor_context_packet_path(Path(run_dir), actor_id)
+        raise AgentActorProjectionError(
+            "actor_context_packet_missing",
+            {"actor_id": actor_id, "path": str(path) if path is not None else ""},
+        )
+    return packet
 
 
 def project_actor_request(
@@ -585,9 +622,36 @@ def _projection_packet(
     final_actor_message = _projection_final_actor_message(call, projection_result)
     if final_actor_message:
         projected["gm_prompt"] = final_actor_message
-        projected_call = projected.get("call")
-        if isinstance(projected_call, dict):
-            projected["call"] = {**copy.deepcopy(projected_call), "prompt": final_actor_message}
+    projected_call = copy.deepcopy(call)
+    if final_actor_message:
+        projected_call["prompt"] = final_actor_message
+    projected["call"] = projected_call
+    visibility_basis = call.get("visibility_basis")
+    if isinstance(visibility_basis, dict):
+        projected["gm_visibility_basis"] = copy.deepcopy(visibility_basis)
+    return projected
+
+
+def _actor_context_packet_path(run_dir: Path, actor_id: str) -> Path | None:
+    if actor_id == "player":
+        return run_dir / "player.context.json"
+    if actor_id.startswith("character:"):
+        safe = agent_run.safe_name(actor_id.split(":", 1)[1] or "_unknown")
+        return run_dir / "characters" / f"{safe}.context.json"
+    return None
+
+
+def _validated_actor_context_packet(actor_id: str, packet: dict | None) -> dict | None:
+    if not isinstance(packet, dict):
+        return None
+    projected = copy.deepcopy(packet)
+    packet_actor_id = str(projected.get("actor_id") or actor_id)
+    if packet_actor_id != actor_id:
+        raise AgentActorProjectionError(
+            "actor_context_actor_mismatch",
+            {"expected_actor_id": actor_id, "packet_actor_id": packet_actor_id},
+        )
+    projected["actor_id"] = actor_id
     return projected
 
 

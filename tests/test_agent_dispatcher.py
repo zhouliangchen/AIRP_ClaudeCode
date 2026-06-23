@@ -397,6 +397,19 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
+    def _write_character_context_packet(self, safe_name, *, role="archive guard"):
+        _write_json(
+            self.run_dir / "characters" / f"{safe_name}.context.json",
+            {
+                "actor_id": f"character:{safe_name}",
+                "agent": "character",
+                "visibility": "first_person_character",
+                "immersive_context": f"{safe_name} remembers the {role} oath.",
+                "memory": {"key_memories": [f"I serve as {role}."]},
+                "visible_events": [{"type": "scene", "content": "The archive hall is quiet."}],
+            },
+        )
+
     def _write_gm_actor_input(self):
         _write_json(
             self.run_dir / "input.json",
@@ -415,6 +428,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 },
             },
         )
+        self._write_character_context_packet("Ada")
 
     def _write_multi_actor_input(self):
         _write_json(
@@ -440,6 +454,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 },
             },
         )
+        self._write_character_context_packet("Ada", role="archive guard")
+        self._write_character_context_packet("Bea", role="night clerk")
 
     def _gm_actor_call(self, actor_id="character:Ada", call_id="call-character-Ada-1"):
         return {
@@ -2569,6 +2585,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(pending[0]["payload"]["actor_id"], "character:Ada")
         self.assertEqual(pending[0]["payload"]["source_call_id"], "call-character-Ada-1")
         self.assertEqual(pending[0]["requested_by"], "gm")
+        request_messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        request_actor = [message for message in request_messages if message.get("type") == "request_actor"][0]
+        actor_packet = request_actor["payload"]["packet"]
+        self.assertEqual(actor_packet["actor_id"], "character:Ada")
+        self.assertEqual(actor_packet["immersive_context"], "Ada remembers the archive guard oath.")
+        self.assertEqual(actor_packet["memory"]["key_memories"], ["I serve as archive guard."])
         self.assertEqual(result["detail"]["created_projection_intents"], [pending[0]["id"]])
         self.assertEqual(result["detail"]["loop_result"]["called_actors"], [])
         completed = self.intents.list_intents(self.run_dir, "completed")

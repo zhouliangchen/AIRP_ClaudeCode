@@ -2538,11 +2538,13 @@ def _execute_run_gm_turn(
                 actor_id = str(call.get("actor_id") or "")
                 if not actor_id:
                     continue
+                actor_packet = agent_actor_runtime.require_actor_context_packet(run_dir, actor_id)
                 message_id, projection_intent_id = agent_actor_runtime.record_request_actor(
                     run_dir,
                     "gm",
                     actor_id,
                     call,
+                    packet=actor_packet,
                     source_intent_id=intent_id,
                     fanout=fanout,
                 )
