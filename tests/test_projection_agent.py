@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -253,6 +254,12 @@ class ProjectionAgentTest(unittest.TestCase):
                 "final_actor_message": "You see a black-robed figure.",
                 "feedback": "Changed label to Bob-visible wording.",
             },
+            {
+                "projection_packet": {
+                    "target_actor_id": "character:Bob",
+                    "source_call_id": "call-bob-1",
+                }
+            },
         )
 
         self.assertEqual(output["decision"], "edited")
@@ -275,10 +282,80 @@ class ProjectionAgentTest(unittest.TestCase):
                     "feedback": "",
                 }
             },
+            {
+                "projection_packet": {
+                    "target_actor_id": "character:Bob",
+                    "source_call_id": "call-bob-1",
+                }
+            },
         )
 
         self.assertEqual(output["decision"], "pass")
         self.assertEqual(output["final_actor_message"], "You hear Alice whisper from the hall.")
+
+    def test_rp_generate_cli_rejects_projection_identity_mismatch(self):
+        cli = _load_rp_generate_cli()
+
+        with self.assertRaisesRegex(cli.AgentExecutionError, "projection returned invalid artifact"):
+            cli._validate(
+                "projection",
+                {
+                    "decision": "pass",
+                    "target_actor_id": "character:Alice",
+                    "source_call_id": "call-alice-1",
+                    "final_actor_message": "You hear Alice whisper from the hall.",
+                    "feedback": "",
+                },
+                {
+                    "projection_packet": {
+                        "target_actor_id": "character:Bob",
+                        "source_call_id": "call-bob-1",
+                    }
+                },
+            )
+
+    def test_rp_generate_cli_rejects_projection_without_validation_context(self):
+        cli = _load_rp_generate_cli()
+
+        with self.assertRaisesRegex(cli.AgentExecutionError, "projection validation context"):
+            cli._validate(
+                "projection",
+                {
+                    "decision": "pass",
+                    "target_actor_id": "character:Bob",
+                    "source_call_id": "call-bob-1",
+                    "final_actor_message": "You hear Alice whisper from the hall.",
+                    "feedback": "",
+                },
+            )
+
+    def test_dispatch_agent_payload_binds_projection_identity_from_extra_context(self):
+        cli = _load_rp_generate_cli()
+        payload = {
+            "decision": "pass",
+            "target_actor_id": "character:Alice",
+            "source_call_id": "call-alice-1",
+            "final_actor_message": "You hear Alice whisper from the hall.",
+            "feedback": "",
+        }
+
+        def fake_run_claude(_agent_key, _prompt, _cwd):
+            return json.dumps(payload, ensure_ascii=False)
+
+        with self.assertRaisesRegex(cli.AgentExecutionError, "projection returned invalid artifact"):
+            cli._dispatch_agent_payload(
+                "projection",
+                "# projection\n",
+                ROOT,
+                fake_run_claude,
+                extra_context={
+                    "projection_packet": {
+                        "target_actor_id": "character:Bob",
+                        "source_call_id": "call-bob-1",
+                    }
+                },
+                attempts=1,
+            )
 
     def test_rp_generate_cli_converts_projection_validation_error(self):
         cli = _load_rp_generate_cli()
@@ -291,6 +368,12 @@ class ProjectionAgentTest(unittest.TestCase):
                     "target_actor_id": "character:Bob",
                     "source_call_id": "call-bob-1",
                     "feedback": "Missing final actor message.",
+                },
+                {
+                    "projection_packet": {
+                        "target_actor_id": "character:Bob",
+                        "source_call_id": "call-bob-1",
+                    }
                 },
             )
 

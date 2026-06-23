@@ -98,6 +98,17 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("Only `final_actor_message` can be delivered to the actor", prompt)
         self.assertNotIn("false_belief", prompt)
 
+    def test_projection_prompt_includes_existing_skill_body(self):
+        prompt = self.agent_prompts.projection_prompt_text(
+            {
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-bob-1",
+            }
+        )
+
+        self.assertIn(".claude/skills/rp-projection-agent.md", prompt)
+        self.assertNotIn("(missing skill file:", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
