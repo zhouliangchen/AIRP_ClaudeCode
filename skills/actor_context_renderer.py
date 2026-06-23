@@ -11,11 +11,15 @@ import agent_visibility
 PROJECTION_CONTROL_MARKERS = {
     "misconceptions",
     "objective_truth",
+    "projection_control",
+    "control_note",
     "projection_review",
     "belief_is_false",
     "visibility_basis",
     "audit",
 }
+
+ACTOR_FACING_FORBIDDEN_MARKERS = set(agent_visibility.HIDDEN_MARKERS) | PROJECTION_CONTROL_MARKERS
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -60,17 +64,21 @@ def _control_marker_name(value: Any) -> str:
     return ""
 
 
-def _actor_marker_name(value: Any) -> str:
+def actor_facing_marker_name(value: Any) -> str:
     return agent_visibility.hidden_marker_name(value) or _control_marker_name(value)
+
+
+def contains_actor_facing_marker(value: Any) -> bool:
+    return bool(actor_facing_marker_name(value))
 
 
 def _clean_text(value: Any) -> str:
     text = "" if value is None else str(value).strip()
-    return "" if _actor_marker_name(text) else text
+    return "" if contains_actor_facing_marker(text) else text
 
 
 def _is_forbidden_key(value: Any) -> bool:
-    return bool(_actor_marker_name(value))
+    return contains_actor_facing_marker(value)
 
 
 def _clean_value(value: Any) -> Any:

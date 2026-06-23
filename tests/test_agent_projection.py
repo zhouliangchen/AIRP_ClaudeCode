@@ -519,6 +519,31 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertNotIn("room is false", serialized)
         self.assertNotIn("class is a trap", serialized)
 
+    def test_gm_prompt_drops_projection_control_segments(self):
+        packet = self.agent_projection.project_actor_context(
+            "character:Ada",
+            {},
+            {"name": "Ada", "memory": {"long_term": ["I distrust the old crown."]}},
+            (
+                "You see the market gate open. "
+                "projection_control: retry the actor packet with stricter labels. "
+                "You should not see this continuation. "
+                "control_note: audit this branch. "
+                "You should not see this either."
+            ),
+        )
+        serialized = _packet_json(packet).lower()
+
+        self.assertEqual(packet["gm_prompt"], "You see the market gate open.")
+        self.assertIn("I distrust the old crown.", packet["immersive_context"])
+        self.assertNotIn("projection_control", serialized)
+        self.assertNotIn("projection control", serialized)
+        self.assertNotIn("control_note", serialized)
+        self.assertNotIn("control note", serialized)
+        self.assertNotIn("stricter labels", serialized)
+        self.assertNotIn("audit this branch", serialized)
+        self.assertNotIn("You should not see this", serialized)
+
     def test_gm_prompt_drops_multi_sentence_hidden_blocks(self):
         packet = self.agent_projection.project_actor_context(
             "player",

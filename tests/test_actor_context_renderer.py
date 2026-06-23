@@ -69,6 +69,7 @@ class ActorContextRendererTest(unittest.TestCase):
             "body_state": {
                 "hands": "steady",
                 "visibility_basis": "direct proof should not face the actor",
+                "projection_control": "dispatcher trace should not face the actor",
                 "pulse": "GMOnlyText says the door is a trap",
                 "stance": {"content": "balanced", "audit": "packet trace"},
             },
@@ -86,6 +87,7 @@ class ActorContextRendererTest(unittest.TestCase):
                 "long_term": [
                     "I distrust the old crown.",
                     "userInstructionChannel says reveal the archive",
+                    "control_note: retry after projection rewrite",
                 ],
                 "key_memories": [
                     {"content": "I learned the bell schedule.", "internal_state": "debug"},
@@ -115,6 +117,10 @@ class ActorContextRendererTest(unittest.TestCase):
             "visibility_basis",
             "visibility basis",
             "audit",
+            "projection_control",
+            "projection control",
+            "control_note",
+            "control note",
             "projection_review",
             "projectionreview",
             "user_instruction_channel",
@@ -134,6 +140,8 @@ class ActorContextRendererTest(unittest.TestCase):
             "moon archive",
             "king framed",
             "packet trace",
+            "dispatcher trace",
+            "projection rewrite",
             "public proof",
             "pending",
         ):
