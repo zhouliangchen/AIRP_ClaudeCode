@@ -119,16 +119,33 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertNotIn("own misconceptions", text)
         self.assertNotIn("- `misconceptions`", text)
 
-    def test_gm_and_subgm_actor_requests_use_immersive_second_person_labels(self):
-        combined = "\n".join([
-            self.read(".claude/skills/rp-gm-agent.md"),
-            self.read(".claude/skills/rp-subgm-agent.md"),
-        ])
+    def test_gm_actor_requests_use_immersive_second_person_labels(self):
+        text = self.read(".claude/skills/rp-gm-agent.md")
 
-        self.assertIn("immersive second-person natural language", combined)
-        self.assertIn("objective world truth", combined)
-        self.assertIn("target actor memory, perception, training, and in-world reports", combined)
-        self.assertIn("appearance-level or belief-level label", combined)
+        self.assertIn("immersive second-person natural language", text)
+        self.assertIn("objective world truth", text)
+        self.assertIn("target actor memory, perception, training, and in-world reports", text)
+        self.assertIn("appearance-level or belief-level label", text)
+
+    def test_subgm_actor_requests_use_immersive_second_person_labels(self):
+        text = self.read(".claude/skills/rp-subgm-agent.md")
+
+        self.assertIn("immersive second-person natural language", text)
+        self.assertIn("objective world truth", text)
+        self.assertIn("target actor memory, perception, training, and in-world reports", text)
+        self.assertIn("appearance-level or belief-level label", text)
+
+    def test_projection_docs_preserve_final_actor_message_boundary(self):
+        readme = self.read("README.md")
+        projector = self.read(".claude/skills/rp-context-projector.md")
+        projection_agent = self.read(".claude/skills/rp-projection-agent.md")
+
+        self.assertIn("final_actor_message", projection_agent)
+        self.assertIn("final_actor_message", readme)
+        self.assertIn("final_actor_message", projector)
+        self.assertIn("agent_projection.project_actor_context", readme)
+        self.assertIn("actor context rendering", readme)
+        self.assertIn("projection/rendering", projector)
 
     def test_actor_skills_do_not_receive_misconceptions_label(self):
         combined = "\n".join([

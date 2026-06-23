@@ -24,7 +24,8 @@ Projection decides what each agent is allowed to know. It is the main defense fo
 - Never leak `user_instruction_channel` into player/character packets unless the instruction has become a world-visible fact; 换言之, 不得泄露出戏指令、GM 隐藏真相或 Claude Code 工作流信息。
 - Use `world-visible` labels for facts that characters can perceive this turn.
 - Never tell an actor that a belief is a misconception. Preserve false beliefs as in-world subjective memory.
-- Actor-facing projection should render wrong beliefs inside `immersive_context` and `subjective_memory`, not as diagnostic labels.
+- Context projection/rendering should render false beliefs from actor memory into `immersive_context` and `subjective_memory`, not as diagnostic labels.
+- Projection-agent review edits only the deliverable actor message when needed; only `final_actor_message` is delivered to the actor.
 - Include sensory affordances: what the role can see, hear, touch, smell, remember, and plausibly infer.
 - Include memory from `memory/characters/<safe_name>/` only for that character.
 - Keep packets compact. Prefer local facts over long global summaries for speed.
