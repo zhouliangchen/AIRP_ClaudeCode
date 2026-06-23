@@ -899,6 +899,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if agent_key.startswith("subGM:"):
                 thread_id = agent_key.split(":", 1)[1]
                 return _side_thread_output_fixture(thread_id)
+            if agent_key == "projection":
+                projection_packet = context.get("projection_packet")
+                if not isinstance(projection_packet, dict):
+                    raise RuntimeError("deterministic projection dispatch did not receive a projection packet")
+                return {
+                    "decision": "pass",
+                    "target_actor_id": str(projection_packet.get("target_actor_id") or ""),
+                    "source_call_id": str(projection_packet.get("source_call_id") or ""),
+                    "final_actor_message": str(projection_packet.get("requested_actor_message") or ""),
+                    "feedback": "",
+                }
             if agent_key == "character:Ada":
                 actor_packet = context.get("actor_packet")
                 if not isinstance(actor_packet, dict):

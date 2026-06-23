@@ -1159,6 +1159,71 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual([intent["type"] for intent in pending], ["run_actor"])
         self.assertEqual(result["created_intents"], [pending[0]["id"]])
 
+    def test_request_projection_edited_message_rewrites_nested_packet_call_prompt(self):
+        request = self.dispatcher.agent_messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Bob-1",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "call": {
+                        "call_id": "call-character-Bob-1",
+                        "actor_id": "character:Bob",
+                        "prompt": "SECRET old prompt",
+                    },
+                    "packet": {
+                        "actor_id": "character:Bob",
+                        "immersive_context": "Bob only sees safe visible details.",
+                        "call": {
+                            "call_id": "call-character-Bob-1",
+                            "actor_id": "character:Bob",
+                            "prompt": "SECRET old prompt",
+                        },
+                    },
+                },
+            },
+        )["message"]
+        self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "gm",
+                "type": "request_projection",
+                "payload": {
+                    "actor_id": "character:Bob",
+                    "source_message_id": request["id"],
+                    "source_call_id": "call-character-Bob-1",
+                },
+            },
+        )
+
+        def fake_dispatch(agent_key, run_dir, root_dir, run_claude, extra_context):
+            self.assertEqual(agent_key, "projection")
+            return {
+                "decision": "edited",
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-character-Bob-1",
+                "final_actor_message": "SAFE edited prompt",
+                "feedback": "Removed unsafe prompt.",
+            }
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *_args: "{}")
+
+        self.assertTrue(result["ok"])
+        projected = self.dispatcher.agent_messages.read_inbox(self.run_dir, "character:Bob")[0]
+        packet = projected["payload"]["packet"]
+        packet_text = json.dumps(packet, ensure_ascii=False)
+        prompt_text = self.dispatcher.agent_prompts.character_prompt_text(packet)
+        self.assertIn("SAFE edited prompt", packet_text)
+        self.assertIn("SAFE edited prompt", prompt_text)
+        self.assertNotIn("SECRET old prompt", packet_text)
+        self.assertNotIn("SECRET old prompt", prompt_text)
+
     def test_request_projection_needs_rewrite_creates_gm_follow_up_without_actor_dispatch(self):
         request = self.dispatcher.agent_messages.append_message(
             self.run_dir,

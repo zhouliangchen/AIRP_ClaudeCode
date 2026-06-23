@@ -672,52 +672,13 @@ def _dispatch_projection_agent(
     run_claude: Callable[[str, str, str | Path], str] | None,
     review_packet: dict[str, Any],
 ) -> dict[str, Any]:
-    try:
-        return _dispatch_agent_payload(
-            "projection",
-            run_dir,
-            root_dir,
-            run_claude,
-            {"projection_packet": review_packet},
-        )
-    except Exception as exc:
-        if not _allow_deterministic_projection_pass_fallback(exc, run_claude):
-            raise
-        return {
-            "decision": "pass",
-            "target_actor_id": str(review_packet.get("target_actor_id") or ""),
-            "source_call_id": str(review_packet.get("source_call_id") or ""),
-            "final_actor_message": str(review_packet.get("requested_actor_message") or ""),
-            "feedback": "deterministic projection fallback",
-        }
-
-
-def _allow_deterministic_projection_pass_fallback(
-    exc: BaseException,
-    run_claude: Callable[[str, str, str | Path], str] | None,
-) -> bool:
-    text = str(exc)
-    if "unexpected deterministic dispatch target: projection" in text:
-        return True
-    if _callable_name_starts_with_fake(run_claude) and "projection returned invalid artifact:" in text:
-        return True
-    return False
-
-
-def _callable_name_starts_with_fake(value: Any) -> bool:
-    if str(getattr(value, "__name__", "")).startswith("fake"):
-        return True
-    closure = getattr(value, "__closure__", None)
-    if not closure:
-        return False
-    for cell in closure:
-        try:
-            cell_value = cell.cell_contents
-        except ValueError:
-            continue
-        if str(getattr(cell_value, "__name__", "")).startswith("fake"):
-            return True
-    return False
+    return _dispatch_agent_payload(
+        "projection",
+        run_dir,
+        root_dir,
+        run_claude,
+        {"projection_packet": review_packet},
+    )
 
 
 def _gm_fanout_completed_source_call_ids(

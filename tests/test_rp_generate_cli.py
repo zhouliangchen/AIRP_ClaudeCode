@@ -137,6 +137,16 @@ def _story_output(content="<content>ok</content>", *, metadata=None):
     return {"content": content, "character_dialogues": [], "metadata": metadata or {}}
 
 
+def _projection_output(actor_id, source_call_id, final_actor_message):
+    return {
+        "decision": "pass",
+        "target_actor_id": actor_id,
+        "source_call_id": source_call_id,
+        "final_actor_message": final_actor_message,
+        "feedback": "",
+    }
+
+
 def _critic_pass():
     return {
         "decision": "pass",
@@ -1424,6 +1434,8 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload["agent_id"] = "character:Ada"
             elif agent_key == "player":
                 payload = _player_output("I correct myself.")
+            elif agent_key == "projection":
+                payload = _projection_output("player", "call-player-1", "Respond to the current player action.")
             elif agent_key == "story":
                 payload = _story_output()
             elif agent_key == "critic":
@@ -1485,6 +1497,8 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _character_output("character:Ada", "Stay close.")
             elif agent_key == "player":
                 payload = _player_output("I stay close.")
+            elif agent_key == "projection":
+                payload = _projection_output("character:Ada", "call-character-Ada-1", "Ada sees the player enter.")
             elif agent_key == "story":
                 payload = _story_output()
             elif agent_key == "critic":

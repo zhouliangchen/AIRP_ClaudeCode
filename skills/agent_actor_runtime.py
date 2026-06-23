@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import agent_intents
@@ -577,13 +578,16 @@ def _projection_packet(
     if not isinstance(packet, dict):
         packet = call.get("packet")
     if isinstance(packet, dict):
-        projected = dict(packet)
+        projected = copy.deepcopy(packet)
         projected.setdefault("actor_id", actor_id)
     else:
-        projected = {"actor_id": actor_id, "call": call}
+        projected = {"actor_id": actor_id, "call": copy.deepcopy(call)}
     final_actor_message = _projection_final_actor_message(call, projection_result)
     if final_actor_message:
         projected["gm_prompt"] = final_actor_message
+        projected_call = projected.get("call")
+        if isinstance(projected_call, dict):
+            projected["call"] = {**copy.deepcopy(projected_call), "prompt": final_actor_message}
     return projected
 
 
