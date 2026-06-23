@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import agent_run
 REQUESTED_BY = "input_analyst"
 ARTIFACT_DIR = "input_routing_requests"
 SOURCE_NAME = "input_analysis.routing_requests"
+SAFE_REQUEST_ID_PREFIX_MAX = 80
 
 
 def process_routing_requests(
@@ -37,6 +39,15 @@ def process_routing_requests(
         request_type = str(request.get("type") or "")
         safe_id = _safe_request_id(request_id)
         artifact_rel = f"artifacts/{ARTIFACT_DIR}/{safe_id}.json"
+        existing_audit = agent_run.read_json(run_dir / artifact_rel)
+        if isinstance(existing_audit, dict):
+            existing_result = _existing_audit_result(existing_audit, artifact_rel, request_id, request_type)
+            artifacts.append(artifact_rel)
+            created_intents.extend(existing_result["created_intents"])
+            created_messages.extend(existing_result["created_messages"])
+            results.append(existing_result)
+            continue
+
         context = {
             "run_dir": run_dir,
             "request": request,
@@ -243,6 +254,28 @@ def _audit_artifact(
     }
 
 
+def _existing_audit_result(
+    audit: dict[str, Any],
+    artifact_rel: str,
+    request_id: str,
+    request_type: str,
+) -> dict[str, Any]:
+    created_intents = audit.get("created_intent_ids")
+    if not isinstance(created_intents, list):
+        created_intents = []
+    created_messages = audit.get("created_message_ids")
+    if not isinstance(created_messages, list):
+        created_messages = []
+    return {
+        "request_id": str(audit.get("request_id") or request_id),
+        "type": str(audit.get("request_type") or request_type),
+        "status": str(audit.get("status") or "blocked"),
+        "artifact": artifact_rel,
+        "created_intents": [str(item) for item in created_intents],
+        "created_messages": [str(item) for item in created_messages],
+    }
+
+
 def _policy(context: dict[str, Any]) -> dict[str, str]:
     return {
         "source_intent_id": context["source_intent_id"],
@@ -266,6 +299,10 @@ def _request_id(request: dict[str, Any]) -> str:
 
 
 def _safe_request_id(request_id: str) -> str:
-    safe = re.sub(r"[^0-9A-Za-z_-]", "_", str(request_id or "routing_request"))
-    safe = safe.strip("._")
-    return safe or "routing_request"
+    raw = str(request_id or "")
+    prefix = re.sub(r"[^0-9A-Za-z_-]+", "-", raw).strip("-_")
+    if not prefix:
+        prefix = "routing_request"
+    prefix = prefix[:SAFE_REQUEST_ID_PREFIX_MAX].rstrip("-_") or "routing_request"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{digest}"

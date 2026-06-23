@@ -22,6 +22,10 @@ def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _read_first_audit(run_dir, result):
+    return _read_json(Path(run_dir) / result["results"][0]["artifact"])
+
+
 class InputRoutingRequestsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -29,6 +33,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.run_dir.mkdir(parents=True)
         self.mod = _load("input_routing_requests")
         self.intents = _load("agent_intents")
+        self.messages = _load("agent_messages")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -57,7 +62,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual(pending[0]["type"], "assets_task")
         self.assertEqual(pending[0]["payload"]["prompt"], "rainy street")
-        artifact = _read_json(self.run_dir / "artifacts" / "input_routing_requests" / "route-001.json")
+        artifact = _read_first_audit(self.run_dir, result)
         self.assertEqual(artifact["status"], "queued")
 
     def test_assets_ui_task_default_source_intent_policy_keeps_empty_source_id(self):
@@ -85,6 +90,132 @@ class InputRoutingRequestsTest(unittest.TestCase):
             {"source_intent_id": "", "routing_request_id": "route-default"},
         )
 
+    def test_process_assets_ui_task_is_idempotent_for_existing_audit_artifact(self):
+        request = {
+            "id": "route-repeat",
+            "type": "assets_ui_task",
+            "source_channel": "user_instruction",
+            "summary": "Create a rainy street image.",
+            "target": "assets-ui",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "rainy street"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "make an image"},
+        }
+
+        first = self.mod.process_routing_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+        second = self.mod.process_routing_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
+        self.assertEqual(len(pending_assets), 1)
+        self.assertEqual(second["created_intents"], [pending_assets[0]["id"]])
+        self.assertEqual(second["results"][0]["created_intents"], [pending_assets[0]["id"]])
+        routing_messages = [
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+        ]
+        self.assertEqual(len(routing_messages), 1)
+        artifact = _read_first_audit(self.run_dir, first)
+        self.assertEqual(artifact["created_intent_ids"], first["created_intents"])
+
+    def test_path_shaping_request_ids_do_not_collide_with_literal_underscore_ids(self):
+        requests = [
+            {
+                "id": "route/x",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a bridge image.",
+                "target": "assets-ui",
+                "payload": {"kind": "scene", "target": "bridge", "prompt": "misty bridge"},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw bridge"},
+            },
+            {
+                "id": "route_x",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a street image.",
+                "target": "assets-ui",
+                "payload": {"kind": "scene", "target": "street", "prompt": "rainy street"},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"semantic_unit_ids": ["u2"], "raw_excerpt": "draw street"},
+            },
+            {
+                "id": "route_x002F_x",
+                "type": "assets_ui_task",
+                "source_channel": "user_instruction",
+                "summary": "Create a tower image.",
+                "target": "assets-ui",
+                "payload": {"kind": "scene", "target": "tower", "prompt": "silver tower"},
+                "requires_authorization": False,
+                "authorization_gate": "none",
+                "evidence": {"semantic_unit_ids": ["u3"], "raw_excerpt": "draw tower"},
+            },
+        ]
+
+        result = self.mod.process_routing_requests(
+            self.run_dir,
+            requests,
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
+        self.assertEqual(len(pending_assets), 3)
+        routing_messages = [
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+        ]
+        self.assertEqual(len(routing_messages), 3)
+        artifact_files = sorted((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json"))
+        self.assertEqual(len(artifact_files), 3)
+        self.assertEqual(len({item.name for item in artifact_files}), 3)
+        self.assertEqual(result["created_intents_count"], 3)
+
+    def test_long_request_id_uses_bounded_audit_filename_and_remains_idempotent(self):
+        request = {
+            "id": "route-" + "a" * 260,
+            "type": "assets_ui_task",
+            "source_channel": "user_instruction",
+            "summary": "Create a panorama.",
+            "target": "assets-ui",
+            "payload": {"kind": "scene", "target": "panorama", "prompt": "wide canyon"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw panorama"},
+        }
+
+        first = self.mod.process_routing_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+        second = self.mod.process_routing_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
+        self.assertEqual(len(pending_assets), 1)
+        artifact_files = list((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json"))
+        self.assertEqual(len(artifact_files), 1)
+        self.assertLess(len(artifact_files[0].name), 120)
+        self.assertEqual(second["created_intents"], first["created_intents"])
+        self.assertEqual(second["created_intents"], [pending_assets[0]["id"]])
+
     def test_source_request_without_gate_writes_authorization_required_without_system_intent(self):
         request = {
             "id": "route-002",
@@ -107,7 +238,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
 
         self.assertEqual(result["created_intents_count"], 0)
         self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
-        artifact = _read_json(self.run_dir / "artifacts" / "input_routing_requests" / "route-002.json")
+        artifact = _read_first_audit(self.run_dir, result)
         self.assertEqual(artifact["status"], "authorization_required")
         self.assertFalse(artifact["authorization"]["allowSourceCodeSelfRepair"])
 
@@ -158,6 +289,6 @@ class InputRoutingRequestsTest(unittest.TestCase):
         )
 
         self.assertEqual(result["created_intents_count"], 0)
-        artifact = _read_json(self.run_dir / "artifacts" / "input_routing_requests" / "route-004.json")
+        artifact = _read_first_audit(self.run_dir, result)
         self.assertEqual(artifact["status"], "audit_only")
         self.assertFalse((self.run_dir.parents[1] / "memory" / "characters" / "Ada").exists())

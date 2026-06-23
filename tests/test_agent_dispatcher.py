@@ -58,6 +58,48 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         _write_json(settings_path, settings)
         return root
 
+    def _stub_apply_result_with_routing_requests(self, requests, settings=None):
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "prepared",
+                "runtime_settings": settings or {
+                    "selfRepairMode": "limited",
+                    "allowSourceCodeSelfRepair": False,
+                },
+            },
+        )
+
+        def fake_apply(card_folder, root_dir):
+            _write_json(
+                self.run_dir / "input_analysis.output.json",
+                {
+                    "schema_version": 1,
+                    "routing_requests": requests,
+                },
+            )
+            return {
+                "ok": True,
+                "stage": "analysis_applied",
+                "run_dir": str(self.run_dir),
+                "root_dir": str(root_dir),
+                "hidden_facts_persisted": 0,
+                "important_characters_persisted": [],
+                "routed_input": {"role_channel": "I listen.", "user_instruction_channel": ""},
+                "manifest": {
+                    "round_id": "round-000001",
+                    "stage": "analysis_applied",
+                    "runtime_settings": settings or {
+                        "selfRepairMode": "limited",
+                        "allowSourceCodeSelfRepair": False,
+                    },
+                },
+                "routing_requests": requests,
+            }
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+
     def _install_dispatcher_dependencies(self):
         if not hasattr(self.dispatcher, "agent_outputs"):
             self.dispatcher.agent_outputs = _load("agent_outputs")
@@ -751,6 +793,145 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["created_messages"], [applied[1]["id"]])
         pending = self.intents.list_intents(self.run_dir, "pending")
         self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
+
+    def test_analyze_input_creates_assets_task_from_routing_request(self):
+        request = {
+            "id": "route-assets",
+            "type": "assets_ui_task",
+            "source_channel": "user_instruction",
+            "summary": "Create a scene image.",
+            "target": "assets-ui",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "misty bridge"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "draw bridge"},
+        }
+        self._stub_apply_result_with_routing_requests([request])
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )["intent"]
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
+        self.assertIn("assets_task", pending_types)
+        self.assertIn("run_gm_turn", pending_types)
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        analyze = [item for item in completed if item["id"] == created["id"]][0]
+        self.assertEqual(analyze["result"]["outputs"]["routing_requests"]["processed_count"], 1)
+
+    def test_analyze_input_source_request_without_source_gate_is_authorization_required(self):
+        request = {
+            "id": "route-source",
+            "type": "source_feature_request",
+            "source_channel": "user_instruction",
+            "summary": "Add export button.",
+            "target": "main_agent",
+            "payload": {"feature": "save_export"},
+            "requires_authorization": True,
+            "authorization_gate": "allowSourceCodeSelfRepair",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "add export"},
+        }
+        self._stub_apply_result_with_routing_requests(
+            [request],
+            settings={"selfRepairMode": "full", "allowSourceCodeSelfRepair": False},
+        )
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending_types = [item["type"] for item in self.intents.list_intents(self.run_dir, "pending")]
+        self.assertNotIn("system_request", pending_types)
+        completed = self.intents.list_intents(self.run_dir, "completed")
+        routing_result = completed[0]["result"]["outputs"]["routing_requests"]
+        artifact = json.loads((self.run_dir / routing_result["results"][0]["artifact"]).read_text(encoding="utf-8"))
+        self.assertEqual(artifact["status"], "authorization_required")
+
+    def test_analyze_input_source_request_with_source_gate_ignores_self_repair_mode(self):
+        request = {
+            "id": "route-source",
+            "type": "source_feature_request",
+            "source_channel": "user_instruction",
+            "summary": "Add export button.",
+            "target": "main_agent",
+            "payload": {"feature": "save_export"},
+            "requires_authorization": True,
+            "authorization_gate": "allowSourceCodeSelfRepair",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "add export"},
+        }
+        self._stub_apply_result_with_routing_requests(
+            [request],
+            settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": True},
+        )
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        system_requests = [item for item in pending if item["type"] == "system_request"]
+        self.assertEqual(len(system_requests), 1)
+        self.assertFalse(system_requests[0]["payload"]["selfRepairMode_required"])
+
+    def test_analyze_input_source_request_uses_manifest_settings_when_applied_manifest_lacks_settings(self):
+        request = {
+            "id": "route-source",
+            "type": "source_feature_request",
+            "source_channel": "user_instruction",
+            "summary": "Add export button.",
+            "target": "main_agent",
+            "payload": {"feature": "save_export"},
+            "requires_authorization": True,
+            "authorization_gate": "allowSourceCodeSelfRepair",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "add export"},
+        }
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "prepared",
+                "runtime_settings": {"selfRepairMode": "off", "allowSourceCodeSelfRepair": True},
+            },
+        )
+
+        def fake_apply(card_folder, root_dir):
+            _write_json(
+                self.run_dir / "input_analysis.output.json",
+                {
+                    "schema_version": 1,
+                    "routing_requests": [request],
+                },
+            )
+            return {
+                "ok": True,
+                "stage": "analysis_applied",
+                "run_dir": str(self.run_dir),
+                "root_dir": str(root_dir),
+                "manifest": {"round_id": "round-000001", "stage": "analysis_applied"},
+                "routing_requests": [request],
+            }
+
+        self.dispatcher.input_analysis_apply.apply_current_run = fake_apply
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "system", "type": "analyze_input", "payload": {"analysis_path": "input_analysis.output.json"}},
+        )
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, Path(self.tmp.name))
+
+        self.assertTrue(result["ok"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        system_requests = [item for item in pending if item["type"] == "system_request"]
+        self.assertEqual(len(system_requests), 1)
 
     def test_request_projection_creates_projected_message_and_run_actor_intent(self):
         request = self.dispatcher.agent_messages.append_message(
