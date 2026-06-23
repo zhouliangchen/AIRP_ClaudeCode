@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+import agent_visibility
 
-FORBIDDEN_ACTOR_KEYS = {
+
+PROJECTION_CONTROL_MARKERS = {
     "misconceptions",
     "objective_truth",
-    "gm_only",
-    "gm_notes",
     "projection_review",
     "belief_is_false",
-    "hidden_facts",
-    "hidden_truth",
-    "hidden_fact",
-    "hidden_note",
-    "hidden_text",
-    "hiddenfact",
-    "gm_only_text",
-    "gmonly",
-    "private_notes",
-    "out_of_character",
-    "outofcharacter",
-    "world_truth",
-    "worldtruth",
+    "visibility_basis",
+    "audit",
 }
 
 
@@ -43,17 +33,44 @@ def _as_list(value: Any) -> list[Any]:
     return [text] if text else []
 
 
+def _marker_tokens(value: Any) -> list[str]:
+    raw = str(value or "")
+    acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    camel_separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", acronym_separated)
+    return re.findall(r"[a-z0-9]+", camel_separated.lower())
+
+
+def _compact_marker(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _control_marker_name(value: Any) -> str:
+    tokens = _marker_tokens(value)
+    compact_tokens = [_compact_marker(token) for token in tokens]
+    for marker in sorted(PROJECTION_CONTROL_MARKERS, key=lambda item: (-len(_marker_tokens(item)), item)):
+        marker_tokens = _marker_tokens(marker)
+        if not marker_tokens:
+            continue
+        for index in range(0, len(tokens) - len(marker_tokens) + 1):
+            if tuple(tokens[index:index + len(marker_tokens)]) == tuple(marker_tokens):
+                return marker
+        marker_compact = _compact_marker(marker)
+        if marker_compact and marker_compact in compact_tokens:
+            return marker
+    return ""
+
+
+def _actor_marker_name(value: Any) -> str:
+    return agent_visibility.hidden_marker_name(value) or _control_marker_name(value)
+
+
 def _clean_text(value: Any) -> str:
     text = "" if value is None else str(value).strip()
-    for marker in FORBIDDEN_ACTOR_KEYS:
-        if marker.lower() in text.lower():
-            return ""
-    return text
+    return "" if _actor_marker_name(text) else text
 
 
 def _is_forbidden_key(value: Any) -> bool:
-    text = str(value).lower()
-    return any(marker.lower() in text for marker in FORBIDDEN_ACTOR_KEYS)
+    return bool(_actor_marker_name(value))
 
 
 def _clean_value(value: Any) -> Any:
