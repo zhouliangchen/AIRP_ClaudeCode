@@ -178,6 +178,10 @@ def _process_card_data_edit(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _create_intent(context: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    existing = _find_existing_routing_intent(context, str(payload.get("type") or ""))
+    if existing is not None:
+        return existing
+
     created = agent_intents.create_intent(context["run_dir"], payload)
     if not created.get("ok") or not isinstance(created.get("intent"), dict):
         raise RuntimeError(f"routing request intent creation failed: {created!r}")
@@ -191,6 +195,10 @@ def _append_routing_message(
     *,
     intent_id: str = "",
 ) -> str:
+    existing_message_id = _find_existing_routing_message(context, intent_id=intent_id)
+    if existing_message_id:
+        return existing_message_id
+
     payload = {
         "routing_request_id": context["request_id"],
         "routing_request_type": context["request_type"],
@@ -221,9 +229,59 @@ def _append_routing_message(
 
 
 def _attach_source_message(run_dir: Path, intent_id: str, message_id: str) -> None:
+    intent = _find_intent_by_id(run_dir, intent_id)
+    if isinstance(intent, dict) and intent.get("source_message_id") == message_id:
+        return
     attached = agent_intents.attach_source_message(run_dir, intent_id, message_id)
     if not attached.get("ok"):
         raise RuntimeError(f"routing request source message attach failed: {attached!r}")
+
+
+def _find_existing_routing_intent(context: dict[str, Any], intent_type: str) -> dict[str, Any] | None:
+    for state in agent_intents.VALID_STATES:
+        for intent in agent_intents.list_intents(context["run_dir"], state):
+            if intent.get("type") != intent_type:
+                continue
+            policy = intent.get("policy")
+            if not isinstance(policy, dict):
+                continue
+            if policy.get("source_intent_id") != context["source_intent_id"]:
+                continue
+            if policy.get("routing_request_id") != context["request_id"]:
+                continue
+            return intent
+    return None
+
+
+def _find_existing_routing_message(context: dict[str, Any], *, intent_id: str = "") -> str:
+    for message in agent_messages.read_messages(context["run_dir"]):
+        if message.get("from") != REQUESTED_BY or message.get("type") != "routing_request":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("routing_request_id") != context["request_id"]:
+            continue
+        if payload.get("routing_request_type") != context["request_type"]:
+            continue
+        payload_intent_id = str(payload.get("intent_id") or "")
+        if intent_id:
+            if payload_intent_id != intent_id:
+                continue
+        elif payload_intent_id:
+            continue
+        message_id = str(message.get("id") or "")
+        if message_id:
+            return message_id
+    return ""
+
+
+def _find_intent_by_id(run_dir: Path, intent_id: str) -> dict[str, Any] | None:
+    for state in agent_intents.VALID_STATES:
+        for intent in agent_intents.list_intents(run_dir, state):
+            if intent.get("id") == intent_id:
+                return intent
+    return None
 
 
 def _audit_artifact(

@@ -216,6 +216,63 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(second["created_intents"], first["created_intents"])
         self.assertEqual(second["created_intents"], [pending_assets[0]["id"]])
 
+    def test_retry_after_attach_failure_reuses_pre_audit_intent_and_message(self):
+        request = {
+            "id": "route-attach-retry",
+            "type": "assets_ui_task",
+            "source_channel": "user_instruction",
+            "summary": "Create a rainy street image.",
+            "target": "assets-ui",
+            "payload": {"kind": "scene", "target": "scene_illustration", "prompt": "rainy street"},
+            "requires_authorization": False,
+            "authorization_gate": "none",
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "make an image"},
+        }
+        original_attach = self.mod.agent_intents.attach_source_message
+
+        def fail_attach(_run_dir, _intent_id, _message_id):
+            return {"ok": False, "reason": "injected_failure"}
+
+        self.mod.agent_intents.attach_source_message = fail_attach
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected_failure"):
+                self.mod.process_routing_requests(
+                    self.run_dir,
+                    [request],
+                    runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+                    source_intent_id="intent_000001",
+                )
+        finally:
+            self.mod.agent_intents.attach_source_message = original_attach
+
+        self.assertEqual(list((self.run_dir / "artifacts" / "input_routing_requests").glob("*.json")), [])
+        pending_assets = [item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"]
+        self.assertEqual(len(pending_assets), 1)
+        routing_messages = [
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+        ]
+        self.assertEqual(len(routing_messages), 1)
+
+        result = self.mod.process_routing_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={"selfRepairMode": "off", "allowSourceCodeSelfRepair": False},
+            source_intent_id="intent_000001",
+        )
+
+        pending_assets_after_retry = [
+            item for item in self.intents.list_intents(self.run_dir, "pending") if item["type"] == "assets_task"
+        ]
+        routing_messages_after_retry = [
+            item for item in self.messages.read_messages(self.run_dir) if item.get("type") == "routing_request"
+        ]
+        self.assertEqual(len(pending_assets_after_retry), 1)
+        self.assertEqual(len(routing_messages_after_retry), 1)
+        artifact = _read_first_audit(self.run_dir, result)
+        self.assertEqual(artifact["created_intent_ids"], [pending_assets[0]["id"]])
+        self.assertEqual(artifact["created_message_ids"], [routing_messages[0]["id"]])
+        self.assertEqual(pending_assets_after_retry[0]["source_message_id"], routing_messages[0]["id"])
+
     def test_source_request_without_gate_writes_authorization_required_without_system_intent(self):
         request = {
             "id": "route-002",
