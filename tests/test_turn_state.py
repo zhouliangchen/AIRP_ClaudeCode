@@ -254,7 +254,7 @@ class TurnStateTest(unittest.TestCase):
         self.handler.STYLES = self.old_styles
         self.tmp.cleanup()
 
-    def _write_postprocess_output(self, core=None, ui_extensions=None):
+    def _write_postprocess_output(self, core=None, ui_extensions=None, path=None):
         payload = {
             "schema_version": 1,
             "core": core or {
@@ -270,7 +270,9 @@ class TurnStateTest(unittest.TestCase):
             },
             "ui_extension_status": {"status": "ok", "issues": []},
         }
-        (self.card / "postprocess.output.json").write_text(
+        output_path = Path(path) if path is not None else self.card / "postprocess.output.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -1217,6 +1219,91 @@ class TurnStateTest(unittest.TestCase):
             {
                 "status_panels": {"weather": "rain"},
                 "custom_cards": {"focus": {"title": "Door"}},
+                "asset_bindings": {},
+            },
+        )
+
+    def test_append_turn_uses_current_run_postprocess_before_stale_card_root(self):
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        (self.card / ".agent_runs").mkdir()
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+        self._write_postprocess_output(
+            core={
+                "summary": "Stale root summary",
+                "current_goal": "Stale root goal",
+                "options": ["Stale root option"],
+                "state_patch": {"quest": "Stale root quest"},
+            },
+            ui_extensions={
+                "status_panels": {"weather": "stale"},
+                "custom_cards": {},
+                "asset_bindings": {},
+            },
+        )
+        self._write_postprocess_output(
+            path=run_dir / "postprocess.output.json",
+            core={
+                "summary": "Current run summary",
+                "current_goal": "Current run goal",
+                "options": [{"label": "Current run option", "source": "postprocess"}],
+                "state_patch": {"quest": "Current run quest"},
+            },
+            ui_extensions={
+                "status_panels": {"weather": "current"},
+                "custom_cards": {"focus": {"title": "Current run"}},
+                "asset_bindings": {},
+            },
+        )
+
+        self.handler.append_turn(str(self.card), content="<p>Main narration.</p>", summary="Legacy summary")
+
+        self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Current run summary")
+        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Current run option"])
+        self.assertEqual(
+            self._content_window_var("POSTPROCESS_UI"),
+            {
+                "status_panels": {"weather": "current"},
+                "custom_cards": {"focus": {"title": "Current run"}},
+                "asset_bindings": {},
+            },
+        )
+        state_js = (self.card / "state.js").read_text(encoding="utf-8")
+        self.assertIn('quest: "Current run quest"', state_js)
+        self.assertNotIn("Stale root", state_js)
+
+    def test_write_content_js_uses_current_run_artifacts_postprocess(self):
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        (self.card / ".agent_runs").mkdir()
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "<p>Main narration.</p><summary>Legacy summary</summary><options>\nLegacy option\n</options>",
+            "summary": "Legacy summary",
+        }])
+        self._write_postprocess_output(
+            path=run_dir / "artifacts" / "postprocess.output.json",
+            core={
+                "summary": "Artifact summary",
+                "current_goal": "Artifact goal",
+                "options": [{"label": "Artifact option", "source": "postprocess"}],
+                "state_patch": {},
+            },
+            ui_extensions={
+                "status_panels": {"weather": "artifact"},
+                "custom_cards": {"focus": {"title": "Artifact"}},
+                "asset_bindings": {},
+            },
+        )
+
+        self.handler.write_content_js(str(self.card))
+
+        self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Artifact summary")
+        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Artifact option"])
+        self.assertEqual(
+            self._content_window_var("POSTPROCESS_UI"),
+            {
+                "status_panels": {"weather": "artifact"},
+                "custom_cards": {"focus": {"title": "Artifact"}},
                 "asset_bindings": {},
             },
         )

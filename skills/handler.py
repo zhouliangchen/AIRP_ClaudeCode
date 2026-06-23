@@ -32,6 +32,11 @@ except Exception:
     round_state = None
 
 try:
+    import agent_run
+except Exception:
+    agent_run = None
+
+try:
     import postprocess_outputs
 except Exception:
     postprocess_outputs = None
@@ -421,18 +426,43 @@ def _strip_html(text):
 def _load_postprocess_output(card_folder):
     if postprocess_outputs is None:
         return None
-    path = Path(card_folder) / "postprocess.output.json"
-    if not path.exists():
-        return None
-    try:
-        data = _read_json_file(path, None)
-        result = postprocess_outputs.validate_postprocess_output(data)
-    except Exception:
-        return None
-    if not isinstance(result, dict) or not result.get("ok"):
-        return None
-    output = result.get("output")
-    return output if isinstance(output, dict) else None
+    paths = []
+    if agent_run is not None:
+        try:
+            run_dir = agent_run.current_run_dir(card_folder)
+        except Exception:
+            run_dir = None
+        if run_dir is not None:
+            run_dir = Path(run_dir)
+            paths.extend([
+                run_dir / "postprocess.output.json",
+                run_dir / "artifacts" / "postprocess.output.json",
+            ])
+    paths.append(Path(card_folder) / "postprocess.output.json")
+
+    seen = set()
+    for path in paths:
+        path = Path(path)
+        try:
+            key = path.resolve()
+        except Exception:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.exists():
+            continue
+        try:
+            data = _read_json_file(path, None)
+            result = postprocess_outputs.validate_postprocess_output(data)
+        except Exception:
+            continue
+        if not isinstance(result, dict) or not result.get("ok"):
+            continue
+        output = result.get("output")
+        if isinstance(output, dict):
+            return output
+    return None
 
 
 def _postprocess_option_labels(postprocess):
