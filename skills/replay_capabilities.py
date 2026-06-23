@@ -17,33 +17,55 @@ class ReplayCapabilityError(ValueError):
 PLAN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 ROUND_ID_RE = re.compile(r"^round-[0-9]{6}$")
 OPTIONAL_STRING_FIELDS = ("reason", "requested_by", "source_capability_request_id")
+REPLAY_DISCARD_ALLOWLIST = {
+    "gm.output.json",
+    "actor.outputs.json",
+    "interaction.trace.json",
+    "story.input.json",
+    "story.output.json",
+    "critic.report.json",
+    "postprocess.output.json",
+}
 
 
 def validate_replay_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize a replay plan without mutating caller data."""
 
     data = _require_dict(plan, "replay_plan")
-    mode = _require_nonempty_str(data, "mode", "replay_plan")
-    if mode == "multi_round":
+    schema_version = data.get("schema_version", 1)
+    if schema_version != 1:
+        raise ReplayCapabilityError("replay_plan.schema_version must be 1")
+
+    scope = _coalesce_nonempty_str(data, ("scope", "mode"), "replay_plan")
+    if scope == "multi_round":
         raise ReplayCapabilityError("multi_round replay is plan-only in this implementation phase")
-    if mode != "single_round":
-        raise ReplayCapabilityError("replay_plan.mode must be single_round")
+    if scope != "single_round":
+        raise ReplayCapabilityError("replay_plan.scope must be single_round")
     if data.get("requires_manual_confirmation") is not True:
         raise ReplayCapabilityError("replay_plan.requires_manual_confirmation must be true")
 
     plan_id = _require_safe_id(data, "plan_id", "replay_plan")
     snapshot_id = _require_safe_id(data, "snapshot_id", "replay_plan")
     affected_rounds = _require_round_list(data, "affected_rounds", "replay_plan")
-    preserved_inputs = _require_preserved_inputs(data, "preserved_player_inputs", "replay_plan")
-    discard_artifacts = _require_artifact_list(data, "discard_artifacts", "replay_plan")
+    preserved_inputs = _require_preserved_inputs(
+        data,
+        ("preserved_player_input_ids", "preserved_player_inputs"),
+        "replay_plan",
+    )
+    discard_artifacts = _require_artifact_list(
+        data,
+        ("discard_ai_artifacts", "discard_artifacts"),
+        "replay_plan",
+    )
 
     normalized = {
+        "schema_version": 1,
         "plan_id": plan_id,
-        "mode": mode,
+        "scope": scope,
         "snapshot_id": snapshot_id,
         "affected_rounds": affected_rounds,
-        "preserved_player_inputs": preserved_inputs,
-        "discard_artifacts": discard_artifacts,
+        "preserved_player_input_ids": preserved_inputs,
+        "discard_ai_artifacts": discard_artifacts,
         "requires_manual_confirmation": True,
     }
     for key in OPTIONAL_STRING_FIELDS:
@@ -87,6 +109,15 @@ def _require_nonempty_str(payload: dict[str, Any], key: str, path: str) -> str:
     return value.strip()
 
 
+def _coalesce_nonempty_str(payload: dict[str, Any], keys: tuple[str, ...], path: str) -> str:
+    seen = [_require_nonempty_str(payload, key, path) for key in keys if key in payload]
+    if not seen:
+        raise ReplayCapabilityError(f"{path}.{keys[0]} must be a non-empty string")
+    if len(set(seen)) > 1:
+        raise ReplayCapabilityError(f"{path}.{keys[0]} conflicts with compatibility alias")
+    return seen[0]
+
+
 def _require_safe_id(payload: dict[str, Any], key: str, path: str) -> str:
     value = _require_nonempty_str(payload, key, path)
     if not PLAN_ID_RE.fullmatch(value):
@@ -107,8 +138,17 @@ def _require_round_list(payload: dict[str, Any], key: str, path: str) -> list[st
     return normalized
 
 
-def _require_preserved_inputs(payload: dict[str, Any], key: str, path: str) -> list[Any]:
-    values = _require_nonempty_list(payload, key, path)
+def _coalesce_nonempty_list(payload: dict[str, Any], keys: tuple[str, ...], path: str) -> list[Any]:
+    present = [key for key in keys if key in payload]
+    if not present:
+        raise ReplayCapabilityError(f"{path}.{keys[0]} must be a non-empty array")
+    if len(present) > 1 and payload[present[0]] != payload[present[1]]:
+        raise ReplayCapabilityError(f"{path}.{keys[0]} conflicts with compatibility alias")
+    return _require_nonempty_list(payload, present[0], path)
+
+
+def _require_preserved_inputs(payload: dict[str, Any], keys: tuple[str, ...], path: str) -> list[Any]:
+    values = _coalesce_nonempty_list(payload, keys, path)
     normalized = []
     for item in values:
         if isinstance(item, str):
@@ -117,27 +157,29 @@ def _require_preserved_inputs(payload: dict[str, Any], key: str, path: str) -> l
             normalized.append(item.strip())
             continue
         if not isinstance(item, dict):
-            raise ReplayCapabilityError(f"{path}.{key} must contain non-empty strings or objects")
+            raise ReplayCapabilityError(f"{path}.{keys[0]} must contain non-empty strings or objects")
         entry = deepcopy(item)
-        round_id = _require_nonempty_str(entry, "round_id", f"{path}.{key}[]")
+        round_id = _require_nonempty_str(entry, "round_id", f"{path}.{keys[0]}[]")
         if not ROUND_ID_RE.fullmatch(round_id):
-            raise ReplayCapabilityError(f"{path}.{key}[].round_id contains invalid round id: {round_id}")
-        input_id = _require_nonempty_str(entry, "input_id", f"{path}.{key}[]")
-        raw_text = _require_nonempty_str(entry, "raw_text", f"{path}.{key}[]")
+            raise ReplayCapabilityError(f"{path}.{keys[0]}[].round_id contains invalid round id: {round_id}")
+        input_id = _require_nonempty_str(entry, "input_id", f"{path}.{keys[0]}[]")
+        raw_text = _require_nonempty_str(entry, "raw_text", f"{path}.{keys[0]}[]")
         normalized.append({"round_id": round_id, "input_id": input_id, "raw_text": raw_text})
     return normalized
 
 
-def _require_artifact_list(payload: dict[str, Any], key: str, path: str) -> list[str]:
-    values = _require_nonempty_list(payload, key, path)
+def _require_artifact_list(payload: dict[str, Any], keys: tuple[str, ...], path: str) -> list[str]:
+    values = _coalesce_nonempty_list(payload, keys, path)
     normalized = []
     for item in values:
         if not isinstance(item, str) or not item.strip():
-            raise ReplayCapabilityError(f"{path}.{key} must contain non-empty strings")
+            raise ReplayCapabilityError(f"{path}.{keys[0]} must contain non-empty strings")
         artifact = item.strip().replace("\\", "/")
         relative = Path(artifact)
         if relative.is_absolute() or ".." in relative.parts:
-            raise ReplayCapabilityError(f"{path}.{key} contains unsafe artifact path: {item}")
+            raise ReplayCapabilityError(f"{path}.{keys[0]} contains unsafe artifact path: {item}")
+        if artifact not in REPLAY_DISCARD_ALLOWLIST:
+            raise ReplayCapabilityError(f"{path}.{keys[0]} contains unsupported artifact: {artifact}")
         normalized.append(artifact)
     return normalized
 

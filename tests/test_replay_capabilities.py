@@ -31,18 +31,19 @@ class ReplayCapabilitiesTest(unittest.TestCase):
 
     def _valid_plan(self):
         return {
+            "schema_version": 1,
             "plan_id": "replay-001",
-            "mode": "single_round",
+            "scope": "single_round",
             "snapshot_id": "round-000003-20260623T000000000000Z-abc123def456",
             "affected_rounds": ["round-000003"],
-            "preserved_player_inputs": [
+            "preserved_player_input_ids": [
                 {
                     "round_id": "round-000003",
                     "input_id": "input-3",
-                    "raw_text": "把上一轮改成梦境，从醒来继续。",
+                    "raw_text": "Treat the previous round as a dream and continue after waking.",
                 }
             ],
-            "discard_artifacts": [
+            "discard_ai_artifacts": [
                 "gm.output.json",
                 "actor.outputs.json",
                 "interaction.trace.json",
@@ -56,22 +57,25 @@ class ReplayCapabilitiesTest(unittest.TestCase):
         original = json.loads(json.dumps(plan, ensure_ascii=False))
 
         normalized = self.mod.validate_replay_plan(plan)
-        normalized["preserved_player_inputs"][0]["raw_text"] = "changed"
+        normalized["preserved_player_input_ids"][0]["raw_text"] = "changed"
 
         self.assertEqual(plan, original)
+        self.assertEqual(normalized["schema_version"], 1)
         self.assertEqual(normalized["plan_id"], "replay-001")
-        self.assertEqual(normalized["mode"], "single_round")
+        self.assertEqual(normalized["scope"], "single_round")
+        self.assertNotIn("mode", normalized)
         self.assertEqual(normalized["snapshot_id"], plan["snapshot_id"])
         self.assertEqual(normalized["affected_rounds"], ["round-000003"])
         self.assertEqual(
-            normalized["discard_artifacts"],
+            normalized["discard_ai_artifacts"],
             ["gm.output.json", "actor.outputs.json", "interaction.trace.json", "story.input.json"],
         )
+        self.assertNotIn("discard_artifacts", normalized)
         self.assertIs(normalized["requires_manual_confirmation"], True)
 
     def test_validate_replay_plan_rejects_multi_round_with_readable_error(self):
         plan = self._valid_plan()
-        plan["mode"] = "multi_round"
+        plan["scope"] = "multi_round"
 
         with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "multi_round replay is plan-only"):
             self.mod.validate_replay_plan(plan)
@@ -85,10 +89,38 @@ class ReplayCapabilitiesTest(unittest.TestCase):
 
     def test_validate_replay_plan_rejects_unsafe_artifact_paths(self):
         plan = self._valid_plan()
-        plan["discard_artifacts"] = ["../story.output.json"]
+        plan["discard_ai_artifacts"] = ["../story.output.json"]
 
-        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "discard_artifacts"):
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "discard_ai_artifacts"):
             self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_rejects_artifacts_outside_allowlist(self):
+        plan = self._valid_plan()
+        plan["discard_ai_artifacts"] = ["debug/model_calls/index.jsonl"]
+
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "unsupported artifact"):
+            self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_rejects_invalid_preserved_input_entries(self):
+        plan = self._valid_plan()
+        plan["preserved_player_input_ids"] = [123]
+
+        with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "preserved_player_input_ids"):
+            self.mod.validate_replay_plan(plan)
+
+    def test_validate_replay_plan_accepts_aliases_but_normalizes_output(self):
+        plan = self._valid_plan()
+        plan["mode"] = plan.pop("scope")
+        plan["preserved_player_inputs"] = plan.pop("preserved_player_input_ids")
+        plan["discard_artifacts"] = plan.pop("discard_ai_artifacts")
+
+        normalized = self.mod.validate_replay_plan(plan)
+
+        self.assertEqual(normalized["scope"], "single_round")
+        self.assertIn("preserved_player_input_ids", normalized)
+        self.assertIn("discard_ai_artifacts", normalized)
+        self.assertNotIn("preserved_player_inputs", normalized)
+        self.assertNotIn("discard_artifacts", normalized)
 
     def test_materialize_replay_plan_writes_artifact_inside_run_without_side_effects(self):
         plan = self._valid_plan()
@@ -106,6 +138,12 @@ class ReplayCapabilitiesTest(unittest.TestCase):
         self.assertTrue(artifact_path.is_file())
         payload = json.loads(artifact_path.read_text(encoding="utf-8"))
         self.assertEqual(payload, result["plan"])
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["scope"], "single_round")
+        self.assertIn("preserved_player_input_ids", payload)
+        self.assertIn("discard_ai_artifacts", payload)
+        self.assertNotIn("preserved_player_inputs", payload)
+        self.assertNotIn("discard_artifacts", payload)
         self.assertTrue(snapshot_dir.is_dir())
         self.assertEqual(existing_artifact.read_text(encoding="utf-8"), '{"keep": true}')
 
