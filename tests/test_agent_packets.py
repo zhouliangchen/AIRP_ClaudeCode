@@ -2025,6 +2025,100 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn(hidden_text, json.dumps(player_packet, ensure_ascii=False))
         self.assertNotIn(hidden_text, json.dumps(character_packet, ensure_ascii=False))
 
+    def test_prepare_agent_run_includes_objective_world_only_for_gm(self):
+        objective_fact = "The locked archive door leads to a moon base."
+        _write_json(
+            self.card / "memory" / "objective_world.json",
+            {
+                "facts": [{"scope": "archive", "fact": objective_fact, "source": "fixture"}],
+                "sources": [{"type": "fixture", "path": "memory/objective_world.json"}],
+            },
+        )
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I listen at the archive door.",
+            chat_log=[],
+            card_data={"title": "Objective World Packet Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        safe_name = self.agent_run.safe_name("Ada")
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+        gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
+        player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+        character_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertEqual(input_json["objective_world"]["facts"][0]["fact"], objective_fact)
+        self.assertEqual(gm_packet["objective_world"]["facts"][0]["fact"], objective_fact)
+        self.assertIn(objective_fact, gm_prompt)
+        self.assertNotIn("objective_world", player_packet)
+        self.assertNotIn("objective_world", character_packet)
+        self.assertNotIn(objective_fact, json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn(objective_fact, json.dumps(character_packet, ensure_ascii=False))
+        self.assertNotIn(objective_fact, player_prompt)
+        self.assertNotIn(objective_fact, character_prompt)
+
+    def test_rebuild_agent_run_from_analysis_refreshes_objective_world_for_gm_only(self):
+        initial_fact = "The old archive map is incomplete."
+        rebuilt_fact = "The archive elevator reaches the moon base."
+        _write_json(
+            self.card / "memory" / "objective_world.json",
+            {"facts": [{"scope": "archive", "fact": initial_fact, "source": "before"}], "sources": []},
+        )
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I check the archive map.",
+            chat_log=[],
+            card_data={"title": "Objective World Rebuild Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+        )
+        run_dir = Path(result["run_dir"])
+        raw_request = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        _write_json(
+            self.card / "memory" / "objective_world.json",
+            {"facts": [{"scope": "archive", "fact": rebuilt_fact, "source": "analysis"}], "sources": []},
+        )
+
+        self.agent_packets.rebuild_agent_run_from_analysis(
+            self.card,
+            run_dir,
+            {"analysis_mode": "fixture", "source_integrity": raw_request["source_integrity"]},
+            {
+                "input_schema": "analysis_v1",
+                "role_channel": "I check the archive map.",
+                "user_instruction_channel": "",
+                "components": [{"channel": "role", "text": "I check the archive map."}],
+                "characters": ["Ada"],
+            },
+            raw_request,
+            chat_log=[],
+            card_data={"title": "Objective World Rebuild Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+        )
+
+        safe_name = self.agent_run.safe_name("Ada")
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+        player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+        character_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertEqual(input_json["objective_world"]["facts"][0]["fact"], rebuilt_fact)
+        self.assertEqual(gm_packet["objective_world"]["facts"][0]["fact"], rebuilt_fact)
+        self.assertNotIn(initial_fact, json.dumps(input_json, ensure_ascii=False))
+        self.assertNotIn("objective_world", player_packet)
+        self.assertNotIn("objective_world", character_packet)
+        self.assertNotIn(rebuilt_fact, player_prompt)
+        self.assertNotIn(rebuilt_fact, character_prompt)
+
     def test_prepare_agent_run_ignores_metadata_dict_as_character_context(self):
         user_text = "I test metadata-only character context."
         result = self.agent_packets.prepare_agent_run(

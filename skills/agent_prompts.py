@@ -19,6 +19,7 @@ SKILL_PATHS = {
     "subgm": ".claude/skills/rp-subgm-agent.md",
     "player": ".claude/skills/rp-player-agent.md",
     "character": ".claude/skills/rp-character-agent.md",
+    "projection": ".claude/skills/rp-projection-agent.md",
     "story": ".claude/skills/rp-story-agent.md",
     "critic": ".claude/skills/rp-critic-agent.md",
     "postprocess": ".claude/skills/rp-postprocess-agent.md",
@@ -379,6 +380,33 @@ def _character_prompt(context: Dict[str, Any]) -> str:
 def character_prompt_text(context: Dict[str, Any]) -> str:
     """Return the generated character prompt text for a projected loop packet."""
     return _character_prompt(context if isinstance(context, dict) else {})
+
+
+def projection_prompt_text(context: Dict[str, Any]) -> str:
+    """Return the generated projection review prompt text."""
+    context = context if isinstance(context, dict) else {}
+    contract = _json_block({
+        "decision": "pass",
+        "target_actor_id": context.get("target_actor_id", ""),
+        "source_call_id": context.get("source_call_id", ""),
+        "final_actor_message": "actor-facing second-person message",
+        "feedback": "",
+    })
+    return _base_prompt(
+        "Projection Agent Prompt",
+        "projection",
+        "artifacts/projections/<intent_id>.json",
+        contract,
+        context,
+        "Review the requested actor message and return exactly one JSON projection result object. "
+        "Use `pass` when no change is needed, `edited` for small safe edits, "
+        "`needs_rewrite` when GM/subGM must rewrite, and `blocked` for invalid requests.",
+        contract_notes=(
+            "Do not reveal objective truth to the target actor. "
+            "Do not tell the actor that a belief is false. "
+            "Only `final_actor_message` can be delivered to the actor."
+        ),
+    )
 
 
 def _subgm_prompt(context: Dict[str, Any]) -> str:

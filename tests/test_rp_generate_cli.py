@@ -137,6 +137,16 @@ def _story_output(content="<content>ok</content>", *, metadata=None):
     return {"content": content, "character_dialogues": [], "metadata": metadata or {}}
 
 
+def _projection_output(actor_id, source_call_id, final_actor_message):
+    return {
+        "decision": "pass",
+        "target_actor_id": actor_id,
+        "source_call_id": source_call_id,
+        "final_actor_message": final_actor_message,
+        "feedback": "",
+    }
+
+
 def _critic_pass():
     return {
         "decision": "pass",
@@ -243,6 +253,32 @@ class RpGenerateCliTest(unittest.TestCase):
         )
         self.module = _load_rp_generate_cli()
         self.agent_intents = importlib.import_module("agent_intents")
+
+    def _write_player_context_packet(self):
+        _write_json(
+            self.run_dir / "player.context.json",
+            {
+                "actor_id": "player",
+                "agent": "player",
+                "visibility": "first_person_player",
+                "immersive_context": "You are following the noise.",
+                "memory": {"key_memories": ["You heard the alley noise."]},
+                "visible_events": [],
+            },
+        )
+
+    def _write_character_context_packet(self, safe_name="Ada"):
+        _write_json(
+            self.run_dir / "characters" / f"{safe_name}.context.json",
+            {
+                "actor_id": f"character:{safe_name}",
+                "agent": "character",
+                "visibility": "first_person_character",
+                "immersive_context": f"{safe_name} is watching the player enter.",
+                "memory": {"key_memories": [f"{safe_name} is present in the scene."]},
+                "visible_events": [],
+            },
+        )
 
     def _queue_run_gm_turn(self):
         return self.agent_intents.create_intent(
@@ -1398,6 +1434,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
     def test_run_round_retries_actor_output_with_wrong_agent_id(self):
         self._queue_run_gm_turn()
+        self._write_player_context_packet()
         calls = []
         gm_payloads = [
             _gm_output(
@@ -1424,6 +1461,8 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload["agent_id"] = "character:Ada"
             elif agent_key == "player":
                 payload = _player_output("I correct myself.")
+            elif agent_key == "projection":
+                payload = _projection_output("player", "call-player-1", "Respond to the current player action.")
             elif agent_key == "story":
                 payload = _story_output()
             elif agent_key == "critic":
@@ -1449,6 +1488,7 @@ class RpGenerateCliTest(unittest.TestCase):
 
     def test_run_round_retries_character_output_with_wrong_agent_id(self):
         self._queue_run_gm_turn()
+        self._write_character_context_packet("Ada")
         (self.run_dir / "prompts" / "characters").mkdir()
         (self.run_dir / "prompts" / "characters" / "Ada.prompt.md").write_text("# Ada\n", encoding="utf-8")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1485,6 +1525,8 @@ class RpGenerateCliTest(unittest.TestCase):
                 payload = _character_output("character:Ada", "Stay close.")
             elif agent_key == "player":
                 payload = _player_output("I stay close.")
+            elif agent_key == "projection":
+                payload = _projection_output("character:Ada", "call-character-Ada-1", "Ada sees the player enter.")
             elif agent_key == "story":
                 payload = _story_output()
             elif agent_key == "critic":

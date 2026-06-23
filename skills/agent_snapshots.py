@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
+import objective_world
+
 SNAPSHOT_ITEMS = [
     "chat_log.json",
     ".card_data.json",
@@ -137,6 +139,7 @@ def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> D
         "reason": reason,
         "created_at": _utc_now(),
         "copied": copied,
+        "objective_world_included": (card / objective_world.OBJECTIVE_WORLD_REL_PATH).is_file(),
     }
     _write_json(snapshot_dir / "snapshot.json", metadata)
 

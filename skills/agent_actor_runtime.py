@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 import agent_intents
@@ -38,6 +40,7 @@ def record_request_actor(
     actor_id: str,
     call: dict,
     *,
+    packet: dict | None = None,
     source_intent_id: str = "",
     fanout: dict | None = None,
 ) -> tuple[str, str]:
@@ -45,6 +48,15 @@ def record_request_actor(
 
     try:
         call_id = str(call.get("call_id") or "")
+        request_payload = {
+            "actor_id": actor_id,
+            "call": copy.deepcopy(call),
+        }
+        context_packet = _validated_actor_context_packet(actor_id, packet)
+        if context_packet is None:
+            context_packet = load_actor_context_packet(run_dir, actor_id)
+        if context_packet is not None:
+            request_payload["packet"] = context_packet
         request_message = _require_message_result(
             "append request_actor message",
             agent_messages.append_message(
@@ -55,10 +67,7 @@ def record_request_actor(
                     "type": "request_actor",
                     "visibility": "gm_only",
                     "source_call_id": call_id,
-                    "payload": {
-                        "actor_id": actor_id,
-                        "call": call,
-                    },
+                    "payload": request_payload,
                 },
             ),
         )
@@ -90,14 +99,92 @@ def record_request_actor(
         raise _runtime_write_error("record request_actor intent", exc) from exc
 
 
+def load_actor_context_packet(run_dir: str | Path, actor_id: str) -> dict | None:
+    """Load the current round actor packet if it has already been rendered."""
+
+    path = _actor_context_packet_path(Path(run_dir), actor_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AgentActorProjectionError(
+            "actor_context_packet_invalid",
+            {"actor_id": actor_id, "path": str(path), "error": str(exc)},
+        ) from exc
+    return _validated_actor_context_packet(actor_id, payload)
+
+
+def require_actor_context_packet(run_dir: str | Path, actor_id: str) -> dict:
+    """Load the current actor packet or block projection before context is lost."""
+
+    packet = load_actor_context_packet(run_dir, actor_id)
+    if packet is None:
+        path = _actor_context_packet_path(Path(run_dir), actor_id)
+        raise AgentActorProjectionError(
+            "actor_context_packet_missing",
+            {"actor_id": actor_id, "path": str(path) if path is not None else ""},
+        )
+    return packet
+
+
 def project_actor_request(
     run_dir: Path,
     *,
     actor_id: str,
     source_message_id: str,
     source_call_id: str,
+    projection_result: dict | None = None,
 ) -> dict:
     """Project a request_actor message into the target actor inbox."""
+
+    request = inspect_projection_request(
+        run_dir,
+        actor_id=actor_id,
+        source_message_id=source_message_id,
+        source_call_id=source_call_id,
+    )
+    call = request["call"]
+    resolved_call_id = request["source_call_id"]
+    packet = _projection_packet(actor_id, request["payload"], call, projection_result=projection_result)
+    existing_projected_message = request["existing_projected_message"]
+    if existing_projected_message is not None:
+        return {
+            "actor_id": actor_id,
+            "source_message_id": source_message_id,
+            "source_call_id": resolved_call_id,
+            "projected_message_id": str(existing_projected_message["id"]),
+            "projected_message": existing_projected_message,
+            "projected_message_created": False,
+        }
+
+    projected_message = _append_projected_message(
+        run_dir,
+        actor_id,
+        call,
+        packet,
+        resolved_call_id,
+        source_message_id,
+        projection_result=projection_result,
+    )
+    return {
+        "actor_id": actor_id,
+        "source_message_id": source_message_id,
+        "source_call_id": resolved_call_id,
+        "projected_message_id": str(projected_message["id"]),
+        "projected_message": projected_message,
+        "projected_message_created": True,
+    }
+
+
+def inspect_projection_request(
+    run_dir: Path,
+    *,
+    actor_id: str,
+    source_message_id: str,
+    source_call_id: str,
+) -> dict:
+    """Validate and describe a request_actor projection without appending messages."""
 
     source_message = _find_source_message(run_dir, source_message_id)
     if source_message is None:
@@ -169,31 +256,15 @@ def project_actor_request(
         source_message_id=source_message_id,
         call=call,
     )
-    if existing_projected_message is not None:
-        return {
-            "actor_id": actor_id,
-            "source_message_id": source_message_id,
-            "source_call_id": resolved_call_id,
-            "projected_message_id": str(existing_projected_message["id"]),
-            "projected_message": existing_projected_message,
-            "projected_message_created": False,
-        }
-
-    projected_message = _append_projected_message(
-        run_dir,
-        actor_id,
-        call,
-        packet,
-        resolved_call_id,
-        source_message_id,
-    )
     return {
         "actor_id": actor_id,
         "source_message_id": source_message_id,
         "source_call_id": resolved_call_id,
-        "projected_message_id": str(projected_message["id"]),
-        "projected_message": projected_message,
-        "projected_message_created": True,
+        "source_message": source_message,
+        "payload": payload,
+        "call": call,
+        "packet": packet,
+        "existing_projected_message": existing_projected_message,
     }
 
 
@@ -533,15 +604,63 @@ def _resolve_source_call_id(source_message: dict, call: dict) -> str:
     return str(source_message.get("source_call_id") or call.get("call_id") or "")
 
 
-def _projection_packet(actor_id: str, payload: dict, call: dict) -> dict:
+def _projection_packet(
+    actor_id: str,
+    payload: dict,
+    call: dict,
+    *,
+    projection_result: dict | None = None,
+) -> dict:
     packet = payload.get("packet")
     if not isinstance(packet, dict):
         packet = call.get("packet")
     if isinstance(packet, dict):
-        projected = dict(packet)
+        projected = copy.deepcopy(packet)
         projected.setdefault("actor_id", actor_id)
-        return projected
-    return {"actor_id": actor_id, "call": call}
+    else:
+        projected = {"actor_id": actor_id, "call": copy.deepcopy(call)}
+    final_actor_message = _projection_final_actor_message(call, projection_result)
+    if final_actor_message:
+        projected["gm_prompt"] = final_actor_message
+    projected_call = copy.deepcopy(call)
+    if final_actor_message:
+        projected_call["prompt"] = final_actor_message
+    projected["call"] = projected_call
+    visibility_basis = call.get("visibility_basis")
+    if isinstance(visibility_basis, dict):
+        projected["gm_visibility_basis"] = copy.deepcopy(visibility_basis)
+    return projected
+
+
+def _actor_context_packet_path(run_dir: Path, actor_id: str) -> Path | None:
+    if actor_id == "player":
+        return run_dir / "player.context.json"
+    if actor_id.startswith("character:"):
+        safe = agent_run.safe_name(actor_id.split(":", 1)[1] or "_unknown")
+        return run_dir / "characters" / f"{safe}.context.json"
+    return None
+
+
+def _validated_actor_context_packet(actor_id: str, packet: dict | None) -> dict | None:
+    if not isinstance(packet, dict):
+        return None
+    projected = copy.deepcopy(packet)
+    packet_actor_id = str(projected.get("actor_id") or actor_id)
+    if packet_actor_id != actor_id:
+        raise AgentActorProjectionError(
+            "actor_context_actor_mismatch",
+            {"expected_actor_id": actor_id, "packet_actor_id": packet_actor_id},
+        )
+    projected["actor_id"] = actor_id
+    return projected
+
+
+def _projection_final_actor_message(call: dict, projection_result: dict | None) -> str:
+    if isinstance(projection_result, dict):
+        final_actor_message = projection_result.get("final_actor_message")
+        if isinstance(final_actor_message, str) and final_actor_message.strip():
+            return final_actor_message.strip()
+    return str(call.get("prompt") or "")
 
 
 def _append_projected_message(
@@ -551,7 +670,18 @@ def _append_projected_message(
     packet: dict,
     source_call_id: str,
     source_message_id: str,
+    *,
+    projection_result: dict | None = None,
 ) -> dict:
+    final_actor_message = _projection_final_actor_message(call, projection_result)
+    payload = {
+        "actor_id": actor_id,
+        "source_message_id": source_message_id,
+        "packet": packet,
+        "gm_prompt": final_actor_message,
+    }
+    if isinstance(projection_result, dict):
+        payload["projection"] = dict(projection_result)
     result = agent_messages.append_message(
         run_dir,
         {
@@ -560,12 +690,7 @@ def _append_projected_message(
             "type": "projected_message",
             "visibility": "actor_facing",
             "source_call_id": source_call_id,
-            "payload": {
-                "actor_id": actor_id,
-                "source_message_id": source_message_id,
-                "packet": packet,
-                "gm_prompt": str(call.get("prompt") or ""),
-            },
+            "payload": payload,
         },
     )
     if not isinstance(result, dict) or not result.get("ok"):

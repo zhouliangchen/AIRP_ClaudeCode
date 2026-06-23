@@ -20,6 +20,7 @@ import agent_schemas
 import agent_turn_loop
 import input_analysis_apply
 import model_debug
+import projection_agent
 import self_repair
 
 try:
@@ -335,6 +336,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "critic_report"
     elif agent_key == "postprocess":
         wrapper = "postprocess_output"
+    elif agent_key == "projection":
+        wrapper = "projection_output"
 
     nested = payload.get(wrapper) if wrapper else None
     if isinstance(nested, dict):
@@ -359,7 +362,22 @@ def _normalize_world_state_delta(items: list[Any]) -> list[Any]:
     return normalized
 
 
-def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _projection_validation_identity(validation_context: Dict[str, Any] | None) -> tuple[str, str]:
+    context = validation_context if isinstance(validation_context, dict) else {}
+    packet = context.get("projection_packet")
+    source = packet if isinstance(packet, dict) else context
+    actor_id = str(source.get("target_actor_id") or "").strip()
+    source_call_id = str(source.get("source_call_id") or "").strip()
+    if not actor_id or not source_call_id:
+        raise AgentExecutionError("projection validation context requires target_actor_id and source_call_id")
+    return actor_id, source_call_id
+
+
+def _validate(
+    agent_key: str,
+    payload: Dict[str, Any],
+    validation_context: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     payload = _unwrap_payload(agent_key, payload)
     try:
         if agent_key == "gm":
@@ -392,7 +410,16 @@ def _validate(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             return payload
         if agent_key == "input_analyst":
             return payload
+        if agent_key == "projection":
+            actor_id, source_call_id = _projection_validation_identity(validation_context)
+            return projection_agent.validate_projection_output(
+                payload,
+                actor_id=actor_id,
+                source_call_id=source_call_id,
+            )
     except agent_schemas.ValidationError as exc:
+        raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
+    except projection_agent.ProjectionValidationError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     raise AgentExecutionError(f"Unknown agent key: {agent_key}")
 
@@ -412,7 +439,7 @@ def _dispatch_agent_payload(
             stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
             text = _extract_agent_or_direct_text(stream)
             payload = _extract_json_object(text)
-            return _validate(agent_key, payload)
+            return _validate(agent_key, payload, extra_context)
         except AgentExecutionError as exc:
             last_error = exc
             if attempt == attempts - 1:

@@ -43,6 +43,10 @@ The main GM is the only root authority. You may accept, reject, or revise subGM 
 
 Before completing a turn, resolve side-thread state explicitly: guide it with `message` or `accelerate`, wait by returning `continue`, merge it, pause it for later, or close it as abandoned/completed. A `complete` stop is valid only when no active side thread remains.
 
+## Actor Request Boundary
+
+Write actor requests in immersive second-person natural language. Use objective world truth for simulation, but actor-facing labels must come from target actor memory, perception, training, and in-world reports. If the target lacks basis for a hidden label, use an appearance-level or belief-level label instead.
+
 ## Output Schema
 
 Return one GM output object:
@@ -61,7 +65,7 @@ Return one GM output object:
     {
       "call_id": "call-character-Ada-1",
       "actor_id": "character:Ada",
-      "prompt": "second-person visible prompt for this actor",
+      "prompt": "immersive second-person visible prompt for this actor",
       "reason": "why this actor is needed now",
       "metadata": {},
       "visibility_basis": {

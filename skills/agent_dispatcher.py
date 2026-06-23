@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+import agent_prompts
 import agent_outputs
 import agent_snapshots
 import agent_actor_runtime
@@ -18,6 +19,7 @@ import agent_turn_loop
 import input_analysis_apply
 import input_routing_requests
 import postprocess_outputs
+import projection_agent
 import rp_generate_cli
 import self_repair
 import subgm_threads
@@ -134,7 +136,7 @@ def _execute_supported_intent(
     if intent_type == "run_gm_turn":
         return _execute_run_gm_turn(run_dir, root_dir, intent, run_claude)
     if intent_type == "request_projection":
-        return _execute_request_projection(run_dir, intent)
+        return _execute_request_projection(run_dir, root_dir, intent, run_claude)
     if intent_type == "run_actor":
         return _execute_run_actor(run_dir, root_dir, intent, run_claude)
     if intent_type == "run_subgm_thread":
@@ -225,6 +227,9 @@ def _dispatch_agent_payload(
             if not _is_loop_prompt_missing(exc):
                 raise
             prompt = _read_prompt(run_dir, agent_key)
+    elif agent_key == "projection":
+        projection_packet = extra_context.get("projection_packet") if isinstance(extra_context, dict) else None
+        prompt = agent_prompts.projection_prompt_text(projection_packet if isinstance(projection_packet, dict) else {})
     else:
         prompt = _read_prompt(run_dir, agent_key)
     return rp_generate_cli._dispatch_agent_payload(
@@ -418,7 +423,12 @@ def _execute_compose_story(
     )
 
 
-def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[str, Any]:
+def _execute_request_projection(
+    run_dir: Path,
+    root_dir: Path,
+    intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None,
+) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
     actor_id = str(payload.get("actor_id") or "")
@@ -440,11 +450,117 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         return accept_failure
 
     try:
+        request = agent_actor_runtime.inspect_projection_request(
+            run_dir,
+            actor_id=actor_id,
+            source_message_id=source_message_id,
+            source_call_id=source_call_id,
+        )
+        existing_projected_message = request.get("existing_projected_message")
+        projection_result: dict[str, Any] | None = None
+        projection_artifact = ""
+        if existing_projected_message is None:
+            call = request.get("call") if isinstance(request.get("call"), dict) else {}
+            source_payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+            objective_context = source_payload.get("objective_context")
+            if not isinstance(objective_context, dict):
+                objective_context = call.get("objective_context") if isinstance(call.get("objective_context"), dict) else {}
+            review_packet = projection_agent.build_review_packet(
+                actor_id=actor_id,
+                source_call_id=str(request.get("source_call_id") or source_call_id),
+                source_message_id=source_message_id,
+                requested_actor_message=str(call.get("prompt") or ""),
+                actor_packet=request.get("packet") if isinstance(request.get("packet"), dict) else {},
+                objective_context=objective_context,
+            )
+            raw_projection = _dispatch_projection_agent(run_dir, root_dir, run_claude, review_packet)
+            projection_result = projection_agent.validate_projection_output(
+                raw_projection,
+                actor_id=actor_id,
+                source_call_id=str(request.get("source_call_id") or source_call_id),
+            )
+            projection_artifact = f"artifacts/projections/{intent_id}.json"
+            write_artifact(
+                run_dir,
+                f"projections/{intent_id}.json",
+                {
+                    "review_packet": review_packet,
+                    "projection_result": projection_result,
+                },
+            )
+            if projection_result["decision"] == "blocked":
+                raise agent_actor_runtime.AgentActorProjectionError(
+                    "projection_agent_blocked",
+                    {"feedback": projection_result.get("feedback", ""), "projection_result": projection_result},
+                )
+            if projection_result["decision"] == "needs_rewrite":
+                follow_up = _ensure_follow_up_intent(
+                    run_dir,
+                    intent_id,
+                    {
+                        "requested_by": "projection",
+                        "type": "run_gm_turn",
+                        "source_message_id": source_message_id,
+                        "payload": {
+                            "reason": "projection_needs_rewrite",
+                            "actor_id": actor_id,
+                            "source_message_id": source_message_id,
+                            "source_call_id": str(request.get("source_call_id") or source_call_id),
+                            "projection_feedback": projection_result.get("feedback", ""),
+                        },
+                        "policy": {
+                            "source_intent_id": intent_id,
+                            **({"fanout_batch_id": fanout["batch_id"]} if fanout else {}),
+                        },
+                    },
+                )
+                follow_up_id = str(follow_up.get("id") or "")
+                created_intents = [follow_up_id] if follow_up.get("created") else []
+                outputs = {
+                    "executor": "request_projection",
+                    "intent_type": "request_projection",
+                    "source_message_id": source_message_id,
+                    "source_call_id": str(request.get("source_call_id") or source_call_id),
+                    "projection_decision": projection_result["decision"],
+                    "projection_feedback": projection_result.get("feedback", ""),
+                    "follow_up_intent_id": follow_up_id,
+                    "created_messages": [],
+                    "created_intents": created_intents,
+                    "artifacts": [projection_artifact],
+                }
+                complete_failure = _request_projection_transition_failure(
+                    run_dir,
+                    intent_id,
+                    "request_projection_complete_failed",
+                    _call_intent_transition(
+                        agent_intents.complete_intent,
+                        run_dir,
+                        intent_id,
+                        outputs=outputs,
+                    ),
+                    outputs=outputs,
+                    created_intents=created_intents,
+                    created_messages=[],
+                )
+                if complete_failure is not None:
+                    return complete_failure
+                return _result(
+                    True,
+                    "completed",
+                    intent_id=intent_id,
+                    intent_type="request_projection",
+                    reason="",
+                    created_intents=created_intents,
+                    created_messages=[],
+                    artifacts=[projection_artifact],
+                    detail=outputs,
+                )
         projection = agent_actor_runtime.project_actor_request(
             run_dir,
             actor_id=actor_id,
             source_message_id=source_message_id,
             source_call_id=source_call_id,
+            projection_result=projection_result,
         )
         projected_message_id = str(projection.get("projected_message_id") or "")
         resolved_source_call_id = str(projection.get("source_call_id") or source_call_id)
@@ -482,6 +598,10 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
     created_intents = [follow_up_id] if follow_up.get("created") else []
     projected_message_created = bool(projection.get("projected_message_created", True))
     created_messages = [projected_message_id] if projected_message_id and projected_message_created else []
+    artifacts = [projection_artifact] if projection_artifact else []
+    projection_decision = ""
+    if isinstance(projection_result, dict):
+        projection_decision = str(projection_result.get("decision") or "")
     outputs = {
         "executor": "request_projection",
         "intent_type": "request_projection",
@@ -491,7 +611,10 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         "follow_up_intent_id": follow_up_id,
         "created_messages": created_messages,
         "created_intents": created_intents,
+        "artifacts": artifacts,
     }
+    if projection_decision:
+        outputs["projection_decision"] = projection_decision
     complete_failure = _request_projection_transition_failure(
         run_dir,
         intent_id,
@@ -516,7 +639,7 @@ def _execute_request_projection(run_dir: Path, intent: dict[str, Any]) -> dict[s
         reason="",
         created_intents=created_intents,
         created_messages=created_messages,
-        artifacts=[],
+        artifacts=artifacts,
         detail=outputs,
     )
 
@@ -541,6 +664,21 @@ def _normalize_actor_fanout(value: Any) -> dict[str, Any] | None:
         "source_gm_intent_id": source_gm_intent_id,
         "expected_source_call_ids": expected_source_call_ids,
     }
+
+
+def _dispatch_projection_agent(
+    run_dir: Path,
+    root_dir: Path,
+    run_claude: Callable[[str, str, str | Path], str] | None,
+    review_packet: dict[str, Any],
+) -> dict[str, Any]:
+    return _dispatch_agent_payload(
+        "projection",
+        run_dir,
+        root_dir,
+        run_claude,
+        {"projection_packet": review_packet},
+    )
 
 
 def _gm_fanout_completed_source_call_ids(
@@ -2428,11 +2566,13 @@ def _execute_run_gm_turn(
                 actor_id = str(call.get("actor_id") or "")
                 if not actor_id:
                     continue
+                actor_packet = agent_actor_runtime.require_actor_context_packet(run_dir, actor_id)
                 message_id, projection_intent_id = agent_actor_runtime.record_request_actor(
                     run_dir,
                     "gm",
                     actor_id,
                     call,
+                    packet=actor_packet,
                     source_intent_id=intent_id,
                     fanout=fanout,
                 )

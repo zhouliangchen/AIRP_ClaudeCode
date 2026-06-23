@@ -78,6 +78,40 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("Do not write `<UpdateVariable>`", prompt)
         self.assertIn("postprocess owns MVU variable update commands", prompt)
 
+    def test_projection_prompt_contains_contract_context_and_no_reveal_rule(self):
+        prompt = self.agent_prompts.projection_prompt_text(
+            {
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-bob-1",
+                "requested_actor_message": "You learn Alice is secretly a vampire.",
+                "actor_context": (
+                    "You only saw Alice avoid the sun and heard townsfolk call her dangerous."
+                ),
+            }
+        )
+
+        self.assertIn("Projection Agent Prompt", prompt)
+        self.assertIn('"decision"', prompt)
+        self.assertIn('"final_actor_message"', prompt)
+        self.assertIn("character:Bob", prompt)
+        self.assertIn("call-bob-1", prompt)
+        self.assertIn("avoid the sun", prompt)
+        self.assertIn("Do not reveal objective truth to the target actor", prompt)
+        self.assertIn("Do not tell the actor that a belief is false", prompt)
+        self.assertIn("Only `final_actor_message` can be delivered to the actor", prompt)
+        self.assertNotIn("false_belief", prompt)
+
+    def test_projection_prompt_includes_existing_skill_body(self):
+        prompt = self.agent_prompts.projection_prompt_text(
+            {
+                "target_actor_id": "character:Bob",
+                "source_call_id": "call-bob-1",
+            }
+        )
+
+        self.assertIn(".claude/skills/rp-projection-agent.md", prompt)
+        self.assertNotIn("(missing skill file:", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

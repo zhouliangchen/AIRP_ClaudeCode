@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict
 
 import agent_visibility
+import actor_context_renderer
 
 
 ADDRESS_MODE = "second_person_gm_narration"
@@ -39,11 +40,11 @@ def _text(value: Any) -> str:
 
 
 def _is_forbidden_key(key: Any) -> bool:
-    return bool(agent_visibility.hidden_marker_name(key, FORBIDDEN_NESTED_KEYS))
+    return bool(agent_visibility.hidden_marker_name(key, FORBIDDEN_NESTED_KEYS)) or actor_context_renderer.contains_actor_facing_marker(key)
 
 
 def _contains_forbidden_text(value: Any) -> bool:
-    return bool(agent_visibility.hidden_marker_name(value, FORBIDDEN_NESTED_KEYS))
+    return bool(agent_visibility.hidden_marker_name(value, FORBIDDEN_NESTED_KEYS)) or actor_context_renderer.contains_actor_facing_marker(value)
 
 
 def _safe_text(value: Any) -> str:
@@ -67,18 +68,18 @@ def _sanitize_prompt(value: Any) -> str:
     return " ".join(kept)
 
 
-def _json_safe(value: Any) -> Any:
+def _json_safe(value: Any, *, allow_protocol_keys: bool = False) -> Any:
     """Return a copied JSON-serializable value with forbidden keys removed."""
     if isinstance(value, dict):
         return {
-            str(key): _json_safe(child)
+            str(key): _json_safe(child, allow_protocol_keys=allow_protocol_keys)
             for key, child in value.items()
-            if not _is_forbidden_key(key)
+            if not _is_forbidden_key(key) or (allow_protocol_keys and key in agent_visibility.VISIBILITY_FIELDS)
         }
     if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
+        return [_json_safe(item, allow_protocol_keys=allow_protocol_keys) for item in value]
     if isinstance(value, set):
-        return [_json_safe(item) for item in sorted(value, key=lambda item: str(item))]
+        return [_json_safe(item, allow_protocol_keys=allow_protocol_keys) for item in sorted(value, key=lambda item: str(item))]
     if isinstance(value, str):
         return _safe_text(value)
     if isinstance(value, float):
@@ -170,7 +171,7 @@ def _collect_events(
     source_bucket_actor_id: str = "",
 ) -> list[Any]:
     return [
-        _json_safe(item)
+        _json_safe(item, allow_protocol_keys=True)
         for item in agent_visibility.filter_visible_events(
             value,
             actor_id,
@@ -222,6 +223,7 @@ def project_actor_context(
     actor_key = _text(actor_id)
     world = _as_dict(world_state)
     actor = _as_dict(actor_state)
+    rendered = actor_context_renderer.render_actor_context(actor_key, actor, world)
 
     return {
         "actor_id": actor_key,
@@ -229,14 +231,15 @@ def project_actor_context(
         "visibility": _actor_visibility(actor_key),
         "gm_prompt": _sanitize_prompt(gm_prompt),
         "gm_visibility_basis": _json_safe(
-            agent_visibility.normalize_visibility_basis(gm_visibility_basis or {})
+            agent_visibility.normalize_visibility_basis(gm_visibility_basis or {}),
+            allow_protocol_keys=True,
         ),
         "address_mode": ADDRESS_MODE,
+        "immersive_context": rendered.get("immersive_context", ""),
         "self_knowledge": _self_knowledge(actor),
         "memory": _memory(actor),
         "sensory_context": _sensory_context(world, actor, actor_key),
         "visible_events": _visible_events(world, actor_key, actor),
-        "misconceptions": _as_list(actor.get("misconceptions")),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
     }
 

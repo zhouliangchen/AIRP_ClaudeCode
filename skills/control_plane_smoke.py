@@ -238,6 +238,30 @@ def _ensure_smoke_character_contexts(run_dir: Path) -> None:
     _write_json(run_dir / "input.json", input_json)
 
 
+def _write_smoke_actor_context_packets(run_dir: Path) -> None:
+    _write_json(
+        run_dir / "characters" / "Ada.context.json",
+        {
+            "actor_id": "character:Ada",
+            "agent": "character",
+            "visibility": "first_person_character",
+            "gm_prompt": "",
+            "gm_visibility_basis": {},
+            "address_mode": "second_person_gm_narration",
+            "immersive_context": "Ada stands in the classroom and remembers guiding the player near the archive.",
+            "self_knowledge": {"name": "Ada", "role": "archive guide"},
+            "memory": {
+                "long_term": ["I guide the player near the archive."],
+                "key_memories": [],
+                "short_term": [],
+                "goals": ["Keep the player steady near the archive."],
+            },
+            "sensory_context": {"location": "classroom"},
+            "visible_events": [],
+        },
+    )
+
+
 def _initial_gm_output_fixture() -> Dict[str, Any]:
     output = {
         "agent": "gm",
@@ -899,6 +923,17 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             if agent_key.startswith("subGM:"):
                 thread_id = agent_key.split(":", 1)[1]
                 return _side_thread_output_fixture(thread_id)
+            if agent_key == "projection":
+                projection_packet = context.get("projection_packet")
+                if not isinstance(projection_packet, dict):
+                    raise RuntimeError("deterministic projection dispatch did not receive a projection packet")
+                return {
+                    "decision": "pass",
+                    "target_actor_id": str(projection_packet.get("target_actor_id") or ""),
+                    "source_call_id": str(projection_packet.get("source_call_id") or ""),
+                    "final_actor_message": str(projection_packet.get("requested_actor_message") or ""),
+                    "feedback": "",
+                }
             if agent_key == "character:Ada":
                 actor_packet = context.get("actor_packet")
                 if not isinstance(actor_packet, dict):
@@ -944,6 +979,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 raise RuntimeError(f"analyze_input dispatch failed: {analyze_result}")
             applied_analysis = analyze_result.get("detail", {}).get("applied", {})
             _ensure_smoke_character_contexts(run_dir)
+            _write_smoke_actor_context_packets(run_dir)
 
             gm_result = agent_dispatcher.dispatch_next(
                 run_dir,
