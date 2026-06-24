@@ -593,6 +593,16 @@ class AgentVisibilityTest(unittest.TestCase):
         )
         json.dumps(normalized, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
+    def test_normalize_visibility_basis_maps_peripheral_to_witness(self):
+        normalized = self.visibility.normalize_visibility_basis({
+            "mode": "peripheral",
+            "summary": "Ada can see the conversation from across the hall.",
+            "target_actor": "character:Ada",
+        })
+
+        self.assertEqual(normalized["mode"], "witness")
+        self.assertEqual(normalized["target_actor"], "character:Ada")
+
 
 if __name__ == "__main__":
     unittest.main()

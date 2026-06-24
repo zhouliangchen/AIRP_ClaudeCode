@@ -808,23 +808,6 @@ def _subgm_evidence(
     }
 
 
-def _dispatcher_evidence(run_dir: Path, agent_intents) -> dict:
-    completed = agent_intents.list_intents(run_dir, "completed")
-    blocked = agent_intents.list_intents(run_dir, "blocked")
-    pending = agent_intents.list_intents(run_dir, "pending")
-    manifest = _read_json(run_dir / "manifest.json")
-    manifest_dispatcher = manifest.get("dispatcher")
-    if not isinstance(manifest_dispatcher, dict):
-        manifest_dispatcher = {}
-    return {
-        "status": "delivered" if not pending and not blocked else "blocked" if blocked else "pending",
-        "manifest_status": str(manifest_dispatcher.get("status") or ""),
-        "completed_intent_types": [str(item.get("type") or "") for item in completed],
-        "blocked_intent_types": [str(item.get("type") or "") for item in blocked],
-        "pending_intent_types": [str(item.get("type") or "") for item in pending],
-    }
-
-
 def _story_evidence(run_dir: Path) -> Dict[str, Any]:
     story_output = _read_json(run_dir / "story.output.json")
     dialogues = story_output.get("character_dialogues", [])

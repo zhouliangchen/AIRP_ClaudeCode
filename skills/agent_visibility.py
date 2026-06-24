@@ -17,6 +17,9 @@ ALLOWED_BASIS_MODES = {
     "witness",
     "inference",
 }
+MODE_ALIASES = {
+    "peripheral": "witness",
+}
 VISIBILITY_FIELDS = (
     "scene_id",
     "location",
@@ -259,7 +262,7 @@ def normalize_visibility_basis(value: Any, *, require_summary: bool = False) -> 
 
     normalized: dict[str, Any] = {}
 
-    mode = _canonical_marker(value.get("mode"))
+    mode = MODE_ALIASES.get(_canonical_marker(value.get("mode")), _canonical_marker(value.get("mode")))
     if mode in ALLOWED_BASIS_MODES:
         normalized["mode"] = mode
 

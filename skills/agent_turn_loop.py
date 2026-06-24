@@ -1484,6 +1484,8 @@ def run_interactive_loop(
         gm_stop = str(gm_output.get("stop_reason") or "continue")
         gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
         gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS else ""
+        actor_decision_pending = False
+        actor_decision_reason = ""
 
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
         pending_parallel_groups = gm_output.get("parallel_groups") or []
@@ -1572,7 +1574,7 @@ def run_interactive_loop(
 
                 transfer_calls = []
                 actor_requested_decision = False
-                actor_decision_reason = ""
+                batch_actor_decision_reason = ""
                 for _call, _actor_id, _actor_output, warning in results:
                     if warning:
                         agent_lifecycle.record_stale_actor_context_warning(
@@ -1607,26 +1609,17 @@ def run_interactive_loop(
                     if actor_stop_reason == "stop_for_player_decision" or processed["actor_requested_decision"]:
                         actor_requested_decision = True
                     if processed.get("decision_reason"):
-                        actor_decision_reason = str(processed.get("decision_reason") or "")
+                        batch_actor_decision_reason = str(processed.get("decision_reason") or "")
 
                 _update_visible_events(root, world_state)
                 if actor_requested_decision:
-                    decision_point = _mark_decision(
-                        root,
-                        None,
-                        actor_decision_reason or "Actor requested a real player decision.",
-                    )
-                    _write_progress_safe(
-                        "gm_loop.waiting_player_decision",
-                        "等待玩家决策",
-                        percent=60,
-                        detail={"reason": "actor_requested_decision"},
-                    )
-                    stop_reason = "player_decision"
+                    actor_decision_pending = True
+                    if batch_actor_decision_reason and not actor_decision_reason:
+                        actor_decision_reason = batch_actor_decision_reason
                 if stop_reason in STOP_REASONS:
                     actor_queue.clear()
                     break
-                if transfer_calls:
+                if transfer_calls and not actor_decision_pending:
                     remaining_calls = [
                         later_call
                         for later_batch in batches[batch_index + 1:]
@@ -1642,6 +1635,20 @@ def run_interactive_loop(
                     )
                     break
 
+        if actor_decision_pending:
+            decision_point = _mark_decision(
+                root,
+                None,
+                actor_decision_reason or "Actor requested a real player decision.",
+            )
+            _write_progress_safe(
+                "gm_loop.waiting_player_decision",
+                "等待玩家决策",
+                percent=60,
+                detail={"reason": "actor_requested_decision"},
+            )
+            stop_reason = "player_decision"
+            break
         if stop_reason in STOP_REASONS:
             break
         if gm_has_decision:

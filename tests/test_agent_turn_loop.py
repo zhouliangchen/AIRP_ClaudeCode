@@ -975,6 +975,66 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
 
+    def test_actor_decision_request_does_not_skip_remaining_direct_actor_calls(self):
+        self.register_characters("Ada", "Bea")
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append(agent_key)
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Ada notices a choice while Bea can still react."}],
+                    "events": [],
+                    "actor_calls": [
+                        {
+                            "call_id": "call-character-Ada-1",
+                            "actor_id": "character:Ada",
+                            "prompt": "You see a choice that needs the player.",
+                            "reason": "Ada can request a real player decision.",
+                        },
+                        {
+                            "call_id": "call-character-Bea-1",
+                            "actor_id": "character:Bea",
+                            "prompt": "You react to the same visible moment.",
+                            "reason": "Bea was part of the direct GM fanout.",
+                        },
+                    ],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            if agent_key == "character:Ada":
+                events = [{
+                    "type": "stop_for_player_decision",
+                    "target": "",
+                    "content": "The player needs to choose before I continue.",
+                }]
+            else:
+                self.assertEqual(agent_key, "character:Bea")
+                events = [{"type": "action", "target": "", "content": "Bea watches Ada pause."}]
+            return {
+                "agent": "character",
+                "agent_id": agent_key,
+                "character_name": agent_key.split(":", 1)[1],
+                "events": events,
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+
+        self.assertEqual(calls, ["gm", "character:Ada", "character:Bea"])
+        self.assertEqual(result["called_actors"], ["character:Ada", "character:Bea"])
+        self.assertEqual(result["stop_reason"], "player_decision")
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(
+            [call["call_id"] for call in gm_outputs["outputs"][0]["actor_calls"]],
+            ["call-character-Ada-1", "call-character-Bea-1"],
+        )
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(sorted(actor_outputs), ["character:Ada", "character:Bea"])
+
     def test_serial_batch_transfer_runs_before_later_planned_actor_call(self):
         self.register_characters("Ada", "Bea", "Cora")
 

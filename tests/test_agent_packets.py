@@ -2308,40 +2308,11 @@ class AgentPacketTest(unittest.TestCase):
         round_context = round_context_path.read_text(encoding="utf-8")
         self.assertIn("=== AGENT_RUN ===", round_context)
         run_dir = Path(expected_run_dir)
-        self.assertTrue((run_dir / "messages.jsonl").exists())
-        messages = [
-            json.loads(line)
-            for line in (run_dir / "messages.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertTrue(any(item["type"] == "input_received" for item in messages))
-        input_messages = [item for item in messages if item["type"] == "input_received"]
-        self.assertEqual(len(input_messages), 1)
-        self.assertEqual(input_messages[0]["from"], "main_agent")
-        self.assertIn("input_analyst", input_messages[0]["to"])
-        self.assertIn("gm", input_messages[0]["to"])
-        self.assertEqual(input_messages[0]["visibility"], "gm_only")
-        self.assertEqual(input_messages[0]["payload"]["input_path"], "input.json")
-        self.assertEqual(input_messages[0]["payload"]["raw_path"], "input.raw.json")
-        self.assertNotIn("input_raw_path", input_messages[0]["payload"])
+        self.assertTrue((run_dir / "manifest.json").exists())
 
-        pending_intents_dir = run_dir / "intents" / "pending"
-        self.assertTrue(pending_intents_dir.exists())
-        pending_intents = list(pending_intents_dir.glob("intent_*.json"))
-        self.assertTrue(pending_intents)
-        intent_payloads = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in pending_intents
-        ]
-        analyze = [item for item in intent_payloads if item["type"] == "analyze_input"]
-        self.assertEqual(len(analyze), 1)
-        self.assertEqual(analyze[0]["requested_by"], "main_agent")
-        self.assertEqual(analyze[0]["source_message_id"], input_messages[0]["id"])
-        self.assertEqual(analyze[0]["payload"]["input_path"], "input.json")
-        self.assertEqual(
-            analyze[0]["payload"]["input_analysis_request_path"],
-            "input_analysis.request.md",
-        )
+        intents_dir = run_dir / "intents"
+        intent_files = list(intents_dir.glob("*/*.json")) if intents_dir.exists() else []
+        self.assertEqual(intent_files, [])
         self.assertIn("  style: 轻松活泼", round_context)
         self.assertIn("  wordCount: 1200", round_context)
         self.assertIn("  nsfw: 舒缓", round_context)
@@ -2363,8 +2334,7 @@ class AgentPacketTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
-        self.assertEqual(payload["dispatcher_runtime"]["intent"]["type"], "analyze_input")
-        self.assertEqual(payload["dispatcher_runtime"]["intent"]["requested_by"], "main_agent")
+        self.assertNotIn("dispatcher_runtime", payload)
         snapshots = list((self.card / ".agent_runs" / "snapshots").glob("*"))
         self.assertTrue(snapshots)
         metadata = json.loads((snapshots[0] / "snapshot.json").read_text(encoding="utf-8"))
@@ -2375,138 +2345,6 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(payload["snapshot"]["round_id"], "round-000001")
         self.assertTrue(any(args and args[0] == "round.preparing" for args, _ in progress_calls))
         self.assertTrue(any(args and args[0] == "input_analysis.awaiting" for args, _ in progress_calls))
-
-    def test_round_prepare_reuses_canonical_input_message_for_dispatcher_intent(self):
-        temp_root, styles_dir = self._make_round_prepare_fixture()
-        styles_dir.joinpath("input.txt").write_text("I step into the archive.", encoding="utf-8")
-        round_prepare = _load_round_prepare()
-        round_prepare.agent_packets = _load_agent_packets()
-        round_prepare.write_progress = lambda *args, **kwargs: None
-        round_prepare.apply_injections = lambda card_folder: []
-        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
-        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
-
-        def run_main():
-            old_argv = sys.argv
-            stdout = io.StringIO()
-            try:
-                sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
-                with contextlib.redirect_stdout(stdout):
-                    round_prepare.main()
-            finally:
-                sys.argv = old_argv
-            return json.loads(stdout.getvalue())
-
-        payload = run_main()
-        repeated_payload = run_main()
-        self.assertEqual(repeated_payload["agent_run"], payload["agent_run"])
-        run_dir = Path(payload["agent_run"])
-        messages_after_prepare = [
-            json.loads(line)
-            for line in (run_dir / "messages.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertEqual(
-            len([item for item in messages_after_prepare if item["type"] == "input_received"]),
-            1,
-        )
-        self.assertEqual(
-            len([item for item in messages_after_prepare if item["type"] == "analysis_requested"]),
-            1,
-        )
-        round_prepare._initialize_dispatcher_runtime(run_dir)
-
-        messages = [
-            json.loads(line)
-            for line in (run_dir / "messages.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        input_messages = [item for item in messages if item["type"] == "input_received"]
-        self.assertEqual(len(input_messages), 1)
-        input_received = input_messages[0]
-        self.assertEqual(input_received["payload"]["input_path"], "input.json")
-        self.assertEqual(input_received["payload"]["raw_path"], "input.raw.json")
-        self.assertIn("raw_text_hash", input_received["payload"])
-        self.assertNotIn("input_raw_path", input_received["payload"])
-
-        intent_payloads = []
-        for state in ("pending", "accepted", "completed", "blocked", "rejected"):
-            state_dir = run_dir / "intents" / state
-            intent_payloads.extend(
-                json.loads(path.read_text(encoding="utf-8"))
-                for path in state_dir.glob("intent_*.json")
-            )
-        analyze = [
-            item
-            for item in intent_payloads
-            if item["type"] == "analyze_input"
-            and item.get("source_message_id") == input_received["id"]
-        ]
-        self.assertEqual(len(analyze), 1)
-        self.assertEqual(analyze[0]["source_message_id"], input_received["id"])
-        self.assertEqual(analyze[0]["payload"]["input_path"], "input.json")
-        self.assertEqual(
-            analyze[0]["payload"]["input_analysis_request_path"],
-            "input_analysis.request.md",
-        )
-        round_prepare.agent_intents.complete_intent(run_dir, analyze[0]["id"], outputs={"fixture": True})
-        runtime_after_completion = round_prepare._initialize_dispatcher_runtime(run_dir)
-        self.assertEqual(runtime_after_completion["intent"]["id"], analyze[0]["id"])
-        all_analyze_after_completion = []
-        for state in ("pending", "accepted", "completed", "blocked", "rejected"):
-            state_dir = run_dir / "intents" / state
-            for path in state_dir.glob("intent_*.json"):
-                item = json.loads(path.read_text(encoding="utf-8"))
-                if item.get("type") == "analyze_input":
-                    all_analyze_after_completion.append(item)
-        self.assertEqual(len(all_analyze_after_completion), 1)
-
-    def test_round_prepare_ignores_malformed_input_message_and_stale_analyze_intent(self):
-        round_prepare = _load_round_prepare()
-        run_dir = self.card / ".agent_runs" / "round-000001"
-        run_dir.mkdir(parents=True)
-        _write_json(
-            run_dir / "input.raw.json",
-            {"source_integrity": {"raw_text_sha256": "hash-1"}},
-        )
-        malformed_message = round_prepare.agent_messages.append_message(
-            run_dir,
-            {
-                "from": "main_agent",
-                "to": ["gm", "input_analyst"],
-                "type": "input_received",
-                "visibility": "gm_only",
-                "payload": {"input_path": "input.json", "input_raw_path": "input.raw.json"},
-            },
-        )
-        self.assertTrue(malformed_message["ok"])
-        stale_intent = round_prepare.agent_intents.create_intent(
-            run_dir,
-            {
-                "requested_by": "main_agent",
-                "type": "analyze_input",
-                "source_message_id": "msg_stale",
-                "payload": {"input_path": "input.json"},
-                "policy": {"source": "round_prepare"},
-            },
-        )
-        self.assertTrue(stale_intent["ok"])
-
-        runtime = round_prepare._initialize_dispatcher_runtime(run_dir)
-
-        self.assertNotEqual(runtime["message"]["id"], malformed_message["message"]["id"])
-        self.assertEqual(runtime["message"]["payload"]["input_path"], "input.json")
-        self.assertEqual(runtime["message"]["payload"]["raw_path"], "input.raw.json")
-        self.assertEqual(runtime["message"]["payload"]["raw_text_hash"], "hash-1")
-        self.assertEqual(runtime["intent"]["source_message_id"], runtime["message"]["id"])
-        self.assertNotEqual(runtime["intent"]["id"], stale_intent["intent"]["id"])
-        all_analyze = []
-        for state in ("pending", "accepted", "completed", "blocked", "rejected"):
-            for path in (run_dir / "intents" / state).glob("intent_*.json"):
-                item = json.loads(path.read_text(encoding="utf-8"))
-                if item.get("type") == "analyze_input":
-                    all_analyze.append(item)
-        self.assertEqual(len(all_analyze), 2)
 
     def test_round_prepare_passes_latest_dual_channel_payload_to_agent_run(self):
         temp_root, _styles_dir = self._make_round_prepare_fixture()

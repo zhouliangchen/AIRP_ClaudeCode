@@ -97,3 +97,22 @@ class RoundPrepareInputSelectionTest(unittest.TestCase):
         self.assertIn(role_text, round_context)
         self.assertNotIn(stale_text, round_context)
 
+    def test_round_prepare_does_not_create_dispatcher_runtime(self):
+        (self.styles / "input.txt").write_text("我推开教室门。", encoding="utf-8")
+
+        round_prepare = _load_module("round_prepare")
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(self.root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        payload = json.loads(stdout.getvalue())
+        self.assertNotIn("dispatcher_runtime", payload)
+        run_dir = Path(payload["agent_run"])
+        intent_files = list((run_dir / "intents").glob("*/*.json"))
+        self.assertEqual(intent_files, [])

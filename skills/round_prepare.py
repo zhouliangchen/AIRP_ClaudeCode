@@ -18,8 +18,6 @@ import sys
 from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
-import agent_intents
-import agent_messages
 import agent_packets
 import agent_snapshots
 import hidden_settings
@@ -215,93 +213,6 @@ def _read_character_file(card_folder, name, fname):
         except Exception:
             pass
     return ""
-
-
-def _initialize_dispatcher_runtime(run_dir):
-    """Create the first message and intent for dispatcher-first execution."""
-
-    message = _find_input_received_message(run_dir)
-    if message is None:
-        message_result = agent_messages.append_message(
-            run_dir,
-            {
-                "from": "main_agent",
-                "to": ["gm", "input_analyst"],
-                "type": "input_received",
-                "visibility": "gm_only",
-                "payload": _fallback_input_received_payload(run_dir),
-            },
-        )
-        if not message_result.get("ok"):
-            raise RuntimeError(f"failed to append input_received message: {message_result}")
-        message = message_result.get("message", {})
-
-    message_id = (message or {}).get("id", "")
-    existing_intent = _find_existing_analyze_input_intent(run_dir, message_id)
-    if existing_intent is not None:
-        return {
-            "message": message,
-            "intent": existing_intent,
-        }
-    intent_result = agent_intents.create_intent(
-        run_dir,
-        {
-            "requested_by": "main_agent",
-            "type": "analyze_input",
-            "source_message_id": message_id,
-            "payload": {
-                "input_path": "input.json",
-                "input_analysis_request_path": "input_analysis.request.md",
-            },
-            "policy": {"source": "round_prepare"},
-        },
-    )
-    if not intent_result.get("ok"):
-        raise RuntimeError(f"failed to create analyze_input intent: {intent_result}")
-    return {
-        "message": message,
-        "intent": intent_result.get("intent", {}),
-    }
-
-
-def _find_input_received_message(run_dir):
-    messages = agent_messages.read_messages(run_dir)
-    for item in messages:
-        if not isinstance(item, dict) or item.get("type") != "input_received":
-            continue
-        if not isinstance(item.get("id"), str) or not item.get("id"):
-            continue
-        if item.get("status") != "delivered":
-            continue
-        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-        if payload.get("input_path") == "input.json" and payload.get("raw_path") == "input.raw.json":
-            return item
-    return None
-
-
-def _fallback_input_received_payload(run_dir):
-    payload = {
-        "input_path": "input.json",
-        "raw_path": "input.raw.json",
-    }
-    raw_record = read_json(Path(run_dir) / "input.raw.json") or {}
-    source_integrity = raw_record.get("source_integrity") if isinstance(raw_record, dict) else {}
-    raw_text_hash = source_integrity.get("raw_text_sha256") if isinstance(source_integrity, dict) else None
-    if raw_text_hash:
-        payload["raw_text_hash"] = raw_text_hash
-    return payload
-
-
-def _find_existing_analyze_input_intent(run_dir, source_message_id):
-    if not isinstance(source_message_id, str) or not source_message_id:
-        return None
-    for state in agent_intents.VALID_STATES:
-        for intent in agent_intents.list_intents(run_dir, state):
-            if not isinstance(intent, dict) or intent.get("type") != "analyze_input":
-                continue
-            if intent.get("source_message_id") == source_message_id:
-                return intent
-    return None
 
 
 def build_character_contexts(card_folder, card_data, card_structure, chat_log, user_text):
@@ -501,7 +412,6 @@ def main():
     )
     agent_run_info = None
     agent_run_error = None
-    dispatcher_runtime = None
     snapshot_result = None
     turn_index = len(chat_log)
     round_id = f"round-{turn_index + 1:06d}" if isinstance(turn_index, int) else "round-current"
@@ -525,10 +435,6 @@ def main():
     except Exception as exc:
         agent_run_error = str(exc)
         agent_run_info = None
-        dispatcher_runtime = None
-    run_dir = agent_run_info.get("run_dir") if isinstance(agent_run_info, dict) else None
-    if run_dir:
-        dispatcher_runtime = _initialize_dispatcher_runtime(run_dir)
 
     # ═══════════════════════════════════════════════
     # BUILD OUTPUT — static prefix first (cached),
@@ -746,7 +652,6 @@ def main():
         "output": str(output_path),
         "character_contexts": str(character_contexts_path),
         "agent_run": agent_run_info.get("run_dir") if agent_run_info else None,
-        "dispatcher_runtime": dispatcher_runtime,
         "snapshot": snapshot_result,
         "character_count": len(character_contexts.get("characters", [])),
         "size": len(output_text),
