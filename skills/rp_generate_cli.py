@@ -595,7 +595,20 @@ def _validate(
                 )
             return normalized
         if agent_key == "story":
-            return agent_schemas.validate_story_output(payload)
+            source_metadata = dict(payload.get("metadata")) if isinstance(payload.get("metadata"), dict) else {}
+            normalized = agent_schemas.validate_story_output(payload)
+            recovered = {
+                key: source_metadata[key]
+                for key in ("recovered_from_malformed_story_json", "recovery_error")
+                if key in source_metadata
+            }
+            if recovered:
+                metadata = normalized.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata.update(recovered)
+                normalized["metadata"] = metadata
+            return normalized
         if agent_key == "critic":
             return agent_schemas.validate_critic_report(payload)
         if agent_key == "postprocess":
@@ -821,6 +834,7 @@ def _delivery_complete(delivery: Dict[str, Any]) -> bool:
 
 
 import agent_dispatcher
+import round_runtime
 
 
 def _run_dispatcher_loop(
@@ -1498,7 +1512,7 @@ def run_round(
     run_claude: Callable[[str, str, str | Path], str] = run_claude_agent,
     run_command: Callable[..., Any] = subprocess.run,
 ) -> Dict[str, Any]:
-    """Generate and deliver the currently prepared round."""
+    """Generate and deliver the currently prepared round through the thin runtime."""
     card = Path(card_folder).resolve()
     root = Path(root_dir).resolve()
     run_dir = agent_run.current_run_dir(card)
@@ -1521,26 +1535,13 @@ def run_round(
         prompt,
         cwd,
     )
-    manifest = _reset_delivery_retry_budget(run_dir, manifest)
-    last, results = _run_dispatcher_loop(run_dir, card, root, active_run_claude, run_command)
-    status = str(last.get("status") or "")
-    if status == "delivered":
-        return {
-            "ok": True,
-            "action": "generated",
-            "run_dir": str(run_dir),
-            "dispatcher": last,
-            "dispatcher_results": results,
-        }
-
-    return {
-        "ok": False,
-        "action": "blocked",
-        "run_dir": str(run_dir),
-        "reason": last.get("reason") or status or "dispatcher_blocked",
-        "dispatcher": last,
-        "dispatcher_results": results,
-    }
+    _reset_delivery_retry_budget(run_dir, manifest)
+    return round_runtime.run_round(
+        card,
+        root,
+        run_claude=active_run_claude,
+        run_command=run_command,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

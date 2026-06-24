@@ -1388,6 +1388,117 @@ def _story_player_inputs_for_prompt(input_payload: Dict[str, Any], hidden_phrase
     return sanitized if isinstance(sanitized, dict) else safe_inputs
 
 
+def _relaxed_side_thread_summaries(root: Path) -> list[Dict[str, Any]]:
+    side_root = root / "side_threads"
+    if not side_root.exists():
+        return []
+    threads = []
+    for side_dir in sorted(path for path in side_root.iterdir() if path.is_dir()):
+        state = agent_run.read_json(side_dir / "state.json", {}) or {}
+        subgm_output = agent_run.read_json(side_dir / "subgm.output.json", {}) or {}
+        actor_outputs = agent_run.read_json(side_dir / "actor.outputs.json", {}) or {}
+        threads.append(
+            {
+                "thread_id": side_dir.name,
+                "status": str(
+                    (subgm_output.get("status") if isinstance(subgm_output, dict) else "")
+                    or (state.get("status") if isinstance(state, dict) else "")
+                    or ""
+                ),
+                "state": state if isinstance(state, dict) else {},
+                "subgm_output": subgm_output if isinstance(subgm_output, dict) else {},
+                "actor_outputs": actor_outputs if isinstance(actor_outputs, dict) else {},
+            }
+        )
+    return threads
+
+
+def build_relaxed_story_input(run_dir: str | Path) -> Dict[str, Any]:
+    """Assemble story input without strict trace/provenance gates."""
+    root = Path(run_dir)
+    manifest = _load_manifest(root)
+    if manifest is None:
+        raise AgentOutputError(f"{root / 'manifest.json'}: manifest is missing")
+
+    input_payload = _read_json_required(root / "input.json")
+    artifacts_dir = root / "artifacts"
+    gm_loop = _read_json_required(artifacts_dir / "gm.output.json")
+    if gm_loop.get("agent") != "gm_loop":
+        raise AgentOutputError(f"{artifacts_dir / 'gm.output.json'}: agent must be 'gm_loop'")
+    if not isinstance(gm_loop.get("outputs"), list) or not gm_loop["outputs"]:
+        raise AgentOutputError(f"{artifacts_dir / 'gm.output.json'}.outputs: must not be empty")
+
+    actor_outputs = {}
+    actor_path = artifacts_dir / "actor.outputs.json"
+    if actor_path.exists():
+        actor_outputs = _read_json_required(actor_path)
+
+    analysis = {}
+    analysis_path = artifacts_dir / "input_analysis.output.json"
+    if analysis_path.exists():
+        analysis = _read_json_required(analysis_path)
+
+    runtime_payload = runtime_settings.normalize_prompt_payload(
+        {
+            "settings": manifest.get("runtime_settings", {}),
+            "style_profile": manifest.get("style_profile", {}),
+        }
+    )
+    settings = runtime_payload["settings"]
+    style_profile = runtime_payload["style_profile"]
+    routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
+    role_text = str(routed.get("role_channel") or input_payload.get("role_channel") or input_payload.get("raw_text") or "")
+    side_threads = {"threads": _relaxed_side_thread_summaries(root)}
+
+    story_input = {
+        "round_id": manifest.get("round_id", root.name),
+        "player_inputs": {
+            "raw_text": role_text,
+            "routed_input": routed,
+            "input_analysis": analysis,
+        },
+        "loop_outputs": {
+            "gm": gm_loop,
+            "actors": actor_outputs,
+        },
+        "side_threads": side_threads,
+        "memory_deltas": _memory_deltas_from_events(actor_outputs, gm_loop, side_threads),
+        "interaction_trace": {"status": "relaxed", "visible_events": []},
+        "delivery_constraints": {
+            "preserve_raw_player_inputs": True,
+            "preserve_character_dialogue_metadata": False,
+        },
+        "runtime_settings": settings,
+        "style_guidance": {
+            "style": settings["style"],
+            "name": style_profile.get("name", ""),
+            "title": style_profile.get("title", ""),
+            "content": style_profile.get("content", ""),
+            "warning": style_profile.get("warning", ""),
+        },
+        "story_output_guidance": {
+            "word_count_target": settings["wordCount"],
+            "word_count_is_soft": True,
+            "nsfw": settings["nsfw"],
+        },
+        "critic_style_guidance": {
+            "style": settings["style"],
+            "name": style_profile.get("name", ""),
+            "title": style_profile.get("title", ""),
+            "content": style_profile.get("content", ""),
+            "warning": style_profile.get("warning", ""),
+        },
+    }
+    story_input["story_prompt_context"] = {
+        key: value
+        for key, value in story_input.items()
+        if key != "story_prompt_context"
+    }
+    _write_artifact(root, "story.input.json", story_input)
+    agent_run.update_manifest_stage(root, "story_ready", "Assembled relaxed story.input.json.")
+    return story_input
+
+
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     """Assemble story input from GM loop outputs and trace artifacts."""
     root = Path(run_dir)

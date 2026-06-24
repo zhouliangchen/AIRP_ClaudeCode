@@ -244,6 +244,62 @@ class AgentOutputsTest(unittest.TestCase):
         if decision == "pass" and include_postprocess:
             self._write_postprocess(postprocess_payload)
 
+    def test_build_relaxed_story_input_does_not_require_trace_artifacts(self):
+        run_dir = Path(self.tmp.name) / "relaxed-run"
+        artifacts = run_dir / "artifacts"
+        artifacts.mkdir(parents=True)
+        _write_json(
+            run_dir / "manifest.json",
+            {
+                "round_id": "round_relaxed",
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        )
+        _write_json(
+            run_dir / "input.json",
+            {
+                "raw_text": "我推开门。",
+                "routed_input": {"role_channel": "我推开门。"},
+            },
+        )
+        _write_json(
+            artifacts / "input_analysis.output.json",
+            {
+                "semantic_units": [{"type": "player_action", "derived_summary": "玩家推门"}],
+                "world_updates": {},
+                "capability_requests": [],
+            },
+        )
+        _write_json(
+            artifacts / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "门后传来微弱灯光。", "metadata": {}}],
+                        "events": [{"type": "world_event", "target": "", "content": "门被推开。", "metadata": {}}],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "character_promotions": [],
+                        "subgm_commands": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_relaxed_story_input(run_dir)
+
+        self.assertEqual(story_input["round_id"], "round_relaxed")
+        self.assertEqual(story_input["loop_outputs"]["gm"]["outputs"][0]["agent"], "gm")
+        self.assertEqual(story_input["player_inputs"]["raw_text"], "我推开门。")
+        self.assertEqual(story_input["interaction_trace"]["status"], "relaxed")
+        self.assertTrue((artifacts / "story.input.json").exists())
+
     def _write_postprocess(self, payload=None):
         if payload is None:
             payload = {

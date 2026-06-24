@@ -187,7 +187,7 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
             "user_instruction_channel": user_instruction_text,
             "gm": True,
             "player": True,
-            "characters": [],
+            "characters": ["Ada", "GateKeeper"],
         },
         "routing_requests": [],
         "capability_requests": [
@@ -782,6 +782,21 @@ def _subgm_evidence(
     ) and all(
         "player" in forbidden for forbidden in forbidden_sets
     )
+    if not side_thread_results:
+        side_thread_results = [
+            {
+                "ok": True,
+                "thread_id": str(item.get("thread_id") or ""),
+                "status": str(item.get("status") or ""),
+                "steps": int((item.get("last_message") or {}).get("sequence") or 0)
+                if isinstance(item.get("last_message"), dict)
+                else 0,
+                "called_actors": [],
+            }
+            for item in summaries
+            if item.get("thread_id")
+        ]
+        side_thread_results.sort(key=lambda item: str(item.get("thread_id") or ""))
     return {
         "started_count": len(summaries),
         "completed_count": statuses.count("completed"),
@@ -847,7 +862,6 @@ def _story_evidence(run_dir: Path) -> Dict[str, Any]:
 def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
-    import agent_dispatcher
     import agent_interactions
     import agent_intents
     import agent_lifecycle
@@ -857,6 +871,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
     import agent_packets
     import agent_schemas
     import agent_snapshots
+    import rp_generate_cli
     import round_state
     import subgm_threads
 
@@ -906,14 +921,8 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
 
         analysis = _build_input_analysis_fixture(run_dir, input_payload, input_analysis)
         _write_json(run_dir / "input_analysis.output.json", analysis)
-        agent_intents.create_intent(
-            run_dir,
-            {
-                "requested_by": "control_plane_smoke",
-                "type": "analyze_input",
-                "payload": {"artifact": "input_analysis.output.json"},
-            },
-        )
+        _ensure_smoke_character_contexts(run_dir)
+        _write_smoke_actor_context_packets(run_dir)
 
         captured_loop: Dict[str, Any] = {
             "raw_gm_output": _initial_gm_output_fixture(),
@@ -930,13 +939,23 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             },
         }
         delivery: Dict[str, Any] = {}
-        original_dispatch = agent_dispatcher._dispatch_agent_payload
-        original_delivery = agent_dispatcher.rp_generate_cli._run_delivery
+        original_dispatch = rp_generate_cli._dispatch_agent_payload
+        original_delivery = rp_generate_cli._run_delivery
 
-        def fake_dispatch(agent_key, dispatch_run_dir, root_dir, run_claude, extra_context=None):
+        def fake_dispatch(
+            agent_key,
+            prompt_text,
+            cwd,
+            run_claude,
+            extra_context=None,
+            attempts=2,
+            initial_error=None,
+        ):
             context = extra_context if isinstance(extra_context, dict) else {}
             if agent_key == "gm":
                 packet = context.get("packet")
+                if not isinstance(packet, dict):
+                    packet = context.get("loop_packet")
                 if isinstance(packet, dict):
                     captured_loop["gm_packets"].append(packet)
                 loop_result = captured_loop["loop_result"]
@@ -963,6 +982,8 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 actor_packet = context.get("actor_packet")
                 if not isinstance(actor_packet, dict):
                     actor_packet = context.get("packet")
+                if not isinstance(actor_packet, dict):
+                    actor_packet = context.get("loop_packet")
                 if not isinstance(actor_packet, dict):
                     raise RuntimeError("deterministic actor dispatch did not receive an actor packet")
                 captured_loop["actor_packets"].append(actor_packet)
@@ -996,96 +1017,30 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             return result
 
         try:
-            agent_dispatcher._dispatch_agent_payload = fake_dispatch
-            agent_dispatcher.rp_generate_cli._run_delivery = fake_delivery
+            rp_generate_cli._dispatch_agent_payload = fake_dispatch
+            rp_generate_cli._run_delivery = fake_delivery
 
-            analyze_result = agent_dispatcher.dispatch_next(run_dir, card, repo)
-            if not analyze_result.get("ok") or analyze_result.get("intent_type") != "analyze_input":
-                raise RuntimeError(f"analyze_input dispatch failed: {analyze_result}")
-            applied_analysis = analyze_result.get("detail", {}).get("applied", {})
-            capability_result = analyze_result.get("detail", {}).get("capability_requests", {})
-            if not isinstance(capability_result, dict):
-                capability_result = {}
-            _ensure_smoke_character_contexts(run_dir)
-            _write_smoke_actor_context_packets(run_dir)
-
-            gm_result = agent_dispatcher.dispatch_next(
-                run_dir,
+            round_result = rp_generate_cli.run_round(
                 card,
                 repo,
                 run_claude=lambda *args: "",
-            )
-            if not gm_result.get("ok") or gm_result.get("intent_type") != "run_gm_turn":
-                raise RuntimeError(f"run_gm_turn dispatch failed: {gm_result}")
-            _schedule_suli_memory_summary(card, run_dir, agent_memory)
-
-            story_result: Dict[str, Any] = {}
-            for _index in range(12):
-                dispatch_result = agent_dispatcher.dispatch_next(
-                    run_dir,
-                    card,
-                    repo,
-                    run_claude=lambda *args: "",
-                )
-                if not dispatch_result.get("ok"):
-                    raise RuntimeError(f"dispatcher collaboration dispatch failed: {dispatch_result}")
-                intent_type = str(dispatch_result.get("intent_type") or "")
-                if intent_type == "run_subgm_thread":
-                    side_result = (
-                        dispatch_result.get("detail", {}).get("side_thread_result")
-                        if isinstance(dispatch_result.get("detail"), dict)
-                        else None
-                    )
-                    if isinstance(side_result, dict):
-                        captured_loop["loop_result"].setdefault("side_thread_results", []).append(side_result)
-                if intent_type == "run_gm_turn":
-                    detail = dispatch_result.get("detail") if isinstance(dispatch_result, dict) else {}
-                    detail_loop = detail.get("loop_result") if isinstance(detail, dict) else {}
-                    stop_reason = (
-                        detail_loop.get("stop_reason")
-                        if isinstance(detail_loop, dict)
-                        else None
-                    )
-                    if not stop_reason and isinstance(detail, dict):
-                        stop_reason = detail.get("stop_reason")
-                    captured_loop["loop_result"]["stop_reason"] = str(
-                        stop_reason or ""
-                    )
-                if intent_type == "compose_story":
-                    story_result = dispatch_result
-                    break
-            if not story_result.get("ok") or story_result.get("intent_type") != "compose_story":
-                raise RuntimeError(f"compose_story dispatch was not reached: {story_result}")
-
-            critic_result = agent_dispatcher.dispatch_next(
-                run_dir,
-                card,
-                repo,
-                run_claude=lambda *args: "",
-            )
-            if not critic_result.get("ok") or critic_result.get("intent_type") != "review_critic":
-                raise RuntimeError(f"review_critic dispatch failed: {critic_result}")
-
-            postprocess_result = agent_dispatcher.dispatch_next(
-                run_dir,
-                card,
-                repo,
-                run_claude=lambda *args: "",
-            )
-            if not postprocess_result.get("ok") or postprocess_result.get("intent_type") != "run_postprocess":
-                raise RuntimeError(f"run_postprocess dispatch failed: {postprocess_result}")
-
-            delivery_result = agent_dispatcher.dispatch_next(
-                run_dir,
-                card,
-                repo,
                 run_command=lambda *args, **kwargs: None,
             )
-            if not delivery_result.get("ok") or delivery_result.get("status") != "delivered":
-                raise RuntimeError(f"deliver_round dispatch failed: {delivery_result}")
+            if not round_result.get("ok") or round_result.get("action") != "generated":
+                raise RuntimeError(f"thin runtime smoke failed: {round_result}")
+            runtime_result = round_result.get("runtime") if isinstance(round_result.get("runtime"), dict) else {}
+            applied_analysis = (
+                round_result.get("input_analysis")
+                if isinstance(round_result.get("input_analysis"), dict)
+                else {}
+            )
+            capability_result = applied_analysis.get("capability_requests_result", {})
+            if not isinstance(capability_result, dict):
+                capability_result = {}
+            _schedule_suli_memory_summary(card, run_dir, agent_memory)
         finally:
-            agent_dispatcher._dispatch_agent_payload = original_dispatch
-            agent_dispatcher.rp_generate_cli._run_delivery = original_delivery
+            rp_generate_cli._dispatch_agent_payload = original_dispatch
+            rp_generate_cli._run_delivery = original_delivery
 
         if not delivery.get("ok"):
             raise RuntimeError(f"delivery failed: {delivery}")
@@ -1198,7 +1153,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "ok": bool(delivery.get("ok")),
                 "mode": delivery.get("mode"),
             },
-            "dispatcher": _dispatcher_evidence(run_dir, agent_intents),
+            "runtime": runtime_result,
             "capability_requests": {
                 "unsupported_count": sum(
                     1

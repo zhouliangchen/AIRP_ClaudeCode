@@ -356,7 +356,7 @@ def _actor_locations(actor_state: Any) -> set[str]:
     for key in ("location", "current_location", "scene_id"):
         if key in actor:
             values.extend(_string_list(actor.get(key)))
-    for nested_key in ("self_knowledge", "metadata"):
+    for nested_key in ("self_knowledge", "metadata", "sensory_context"):
         nested = _as_dict(actor.get(nested_key))
         if "location" in nested:
             values.extend(_string_list(nested.get("location")))
@@ -373,10 +373,11 @@ def _actor_sensory_channels(actor_state: Any) -> set[str]:
             found_explicit = True
             values.extend(_string_list(actor.get(key)))
 
-    nested = _as_dict(actor.get("self_knowledge"))
-    if "sensory_channels" in nested:
-        found_explicit = True
-        values.extend(_string_list(nested.get("sensory_channels")))
+    for nested_key in ("self_knowledge", "sensory_context"):
+        nested = _as_dict(actor.get(nested_key))
+        if "sensory_channels" in nested:
+            found_explicit = True
+            values.extend(_string_list(nested.get("sensory_channels")))
 
     if not found_explicit:
         values.extend(DEFAULT_ACTOR_SENSORY_CHANNELS)

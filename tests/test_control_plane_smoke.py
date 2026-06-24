@@ -102,10 +102,13 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertIn("request_actor", payload["messages"]["types"])
         self.assertIn("projected_message", payload["messages"]["types"])
         self.assertIn("actor_response", payload["messages"]["types"])
+        self.assertIn("unsupported_capability", payload["messages"]["types"])
         self.assertGreaterEqual(payload["intents"]["completed"], 1)
-        self.assertIn("dispatcher", payload)
-        self.assertEqual(payload["dispatcher"]["status"], "delivered")
-        self.assertEqual(payload["dispatcher"]["manifest_status"], "delivered")
+        self.assertEqual(payload["runtime"]["mode"], "thin")
+        self.assertEqual(
+            payload["runtime"]["stages"],
+            ["input_analysis", "gm_collaboration", "story", "critic", "postprocess", "delivery"],
+        )
         self.assertIn("capability_requests", payload)
         self.assertEqual(payload["capability_requests"]["unsupported_count"], 1)
         self.assertEqual(len(payload["capability_requests"]["artifacts"]), 1)
@@ -121,25 +124,6 @@ class ControlPlaneSmokeTest(unittest.TestCase):
                     "capability": "external.weather_lookup",
                 }
             ],
-        )
-        completed_intents = payload["dispatcher"]["completed_intent_types"]
-        self.assertIn("analyze_input", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("run_gm_turn", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("request_projection", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("run_actor", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("run_subgm_thread", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("compose_story", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("review_critic", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("run_postprocess", payload["dispatcher"]["completed_intent_types"])
-        self.assertIn("deliver_round", payload["dispatcher"]["completed_intent_types"])
-        critic_index = completed_intents.index("review_critic")
-        postprocess_index = completed_intents.index("run_postprocess")
-        delivery_index = completed_intents.index("deliver_round")
-        self.assertLess(critic_index, postprocess_index)
-        self.assertLess(postprocess_index, delivery_index)
-        self.assertEqual(
-            completed_intents[critic_index : delivery_index + 1],
-            ["review_critic", "run_postprocess", "deliver_round"],
         )
         self.assertEqual(
             payload["postprocess"]["core"]["summary"],

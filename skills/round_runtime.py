@@ -1,0 +1,341 @@
+"""Thin default runtime for one prepared RP round."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+from typing import Any, Callable
+
+import agent_messages
+import agent_outputs
+import agent_prompts
+import agent_run
+import agent_turn_loop
+import input_analysis_apply
+import input_routing_requests
+import postprocess_outputs
+import rp_generate_cli
+
+
+class RoundRuntimeError(RuntimeError):
+    """Raised when the thin runtime cannot continue."""
+
+
+def run_round(
+    card_folder: str | Path,
+    root_dir: str | Path,
+    *,
+    run_claude: Callable[[str, str, str | Path], str],
+    run_command: Callable[..., Any],
+) -> dict[str, Any]:
+    card = Path(card_folder).resolve()
+    root = Path(root_dir).resolve()
+    run_dir = agent_run.current_run_dir(card)
+    if run_dir is None:
+        raise RoundRuntimeError(f"{card / '.agent_runs' / 'current'} is missing or invalid.")
+    run_dir = Path(run_dir)
+    manifest = _load_manifest(run_dir)
+    stages: list[str] = []
+
+    input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
+    stages.append("input_analysis")
+
+    loop_result = _run_gm_collaboration(card, root, run_dir, manifest, run_claude)
+    stages.append("gm_collaboration")
+
+    story_input = agent_outputs.build_relaxed_story_input(run_dir)
+    story_output = _run_story(root, run_dir, manifest, run_claude, story_input)
+    stages.append("story")
+
+    critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
+    stages.append("critic")
+    if str(critic.get("decision") or "") != "pass":
+        return _blocked(
+            run_dir,
+            stages,
+            "critic_requires_revision",
+            {"critic": critic, "loop_result": loop_result},
+        )
+
+    _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
+    stages.append("postprocess")
+
+    delivery = _run_delivery(card, root, run_dir, run_command)
+    stages.append("delivery")
+    ok = rp_generate_cli._delivery_complete(delivery)
+    result = {
+        "ok": ok,
+        "action": "generated" if ok else "blocked",
+        "run_dir": str(run_dir),
+        "runtime": {"mode": "thin", "stages": stages},
+        "input_analysis": input_analysis_result,
+        "delivery": delivery,
+        "loop_result": loop_result,
+    }
+    _write_artifact(run_dir, "runtime.result.json", result)
+    if ok:
+        agent_run.update_manifest_stage(run_dir, "delivered", "Thin runtime delivery completed.")
+    else:
+        agent_run.update_manifest_stage(run_dir, "blocked", "Thin runtime delivery did not complete.")
+    return result
+
+
+def _load_manifest(run_dir: Path) -> dict[str, Any]:
+    manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
+    if not isinstance(manifest, dict):
+        raise RoundRuntimeError(f"{run_dir / 'manifest.json'} is missing or invalid.")
+    return manifest
+
+
+def _artifact_path(run_dir: Path, relative_path: str) -> Path:
+    relative = Path(str(relative_path))
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        raise RoundRuntimeError(f"artifact path must stay inside artifacts: {relative_path}")
+    return run_dir / "artifacts" / relative
+
+
+def _write_artifact(run_dir: Path, relative_path: str, payload: dict[str, Any]) -> Path:
+    path = _artifact_path(run_dir, relative_path)
+    agent_run.write_json(path, payload)
+    return path
+
+
+def _copy_to_artifact(run_dir: Path, source_name: str) -> None:
+    source = run_dir / source_name
+    if not source.exists():
+        return
+    destination = _artifact_path(run_dir, source_name)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _prompt_text(run_dir: Path, manifest: dict[str, Any], key: str, default: str) -> str:
+    prompts = manifest.get("prompts") if isinstance(manifest.get("prompts"), dict) else {}
+    relative = prompts.get(key) if isinstance(prompts.get(key), str) else default
+    path = run_dir / str(relative)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RoundRuntimeError(f"{path}: prompt is missing.") from exc
+
+
+def _dispatch(
+    run_dir: Path,
+    root: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+    agent_key: str,
+    prompt: str,
+    *,
+    extra_context: dict[str, Any] | None = None,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    payload = rp_generate_cli._dispatch_agent_payload(
+        agent_key,
+        prompt,
+        root,
+        run_claude,
+        extra_context=extra_context or {},
+    )
+    if output_path is not None:
+        agent_run.write_json(output_path, payload)
+    return payload
+
+
+def _ensure_input_analysis(
+    card: Path,
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str],
+) -> dict[str, Any]:
+    output_path = run_dir / "input_analysis.output.json"
+    if not output_path.exists():
+        prompt = _prompt_text(run_dir, manifest, "input_analyst", "prompts/input_analyst.prompt.md")
+        _dispatch(
+            run_dir,
+            root,
+            run_claude,
+            "input_analyst",
+            prompt,
+            output_path=output_path,
+        )
+    applied = input_analysis_apply.apply_current_run(card, root)
+    applied = applied if isinstance(applied, dict) else {}
+    capability_requests = applied.get("capability_requests")
+    if not isinstance(capability_requests, list):
+        capability_requests = []
+    applied_manifest = applied.get("manifest") if isinstance(applied.get("manifest"), dict) else {}
+    runtime_settings = (
+        applied_manifest.get("runtime_settings")
+        if isinstance(applied_manifest.get("runtime_settings"), dict)
+        else {}
+    )
+    applied["capability_requests_result"] = input_routing_requests.process_capability_requests(
+        run_dir,
+        capability_requests,
+        runtime_settings=runtime_settings,
+        source_intent_id="input_analysis",
+    )
+    _copy_to_artifact(run_dir, "input_analysis.output.json")
+    _append_message_once(
+        run_dir,
+        "analysis_applied",
+        {
+            "from": "input_analyst",
+            "to": ["gm", "main_agent"],
+            "type": "analysis_applied",
+            "visibility": "gm_only",
+            "payload": {"applied": applied},
+        },
+    )
+    return applied
+
+
+def _append_message_once(run_dir: Path, message_type: str, payload: dict[str, Any]) -> None:
+    for message in agent_messages.read_messages(run_dir):
+        if isinstance(message, dict) and message.get("type") == message_type:
+            return
+    agent_messages.append_message(run_dir, payload)
+
+
+def _run_gm_collaboration(
+    card: Path,
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str],
+) -> dict[str, Any]:
+    def dispatch(agent_key: str, packet: dict[str, Any]) -> dict[str, Any]:
+        prompt = rp_generate_cli._read_loop_prompt(run_dir, manifest, agent_key, packet)
+        return _dispatch(
+            run_dir,
+            root,
+            run_claude,
+            agent_key,
+            prompt,
+            extra_context={"loop_packet": packet},
+        )
+
+    try:
+        result = agent_turn_loop.run_interactive_loop(run_dir, dispatch, card_folder=card)
+    except agent_turn_loop.AgentTurnLoopError as exc:
+        raise RoundRuntimeError(str(exc)) from exc
+    for artifact_name in ("gm.output.json", "actor.outputs.json", "interaction.trace.json"):
+        _copy_to_artifact(run_dir, artifact_name)
+    return result if isinstance(result, dict) else {}
+
+
+def _run_story(
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str],
+    story_input: dict[str, Any],
+) -> dict[str, Any]:
+    story_context = agent_outputs.story_prompt_context(story_input)
+    prompt = _prompt_text(run_dir, manifest, "story", "prompts/story.prompt.md")
+    story_output = _dispatch(
+        run_dir,
+        root,
+        run_claude,
+        "story",
+        prompt,
+        extra_context={"story_input": story_context},
+    )
+    story_output = rp_generate_cli._normalize_story_output(story_output, story_context)
+    _write_artifact(run_dir, "story.output.json", story_output)
+    return story_output
+
+
+def _run_critic(
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str],
+    story_input: dict[str, Any],
+    story_output: dict[str, Any],
+) -> dict[str, Any]:
+    story_context = agent_outputs.story_prompt_context(story_input)
+    quality_metrics = agent_outputs.build_critic_quality_metrics(run_dir, story_output)
+    prompt = _prompt_text(run_dir, manifest, "critic", "prompts/critic.prompt.md")
+    critic = _dispatch(
+        run_dir,
+        root,
+        run_claude,
+        "critic",
+        prompt,
+        extra_context={
+            "story_input": story_context,
+            "story_output": story_output,
+            "quality_metrics": quality_metrics,
+        },
+    )
+    critic = rp_generate_cli._normalize_critic_report_for_story(critic, story_output, story_context)
+    _write_artifact(run_dir, "critic.report.json", critic)
+    return critic
+
+
+def _run_postprocess(
+    card: Path,
+    root: Path,
+    run_dir: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+    story_input: dict[str, Any],
+    story_output: dict[str, Any],
+) -> dict[str, Any]:
+    context = {
+        "story_input": agent_outputs.story_prompt_context(story_input),
+        "story_output": story_output,
+        "pending_repairs": postprocess_outputs.read_pending_repairs(card),
+        "postprocess_contract": postprocess_outputs.load_postprocess_contract(card),
+    }
+    prompt = agent_prompts.build_postprocess_prompt({"postprocess_context": context})
+    raw = _dispatch(
+        run_dir,
+        root,
+        run_claude,
+        "postprocess",
+        prompt,
+        extra_context={"postprocess_context": context},
+    )
+    validation = postprocess_outputs.validate_postprocess_output(
+        raw,
+        critical_action_evidence=agent_outputs.extract_player_critical_action_evidence(story_input),
+    )
+    if not validation.get("ok"):
+        raise RoundRuntimeError(f"postprocess output rejected: {validation}")
+    output = validation.get("output")
+    if not isinstance(output, dict):
+        raise RoundRuntimeError("postprocess output normalization failed.")
+    _write_artifact(run_dir, "postprocess.output.json", output)
+    return output
+
+
+def _run_delivery(
+    card: Path,
+    root: Path,
+    run_dir: Path,
+    run_command: Callable[..., Any],
+) -> dict[str, Any]:
+    delivery = rp_generate_cli._run_delivery(card, root, run_command)
+    _write_artifact(run_dir, "delivery.result.json", delivery)
+    return delivery
+
+
+def _blocked(
+    run_dir: Path,
+    stages: list[str],
+    reason: str,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    result = {
+        "ok": False,
+        "action": "blocked",
+        "run_dir": str(run_dir),
+        "reason": reason,
+        "runtime": {"mode": "thin", "stages": stages},
+        "detail": detail,
+    }
+    _write_artifact(run_dir, "runtime.result.json", result)
+    agent_run.update_manifest_stage(run_dir, "blocked", f"Thin runtime blocked: {reason}.")
+    return result

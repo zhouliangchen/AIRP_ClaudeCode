@@ -64,6 +64,25 @@ class AgentVisibilityTest(unittest.TestCase):
             self.visibility.event_visible_to_actor(event, "character:Ada", actor)
         )
 
+    def test_location_basis_can_match_actor_sensory_context_location(self):
+        actor_call = {
+            "actor_id": "character:Ada",
+            "prompt": "You see the pendant move.",
+            "visibility_basis": basis(
+                "location",
+                location="classroom",
+                sensory_channels=["visual"],
+            ),
+        }
+        actor = {
+            "name": "Ada",
+            "sensory_context": {"location": "classroom"},
+        }
+
+        self.assertTrue(
+            self.visibility.actor_call_visible_to_actor(actor_call, "character:Ada", actor)
+        )
+
     def test_location_basis_can_match_actor_scene_id_without_location(self):
         event = {
             "type": "scene",
