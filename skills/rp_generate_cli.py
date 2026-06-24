@@ -12,16 +12,13 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-import agent_intents
 import agent_outputs
 import agent_prompts
 import agent_run
 import agent_schemas
-import agent_turn_loop
 import input_analysis_apply
 import model_debug
 import projection_agent
-import self_repair
 
 try:
     from handler import write_progress
@@ -41,8 +38,6 @@ class AgentExecutionError(RuntimeError):
     """Raised when a Claude Code subagent run is missing, invalid, or unusable."""
 
 
-MAX_DELIVERY_REPAIR_ATTEMPTS = 3
-MAX_DISPATCHER_STEPS = 64
 _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
     "",
     "prepared",
@@ -717,33 +712,6 @@ def _read_loop_prompt(
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
 
 
-def _run_legacy_interactive_agent_loop(
-    run_dir: Path,
-    manifest: Dict[str, Any],
-    root: Path,
-    run_claude: Callable[[str, str, str | Path], str],
-    repair_context: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    """Compatibility helper for regression coverage of the old broad GM loop."""
-
-    def dispatch(agent_key: str, packet: Dict[str, Any]) -> Dict[str, Any]:
-        extra_context = {"loop_packet": packet}
-        if repair_context and agent_key == "gm":
-            extra_context["repair_context"] = repair_context
-        return _dispatch_agent_payload(
-            agent_key,
-            _read_loop_prompt(run_dir, manifest, agent_key, packet),
-            root,
-            run_claude,
-            extra_context=extra_context,
-        )
-
-    try:
-        return agent_turn_loop.run_interactive_loop(run_dir, dispatch, card_folder=run_dir.parents[1])
-    except agent_turn_loop.AgentTurnLoopError as exc:
-        raise AgentExecutionError(str(exc)) from exc
-
-
 def _run_delivery(card_folder: Path, root: Path, run_command: Callable[..., Any]) -> Dict[str, Any]:
     command = [sys.executable, str(root / "skills" / "round_deliver.py"), str(card_folder), str(root)]
     result = run_command(
@@ -833,134 +801,7 @@ def _delivery_complete(delivery: Dict[str, Any]) -> bool:
     return complete
 
 
-import agent_dispatcher
 import round_runtime
-
-
-def _run_dispatcher_loop(
-    run_dir: Path,
-    card: Path,
-    root: Path,
-    run_claude: Callable[[str, str, str | Path], str],
-    run_command: Callable[..., Any],
-) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
-    results: list[Dict[str, Any]] = []
-    last: Dict[str, Any] = {}
-    for _step in range(MAX_DISPATCHER_STEPS):
-        last = agent_dispatcher.dispatch_next(
-            run_dir,
-            card,
-            root,
-            run_claude=run_claude,
-            run_command=run_command,
-        )
-        results.append(last)
-        if last.get("status") in {"delivered", "blocked", "stalled"}:
-            return last, results
-
-    blocked = dict(last)
-    blocked["ok"] = False
-    blocked["status"] = "blocked"
-    blocked["reason"] = "dispatcher_step_limit"
-    return blocked, results
-
-
-def _pending_repair_intents(run_dir: Path) -> list[dict[str, Any]]:
-    return [item for item in agent_intents.list_intents(run_dir, "pending") if item.get("type") == "repair_request"]
-
-
-def _complete_pending_repair_intents(run_dir: Path, outputs: Dict[str, Any]) -> None:
-    for intent in _pending_repair_intents(run_dir):
-        agent_intents.complete_intent(run_dir, intent.get("id", ""), outputs=outputs)
-
-
-def _block_pending_repair_intents(run_dir: Path, reason: str, outputs: Dict[str, Any]) -> None:
-    for intent in _pending_repair_intents(run_dir):
-        agent_intents.block_intent(run_dir, intent.get("id", ""), reason, outputs=outputs)
-
-
-def _repair_intent_delivery_output(delivery: Dict[str, Any]) -> Dict[str, Any]:
-    delivery_result = delivery.get("result") if isinstance(delivery.get("result"), dict) else {}
-    output = dict(delivery_result)
-    output["ok"] = _delivery_complete(delivery)
-    return output
-
-
-def _load_existing_story_input(run_dir: Path) -> Dict[str, Any] | None:
-    path = run_dir / "artifacts" / "story.input.json"
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise AgentExecutionError(f"{path}: story input is invalid JSON.") from exc
-    except OSError as exc:
-        raise AgentExecutionError(f"{path}: story input cannot be read.") from exc
-    if not isinstance(payload, dict):
-        raise AgentExecutionError(f"{path}: story input must be a JSON object.")
-    return payload
-
-
-def _promote_loop_outputs_to_artifacts(run_dir: Path) -> None:
-    for name in ("gm.output.json", "actor.outputs.json"):
-        source = run_dir / name
-        if not source.exists():
-            continue
-        payload = agent_run.read_json(source)
-        if isinstance(payload, dict):
-            agent_run.write_json(run_dir / "artifacts" / name, payload)
-
-
-def _loop_result_from_story_input(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    loop_outputs = story_input.get("loop_outputs") if isinstance(story_input, dict) else {}
-    if not isinstance(loop_outputs, dict):
-        loop_outputs = {}
-    gm_outputs = loop_outputs.get("gm")
-    if not isinstance(gm_outputs, list):
-        gm_outputs = loop_outputs.get("gm_outputs")
-    if not isinstance(gm_outputs, list):
-        gm_outputs = []
-    actors = loop_outputs.get("actors")
-    if not isinstance(actors, dict):
-        actors = {}
-    called_actors = sorted(
-        str(actor_id)
-        for actor_id, outputs in actors.items()
-        if str(actor_id).strip() and isinstance(outputs, list) and outputs
-    )
-    return {"gm_steps": len(gm_outputs), "called_actors": called_actors}
-
-
-def _delivery_retry_context(
-    delivery_result: Dict[str, Any],
-    story: Dict[str, Any],
-    critic: Dict[str, Any],
-    attempt: int,
-) -> Dict[str, Any]:
-    reason = delivery_result.get("reason") or "delivery_retry"
-    repair_detail = delivery_result.get("detail") if isinstance(delivery_result.get("detail"), dict) else {}
-    repair_instruction = (
-        repair_detail.get("repair_instruction")
-        or delivery_result.get("hint")
-        or "Revise the story output and critic report so round_deliver.py can approve delivery."
-    )
-    repair_instruction = (
-        str(repair_instruction)
-        + " Raw player role_channel and raw_text outrank GM/player/character artifacts; discard any subagent output that continues an obsolete scene, invents player actions/dialogue, or reveals hidden user instructions. "
-        + "If prior AI-derived content is reframed by the player, include <derived_content_edits> JSON that repairs the affected earlier AI turn while preserving all player input fields."
-    )
-    return {
-        "reason": reason,
-        "delivery_result": delivery_result,
-        "authoritative_sources": ["story_input", "loop_outputs", "gm.output.json", "actor.outputs.json", "raw_player_input"],
-        "previous_rejected_story_output": story,
-        "previous_critic_report": critic,
-        "do_not_preserve_rejected_content": True,
-        "repair_attempt": attempt,
-        "max_repair_attempts": MAX_DELIVERY_REPAIR_ATTEMPTS,
-        "repair_routing": self_repair.routing_from_delivery_result(delivery_result),
-        "instruction": repair_instruction,
-    }
 
 
 def _extract_tag(text: str, tag: str) -> str:
