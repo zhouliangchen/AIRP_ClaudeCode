@@ -561,6 +561,54 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(log[0]["player_input_id"], entry["id"])
         self.assertEqual(log[0]["polished_input"], "POLISHED: north.")
 
+    def test_append_turn_replaces_existing_player_input_turn_when_current_run_is_redelivered(self):
+        entry = self.handler.record_player_input(
+            str(self.card),
+            "I ask Su Li what is happening.",
+            "I ask Su Li what is happening.",
+        )
+        self.handler.write_chat_log(str(self.card), [
+            {
+                "index": 0,
+                "user": "I ask Su Li what is happening.",
+                "player_input_id": entry["id"],
+                "ai": "<p>old leaked answer</p>",
+                "tokens": {"total": 100},
+            }
+        ])
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+        (run_dir / "input.json").write_text(
+            json.dumps(
+                {
+                    "id": entry["id"],
+                    "raw_text": "I ask Su Li what is happening.",
+                    "display_text": "I ask Su Li what is happening.",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        index = self.handler.append_turn(
+            str(self.card),
+            content="<p>new safe answer</p>",
+            summary="new summary",
+            tokens={"total": 7},
+        )
+
+        log = self.handler.read_chat_log(str(self.card))
+        self.assertEqual(index, 0)
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["index"], 0)
+        self.assertEqual(log[0]["user"], "I ask Su Li what is happening.")
+        self.assertEqual(log[0]["player_input_id"], entry["id"])
+        self.assertIn("new safe answer", log[0]["ai"])
+        self.assertNotIn("old leaked answer", log[0]["ai"])
+        state_js = (self.card / "state.js").read_text(encoding="utf-8")
+        self.assertIn("generatedCount: 1", state_js)
+
     def test_update_only_player_input_edit_records_impact_without_truncating_chat(self):
         first = self.handler.record_player_input(str(self.card), "first input", "first input")
         second = self.handler.record_player_input(str(self.card), "second input", "second input")
@@ -667,6 +715,25 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(applied[0]["op"], "replace_summary")
         self.assertEqual(log[0]["summary"], "课堂段落改定为梦境预示")
         self.assertIn("课堂段落改定为梦境预示", log[0]["ai"])
+        self.assertIn("derived_repairs", log[0])
+
+    def test_derived_content_edits_clean_full_ai_replacement_contract_tags(self):
+        log = [{"index": 0, "user": "player", "ai": "<p>old</p>", "summary": "old"}]
+
+        applied = self.handler.apply_derived_content_edits(
+            log,
+            [{
+                "turn_index": 0,
+                "ai": "<content><p>Dream preview replacement.</p></content>\n<character_dialogues>[]</character_dialogues>\n<summary>retconned as dream</summary>",
+                "reason": "player reframed previous scene",
+            }],
+        )
+
+        self.assertEqual(applied[0]["op"], "replace_ai")
+        self.assertEqual(log[0]["ai"], "<p>Dream preview replacement.</p>")
+        self.assertEqual(log[0]["summary"], "retconned as dream")
+        self.assertNotIn("<content>", log[0]["ai"])
+        self.assertNotIn("<summary>", log[0]["ai"])
         self.assertIn("derived_repairs", log[0])
 
     def test_append_turn_retargers_current_index_derived_edit_to_prior_ai_when_reframing_previous_scene(self):
@@ -1104,6 +1171,67 @@ class TurnStateTest(unittest.TestCase):
             {"name": "Ada", "source": "subagent", "line": "I will take point.", "aside": "steady"},
             {"name": "Narrator", "source": "main", "line": "Ignore me."},
         ])
+
+    def test_response_parser_falls_back_to_body_without_runtime_tags(self):
+        parser = _load_response_parser()
+        response = """<p>Main narration.</p>
+<character_dialogues>[{"name":"Ada","source":"subagent","line":"Ready."}]</character_dialogues>
+<tokens>
+round_total: 7
+</tokens>
+"""
+
+        parts = parser.parse_response(response)
+
+        self.assertEqual(parts["content"], "<p>Main narration.</p>")
+        self.assertEqual(parts["character_dialogues"], [
+            {"name": "Ada", "source": "subagent", "line": "Ready."}
+        ])
+        self.assertEqual(parts["tokens"]["round_total"], 7)
+
+    def test_response_parser_ignores_content_tags_inside_derived_edits(self):
+        parser = _load_response_parser()
+        replacement = "<content><p>Prior dream replacement.</p></content>\n<summary>prior summary</summary>"
+        response = (
+            "<derived_content_edits>"
+            + json.dumps([{"turn_index": 0, "ai": replacement}], ensure_ascii=False)
+            + "</derived_content_edits>\n"
+            + "<p>Current turn continues after the player wakes up.</p>\n"
+            + "<summary>current summary</summary>"
+        )
+
+        parts = parser.parse_response(response)
+
+        self.assertEqual(parts["content"], "<p>Current turn continues after the player wakes up.</p>")
+        self.assertEqual(parts["summary"], "current summary")
+        self.assertEqual(parts["derived_content_edits"][0]["turn_index"], 0)
+        self.assertIn("Prior dream replacement", parts["derived_content_edits"][0]["ai"])
+
+    def test_handler_does_not_store_runtime_tags_in_chat_ai_without_content_tag(self):
+        response = """<p>Main narration.</p>
+<character_dialogues>[{"name":"Ada","source":"subagent","line":"Ready."}]</character_dialogues>
+<tokens>
+round_total: 7
+</tokens>
+"""
+        parts = _load_response_parser().parse_response(response)
+
+        self.handler.append_turn(
+            str(self.card),
+            content=parts["content"],
+            character_dialogues=parts["character_dialogues"],
+            tokens=parts["tokens"],
+            full_text=response,
+        )
+
+        log = json.loads((self.card / "chat_log.json").read_text(encoding="utf-8"))
+        self.assertEqual(log[0]["ai"], "<p>Main narration.</p>")
+        self.assertNotIn("<character_dialogues>", log[0]["ai"])
+        self.assertNotIn("<tokens>", log[0]["ai"])
+        self.assertEqual(log[0]["character_dialogues"], [
+            {"name": "Ada", "source": "subagent", "line": "Ready."}
+        ])
+        self.assertEqual(log[0]["tokens"]["round_total"], 7)
 
     def test_append_turn_stores_subagent_character_dialogues(self):
         dialogues = [

@@ -11,16 +11,19 @@ You are the story composition agent. You do not invent over the agents for conve
 
 Read from current `.agent_runs/<round>/`:
 
-- `story.input.json` when available; it is the canonical bundle assembled from validated agent outputs.
-- `gm.output.json`
-- `actor.outputs.json`
+- Runtime Input `story_input`; it is the authorized story-facing projection assembled from validated agent outputs.
+- `story.input.json` is a raw audit artifact. When Runtime Input includes `story_input`, do not read raw `story.input.json`, `gm.output.json`, `actor.outputs.json`, trace files, memory files, or hidden settings to recover omitted facts for prose.
+- If Runtime Input `story_input` is missing in an emergency/manual run, use only `story.input.json.story_prompt_context` and treat other fields as audit-only.
 - `input.json`
 - relevant response contract from `CLAUDE.md`
 
 ## Composition Rules
 
 - Preserve the player's authoritative input exactly in meaning; do not rewrite `.player_inputs.jsonl`.
+- When Runtime Input includes `story_input`, treat it as the authorized story-facing context. It may omit or redact raw GM/actor audit details; do not recover omitted private facts by reading raw `gm.output.json`, `actor.outputs.json`, traces, memory files, or hidden settings for story prose.
+- Generic character `action` events in raw actor artifacts are audit material and may contain private perception or reasoning. Use only character dialogue, dialogue transfers, and visible custom actions that remain in Runtime Input `story_input`; do not read raw actor actions to fill in omitted behavior.
 - `story_input.player_inputs.routed_input.role_channel` and raw player input outrank `story_input.loop_outputs`. If any GM or actor artifact continues an obsolete scene, invents player dialogue/actions, or reveals hidden user-instruction facts against the current role_channel, discard that conflicting part and follow player authority.
+- When the current role channel says the player stopped, refused, avoided, did not repeat, or merely considered an action, do not narrate that action as actually performed. You may describe the immediate consequence of the action the player did choose, but never invert a negative or restraint into a completed action.
 - If player supplied an action, briefly reflect the action's immediate consequence, then continue.
 - If player supplied a synopsis, expand that synopsis using scene detail, then stop or advance only where natural.
 - If user supplied omniscient setting, incorporate consequences through GM/story and postprocess-owned variable commands, not through impossible character knowledge.

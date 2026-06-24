@@ -1201,8 +1201,9 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn('"agent_id": "character:Ada"', char_prompt)
         self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
-        self.assertIn("story.input.json.interaction_trace", story_prompt)
+        self.assertIn("Runtime Input `story_input.interaction_trace`", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
+        self.assertNotIn("Read `story.input.json.interaction_trace`", story_prompt)
         self.assertNotIn("interaction.trace.json", story_prompt)
         self.assertNotIn("interaction.trace.json", critic_prompt)
         required_prompt_keys = {
@@ -1625,6 +1626,45 @@ class AgentPacketTest(unittest.TestCase):
 
         player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
         self.assertNotIn(input_payload["user_instruction_text"], json.dumps(player_packet, ensure_ascii=False))
+
+    def test_prepare_agent_run_sanitizes_runtime_tags_from_recent_chat_packets(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I continue.",
+            "role_text": "I continue.",
+            "user_instruction_text": "",
+        }
+        polluted_chat = [
+            {
+                "index": 0,
+                "user": "Earlier input.",
+                "ai": "<p>Visible story.</p><character_dialogues>[]</character_dialogues><tokens>\nround_total: 7\n</tokens>",
+                "summary": "Visible summary.",
+                "character_dialogues": [],
+                "tokens": {"round_total": 7},
+            }
+        ]
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="fallback should not win",
+            chat_log=polluted_chat,
+            card_data={"title": "Sanitize Test"},
+            character_contexts={"characters": []},
+            turn_index=1,
+            input_payload=input_payload,
+        )
+
+        run_dir = Path(result["run_dir"])
+        request = (run_dir / "input_analysis.request.md").read_text(encoding="utf-8")
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+
+        for payload in (request, json.dumps(input_json, ensure_ascii=False), json.dumps(gm_packet, ensure_ascii=False)):
+            self.assertIn("<p>Visible story.</p>", payload)
+            self.assertNotIn("<character_dialogues>", payload)
+            self.assertNotIn("<tokens>", payload)
+            self.assertNotIn('"tokens":', payload)
 
     def test_prepare_agent_run_initializes_message_runtime(self):
         input_payload = {
@@ -2526,6 +2566,51 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         self.assertEqual(called["input_payload"], explicit_payload)
+
+    def test_round_prepare_passes_latest_single_channel_payload_to_agent_run(self):
+        temp_root, styles_dir = self._make_round_prepare_fixture()
+        styles_dir.joinpath("input.txt").write_text("I ask Su Li what is happening.", encoding="utf-8")
+        latest_payload = {
+            "id": "input-plain-1",
+            "created_at": "2026-06-16T00:00:00Z",
+            "source": "player",
+            "raw_text": "I ask Su Li what is happening.",
+            "display_text": "I ask Su Li what is happening.",
+        }
+        (self.card / ".player_inputs.jsonl").write_text(
+            json.dumps(latest_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        round_prepare = _load_round_prepare()
+        called = {}
+
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "routed_input": {
+                    "role_channel": "I ask Su Li what is happening.",
+                    "user_instruction_channel": "",
+                },
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertEqual(called["input_payload"], latest_payload)
 
     def test_round_prepare_preserves_exact_current_input_for_non_explicit_analysis(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()

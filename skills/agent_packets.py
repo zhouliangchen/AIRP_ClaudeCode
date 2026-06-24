@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -20,6 +21,45 @@ import runtime_settings
 
 def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+RUNTIME_CONTRACT_TAGS = (
+    "character_dialogues",
+    "derived_content_edits",
+    "edit_only",
+    "summary",
+    "options",
+    "tokens",
+    "polished_input",
+)
+
+
+def _strip_runtime_contract_tags(value: Any) -> str:
+    text = _to_text(value)
+    for tag in RUNTIME_CONTRACT_TAGS:
+        text = re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def _sanitize_recent_chat_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, child in value.items():
+            if str(key) == "tokens":
+                continue
+            sanitized[str(key)] = _sanitize_recent_chat_value(child)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_recent_chat_value(item) for item in value]
+    if isinstance(value, str):
+        return _strip_runtime_contract_tags(value)
+    return value
+
+
+def _sanitize_recent_chat_for_packets(chat_log: Any) -> list[Any]:
+    if not isinstance(chat_log, list):
+        return []
+    return [_sanitize_recent_chat_value(item) for item in chat_log]
 
 
 def _clean_text_list(value: Any) -> list[str]:
@@ -210,7 +250,7 @@ def _build_world_state(
     return {
         "role_channel": _to_text(routed_input.get("role_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
-        "recent_chat": recent_chat or [],
+        "recent_chat": _sanitize_recent_chat_for_packets(recent_chat),
         "gm_only_hidden_settings": hidden_setting_records or [],
         "visible_events": events,
         "card_data": compact_card_data(card_data),
@@ -414,7 +454,7 @@ def build_gm_packet(
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
         "gm_only_hidden_settings": hidden_setting_records or [],
         "objective_world": objective_payload,
-        "recent_chat": recent_chat or [],
+        "recent_chat": _sanitize_recent_chat_for_packets(recent_chat),
         "card_data": compact_card_data(card_data),
         "character_contexts": character_contexts or [],
         "components": routed_input.get("components", []),
@@ -517,6 +557,7 @@ DEFAULT_CRITIC_REPORT = {
 def build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data):
     """Build the immutable raw-input request for the input analyst subagent."""
     source_payload = dict(input_payload) if isinstance(input_payload, dict) else {}
+    safe_chat_log = _sanitize_recent_chat_for_packets(chat_log)
     if source_payload.get("input_schema") == "dual_channel_v1":
         raw_text = _to_text(source_payload.get("raw_text"))
         role_text = _to_text(source_payload.get("role_text"))
@@ -541,7 +582,7 @@ def build_input_analysis_request(run_dir, user_text, input_payload, chat_log, ca
             "user_instruction_text_sha256": input_analysis.sha256_text(user_instruction_text),
             "raw_preserved": True,
         },
-        "recent_chat": chat_log or [],
+        "recent_chat": safe_chat_log,
         "card_projection": compact_card_data(card_data),
     }
 
@@ -616,10 +657,11 @@ def prepare_agent_run(
     run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
     hidden_setting_records = hidden_setting_records or []
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
-    input_request = build_input_analysis_request(run_dir, user_text, input_payload, chat_log, card_data)
+    safe_chat_log = _sanitize_recent_chat_for_packets(chat_log)
+    input_request = build_input_analysis_request(run_dir, user_text, input_payload, safe_chat_log, card_data)
     world_state = _build_world_state(
         routed_input,
-        chat_log,
+        safe_chat_log,
         hidden_setting_records=hidden_setting_records,
         card_data=card_data,
         character_contexts=character_contexts,
@@ -635,7 +677,7 @@ def prepare_agent_run(
     input_json["routed_input"] = routed_input
     input_json["gm_only_hidden_settings"] = hidden_setting_records
     input_json["objective_world"] = objective_payload
-    input_json["recent_chat"] = chat_log or []
+    input_json["recent_chat"] = safe_chat_log
     input_json["card_data"] = compact_card_data(card_data)
     input_json["character_contexts"] = character_contexts or {}
     input_json["visible_events"] = world_state["visible_events"]
@@ -681,7 +723,7 @@ def prepare_agent_run(
     gm_packet = build_gm_packet(
         card_folder,
         routed_input,
-        chat_log,
+        safe_chat_log,
         card_data,
         character_contexts,
         hidden_setting_records=hidden_setting_records,
@@ -689,7 +731,7 @@ def prepare_agent_run(
         objective_world_payload=objective_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
-    player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)
+    player_packet = build_player_packet(card_folder, routed_input, safe_chat_log, world_state=world_state)
     agent_run.write_json(run_dir / "gm.context.json", gm_packet)
     agent_run.write_json(run_dir / "player.context.json", player_packet)
 
@@ -697,7 +739,7 @@ def prepare_agent_run(
     for character in _iter_characters(character_contexts):
         name = character.get("name") if isinstance(character, dict) else ""
         safe = agent_run.safe_name(name)
-        packet = build_character_packet(card_folder, character, routed_input, chat_log, world_state=world_state)
+        packet = build_character_packet(card_folder, character, routed_input, safe_chat_log, world_state=world_state)
         agent_run.write_json(run_dir / "characters" / f"{safe}.context.json", packet)
         character_packets[safe] = packet
 
@@ -747,7 +789,7 @@ def rebuild_agent_run_from_analysis(
 ):
     """Rewrite final agent packets/prompts after input analysis has been applied."""
     root = Path(run_dir)
-    chat_log = chat_log or []
+    chat_log = _sanitize_recent_chat_for_packets(chat_log)
     hidden_setting_records = hidden_setting_records or []
     card_data = card_data if isinstance(card_data, dict) else {}
     character_contexts = character_contexts or {"characters": []}

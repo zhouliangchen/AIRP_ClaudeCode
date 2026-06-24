@@ -67,6 +67,14 @@ def _remove_stale_response(response_path):
         pass
 
 
+def _remove_stale_pending(styles):
+    for name in (".pending", "progress.json"):
+        try:
+            (Path(styles) / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
 def bootstrap(card_dir=None, root_dir=None, run_command=subprocess.call):
     card = Path(card_dir or Path.cwd()).resolve()
     root = Path(root_dir).resolve() if root_dir else find_root(card)
@@ -75,16 +83,17 @@ def bootstrap(card_dir=None, root_dir=None, run_command=subprocess.call):
     pending_path = styles / ".pending"
 
     return_codes = []
-    return_codes.append(_run_python(root, "start_server.py", root, run_command=run_command))
-
     chat_count = read_chat_count(card)
     active_card = _is_active_card(styles, card)
     has_prefilled_opening = _card_has_prefilled_opening(card)
+    pending_for_active_card = pending_path.exists() and active_card
+    if pending_path.exists() and not active_card:
+        _remove_stale_pending(styles)
     if response_path.exists() and chat_count == 0 and active_card and has_prefilled_opening:
         return_codes.append(_run_python(root, "handler.py", card, "--opening", run_command=run_command))
         action = "opening_delivered"
         instruction = "Opening has already been delivered. Do not run handler.py --opening again; wait for player input."
-    elif pending_path.exists():
+    elif pending_for_active_card:
         return_codes.append(_run_python(root, "round_prepare.py", card, root, run_command=run_command))
         if return_codes[-1] == 0:
             return_codes.append(_run_python(root, "rp_generate_cli.py", card, root, run_command=run_command))
@@ -103,6 +112,8 @@ def bootstrap(card_dir=None, root_dir=None, run_command=subprocess.call):
             return_codes.append(_run_python(root, "import_prepare.py", card, root, run_command=run_command))
         action = "waiting_for_player_input"
         instruction = "No pending player input exists. Wait for browser input instead of inventing an action."
+
+    return_codes.append(_run_python(root, "start_server.py", root, run_command=run_command))
 
     ok = all(code == 0 for code in return_codes)
     return {

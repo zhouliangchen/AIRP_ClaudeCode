@@ -202,10 +202,8 @@ class SubgmStoryInputTest(unittest.TestCase):
             story_input["side_threads"]["threads"][0]["actor_output_source_call_ids"],
             {"character:Ada": ["call-character-Ada-1"]},
         )
-        self.assertEqual(
-            story_input["player_inputs"]["routed_input"]["user_instruction_channel"],
-            "Hidden truth: moon base archive",
-        )
+        self.assertNotIn("user_instruction_channel", story_input["player_inputs"]["routed_input"])
+        self.assertNotIn("moon base archive", json.dumps(story_input["player_inputs"], ensure_ascii=False))
         side_text = json.dumps(story_input["side_threads"], ensure_ascii=False)
         self.assertNotIn("moon base archive", side_text)
 

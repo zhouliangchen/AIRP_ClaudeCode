@@ -356,6 +356,140 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_story_prompt_context_filters_private_artifact_material(self):
+        hidden_record = {
+            "id": "hidden-1",
+            "created_at": "2026-06-24T00:00:00Z",
+            "round_id": "round-000000",
+            "source_input_id": "input-hidden",
+            "source": "input_analysis",
+            "source_unit_id": "hf-1",
+            "visibility": "gm_only",
+            "status": "active",
+            "text": "五年前存在魔法少女决战，粉色吊坠是变身器，苏黎知道男性因子仍在燃烧。",
+        }
+        hidden_path = self.card / "memory" / "gm_only_hidden_truths.jsonl"
+        hidden_path.parent.mkdir(parents=True, exist_ok=True)
+        hidden_path.write_text(json.dumps(hidden_record, ensure_ascii=False) + "\n", encoding="utf-8")
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I ask Ada what she noticed.",
+                "routed_input": {"role_channel": "I ask Ada what she noticed."},
+                "recent_chat": [{"role": "player", "content": "I saw a pink pendant."}],
+            },
+        )
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [
+                            {"content": "Ada keeps her notebook half-open on the desk."},
+                            {"content": "五年前的记忆让Ada意识到那枚吊坠是变身器。"},
+                            {"content": "五年了，Ada以为自己不会再遇到这种气息。"},
+                        ],
+                        "events": [
+                            {
+                                "type": "world_event",
+                                "content": "魔法少女决战留下的男性因子正在影响现场。",
+                            }
+                        ],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-character-Ada-1",
+                                "actor_id": "character:Ada",
+                                "prompt": "You know the pendant is a 变身器 from 五年前.",
+                                "reason": "Ada privately knows the 魔法少女 truth.",
+                                "visibility_basis": _visibility_basis("character:Ada"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [{"scope": "hidden", "fact": "男性因子仍在燃烧"}],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "artifacts" / "actor.outputs.json",
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "action", "target": "", "content": "五年前的记忆让她认出变身器。"},
+                            {"type": "action", "target": "", "content": "五年了。以为不会再闻到这种气息。"},
+                            {"type": "dialogue", "target": "player", "content": "Maybe it was just a dream."},
+                            {"type": "memory_delta", "target": "self", "content": "男性因子仍在燃烧。"},
+                        ],
+                        "stop_reason": "continue",
+                    }
+                ],
+            },
+        )
+        self.agent_interactions.init_trace(
+            self.run_dir,
+            participants=["gm", "character:Ada"],
+            chapter_target_words=1200,
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="action",
+            content="五年前的记忆让她认出变身器。",
+            source_call_id="call-character-Ada-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="action",
+            content="五年了。以为不会再闻到这种气息。",
+            source_call_id="call-character-Ada-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="world_visible",
+            event_type="dialogue",
+            content="Maybe it was just a dream.",
+            target="player",
+            source_call_id="call-character-Ada-1",
+        )
+        self.agent_interactions.append_event(
+            self.run_dir,
+            actor="character:Ada",
+            visibility="actor_visible",
+            event_type="memory_delta",
+            content="男性因子仍在燃烧。",
+            target="self",
+            source_call_id="call-character-Ada-1",
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+        prompt_context = self.agent_outputs.story_prompt_context(story_input)
+        raw_text = json.dumps(story_input["loop_outputs"], ensure_ascii=False)
+        prompt_text = json.dumps(prompt_context, ensure_ascii=False)
+
+        self.assertIn("五年前", raw_text)
+        self.assertIn("变身器", raw_text)
+        self.assertIn("Ada keeps her notebook half-open on the desk.", prompt_text)
+        self.assertIn("Maybe it was just a dream.", prompt_text)
+        for hidden in ("五年前", "五年", "变身器", "魔法少女", "男性因子", "燃烧"):
+            self.assertNotIn(hidden, prompt_text)
+        self.assertNotIn("以为不会再闻到这种气息", prompt_text)
+        gm_call = prompt_context["loop_outputs"]["gm"]["outputs"][0]["actor_calls"][0]
+        self.assertNotIn("prompt", gm_call)
+        self.assertNotIn("reason", gm_call)
+        self.assertNotIn("memory_deltas", prompt_context)
+
     def test_extracts_player_critical_action_evidence_from_story_input(self):
         story_input = {
             "interaction_trace": {
@@ -607,6 +741,81 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(
             story_input["player_inputs"]["input_analysis"]["analysis_mode"],
             "fixture",
+        )
+
+    def test_build_story_input_removes_hidden_user_instruction_from_story_player_inputs(self):
+        hidden_instruction = (
+            "用于长期剧情引导的提示，不需要立刻在剧情中体现：主角是被选中的人，"
+            "吊坠为魔法少女的变身器。战斗将燃烧主角作为男性的身体、记忆、身份。"
+        )
+        role_text = "梦境破碎，我在上学路上醒来。我尝试将吊坠扔掉。"
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": role_text + "\n\n[USER_INSTRUCTION]\n" + hidden_instruction,
+                "routed_input": {
+                    "input_schema": "analysis_v1",
+                    "analysis_mode": "ai",
+                    "role_channel": role_text,
+                    "user_instruction_channel": hidden_instruction,
+                    "gm": True,
+                    "player": True,
+                    "characters": [],
+                    "components": [
+                        {"channel": "role", "text": role_text},
+                        {"channel": "user_instruction", "text": hidden_instruction},
+                    ],
+                },
+                "input_analysis": {
+                    "schema_version": 1,
+                    "round_id": "round-000001",
+                    "analysis_mode": "ai",
+                    "source_integrity": {"raw_text_sha256": "hash"},
+                    "semantic_units": [
+                        {
+                            "id": "su-action",
+                            "type": "action",
+                            "visibility": "player_pov",
+                            "text": role_text,
+                            "raw_excerpt": role_text,
+                            "derived_summary": "The player wakes on the way to school and throws the pendant away.",
+                        },
+                        {
+                            "id": "su-hidden",
+                            "type": "hidden_setting",
+                            "visibility": "gm_only",
+                            "text": hidden_instruction,
+                            "raw_excerpt": hidden_instruction,
+                            "derived_summary": "The pendant is a transformation device with a hidden identity cost.",
+                        },
+                    ],
+                    "routing": {
+                        "role_channel": role_text,
+                        "user_instruction_channel": hidden_instruction,
+                    },
+                    "world_updates": {
+                        "hidden_facts": [{"text": hidden_instruction, "visibility": "gm_only"}],
+                        "public_facts": [{"text": "雨蒙在上学路上醒来。", "visibility": "public_world"}],
+                    },
+                    "narrative_directives": {"continue_after_player_action": True},
+                },
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        player_inputs = story_input["player_inputs"]
+        player_inputs_text = json.dumps(player_inputs, ensure_ascii=False)
+        self.assertIn(role_text, player_inputs_text)
+        self.assertNotIn("用于长期剧情引导", player_inputs_text)
+        self.assertNotIn("战斗将燃烧", player_inputs_text)
+        self.assertNotIn("user_instruction_channel", player_inputs_text)
+        self.assertNotIn("components", player_inputs)
+        self.assertNotIn("raw_excerpt", player_inputs_text)
+        self.assertNotIn("text", player_inputs["input_analysis"]["semantic_units"][0])
+        self.assertEqual(
+            [unit["id"] for unit in player_inputs["input_analysis"]["semantic_units"]],
+            ["su-action"],
         )
 
     def test_build_story_input_includes_interaction_trace_summary(self):
@@ -2257,6 +2466,43 @@ class AgentOutputsTest(unittest.TestCase):
             story_input["loop_outputs"]["gm"]["outputs"][0]["stop_reason"],
             "player_decision",
         )
+
+    def test_build_story_input_allows_player_decision_call_without_actor_output(self):
+        actor_path = self.run_dir / "artifacts" / "actor.outputs.json"
+        actor_path.unlink()
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive waits for your answer."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "What do you do next?",
+                                "reason": "The scene has reached a real player decision.",
+                                "visibility_basis": _visibility_basis("player"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        gm_output = story_input["loop_outputs"]["gm"]["outputs"][0]
+        self.assertEqual(gm_output["stop_reason"], "player_decision")
+        self.assertEqual(gm_output["actor_calls"][0]["actor_id"], "player")
+        self.assertFalse(actor_path.exists())
 
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}

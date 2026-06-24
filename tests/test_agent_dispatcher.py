@@ -37,11 +37,13 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         if not hasattr(self.dispatcher, "agent_snapshots"):
             self.dispatcher.agent_snapshots = _load("agent_snapshots")
         self._restore_after_test(self.dispatcher.input_analysis_apply, "apply_current_run")
+        self._restore_after_test(self.dispatcher.rp_generate_cli, "_ensure_input_analysis")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_dispatch_agent_payload")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_legacy_interactive_agent_loop")
         self._restore_after_test(self.dispatcher.rp_generate_cli, "_run_delivery")
         self._restore_after_test(self.dispatcher.agent_outputs, "build_story_input")
         self._restore_after_test(self.dispatcher, "_dispatch_agent_payload")
+        self._restore_after_test(self.dispatcher.agent_prompts, "build_postprocess_prompt")
         if hasattr(self.dispatcher, "agent_snapshots"):
             self._restore_after_test(self.dispatcher.agent_snapshots, "restore_snapshot")
 
@@ -548,6 +550,35 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(prompts[0][3], {"thread_id": "side_suli_rooftop"})
         self.assertEqual(dispatch_calls[0][1], "generated subGM loop prompt")
 
+    def test_dispatch_agent_payload_uses_actor_packet_for_dynamic_character_prompt(self):
+        prompts = []
+        dispatch_calls = []
+        packet = {"actor_id": "character:前排女生", "gm_prompt": "Turn around and speak."}
+
+        def fake_read_loop_prompt(run_dir, manifest, agent_key, packet=None):
+            prompts.append((Path(run_dir), manifest, agent_key, packet))
+            return "generated character loop prompt"
+
+        def fake_dispatch(agent_key, prompt, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, prompt, Path(root_dir), extra_context))
+            return {"agent": "character", "agent_id": "character:前排女生", "events": [], "stop_reason": "continue"}
+
+        self.dispatcher.rp_generate_cli._read_loop_prompt = fake_read_loop_prompt
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher._dispatch_agent_payload(
+            "character:前排女生",
+            self.run_dir,
+            ROOT,
+            run_claude=lambda *_args: "{}",
+            extra_context={"actor_packet": packet},
+        )
+
+        self.assertEqual(result["agent_id"], "character:前排女生")
+        self.assertEqual(prompts[0][2], "character:前排女生")
+        self.assertEqual(prompts[0][3], packet)
+        self.assertEqual(dispatch_calls[0][1], "generated character loop prompt")
+
     def test_dispatch_agent_payload_does_not_fallback_on_loop_prompt_generation_bug(self):
         def fake_read_loop_prompt(_run_dir, _manifest, _agent_key, _packet=None):
             raise ValueError("prompt generation bug")
@@ -565,6 +596,35 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                 run_claude=lambda *_args: "{}",
                 extra_context={"packet": {"thread_id": "side_suli_rooftop"}},
             )
+
+    def test_dispatch_agent_payload_builds_postprocess_prompt_from_runtime_context(self):
+        build_calls = []
+        dispatch_calls = []
+        extra_context = {"postprocess_context": {"story_output": {"content": "<content>Story text.</content>"}}}
+
+        def fake_build_postprocess_prompt(run_summary):
+            build_calls.append(run_summary)
+            return "generated postprocess prompt"
+
+        def fake_dispatch(agent_key, prompt, root_dir, run_claude, extra_context=None):
+            dispatch_calls.append((agent_key, prompt, Path(root_dir), extra_context))
+            return {"schema_version": 1, "core": {"summary": "ready"}}
+
+        self.dispatcher.agent_prompts.build_postprocess_prompt = fake_build_postprocess_prompt
+        self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher._dispatch_agent_payload(
+            "postprocess",
+            self.run_dir,
+            ROOT,
+            run_claude=lambda *_args: "{}",
+            extra_context=extra_context,
+        )
+
+        self.assertEqual(result["core"]["summary"], "ready")
+        self.assertEqual(build_calls, [extra_context])
+        self.assertEqual(dispatch_calls[0], ("postprocess", "generated postprocess prompt", ROOT, extra_context))
+        self.assertFalse((self.run_dir / "prompts" / "postprocess.prompt.md").exists())
 
     def test_dispatch_next_blocks_unsupported_intent(self):
         created = self.intents.create_intent(
@@ -838,6 +898,69 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["created_messages"], [applied[0]["id"]])
         self.assertEqual(applied[0]["to"], ["gm", "main_agent"])
         self.assertEqual(applied[0]["payload"]["applied"]["analysis"]["analysis_mode"], "fixture")
+
+    def test_analyze_input_dispatches_missing_analysis_before_apply_on_live_path(self):
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": "round-000001",
+                "stage": "prepared",
+                "prompts": {"input_analyst": "prompts/input_analyst.prompt.md"},
+                "expected_outputs": {"input_analysis": "input_analysis.output.json"},
+            },
+        )
+        (self.run_dir / "prompts").mkdir(exist_ok=True)
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "main_agent",
+                "type": "analyze_input",
+                "payload": {"input_analysis_request_path": "input_analysis.request.md"},
+            },
+        )["intent"]
+        ensure_calls = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            return f"{agent_key}:{prompt}:{cwd}"
+
+        def fake_ensure(run_dir, manifest, card_folder, root_dir, run_claude):
+            ensure_calls.append(
+                {
+                    "run_dir": Path(run_dir),
+                    "card_folder": Path(card_folder),
+                    "root_dir": Path(root_dir),
+                    "probe": run_claude("input_analyst", "probe prompt", root_dir),
+                }
+            )
+            _write_json(run_dir / "input_analysis.output.json", {"analysis_mode": "fixture"})
+            return {
+                "ok": True,
+                "analysis": {"analysis_mode": "fixture"},
+                "manifest": {"runtime_settings": {"selfRepairMode": "limited"}},
+                "capability_requests": [],
+            }
+
+        self.dispatcher.rp_generate_cli._ensure_input_analysis = fake_ensure
+
+        result = self.dispatcher.dispatch_next(
+            self.run_dir,
+            self.card,
+            ROOT,
+            run_claude=fake_run_claude,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertEqual(len(ensure_calls), 1)
+        self.assertEqual(ensure_calls[0]["run_dir"], self.run_dir)
+        self.assertEqual(ensure_calls[0]["card_folder"], self.card)
+        self.assertEqual(ensure_calls[0]["root_dir"], ROOT)
+        self.assertIn("input_analyst:probe prompt", ensure_calls[0]["probe"])
+        self.assertTrue((self.run_dir / "artifacts" / "input_analysis.output.json").exists())
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["run_gm_turn"])
 
     def test_analyze_input_blocks_with_failure_when_apply_raises_after_accept(self):
         created = self.intents.create_intent(
@@ -1873,10 +1996,16 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
 
         later_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
         self.assertTrue(later_actor["ok"])
-        self.assertEqual(later_actor["created_intents"], [])
         self.assertTrue(later_actor["detail"]["fanout_player_decision_required"])
         self.assertTrue(later_actor["detail"]["fanout_continuation_blocked_by_player_decision"])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["compose_story"])
+        self.assertEqual(later_actor["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["payload"]["reason"], "actor_fanout_player_decision")
+        self.assertEqual(
+            pending[0]["payload"]["expected_source_call_ids"],
+            ["call-character-Ada-1", "call-character-Bea-1"],
+        )
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(trace["status"], "decision_point")
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1905,8 +2034,14 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         decision_actor = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
         self.assertTrue(decision_actor["ok"])
         self.assertTrue(decision_actor["detail"]["player_decision_required"])
-        self.assertEqual(decision_actor["created_intents"], [])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["compose_story"])
+        self.assertEqual(decision_actor["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["payload"]["reason"], "actor_fanout_player_decision")
+        self.assertEqual(
+            pending[0]["payload"]["expected_source_call_ids"],
+            ["call-character-Ada-1", "call-character-Bea-1"],
+        )
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(trace["status"], "decision_point")
         completed_actor_outputs = [
@@ -1985,7 +2120,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "blocked")
         self.assertEqual(manifest["dispatcher"]["reason"], "run_actor_complete_failed")
 
-    def test_run_actor_player_decision_recovers_when_complete_raises_after_side_effects_without_follow_up(self):
+    def test_run_actor_player_decision_recovers_when_complete_raises_after_side_effects_with_story_follow_up(self):
         packet = {"actor_id": "character:Ada", "visible_context": {"scene": "door"}}
         projected = self._append_projected_actor_message(packet=packet)
         created = self._create_run_actor_intent(projected["id"])
@@ -2024,9 +2159,11 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(result["intent_id"], created["id"])
         self.assertEqual(result["reason"], "run_actor_complete_recovered")
         self.assertTrue(result["detail"]["player_decision_required"])
-        self.assertEqual(result["detail"]["follow_up_intent_id"], "")
-        self.assertEqual(result["created_intents"], [])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(result["detail"]["follow_up_intent_id"], pending[0]["id"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["payload"]["reason"], "actor_player_decision")
         self.assertEqual(self.intents.list_intents(self.run_dir, "blocked"), [])
         completed = self.intents.list_intents(self.run_dir, "completed")
         self.assertEqual([item["id"] for item in completed], [created["id"]])
@@ -2177,7 +2314,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(trace["status"], "decision_point")
 
-    def test_run_actor_stop_for_player_decision_records_decision_point_without_follow_up(self):
+    def test_run_actor_character_decision_creates_compose_story_follow_up(self):
         packet = {"actor_id": "character:Ada", "visible_context": {"scene": "door"}}
         projected = self._append_projected_actor_message(packet=packet)
         self._create_run_actor_intent(projected["id"])
@@ -2205,8 +2342,12 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["detail"]["player_decision_required"])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
-        self.assertEqual(result["created_intents"], [])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([intent["type"] for intent in pending], ["compose_story"])
+        self.assertEqual(result["created_intents"], [pending[0]["id"]])
+        self.assertEqual(pending[0]["payload"]["reason"], "actor_player_decision")
+        self.assertEqual(pending[0]["payload"]["actor_id"], "character:Ada")
+        self.assertEqual(pending[0]["payload"]["actor_response_message_id"], result["created_messages"][0])
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(trace["status"], "decision_point")
 
@@ -2950,7 +3091,139 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(pending[0]["payload"]["loop_result"]["stop_reason"], "word_target")
         self.assertFalse((self.run_dir / "actor.outputs.json").exists())
 
-    def test_run_gm_turn_player_decision_marks_terminal_without_story_follow_up(self):
+    def test_run_gm_turn_continue_without_collaboration_creates_compose_story(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            self.assertEqual(agent_key, "gm")
+            return self._gm_output(actor_calls=[], stop_reason="continue")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["reason"], "gm_no_collaboration_work")
+        self.assertEqual(pending[0]["payload"]["loop_result"]["stop_reason"], "continue")
+
+    def test_run_gm_turn_dispatches_compact_gm_runtime_input_without_raw_channel_duplicates(self):
+        self._install_dispatcher_dependencies()
+        compact_packet = self.dispatcher._compact_gm_runtime_packet_for_prompt(
+            {
+                "role_channel": "I listen.",
+                "user_instruction_channel": "作品基调：日式轻小说风格。",
+                "components": [
+                    {"channel": "role", "text": "I listen."},
+                    {"channel": "user_instruction", "text": "作品基调：日式轻小说风格。"},
+                ],
+                "world_state": {},
+            }
+        )
+        self.assertNotIn("components", compact_packet)
+        self.assertEqual(compact_packet["role_channel"], "I listen.")
+        self.assertEqual(compact_packet["user_instruction_channel"], "作品基调：日式轻小说风格。")
+        _write_json(
+            self.run_dir / "input.json",
+            {
+                "raw_text": "I listen.\n\n[USER_INSTRUCTION]\n作品基调：日式轻小说风格。",
+                "explicit_payload": {
+                    "input_schema": "dual_channel_v1",
+                    "role_text": "I listen.",
+                    "user_instruction_text": "作品基调：日式轻小说风格。",
+                },
+                "input_analysis": {
+                    "schema_version": 1,
+                    "round_id": "round-000001",
+                    "analysis_mode": "ai",
+                    "source_integrity": {"raw_text_sha256": "hash"},
+                    "semantic_units": [
+                        {
+                            "id": "su-001",
+                            "type": "style_guidance",
+                            "text": "作品基调：日式轻小说风格。",
+                            "raw_excerpt": "作品基调：日式轻小说风格。",
+                            "derived_summary": "Use a light-novel school tone.",
+                            "visibility": "gm_only",
+                        }
+                    ],
+                    "routing": {
+                        "role_channel": "I listen.",
+                        "user_instruction_channel": "作品基调：日式轻小说风格。",
+                        "gm": True,
+                        "player": True,
+                        "characters": [],
+                    },
+                    "world_updates": {"hidden_facts": [], "public_facts": [], "important_characters": []},
+                    "narrative_directives": {"continue_after_player_action": True},
+                    "risks": [],
+                },
+                "routed_input": {
+                    "input_schema": "analysis_v1",
+                    "role_channel": "I listen.",
+                    "user_instruction_channel": "作品基调：日式轻小说风格。",
+                    "components": [
+                        {"channel": "role", "text": "I listen."},
+                        {"channel": "user_instruction", "text": "作品基调：日式轻小说风格。"},
+                    ],
+                },
+                "gm_only_hidden_settings": [],
+                "objective_world": {"facts": [], "sources": []},
+                "recent_chat": [],
+                "card_data": {},
+                "character_contexts": {"characters": []},
+                "visible_events": [],
+                "runtime_settings": {"style": "轻松活泼", "wordCount": 4000},
+                "style_profile": {"name": "轻松活泼", "content": "short"},
+            },
+        )
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )
+        runtime_contexts = []
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, extra_context):
+            self.assertEqual(agent_key, "gm")
+            runtime_contexts.append(extra_context)
+            return self._gm_output(actor_calls=[], stop_reason="word_target")
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(runtime_contexts), 1)
+        runtime_context = runtime_contexts[0]
+        self.assertNotIn("loop_packet", runtime_context)
+        self.assertNotIn("components", runtime_context["packet"])
+        world_state = runtime_context["packet"]["world_state"]
+        for duplicated_key in (
+            "raw_text",
+            "explicit_payload",
+            "routed_input",
+            "role_channel",
+            "user_instruction_channel",
+            "components",
+            "runtime_settings",
+            "style_profile",
+        ):
+            self.assertNotIn(duplicated_key, world_state)
+        compact_analysis = world_state["input_analysis"]
+        self.assertNotIn("source_integrity", compact_analysis)
+        self.assertNotIn("routing", compact_analysis)
+        self.assertNotIn("raw_excerpt", compact_analysis["semantic_units"][0])
+        self.assertNotIn("text", compact_analysis["semantic_units"][0])
+        self.assertEqual(compact_analysis["semantic_units"][0]["derived_summary"], "Use a light-novel school tone.")
+
+    def test_run_gm_turn_player_decision_creates_compose_story_follow_up(self):
         self._install_dispatcher_dependencies()
         created = self.intents.create_intent(
             self.run_dir,
@@ -2961,7 +3234,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
             self.assertEqual(agent_key, "gm")
             return self._gm_output(
-                actor_calls=[],
+                actor_calls=[self._gm_actor_call("player", "call-player-1")],
                 decision_point=decision_point,
                 stop_reason="player_decision",
             )
@@ -2972,10 +3245,60 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["intent_id"], created["id"])
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
         self.assertTrue(result["detail"]["player_decision_required"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["compose_story"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(pending[0]["payload"]["reason"], "gm_player_decision")
+        self.assertEqual(pending[0]["payload"]["loop_result"]["stop_reason"], "player_decision")
+        self.assertEqual(
+            pending[0]["payload"]["loop_result"]["actor_calls"][0]["actor_id"],
+            "player",
+        )
         trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
         self.assertEqual(trace["status"], "decision_point")
+
+    def test_run_gm_turn_player_decision_executes_character_call_from_embedded_packet(self):
+        self._install_dispatcher_dependencies()
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "input_analyst", "type": "run_gm_turn", "payload": {}},
+        )["intent"]
+
+        def fake_dispatch(agent_key, _run_dir, _root, _run_claude, _extra_context):
+            self.assertEqual(agent_key, "gm")
+            output = self._gm_output(
+                actor_calls=[self._gm_actor_call("character:NewFriend", "call-character-NewFriend-1")],
+                stop_reason="player_decision",
+            )
+            output["character_promotions"] = [
+                {
+                    "name": "NewFriend",
+                    "source_agent": "gm",
+                    "reason": "NewFriend needs independent agency for this decision beat.",
+                    "profile_seed": "A friendly classmate standing beside the player.",
+                    "visibility": "character_private_and_gm",
+                    "activation": "current_turn",
+                }
+            ]
+            return output
+
+        self.dispatcher._dispatch_agent_payload = fake_dispatch
+
+        result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        self.assertTrue(result["detail"]["player_decision_required"])
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["request_projection"])
+        self.assertEqual(pending[0]["policy"], {"source_intent_id": created["id"]})
+        self.assertEqual(result["detail"]["created_projection_intents"], [pending[0]["id"]])
+        messages = self.dispatcher.agent_messages.read_messages(self.run_dir)
+        request = next(message for message in messages if message.get("type") == "request_actor")
+        self.assertEqual(request["payload"]["actor_id"], "character:NewFriend")
+        self.assertEqual(request["payload"]["packet"]["actor_id"], "character:NewFriend")
+        self.assertFalse((self.run_dir / "characters" / "NewFriend.context.json").exists())
 
     def test_run_gm_turn_default_path_does_not_reference_broad_loop_helper(self):
         self._install_dispatcher_dependencies()
@@ -3147,6 +3470,57 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(dispatch_calls[0][1], "story prompt")
         self.assertEqual(dispatch_calls[0][3], {"story_input": {"round_id": "round-000001", "fixture": "story input"}})
 
+    def test_compose_story_dispatches_story_prompt_context_instead_of_raw_story_input(self):
+        self._install_dispatcher_dependencies()
+        self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "gm", "type": "compose_story", "payload": {"reason": "loop_complete"}},
+        )
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "story.prompt.md").write_text("story prompt", encoding="utf-8")
+        dispatch_contexts = []
+
+        def fake_build_story_input(run_dir):
+            payload = {
+                "round_id": "round-000001",
+                "loop_outputs": {"gm": {"outputs": [{"events": [{"content": "Hidden source detail."}]}]}},
+                "memory_deltas": {"actors": {"character:Ada": [{"content": "Private memory."}]}},
+                "story_prompt_context": {
+                    "round_id": "round-000001",
+                    "loop_outputs": {"gm": {"outputs": [{"events": [{"content": "Visible beat."}]}]}},
+                },
+            }
+            self.dispatcher.write_artifact(run_dir, "story.input.json", payload)
+            return payload
+
+        def fake_dispatch(_agent_key, _prompt, _root_dir, _run_claude, extra_context=None):
+            dispatch_contexts.append(extra_context)
+            return {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}}
+
+        original_build_story_input = self.dispatcher.agent_outputs.build_story_input
+        original_dispatch = self.dispatcher.rp_generate_cli._dispatch_agent_payload
+        try:
+            self.dispatcher.agent_outputs.build_story_input = fake_build_story_input
+            self.dispatcher.rp_generate_cli._dispatch_agent_payload = fake_dispatch
+
+            result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        finally:
+            self.dispatcher.agent_outputs.build_story_input = original_build_story_input
+            self.dispatcher.rp_generate_cli._dispatch_agent_payload = original_dispatch
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            dispatch_contexts[0],
+            {
+                "story_input": {
+                    "round_id": "round-000001",
+                    "loop_outputs": {"gm": {"outputs": [{"events": [{"content": "Visible beat."}]}]}},
+                }
+            },
+        )
+        self.assertNotIn("Hidden source detail.", json.dumps(dispatch_contexts[0], ensure_ascii=False))
+        self.assertNotIn("memory_deltas", json.dumps(dispatch_contexts[0], ensure_ascii=False))
+
     def test_compose_story_writes_normalized_story_output_artifact(self):
         self._install_dispatcher_dependencies()
         self.intents.create_intent(
@@ -3254,6 +3628,64 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(critic_context["quality_metrics"]["word_count"]["current"], 2)
         self.assertNotIn("nsfw", json.dumps(critic_context["quality_metrics"], ensure_ascii=False))
 
+    def test_review_critic_revises_retcon_story_without_derived_content_edits(self):
+        self._install_dispatcher_dependencies()
+        story_input = {
+            "round_id": "round-000002",
+            "player_inputs": {
+                "raw_text": "梦境破碎，我在上学路上醒来。",
+                "input_analysis": {
+                    "narrative_directives": {
+                        "rewrite_previous_output": True,
+                        "expand_synopsis_before_continue": True,
+                    },
+                    "world_updates": {
+                        "retcon_requests": [
+                            {
+                                "id": "rr-001",
+                                "text": "上一轮教室场景必须改定为梦境内容。",
+                                "visibility": "gm_only",
+                                "status": "active",
+                            }
+                        ]
+                    },
+                },
+            },
+        }
+        story_output = {
+            "content": "<content><p>你在上学路上醒来。</p></content>",
+            "character_dialogues": [],
+            "metadata": {"round_id": "round-000002"},
+        }
+        _write_json(self.run_dir / "artifacts" / "story.input.json", story_input)
+        _write_json(self.run_dir / "artifacts" / "story.output.json", story_output)
+        created = self.intents.create_intent(
+            self.run_dir,
+            {"requested_by": "story", "type": "review_critic", "payload": {"reason": "story_ready"}},
+        )["intent"]
+        (self.run_dir / "prompts").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "prompts" / "critic.prompt.md").write_text("critic prompt", encoding="utf-8")
+
+        def fake_dispatch(_agent_key, _run_dir, _root_dir, _run_claude, extra_context=None):
+            return {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": ""}
+
+        original_dispatch = self.dispatcher._dispatch_agent_payload
+        try:
+            self.dispatcher._dispatch_agent_payload = fake_dispatch
+            result = self.dispatcher.dispatch_next(self.run_dir, self.card, ROOT, run_claude=lambda *args: "")
+        finally:
+            self.dispatcher._dispatch_agent_payload = original_dispatch
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["intent_id"], created["id"])
+        critic_report = json.loads((self.run_dir / "artifacts" / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic_report["decision"], "revise")
+        self.assertIn("missing <derived_content_edits>", "\n".join(critic_report["hard_failures"]))
+        self.assertEqual(critic_report["repair_routing"]["stage"], "story_composition")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual([item["type"] for item in pending], ["repair_request"])
+        self.assertFalse(any(item["type"] == "run_postprocess" for item in pending))
+
     def test_review_critic_normalizes_stale_token_failure_to_delivery(self):
         self._install_dispatcher_dependencies()
         _write_json(self.run_dir / "artifacts" / "story.input.json", {"round_id": "round-000001"})
@@ -3302,6 +3734,7 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self._install_dispatcher_dependencies()
         story_input = {
             "round_id": "round-000001",
+            "loop_outputs": {"gm": {"outputs": [{"events": [{"content": "Hidden postprocess source."}]}]}},
             "interaction_trace": {
                 "visible_events": [
                     {
@@ -3314,6 +3747,10 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
                         },
                     }
                 ]
+            },
+            "story_prompt_context": {
+                "round_id": "round-000001",
+                "player_inputs": {"raw_text": "I push open the sealed door."},
             },
         }
         story_output = {"content": "<content>Story text.</content>", "metadata": {"round_id": "round-000001"}}
@@ -3367,7 +3804,8 @@ class AgentDispatcherFoundationTest(unittest.TestCase):
         self.assertEqual(pending[0]["payload"]["reason"], "postprocess_core_valid")
         self.assertEqual(dispatch_calls[0][0], "postprocess")
         postprocess_context = dispatch_calls[0][3]["postprocess_context"]
-        self.assertEqual(postprocess_context["story_input"], story_input)
+        self.assertEqual(postprocess_context["story_input"], story_input["story_prompt_context"])
+        self.assertNotIn("Hidden postprocess source.", json.dumps(postprocess_context, ensure_ascii=False))
         self.assertEqual(postprocess_context["story_output"], story_output)
         self.assertEqual(postprocess_context["critic_report"], critic_report)
         self.assertEqual(postprocess_context["pending_repairs"], [])

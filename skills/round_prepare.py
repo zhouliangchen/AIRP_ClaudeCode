@@ -26,7 +26,7 @@ import hidden_settings
 import match_worldbook
 import mvu_check
 import runtime_settings
-from handler import apply_injections, write_progress
+from handler import apply_injections, read_pending_user_turn, write_progress
 from io_utils import read_file, read_json, walk_paths
 
 
@@ -110,6 +110,90 @@ def _load_player_input_edits(card_folder, limit=20, processed=False):
             continue
         items.append(item)
     return items
+
+
+def _text(value):
+    return "" if value is None else str(value)
+
+
+def _payload_raw_text(payload, fallback=""):
+    payload = payload if isinstance(payload, dict) else {}
+    raw_text = _text(payload.get("raw_text"))
+    if raw_text:
+        return raw_text
+    if payload.get("input_schema") == "dual_channel_v1":
+        role_text = _text(payload.get("role_text"))
+        instruction_text = _text(payload.get("user_instruction_text"))
+        if instruction_text:
+            return role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        if role_text:
+            return role_text
+    display_text = _text(payload.get("display_text"))
+    return display_text if display_text else _text(fallback)
+
+
+def _find_player_input_by_id(player_input_history, input_id):
+    input_id = _text(input_id).strip()
+    if not input_id:
+        return {}
+    for item in reversed(player_input_history or []):
+        if isinstance(item, dict) and _text(item.get("id")).strip() == input_id:
+            return dict(item)
+    return {}
+
+
+def _merge_pending_with_player_record(pending_user_turn, player_input_history):
+    pending = dict(pending_user_turn) if isinstance(pending_user_turn, dict) else {}
+    matched = _find_player_input_by_id(player_input_history, pending.get("id"))
+    if not matched:
+        return pending
+    merged = dict(matched)
+    for key, value in pending.items():
+        if key not in merged or value not in (None, ""):
+            merged[key] = value
+    return merged
+
+
+def _matching_player_payload(player_input_history, current_user_text):
+    latest_player_input = player_input_history[-1] if player_input_history else {}
+    explicit_input_payload = {}
+    if isinstance(latest_player_input, dict):
+        current_user_text = _text(current_user_text)
+        current_user_text_for_matching = current_user_text.strip()
+        for key in ("raw_text", "display_text", "role_text"):
+            candidate = _text(latest_player_input.get(key))
+            if key != "raw_text" and not candidate.strip():
+                continue
+            if candidate == current_user_text or (
+                candidate.strip() and candidate.strip() == current_user_text_for_matching
+            ):
+                explicit_input_payload = dict(latest_player_input)
+                break
+    return explicit_input_payload
+
+
+def _select_authoritative_input(card_folder, input_path, fallback_text, player_input_history):
+    """Return the current turn input from the card-local pending record if present.
+
+    `skills/styles/input.txt` is a bridge scratch file shared across sessions.
+    The card-local pending player turn is the delivery authority, so it must be
+    the generation authority too; otherwise stale bridge input can be paired
+    with the wrong player_input_id at delivery time.
+    """
+    pending_user_turn = read_pending_user_turn(card_folder)
+    if isinstance(pending_user_turn, dict) and pending_user_turn:
+        payload = _merge_pending_with_player_record(pending_user_turn, player_input_history)
+        user_text = _payload_raw_text(payload, fallback_text)
+        payload["raw_text"] = user_text
+        payload.setdefault("display_text", user_text)
+        try:
+            Path(input_path).write_text(user_text, encoding="utf-8")
+        except Exception:
+            pass
+        return user_text, payload, "pending_user_turn"
+
+    user_text = _text(fallback_text)
+    return user_text, _matching_player_payload(player_input_history, user_text), "styles_input"
 
 
 def _short_context(text, limit=260):
@@ -398,23 +482,12 @@ def main():
     chat_log = read_json(chat_log_path) or []
     player_input_history = _load_player_input_history(card_folder)
     player_input_edits = _load_player_input_edits(card_folder, processed=False)
-    latest_player_input = player_input_history[-1] if player_input_history else {}
-    explicit_input_payload = {}
-    if (
-        isinstance(latest_player_input, dict)
-        and latest_player_input.get("input_schema") == "dual_channel_v1"
-    ):
-        latest_raw_text = "" if latest_player_input.get("raw_text") is None else str(latest_player_input.get("raw_text"))
-        latest_role_text = "" if latest_player_input.get("role_text") is None else str(latest_player_input.get("role_text"))
-        current_user_text = "" if user_text is None else str(user_text)
-        current_user_text_for_matching = current_user_text.strip()
-        if (
-            latest_raw_text == current_user_text
-            or latest_raw_text.strip() == current_user_text_for_matching
-            or latest_role_text == current_user_text
-            or latest_role_text.strip() == current_user_text_for_matching
-        ):
-            explicit_input_payload = dict(latest_player_input)
+    user_text, explicit_input_payload, input_source = _select_authoritative_input(
+        card_folder,
+        input_path,
+        user_text,
+        player_input_history,
+    )
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
     except Exception:
@@ -507,6 +580,7 @@ def main():
 
     dynamic_parts.append("=== USER_INPUT ===")
     dynamic_parts.append(user_text)
+    dynamic_parts.append(f"\n=== USER_INPUT_SOURCE ===\n  {input_source}")
 
     dynamic_parts.append("\n=== PLAYER_AUTHORITY_RULES ===")
     dynamic_parts.append("- 玩家历次输入是唯一权威事实源；不得改写、润色或删除 .player_inputs.jsonl 中的 raw_text/display_text。")

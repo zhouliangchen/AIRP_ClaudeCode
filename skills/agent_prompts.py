@@ -27,6 +27,35 @@ SKILL_PATHS = {
 
 AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character", "subgm"}
 
+_GM_PROMPT_TOP_LEVEL_DUPLICATE_KEYS = {"components"}
+_GM_PROMPT_WORLD_DUPLICATE_KEYS = {
+    "raw_text",
+    "explicit_payload",
+    "routed_input",
+    "role_channel",
+    "user_instruction_channel",
+    "components",
+    "gm_only_hidden_settings",
+    "objective_world",
+    "recent_chat",
+    "card_data",
+    "character_contexts",
+    "runtime_settings",
+    "style_profile",
+}
+_GM_PROMPT_INPUT_ANALYSIS_KEEP_KEYS = (
+    "schema_version",
+    "round_id",
+    "analysis_mode",
+    "semantic_units",
+    "world_updates",
+    "narrative_directives",
+    "routing_requests",
+    "capability_requests",
+    "risks",
+)
+_GM_PROMPT_INPUT_ANALYSIS_DUPLICATE_KEYS = {"raw_excerpt", "source_integrity", "routing", "text"}
+
 WORLD_UPDATE_RECORD_CONTRACT = """World update record contract:
 
 - world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
@@ -69,6 +98,52 @@ def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
     if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
         text = _strip_embedded_output_schema(text)
     return text[:limit]
+
+
+def _strip_prompt_duplicate_keys(value: Any, duplicate_keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_prompt_duplicate_keys(item, duplicate_keys)
+            for key, item in value.items()
+            if str(key) not in duplicate_keys
+        }
+    if isinstance(value, list):
+        return [_strip_prompt_duplicate_keys(item, duplicate_keys) for item in value]
+    return value
+
+
+def _compact_gm_input_analysis_for_prompt(analysis: Any) -> Any:
+    if not isinstance(analysis, dict):
+        return analysis
+    compact = {
+        key: analysis[key]
+        for key in _GM_PROMPT_INPUT_ANALYSIS_KEEP_KEYS
+        if key in analysis
+    }
+    return _strip_prompt_duplicate_keys(compact, _GM_PROMPT_INPUT_ANALYSIS_DUPLICATE_KEYS)
+
+
+def _compact_gm_prompt_context(context: Any) -> Any:
+    if not isinstance(context, dict):
+        return context
+    compact = {
+        key: value
+        for key, value in context.items()
+        if str(key) not in _GM_PROMPT_TOP_LEVEL_DUPLICATE_KEYS
+    }
+    world_state = compact.get("world_state")
+    if isinstance(world_state, dict):
+        compact_world = {
+            key: value
+            for key, value in world_state.items()
+            if str(key) not in _GM_PROMPT_WORLD_DUPLICATE_KEYS
+        }
+        if "input_analysis" in world_state:
+            compact_world["input_analysis"] = _compact_gm_input_analysis_for_prompt(
+                world_state.get("input_analysis")
+            )
+        compact["world_state"] = compact_world
+    return compact
 
 
 def _write_prompt(path: Path, body: str) -> None:
@@ -349,6 +424,11 @@ def _player_prompt(context: Dict[str, Any]) -> str:
         "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
     ) + (
         "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+        "Allowed event types: `perceive_request`, `dialogue`, `action`, `custom_action`, "
+        "`memory_delta`, `goal_update`, `wait_for_gm`, `stop_for_player_decision`. "
+        "Do not emit `perceive`, `thought`, `observation`, or `narration`; use `action` for ordinary visible reaction/observation. "
+        "Dialogue metadata keys are only `exact_visible_words`, `delivery_channel`, and `visible_tone_or_action`; "
+        "do not use `tone` or `dialogue_style` keys.\n"
         "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
         "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
     )
@@ -384,6 +464,11 @@ def _character_prompt(context: Dict[str, Any]) -> str:
         "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
     ) + (
         "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
+        "Allowed event types: `perceive_request`, `dialogue`, `action`, `custom_action`, "
+        "`memory_delta`, `goal_update`, `wait_for_gm`, `stop_for_player_decision`. "
+        "Do not emit `perceive`, `thought`, `observation`, or `narration`; use `action` for ordinary visible reaction/observation. "
+        "Dialogue metadata keys are only `exact_visible_words`, `delivery_channel`, and `visible_tone_or_action`; "
+        "do not use `tone` or `dialogue_style` keys.\n"
         "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
         "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
     )
@@ -488,6 +573,9 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "story.output.json",
         contract,
         run_summary,
+        "Use only Runtime Input `story_input`, which is the sanitized story-facing projection. "
+        "Do not open or recover raw `story.input.json`, `gm.output.json`, `actor.outputs.json`, "
+        "trace files, memory files, or hidden settings for story prose.",
         contract_notes=(
             "Story writes only prose, source-backed character dialogues, "
             "and derived-content repair edits. Do not write `<summary>` or `<options>` "
@@ -495,7 +583,11 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
             "and frontend data after critic pass; postprocess also owns MVU variable update commands. "
             "Do not write `<UpdateVariable>`; postprocess owns MVU variable update commands."
         ),
-    ) + _story_runtime_guidance(run_summary) + "\n\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
+    ) + _story_runtime_guidance(run_summary) + (
+        "\n\nUse Runtime Input `story_input.interaction_trace` when present. "
+        "Preserve `visible_events`; do not use private trace content directly. "
+        "The raw `story.input.json` artifact is for audit, critic, and memory boundaries, not for story-agent prompt recovery.\n"
+    )
 
 
 def _critic_prompt(run_summary: Dict[str, Any]) -> str:
@@ -535,6 +627,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- Fill `quality_checks.length` from `quality_metrics.word_count`; use `pass`, `revise`, `block`, `exempt`, or `not_checked`.\n"
         "- If `quality_metrics.word_count.exempted` is true because of a player decision stop, set the length status to `exempt` or otherwise note the player decision exemption instead of requiring expansion.\n"
         "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
+        "- `story.output.json` does not require `<summary>` or `<options>`; hard-failing their absence is incorrect because postprocess owns `core.summary` and `core.options` after critic pass.\n"
         "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
     )
 
@@ -648,7 +741,7 @@ def write_round_prompts(
     character_prompts: Dict[str, str] = {}
 
     _write_prompt(input_analyst_prompt, _input_analyst_prompt(input_request))
-    _write_prompt(gm_prompt, _gm_prompt(gm_packet))
+    _write_prompt(gm_prompt, _gm_prompt(_compact_gm_prompt_context(gm_packet)))
     _write_prompt(player_prompt, _player_prompt(player_packet))
 
     for safe_name, packet in character_packets.items():
@@ -662,7 +755,8 @@ def write_round_prompts(
             "gm": "gm.output.json",
             "actors": "actor.outputs.json",
         },
-        "story_input": "story.input.json",
+        "story_input": "Runtime Input story_input (sanitized story-facing projection)",
+        "audit_story_input": "story.input.json (raw audit artifact; story agent must not read it for prose)",
         "runtime_settings": runtime_payload["settings"],
         "style_profile": runtime_payload["style_profile"],
     }

@@ -8,6 +8,62 @@ import re
 import json
 
 
+CONTRACT_TAGS = (
+    "polished_input",
+    "content",
+    "character_dialogues",
+    "derived_content_edits",
+    "edit_only",
+    "summary",
+    "options",
+    "tokens",
+)
+CONTENT_RUNTIME_TAGS = tuple(tag for tag in CONTRACT_TAGS if tag != "content")
+
+
+def _repair_json_string_controls(text):
+    """Escape literal control characters that appear inside JSON strings."""
+    out = []
+    in_string = False
+    escaped = False
+    for ch in text or "":
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            out.append(ch)
+            in_string = not in_string
+            continue
+        if in_string and ch in "\r\n\t":
+            out.append({"\\r": "\\r", "\\n": "\\n", "\\t": "\\t"}.get(repr(ch)[1:-1], "\\n"))
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _loads_json_relaxed(raw):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_repair_json_string_controls(raw))
+
+
+def _strip_contract_tags(text, tags):
+    cleaned = text or ""
+    for tag in tags:
+        cleaned = re.sub(rf"<{tag}>.*?</{tag}>", "", cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+
+
+def _clean_content_text(text):
+    return _strip_contract_tags(text, CONTENT_RUNTIME_TAGS)
+
+
 def parse_tokens(raw):
     """Parse a <tokens> block ('key: value' lines) into a dict.
     Handles int, float, and percentage (e.g. 77.4%) values."""
@@ -40,20 +96,44 @@ def parse_response(text):
     others are stripped strings.
     """
     result = {}
-    for tag in ("polished_input", "content", "character_dialogues", "derived_content_edits", "edit_only", "summary", "options", "tokens"):
+    text = text or ""
+    for tag in ("derived_content_edits",):
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
         if m:
             raw = m.group(1).strip()
-            if tag == "tokens":
-                result[tag] = parse_tokens(raw)
-            elif tag in ("character_dialogues", "derived_content_edits"):
-                try:
-                    parsed = json.loads(raw)
-                except json.JSONDecodeError:
-                    parsed = []
-                result[tag] = parsed if isinstance(parsed, list) else []
-            else:
-                result[tag] = raw
+            try:
+                parsed = _loads_json_relaxed(raw)
+            except json.JSONDecodeError:
+                parsed = []
+            result[tag] = parsed if isinstance(parsed, list) else []
+
+    current_turn_source = _strip_contract_tags(text, ("derived_content_edits",))
+    for tag in CONTRACT_TAGS:
+        if tag in ("content", "derived_content_edits"):
+            continue
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", current_turn_source, re.DOTALL)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        if tag == "tokens":
+            result[tag] = parse_tokens(raw)
+        elif tag == "character_dialogues":
+            try:
+                parsed = _loads_json_relaxed(raw)
+            except json.JSONDecodeError:
+                parsed = []
+            result[tag] = parsed if isinstance(parsed, list) else []
+        else:
+            result[tag] = raw
+
+    content_source = _strip_contract_tags(current_turn_source, CONTENT_RUNTIME_TAGS)
+    m = re.search(r"<content>(.*?)</content>", content_source, re.DOTALL)
+    if m:
+        result["content"] = _clean_content_text(m.group(1).strip())
+    if "content" not in result:
+        content = _clean_content_text(content_source)
+        if content:
+            result["content"] = content
     return result
 
 

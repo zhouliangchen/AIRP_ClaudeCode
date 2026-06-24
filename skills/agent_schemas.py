@@ -43,9 +43,16 @@ ACTOR_EVENT_TYPES = {
     "wait_for_gm",
     "stop_for_player_decision",
 }
+ACTOR_EVENT_TYPE_ALIASES = {
+    "perceive": "action",
+}
 
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 DIALOGUE_METADATA_KEYS = {"exact_visible_words", "delivery_channel", "visible_tone_or_action"}
+DIALOGUE_METADATA_ALIASES = {
+    "tone": "visible_tone_or_action",
+    "dialogue_style": "visible_tone_or_action",
+}
 CUSTOM_ACTION_RISK_LEVELS = {"low", "medium", "high", "critical"}
 CUSTOM_ACTION_METADATA_KEYS = {"category", "visible_content", "requires_gm_resolution", "risk_level"}
 
@@ -235,10 +242,10 @@ def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
 
 
 def _normalize_dialogue_metadata(metadata: Dict[str, Any], path: str) -> Dict[str, Any]:
-    for key in sorted(metadata):
-        if key not in DIALOGUE_METADATA_KEYS:
-            raise ValidationError(f"{_path(path, str(key))} is not an allowed dialogue metadata field")
     _reject_forbidden_keys(metadata, path)
+    for key in sorted(metadata):
+        if key not in DIALOGUE_METADATA_KEYS and key not in DIALOGUE_METADATA_ALIASES:
+            raise ValidationError(f"{_path(path, str(key))} is not an allowed dialogue metadata field")
 
     normalized: Dict[str, Any] = {}
     if "exact_visible_words" in metadata:
@@ -254,13 +261,18 @@ def _normalize_dialogue_metadata(metadata: Dict[str, Any], path: str) -> Dict[st
         raise ValidationError(f"{_path(path, 'delivery_channel')} must be a string")
     normalized["delivery_channel"] = delivery_channel.strip() or "spoken"
 
-    if "visible_tone_or_action" in metadata:
-        value = metadata["visible_tone_or_action"]
+    tone_parts: list[str] = []
+    for key in ("visible_tone_or_action", "tone", "dialogue_style"):
+        if key not in metadata:
+            continue
+        value = metadata[key]
         if not isinstance(value, str):
-            raise ValidationError(f"{_path(path, 'visible_tone_or_action')} must be a string")
-        visible_tone_or_action = value.strip()
-        if visible_tone_or_action:
-            normalized["visible_tone_or_action"] = visible_tone_or_action
+            raise ValidationError(f"{_path(path, key)} must be a string")
+        value = value.strip()
+        if value and value not in tone_parts:
+            tone_parts.append(value)
+    if tone_parts:
+        normalized["visible_tone_or_action"] = "; ".join(tone_parts)
 
     return normalized
 
@@ -301,6 +313,7 @@ def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
         if key not in ACTOR_EVENT_KEYS:
             raise ValidationError(f"{_path(path, str(key))} is not an allowed actor event field")
     event_type = _require_str(data, "type", path)
+    event_type = ACTOR_EVENT_TYPE_ALIASES.get(event_type, event_type)
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
     metadata = _optional_dict(data, "metadata", path)

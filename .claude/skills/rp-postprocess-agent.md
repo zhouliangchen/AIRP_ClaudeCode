@@ -19,10 +19,12 @@ You generate frontend support data after the critic has approved the story.
 
 Read the current run and card context:
 
-- `story.input.json`
-- `story.output.json`
-- `critic.report.json`
-- `interaction.trace.json`
+- Runtime Input `postprocess_context.story_input`; it is the sanitized story-facing projection authorized for frontend data.
+- Runtime Input `postprocess_context.story_output`
+- Runtime Input `postprocess_context.critic_report`
+- Runtime Input `postprocess_context.critical_action_evidence`
+- Do not read raw `story.input.json`, `gm.output.json`, `actor.outputs.json`, `interaction.trace.json`, memory files, or hidden settings to recover omitted private facts for frontend summary/options/state.
+- Dispatcher derives this Runtime Input from controlled artifacts such as `story.input.json`, `story.output.json`, `critic.report.json`, and `interaction.trace.json`; treat those raw files as runtime/audit sources, not as extra private context to read.
 - `ui_manifest.json`
 - `postprocess_contract.json`
 - generated asset metadata

@@ -910,6 +910,42 @@ class AgentSchemaTest(unittest.TestCase):
             },
         )
 
+    def test_validate_actor_output_normalizes_dialogue_metadata_aliases_and_perceive_event(self):
+        payload = {
+            "agent": "character",
+            "agent_id": "character:LiuChang",
+            "character_name": "LiuChang",
+            "events": [
+                {
+                    "type": "perceive",
+                    "target": "character:Yumeng",
+                    "content": "I notice Yumeng staring blankly at his desk.",
+                    "metadata": {},
+                },
+                {
+                    "type": "dialogue",
+                    "target": "character:Yumeng",
+                    "content": "Hey, did you actually finish the homework?",
+                    "metadata": {
+                        "tone": "teasing",
+                        "dialogue_style": "casual",
+                    },
+                },
+            ],
+            "stop_reason": "continue",
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(payload)
+
+        self.assertEqual(normalized["events"][0]["type"], "action")
+        self.assertEqual(
+            normalized["events"][1]["metadata"],
+            {
+                "delivery_channel": "spoken",
+                "visible_tone_or_action": "teasing; casual",
+            },
+        )
+
     def test_validate_actor_output_rejects_hidden_dialogue_metadata(self):
         payload = {
             "agent": "character",

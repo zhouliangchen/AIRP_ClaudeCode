@@ -248,6 +248,146 @@ def clear_pending_user_turn(card_folder):
     _pending_user_turn_path(card_folder).unlink(missing_ok=True)
 
 
+def _text(value):
+    return "" if value is None else str(value)
+
+
+def _current_run_dir(card_folder):
+    if agent_run is None:
+        return None
+    try:
+        return agent_run.current_run_dir(card_folder)
+    except Exception:
+        return None
+
+
+def _text_matches_source(candidate, current):
+    candidate_text = _text(candidate)
+    current_text = _text(current)
+    if candidate_text == current_text:
+        return True
+    candidate_stripped = candidate_text.strip()
+    return bool(candidate_stripped and candidate_stripped == current_text.strip())
+
+
+def _find_player_input_record(player_inputs, *, input_id="", raw_text="", display_text="", role_text=""):
+    if input_id:
+        for item in reversed(player_inputs or []):
+            if isinstance(item, dict) and _text(item.get("id")) == input_id:
+                return item
+    sources = [raw_text, display_text, role_text]
+    sources = [item for item in sources if _text(item).strip()]
+    if not sources:
+        return None
+    for item in reversed(player_inputs or []):
+        if not isinstance(item, dict):
+            continue
+        candidates = [item.get("raw_text"), item.get("display_text"), item.get("role_text")]
+        if any(_text_matches_source(candidate, source) for candidate in candidates for source in sources):
+            return item
+    return None
+
+
+def _visible_player_text_from_payload(payload, matched_record=None):
+    matched_record = matched_record if isinstance(matched_record, dict) else {}
+    routed = payload.get("routed_input") if isinstance(payload.get("routed_input"), dict) else {}
+    for value in (
+        payload.get("display_text"),
+        matched_record.get("display_text"),
+        payload.get("role_text"),
+        routed.get("role_channel"),
+        matched_record.get("role_text"),
+        matched_record.get("raw_text"),
+        payload.get("raw_text"),
+    ):
+        text = _text(value)
+        if text.strip():
+            return text
+    return ""
+
+
+def _current_run_player_input(card_folder):
+    run_dir = _current_run_dir(card_folder)
+    if run_dir is None:
+        return {}
+    payload = _read_json_file(Path(run_dir) / "input.json", None)
+    if not isinstance(payload, dict):
+        return {}
+    input_id = _text(payload.get("player_input_id") or payload.get("id") or payload.get("input_id")).strip()
+    raw_text = _text(payload.get("raw_text"))
+    display_text = _text(payload.get("display_text"))
+    role_text = _text(payload.get("role_text"))
+    routed = payload.get("routed_input") if isinstance(payload.get("routed_input"), dict) else {}
+    if not role_text:
+        role_text = _text(routed.get("role_channel"))
+    player_inputs = read_player_inputs(card_folder)
+    matched = _find_player_input_record(
+        player_inputs,
+        input_id=input_id,
+        raw_text=raw_text,
+        display_text=display_text,
+        role_text=role_text,
+    )
+    if not input_id and isinstance(matched, dict):
+        input_id = _text(matched.get("id")).strip()
+    visible_text = _visible_player_text_from_payload(payload, matched)
+    result = {"id": input_id, "display_text": visible_text, "raw_text": raw_text}
+    return {key: value for key, value in result.items() if value}
+
+
+def _delivery_player_input(card_folder, pending_user_turn):
+    if isinstance(pending_user_turn, dict) and pending_user_turn:
+        display_text = (
+            pending_user_turn.get("display_text")
+            if "display_text" in pending_user_turn
+            else pending_user_turn.get("raw_text")
+        )
+        return {
+            "id": _text(pending_user_turn.get("id")).strip(),
+            "display_text": _text(display_text),
+            "raw_text": _text(pending_user_turn.get("raw_text")),
+        }
+    return _current_run_player_input(card_folder)
+
+
+def _find_existing_delivery_turn(log, delivery_input):
+    input_id = _text(delivery_input.get("id")).strip() if isinstance(delivery_input, dict) else ""
+    if input_id:
+        for index in range(len(log) - 1, -1, -1):
+            turn = log[index] if isinstance(log[index], dict) else {}
+            if _text(turn.get("player_input_id")).strip() == input_id:
+                return index
+    visible_text = _text(delivery_input.get("display_text")).strip() if isinstance(delivery_input, dict) else ""
+    if visible_text:
+        for index in range(len(log) - 1, -1, -1):
+            turn = log[index] if isinstance(log[index], dict) else {}
+            if _text(turn.get("user")).strip() == visible_text:
+                return index
+    return None
+
+
+def _drop_trailing_orphan_redeliveries(log, replacement_index):
+    while len(log) > replacement_index + 1:
+        last = log[-1] if isinstance(log[-1], dict) else {}
+        if last.get("user") or last.get("player_input_id"):
+            break
+        log.pop()
+
+
+def _chat_log_total_tokens(log):
+    total = 0
+    for turn in log or []:
+        tokens = turn.get("tokens") if isinstance(turn, dict) else None
+        if not isinstance(tokens, dict):
+            continue
+        value = tokens.get("total") or tokens.get("round_total") or tokens.get("startup_total") or 0
+        try:
+            total += int(value)
+        except Exception:
+            continue
+    return total
+
+
 def _find_player_input_turn_index(log, player_inputs, input_id):
     for i, turn in enumerate(log or []):
         if turn.get("player_input_id") == input_id:
@@ -1615,6 +1755,18 @@ def _derived_edit_record(turn_index, op, reason, original_turn_index=None):
     return item
 
 
+def _clean_generated_ai_fragment(text):
+    parts = parse_response(text)
+    content = parts.get("content")
+    if not isinstance(content, str) or not content.strip():
+        content = text or ""
+    return {
+        "content": content.strip(),
+        "summary": parts.get("summary") if isinstance(parts.get("summary"), str) else "",
+        "character_dialogues": _normalize_character_dialogues(parts.get("character_dialogues")),
+    }
+
+
 def apply_derived_content_edits(log, edits, existing_turn_count=None):
     """Apply player-requested repairs to AI-derived turn content.
 
@@ -1648,7 +1800,14 @@ def apply_derived_content_edits(log, edits, existing_turn_count=None):
         # Full replacement for broad rewrite requests (e.g. "rewrite all previous chapters").
         new_ai = edit.get("ai") or edit.get("content") or edit.get("new_ai")
         if isinstance(new_ai, str) and new_ai.strip():
-            target["ai"] = new_ai.strip()
+            cleaned_ai = _clean_generated_ai_fragment(new_ai)
+            target["ai"] = cleaned_ai["content"]
+            if cleaned_ai["summary"]:
+                target["summary"] = cleaned_ai["summary"]
+            if cleaned_ai["character_dialogues"]:
+                target["character_dialogues"] = cleaned_ai["character_dialogues"]
+            else:
+                target.pop("character_dialogues", None)
             applied.append(_derived_edit_record(turn_index, "replace_ai", reason, original_turn_index))
             applied_this_edit = True
 
@@ -1684,12 +1843,15 @@ def apply_derived_content_edits(log, edits, existing_turn_count=None):
 def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text="", character_dialogues=None, derived_content_edits=None):
     """Append a new turn to chat_log and rebuild content.js."""
     log = read_chat_log(card_folder)
-    next_index = len(log)
     pending_user_turn = read_pending_user_turn(card_folder)
+    delivery_input = _delivery_player_input(card_folder, pending_user_turn) if not is_opening else {}
+    replacement_index = None if is_opening else _find_existing_delivery_turn(log, delivery_input)
+    next_index = replacement_index if replacement_index is not None else len(log)
+    prior_log = log[:next_index] if replacement_index is not None else log
     postprocess = _load_postprocess_output(card_folder)
 
     # ── MVU: Compute current variables ──
-    prev_vars = compute_current_variables(log)
+    prev_vars = compute_current_variables(prior_log)
 
     # ── MVU: Load variable schema for validation ──
     var_schema = _load_var_schema(card_folder, prev_vars)
@@ -1751,16 +1913,13 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     if normalized_dialogues:
         entry["character_dialogues"] = normalized_dialogues
     if not is_opening:
-        if pending_user_turn:
-            pending_display = (
-                pending_user_turn.get("display_text")
-                if "display_text" in pending_user_turn
-                else pending_user_turn.get("raw_text")
-            ) or ""
-            if pending_display:
-                entry["user"] = pending_display
-            if pending_user_turn.get("id"):
-                entry["player_input_id"] = pending_user_turn.get("id")
+        if delivery_input:
+            delivery_display = _text(delivery_input.get("display_text"))
+            if delivery_display:
+                entry["user"] = delivery_display
+            delivery_input_id = _text(delivery_input.get("id")).strip()
+            if delivery_input_id:
+                entry["player_input_id"] = delivery_input_id
         elif polished_input:
             entry["user"] = polished_input
         if polished_input:
@@ -1777,7 +1936,16 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         entry["variables"] = {"stat_data": prev_vars}
 
     existing_turn_count = len(log)
-    log.append(entry)
+    if replacement_index is not None:
+        previous_turn = log[replacement_index] if isinstance(log[replacement_index], dict) else {}
+        if "user" not in entry and previous_turn.get("user"):
+            entry["user"] = previous_turn.get("user")
+        if "player_input_id" not in entry and previous_turn.get("player_input_id"):
+            entry["player_input_id"] = previous_turn.get("player_input_id")
+        log[replacement_index] = entry
+        _drop_trailing_orphan_redeliveries(log, replacement_index)
+    else:
+        log.append(entry)
     applied_repairs = apply_derived_content_edits(log, derived_content_edits, existing_turn_count=existing_turn_count)
     if applied_repairs:
         entry["derived_content_edits_applied"] = applied_repairs
@@ -1810,16 +1978,10 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     # Update state: increment generatedCount and accumulate totalTokens
     state_raw = read_state()
     state_raw = _apply_postprocess_state(state_raw, postprocess)
-    new_count = (next_index + 1)
+    new_count = len(log)
     state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
-    if tokens:
-        turn_total = tokens.get("total") or tokens.get("round_total") or tokens.get("startup_total") or 0
-        if turn_total > 0:
-            # Accumulate into totalTokens
-            m = re.search(r'totalTokens:\s*(\d+)', state_raw)
-            prev_total = int(m.group(1)) if m else 0
-            new_total = prev_total + turn_total
-            state_raw = re.sub(r'(\s+totalTokens:\s*)\d+', rf'\g<1>{new_total}', state_raw)
+    total_tokens = _chat_log_total_tokens(log)
+    state_raw = re.sub(r'(\s+totalTokens:\s*)\d+', rf'\g<1>{total_tokens}', state_raw)
     write_state(state_raw, card_folder)
 
     return next_index

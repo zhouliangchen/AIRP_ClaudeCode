@@ -46,6 +46,7 @@ class RpBootstrapTest(unittest.TestCase):
         self.assertTrue(any("handler.py" in " ".join(command) and "--opening" in command for command in self.commands))
 
     def test_pending_input_prepares_and_generates_round_after_starting_server(self):
+        (self.root / "skills" / "styles" / ".card_path").write_text(str(self.card.resolve()), encoding="utf-8")
         (self.root / "skills" / "styles" / ".pending").write_text("1", encoding="utf-8")
 
         result = rp_bootstrap.bootstrap(self.card, self.root, run_command=self._runner)
@@ -55,6 +56,37 @@ class RpBootstrapTest(unittest.TestCase):
         self.assertIn("already been generated", result["instruction"])
         self.assertTrue(any("round_prepare.py" in " ".join(command) for command in self.commands))
         self.assertTrue(any("rp_generate_cli.py" in " ".join(command) for command in self.commands))
+
+    def test_stale_pending_for_different_card_imports_requested_blank_card_before_waiting(self):
+        stale_card = self.root / "stale_card"
+        requested_card = self.root / "requested_blank_card"
+        stale_card.mkdir()
+        requested_card.mkdir()
+        styles = self.root / "skills" / "styles"
+        card_path = styles / ".card_path"
+        card_path.write_text(str(stale_card.resolve()), encoding="utf-8")
+        (styles / ".pending").write_text("1", encoding="utf-8")
+        (styles / "input.txt").write_text("stale input from another save", encoding="utf-8")
+
+        def runner(command):
+            self.commands.append([str(part) for part in command])
+            if any("import_prepare.py" in str(part) for part in command):
+                card_path.write_text(str(Path(command[2]).resolve()), encoding="utf-8")
+                (styles / ".pending").unlink(missing_ok=True)
+                (requested_card / ".card_data.json").write_text(
+                    json.dumps({"mode": "blank_bootstrap", "source_type": "blank"}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            return 0
+
+        result = rp_bootstrap.bootstrap(requested_card, self.root, run_command=runner)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "waiting_for_player_input")
+        self.assertEqual(card_path.read_text(encoding="utf-8"), str(requested_card.resolve()))
+        self.assertTrue(any("import_prepare.py" in " ".join(command) for command in self.commands))
+        self.assertFalse(any("round_prepare.py" in " ".join(command) for command in self.commands))
+        self.assertFalse(any("rp_generate_cli.py" in " ".join(command) for command in self.commands))
 
     def test_running_server_without_pending_input_imports_requested_blank_card_before_waiting(self):
         stale_card = self.root / "stale_card"
@@ -77,6 +109,28 @@ class RpBootstrapTest(unittest.TestCase):
         self.assertEqual(card_path.read_text(encoding="utf-8"), str(requested_card.resolve()))
         self.assertTrue(any("import_prepare.py" in " ".join(command) for command in self.commands))
         self.assertFalse(any("handler.py" in " ".join(command) for command in self.commands))
+
+    def test_blank_card_imports_before_starting_server_so_mvu_uses_requested_card(self):
+        stale_card = self.root / "stale_card"
+        requested_card = self.root / "requested_blank_card"
+        stale_card.mkdir()
+        requested_card.mkdir()
+        card_path = self.root / "skills" / "styles" / ".card_path"
+        card_path.write_text(str(stale_card.resolve()), encoding="utf-8")
+
+        def runner(command):
+            self.commands.append([str(part) for part in command])
+            if any("import_prepare.py" in str(part) for part in command):
+                card_path.write_text(str(Path(command[2]).resolve()), encoding="utf-8")
+            return 0
+
+        result = rp_bootstrap.bootstrap(requested_card, self.root, run_command=runner)
+
+        self.assertTrue(result["ok"])
+        command_texts = [" ".join(command) for command in self.commands]
+        import_index = next(i for i, text in enumerate(command_texts) if "import_prepare.py" in text)
+        start_index = next(i for i, text in enumerate(command_texts) if "start_server.py" in text)
+        self.assertLess(import_index, start_index)
 
     def test_stale_global_response_for_blank_requested_card_imports_before_waiting(self):
         stale_card = self.root / "stale_card"
@@ -171,6 +225,7 @@ class RpBootstrapTest(unittest.TestCase):
         self.assertEqual(data["return_codes"], [0, 0])
 
     def test_cli_entrypoint_prints_final_bootstrap_json(self):
+        (self.root / "skills" / "styles" / ".card_path").write_text(str(self.card.resolve()), encoding="utf-8")
         (self.root / "skills" / "styles" / ".pending").write_text("1", encoding="utf-8")
         old_argv = sys.argv
         stdout = io.StringIO()

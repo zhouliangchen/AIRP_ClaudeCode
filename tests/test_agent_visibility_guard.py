@@ -537,6 +537,26 @@ class AgentVisibilityGuardTest(unittest.TestCase):
             "premoon/base/archive moon/base/archive2 moonbasearchive [redacted]",
         )
 
+    def test_redact_text_uses_literal_matching_for_long_cjk_hidden_phrases(self):
+        short_phrase = "门后是梦境"
+        long_phrase = "魔法少女的力量和变身器都因人而异粉色花朵吊坠是玩家作为魔法少女本源力量独一无二的体现"
+
+        self.assertEqual(
+            self.guard.redact_text("门 后，是 梦境。", [short_phrase]),
+            "[redacted]",
+        )
+        self.assertEqual(
+            self.guard.redact_text(long_phrase, [long_phrase]),
+            "[redacted]",
+        )
+        self.assertEqual(
+            self.guard.redact_text(
+                "魔法少女的力量和变身器都因人而异，粉色花朵吊坠是玩家作为魔法少女本源力量独一无二的体现",
+                [long_phrase],
+            ),
+            "魔法少女的力量和变身器都因人而异，粉色花朵吊坠是玩家作为魔法少女本源力量独一无二的体现",
+        )
+
     def test_sanitize_gm_output_preserves_valid_stop_reason_matching_hidden_phrase_tokens(self):
         input_payload = {
             "hidden_facts": [{"fact": "player decision"}],

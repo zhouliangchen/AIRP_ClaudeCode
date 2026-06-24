@@ -16,6 +16,7 @@ import agent_messages
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import hidden_settings
 import postprocess_outputs
 import runtime_settings
 import self_repair
@@ -33,6 +34,28 @@ DIALOGUE_TRANSFER_TRACE_FIELDS = {
     "visible_tone_or_action",
     "source_call_id",
 }
+STORY_PROMPT_ACTOR_EVENT_TYPES = {
+    "dialogue",
+    "custom_action",
+    "stop_for_player_decision",
+}
+STORY_GUARD_CJK_TERM_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+STORY_GUARD_YEAR_TERM_RE = re.compile(r"([0-9零〇一二两三四五六七八九十百千万]+年)(?:前|后)?")
+STORY_GUARD_CJK_MIN_CHARS = 3
+STORY_GUARD_CJK_MAX_CHARS = 6
+STORY_PRIVATE_ARTIFACT_MARKERS = (
+    "内部评估",
+    "内心确认",
+    "内心",
+    "私密",
+    "绝不暴露",
+    "不暴露",
+    "不能让他知道",
+    "不能让她知道",
+    "gm-only",
+    "gm only",
+    "gm_only",
+)
 
 
 class AgentOutputError(RuntimeError):
@@ -182,6 +205,461 @@ def _sanitize_trace_summary_for_story_input(
         if field in sanitized:
             sanitized[field] = _sanitize_side_summary_value(sanitized[field], hidden_phrases)
     return sanitized
+
+
+def _string_leaves(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, dict):
+        texts: list[str] = []
+        for child in value.values():
+            texts.extend(_string_leaves(child))
+        return texts
+    if isinstance(value, list):
+        texts: list[str] = []
+        for child in value:
+            texts.extend(_string_leaves(child))
+        return texts
+    return []
+
+
+def _card_folder_from_run_dir(root: Path) -> Path:
+    if root.parent.name == ".agent_runs":
+        return root.parent.parent
+    return root.parent.parent
+
+
+def _active_hidden_settings_for_story_guard(root: Path) -> list[Dict[str, Any]]:
+    records = hidden_settings.load_hidden_settings(_card_folder_from_run_dir(root), limit=None)
+    return [
+        record
+        for record in records
+        if isinstance(record, dict) and str(record.get("status") or "active") == "active"
+    ]
+
+
+def _story_hidden_guard_payload(root: Path, input_payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(input_payload)
+    current = payload.get("gm_only_hidden_settings")
+    settings: list[Any] = []
+    if isinstance(current, list):
+        settings.extend(current)
+    elif current:
+        settings.append(current)
+    settings.extend(_active_hidden_settings_for_story_guard(root))
+    if settings:
+        payload["gm_only_hidden_settings"] = settings
+    return payload
+
+
+def _visible_recent_chat_texts(input_payload: Dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for item in input_payload.get("recent_chat", []):
+        if isinstance(item, str):
+            texts.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        visibility = str(item.get("visibility") or "").lower()
+        if visibility in {"gm_only", "hidden", "private"}:
+            continue
+        for key in ("role", "user", "player", "raw_text", "display_text", "ai", "assistant", "content"):
+            if key in item:
+                texts.extend(_string_leaves(item[key]))
+    return texts
+
+
+def _story_public_text_key(input_payload: Dict[str, Any]) -> str:
+    routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
+    texts: list[str] = []
+    for value in (
+        input_payload.get("raw_text"),
+        input_payload.get("role_channel"),
+        routed.get("role_channel"),
+    ):
+        texts.extend(_string_leaves(value))
+    texts.extend(_visible_recent_chat_texts(input_payload))
+    return _story_guard_text_key("\n".join(texts))
+
+
+def _story_hidden_source_texts(input_payload: Dict[str, Any]) -> list[str]:
+    routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
+    sources: list[str] = []
+    for value in (
+        routed.get("user_instruction_channel"),
+        input_payload.get("user_instruction_channel"),
+        input_payload.get("gm_only_hidden_settings"),
+        input_payload.get("hidden_facts"),
+        input_payload.get("world_truth"),
+        input_payload.get("gm_only_recent_chat"),
+        input_payload.get("hidden_recent_chat"),
+        input_payload.get("private_recent_chat"),
+    ):
+        sources.extend(_string_leaves(value))
+    return sources
+
+
+def _story_guard_text_key(text: str) -> str:
+    return "".join(
+        char
+        for char in str(text or "")
+        if char.isalnum() or ("\u3400" <= char <= "\u4dbf") or ("\u4e00" <= char <= "\u9fff")
+    ).casefold()
+
+
+def _story_guard_cjk_terms(text: str) -> set[str]:
+    terms: set[str] = set()
+    for run in STORY_GUARD_CJK_TERM_RE.findall(str(text or "")):
+        max_size = min(STORY_GUARD_CJK_MAX_CHARS, len(run))
+        if max_size < STORY_GUARD_CJK_MIN_CHARS:
+            continue
+        for size in range(STORY_GUARD_CJK_MIN_CHARS, max_size + 1):
+            for index in range(0, len(run) - size + 1):
+                term = _story_guard_text_key(run[index:index + size])
+                if len(term) >= STORY_GUARD_CJK_MIN_CHARS:
+                    terms.add(term)
+    for match in STORY_GUARD_YEAR_TERM_RE.finditer(str(text or "")):
+        term = _story_guard_text_key(match.group(1))
+        if term:
+            terms.add(term)
+    return terms
+
+
+def _story_guard_protected_terms(input_payload: Dict[str, Any], public_text_key: str) -> set[str]:
+    terms: set[str] = set()
+    for text in _story_hidden_source_texts(input_payload):
+        terms.update(_story_guard_cjk_terms(text))
+    return {
+        term
+        for term in terms
+        if term and term not in public_text_key
+    }
+
+
+def _story_text_is_safe(text: Any, hidden_phrases: list[str], protected_terms: set[str]) -> bool:
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    lower = raw.casefold()
+    if any(marker in lower for marker in STORY_PRIVATE_ARTIFACT_MARKERS):
+        return False
+    redacted = agent_visibility_guard.redact_text(raw, hidden_phrases)
+    if redacted != raw:
+        return False
+    if _forbidden_actor_marker(redacted):
+        return False
+    key = _story_guard_text_key(redacted)
+    return not any(term in key for term in protected_terms)
+
+
+def _story_safe_text(text: Any, hidden_phrases: list[str], protected_terms: set[str]) -> str:
+    raw = str(text or "").strip()
+    return raw if _story_text_is_safe(raw, hidden_phrases, protected_terms) else ""
+
+
+def _story_safe_dict(value: Any, hidden_phrases: list[str], protected_terms: set[str]) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if not _story_text_is_safe(serialized, hidden_phrases, protected_terms):
+        return {}
+    sanitized = _sanitize_side_summary_value(value, hidden_phrases)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _compact_story_prompt_actor_outputs(
+    actor_outputs: Any,
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, list[Dict[str, Any]]]:
+    if not isinstance(actor_outputs, dict):
+        return {}
+    compact_actors: Dict[str, list[Dict[str, Any]]] = {}
+    for actor_id, outputs in actor_outputs.items():
+        if not isinstance(outputs, list):
+            continue
+        actor_items: list[Dict[str, Any]] = []
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            events = []
+            for event in output.get("events", []):
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("type") or "")
+                if event_type not in STORY_PROMPT_ACTOR_EVENT_TYPES:
+                    continue
+                content = _story_safe_text(event.get("content"), hidden_phrases, protected_terms)
+                if not content:
+                    continue
+                compact_event = {
+                    "type": event_type,
+                    "target": str(event.get("target") or ""),
+                    "content": content,
+                }
+                metadata = _story_safe_dict(event.get("metadata"), hidden_phrases, protected_terms)
+                if metadata:
+                    compact_event["metadata"] = metadata
+                events.append(compact_event)
+            if not events:
+                continue
+            compact_output = {
+                "agent": output.get("agent"),
+                "agent_id": output.get("agent_id"),
+                "events": events,
+                "stop_reason": output.get("stop_reason", "continue"),
+            }
+            character_name = str(output.get("character_name") or "").strip()
+            if character_name:
+                compact_output["character_name"] = character_name
+            actor_items.append(compact_output)
+        if actor_items:
+            compact_actors[str(actor_id)] = actor_items
+    return compact_actors
+
+
+def _compact_story_prompt_items(
+    items: Any,
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+    *,
+    allowed_fields: tuple[str, ...],
+) -> list[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    compact_items: list[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = _story_safe_text(item.get("content"), hidden_phrases, protected_terms)
+        if not content:
+            continue
+        compact = {"content": content}
+        for field in allowed_fields:
+            if field == "content" or field not in item:
+                continue
+            value = item.get(field)
+            if isinstance(value, str):
+                safe = _story_safe_text(value, hidden_phrases, protected_terms)
+                if safe:
+                    compact[field] = safe
+            elif isinstance(value, dict):
+                safe_dict = _story_safe_dict(value, hidden_phrases, protected_terms)
+                if safe_dict:
+                    compact[field] = safe_dict
+            elif isinstance(value, list):
+                safe_list = _sanitize_side_summary_value(value, hidden_phrases)
+                safe_serialized = json.dumps(safe_list, ensure_ascii=False, sort_keys=True)
+                if _story_text_is_safe(safe_serialized, hidden_phrases, protected_terms):
+                    compact[field] = safe_list
+            else:
+                compact[field] = value
+        compact_items.append(compact)
+    return compact_items
+
+
+def _compact_story_prompt_gm_output(
+    output: Dict[str, Any],
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, Any]:
+    compact = {
+        "agent": output.get("agent", "gm"),
+        "scene_beats": _compact_story_prompt_items(
+            output.get("scene_beats"),
+            hidden_phrases,
+            protected_terms,
+            allowed_fields=("content", "metadata", *agent_visibility.VISIBILITY_FIELDS),
+        ),
+        "events": _compact_story_prompt_items(
+            output.get("events"),
+            hidden_phrases,
+            protected_terms,
+            allowed_fields=("type", "target", "source_call_id", "content", "metadata", *agent_visibility.VISIBILITY_FIELDS),
+        ),
+        "actor_calls": [],
+        "perception_responses": _compact_story_prompt_items(
+            output.get("perception_responses"),
+            hidden_phrases,
+            protected_terms,
+            allowed_fields=("request_id", "actor_id", "source_call_id", "status", "channel", "content", *agent_visibility.VISIBILITY_FIELDS),
+        ),
+        "world_state_delta": _compact_story_prompt_items(
+            output.get("world_state_delta"),
+            hidden_phrases,
+            protected_terms,
+            allowed_fields=("scope", "fact", "status", "content"),
+        ),
+        "stop_reason": output.get("stop_reason", "continue"),
+    }
+    for call in output.get("actor_calls", []):
+        if not isinstance(call, dict):
+            continue
+        compact_call = {
+            "call_id": str(call.get("call_id") or ""),
+            "actor_id": str(call.get("actor_id") or ""),
+        }
+        basis = _story_safe_dict(call.get("visibility_basis"), hidden_phrases, protected_terms)
+        if basis:
+            compact_call["visibility_basis"] = basis
+        compact["actor_calls"].append(compact_call)
+    decision_point = output.get("decision_point")
+    if decision_point is not None:
+        compact_decision = _sanitize_side_summary_value(decision_point, hidden_phrases)
+        serialized = json.dumps(compact_decision, ensure_ascii=False, sort_keys=True)
+        if _story_text_is_safe(serialized, hidden_phrases, protected_terms):
+            compact["decision_point"] = compact_decision
+    return compact
+
+
+def _compact_story_prompt_loop_outputs(
+    loop_outputs: Any,
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, Any]:
+    if not isinstance(loop_outputs, dict):
+        return {"gm": {"agent": "gm_loop", "outputs": []}, "actors": {}}
+    gm = loop_outputs.get("gm")
+    gm_outputs = gm.get("outputs") if isinstance(gm, dict) else []
+    return {
+        "gm": {
+            "agent": "gm_loop",
+            "outputs": [
+                _compact_story_prompt_gm_output(output, hidden_phrases, protected_terms)
+                for output in gm_outputs
+                if isinstance(output, dict)
+            ],
+        },
+        "actors": _compact_story_prompt_actor_outputs(
+            loop_outputs.get("actors"),
+            hidden_phrases,
+            protected_terms,
+        ),
+    }
+
+
+def _compact_story_prompt_trace(
+    trace_summary: Any,
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, Any]:
+    if not isinstance(trace_summary, dict):
+        return {}
+    compact = {
+        key: trace_summary[key]
+        for key in ("schema_version", "status", "chapter_target_words", "private_event_count")
+        if key in trace_summary
+    }
+    visible_events = trace_summary.get("visible_events")
+    if isinstance(visible_events, list):
+        visible_events = [
+            event
+            for event in visible_events
+            if not (
+                isinstance(event, dict)
+                and str(event.get("type") or "") == "action"
+                and str(event.get("actor") or "").startswith("character:")
+            )
+        ]
+    visible = _compact_story_prompt_items(
+        visible_events,
+        hidden_phrases,
+        protected_terms,
+        allowed_fields=("id", "index", "actor", "type", "target", "content", "source_call_id", "dialogue_transfer"),
+    )
+    compact["visible_events"] = visible
+    for field in ("decision_point", "stop_reason"):
+        if field not in trace_summary:
+            continue
+        value = _sanitize_side_summary_value(trace_summary[field], hidden_phrases)
+        serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if _story_text_is_safe(serialized, hidden_phrases, protected_terms):
+            compact[field] = value
+    return compact
+
+
+def _compact_story_prompt_side_threads(
+    side_threads: Any,
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, Any]:
+    if not isinstance(side_threads, dict):
+        return {"threads": []}
+    threads = []
+    for thread in side_threads.get("threads", []):
+        if not isinstance(thread, dict):
+            continue
+        compact_thread = {
+            "thread_id": str(thread.get("thread_id") or ""),
+            "status": str(thread.get("status") or ""),
+            "state": _story_safe_dict(thread.get("state"), hidden_phrases, protected_terms),
+            "actor_outputs": _compact_story_prompt_actor_outputs(
+                thread.get("actor_outputs"),
+                hidden_phrases,
+                protected_terms,
+            ),
+            "interaction_trace": _compact_story_prompt_trace(
+                thread.get("interaction_trace"),
+                hidden_phrases,
+                protected_terms,
+            ),
+        }
+        subgm_output = thread.get("subgm_output")
+        if isinstance(subgm_output, dict):
+            compact_thread["subgm_output"] = _compact_story_prompt_gm_output(
+                subgm_output,
+                hidden_phrases,
+                protected_terms,
+            )
+        threads.append(compact_thread)
+    return {"threads": threads}
+
+
+def _build_story_prompt_context(
+    story_input: Dict[str, Any],
+    hidden_phrases: list[str],
+    protected_terms: set[str],
+) -> Dict[str, Any]:
+    context: Dict[str, Any] = {
+        "round_id": story_input.get("round_id", ""),
+        "player_inputs": story_input.get("player_inputs", {}),
+        "loop_outputs": _compact_story_prompt_loop_outputs(
+            story_input.get("loop_outputs"),
+            hidden_phrases,
+            protected_terms,
+        ),
+        "side_threads": _compact_story_prompt_side_threads(
+            story_input.get("side_threads"),
+            hidden_phrases,
+            protected_terms,
+        ),
+        "interaction_trace": _compact_story_prompt_trace(
+            story_input.get("interaction_trace"),
+            hidden_phrases,
+            protected_terms,
+        ),
+    }
+    for field in (
+        "delivery_constraints",
+        "runtime_settings",
+        "style_guidance",
+        "story_output_guidance",
+        "critic_style_guidance",
+    ):
+        if field in story_input:
+            context[field] = story_input[field]
+    return context
+
+
+def story_prompt_context(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the story-facing prompt context, never the raw audit artifact view."""
+    if not isinstance(story_input, dict):
+        return {}
+    context = story_input.get("story_prompt_context")
+    if isinstance(context, dict):
+        return context
+    return story_input
 
 
 def _validate_dialogue_transfer_trace_metadata(
@@ -388,6 +866,8 @@ def _require_called_actor_outputs(
         for call_index, call in enumerate(gm_output.get("actor_calls", [])):
             context = f"{gm_path}.outputs[{gm_index}].actor_calls[{call_index}]"
             actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            if not _gm_actor_call_requires_output(gm_output, actor_id):
+                continue
             call_id = str(call.get("call_id") or "").strip()
             if not call_id:
                 raise AgentOutputError(f"{context}.call_id: persisted actor call id must be nonblank")
@@ -406,12 +886,24 @@ def _require_called_actor_outputs(
                 )
 
 
+def _gm_output_stops_for_player_decision(gm_output: Dict[str, Any]) -> bool:
+    return str(gm_output.get("stop_reason") or "") == "player_decision" or gm_output.get("decision_point") is not None
+
+
+def _gm_actor_call_requires_output(gm_output: Dict[str, Any], actor_id: str) -> bool:
+    if actor_id == "player" and _gm_output_stops_for_player_decision(gm_output):
+        return False
+    return True
+
+
 def _required_actor_call_counts(gm_outputs: list[Dict[str, Any]]) -> Dict[str, Counter[str]]:
     required_call_counts: Dict[str, Counter[str]] = {}
     for gm_index, gm_output in enumerate(gm_outputs):
         for call_index, call in enumerate(gm_output.get("actor_calls", [])):
             context = f"gm.output.json.outputs[{gm_index}].actor_calls[{call_index}]"
             actor_id = _validate_actor_key(call.get("actor_id"), f"{context}.actor_id")
+            if not _gm_actor_call_requires_output(gm_output, actor_id):
+                continue
             call_id = str(call.get("call_id") or "").strip()
             if call_id:
                 required_call_counts.setdefault(actor_id, Counter())[call_id] += 1
@@ -786,6 +1278,116 @@ def _validate_trace_artifacts(root: Path) -> tuple[Dict[str, Any], Dict[str, Any
     return raw_trace, summary
 
 
+_STORY_INPUT_ANALYSIS_KEEP_KEYS = (
+    "schema_version",
+    "round_id",
+    "analysis_mode",
+    "semantic_units",
+    "world_updates",
+    "narrative_directives",
+    "routing_requests",
+    "capability_requests",
+    "risks",
+)
+_STORY_SEMANTIC_UNIT_KEEP_KEYS = (
+    "id",
+    "type",
+    "visibility",
+    "derived_summary",
+    "source_channel",
+    "confidence",
+    "persist",
+)
+_STORY_ALLOWED_GM_ONLY_UNIT_TYPES = {"edit_request", "synopsis"}
+
+
+def _compact_story_semantic_units_for_prompt(units: Any, hidden_phrases: list[str]) -> list[Dict[str, Any]]:
+    if not isinstance(units, list):
+        return []
+    compact_units: list[Dict[str, Any]] = []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        unit_type = str(unit.get("type") or "")
+        visibility = str(unit.get("visibility") or "")
+        if visibility == "gm_only" and unit_type not in _STORY_ALLOWED_GM_ONLY_UNIT_TYPES:
+            continue
+        compact = {
+            key: unit[key]
+            for key in _STORY_SEMANTIC_UNIT_KEEP_KEYS
+            if key in unit
+        }
+        sanitized = _sanitize_side_summary_value(compact, hidden_phrases)
+        if isinstance(sanitized, dict):
+            compact_units.append(sanitized)
+    return compact_units
+
+
+def _compact_story_world_updates_for_prompt(updates: Any, hidden_phrases: list[str]) -> Dict[str, Any]:
+    if not isinstance(updates, dict):
+        return {}
+    compact: Dict[str, Any] = {}
+    for key in ("public_facts", "retcon_requests"):
+        value = updates.get(key)
+        if isinstance(value, list):
+            compact[key] = _sanitize_side_summary_value(value, hidden_phrases)
+    important = []
+    important_source = updates.get("important_characters")
+    if not isinstance(important_source, list):
+        important_source = []
+    for item in important_source:
+        if isinstance(item, dict) and str(item.get("visibility") or "") == "public_world":
+            important.append(item)
+    if important:
+        compact["important_characters"] = _sanitize_side_summary_value(important, hidden_phrases)
+    return compact
+
+
+def _compact_story_input_analysis_for_prompt(analysis: Any, hidden_phrases: list[str]) -> Dict[str, Any]:
+    if not isinstance(analysis, dict):
+        return {}
+    compact = {
+        key: analysis[key]
+        for key in _STORY_INPUT_ANALYSIS_KEEP_KEYS
+        if key in analysis
+    }
+    compact["semantic_units"] = _compact_story_semantic_units_for_prompt(
+        analysis.get("semantic_units"),
+        hidden_phrases,
+    )
+    if "world_updates" in compact:
+        compact["world_updates"] = _compact_story_world_updates_for_prompt(
+            analysis.get("world_updates"),
+            hidden_phrases,
+        )
+    for key in ("risks", "routing_requests", "capability_requests"):
+        if key in compact:
+            compact[key] = _sanitize_side_summary_value(compact.get(key), hidden_phrases)
+    return compact
+
+
+def _story_player_inputs_for_prompt(input_payload: Dict[str, Any], hidden_phrases: list[str]) -> Dict[str, Any]:
+    routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
+    role_channel = str(routed.get("role_channel") or input_payload.get("role_channel") or input_payload.get("raw_text") or "")
+    safe_routed = {
+        key: routed[key]
+        for key in ("input_schema", "analysis_mode", "role_channel", "gm", "player", "characters")
+        if key in routed
+    }
+    if "role_channel" not in safe_routed:
+        safe_routed["role_channel"] = role_channel
+    safe_inputs = {
+        "raw_text": role_channel,
+        "routed_input": safe_routed,
+        "input_analysis": _compact_story_input_analysis_for_prompt(
+            input_payload.get("input_analysis"),
+            hidden_phrases,
+        ),
+    }
+    sanitized = _sanitize_side_summary_value(safe_inputs, hidden_phrases)
+    return sanitized if isinstance(sanitized, dict) else safe_inputs
+
+
 def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
     """Assemble story input from GM loop outputs and trace artifacts."""
     root = Path(run_dir)
@@ -795,6 +1397,12 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
     input_payload = _read_json_required(root / "input.json")
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
+    story_guard_payload = _story_hidden_guard_payload(root, input_payload)
+    story_hidden_phrases = agent_visibility_guard.hidden_phrases(story_guard_payload)
+    story_protected_terms = _story_guard_protected_terms(
+        story_guard_payload,
+        _story_public_text_key(input_payload),
+    )
     raw_trace, trace_summary = _validate_trace_artifacts(root)
     _validate_dialogue_transfer_trace_metadata(
         raw_trace,
@@ -832,12 +1440,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
     story_input = {
         "round_id": manifest.get("round_id", root.name),
-        "player_inputs": {
-            "raw_text": input_payload.get("raw_text", ""),
-            "routed_input": input_payload.get("routed_input", {}),
-            "input_analysis": input_payload.get("input_analysis", {}),
-            "components": (input_payload.get("routed_input") or {}).get("components", []),
-        },
+        "player_inputs": _story_player_inputs_for_prompt(input_payload, hidden_phrases),
         "loop_outputs": loop_outputs,
         "side_threads": side_threads,
         "memory_deltas": _memory_deltas_from_events(loop_outputs["actors"], loop_outputs["gm"], side_threads),
@@ -867,6 +1470,11 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "warning": style_profile.get("warning", ""),
         },
     }
+    story_input["story_prompt_context"] = _build_story_prompt_context(
+        story_input,
+        story_hidden_phrases,
+        story_protected_terms,
+    )
     _write_artifact(root, "story.input.json", story_input)
     agent_run.update_manifest_stage(root, "story_ready", "Validated agent outputs and assembled story.input.json.")
     return story_input

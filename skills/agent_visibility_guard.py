@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import re
 from typing import Any, Iterable
 
@@ -32,6 +33,7 @@ ENGLISH_FUZZY_SEPARATOR_RE = r"[^a-z0-9]+"
 CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
 HIDDEN_PHRASE_MAX_CHARS = 160
 CJK_HIDDEN_PHRASE_MIN_CHARS = 4
+CJK_FUZZY_HIDDEN_PHRASE_MAX_UNITS = 32
 CJK_INSTRUCTION_SUFFIXES = (
     "不要",
     "不得",
@@ -279,14 +281,37 @@ def hidden_phrases(input_payload: dict) -> list[str]:
     return sorted(phrases, key=lambda phrase: (-len(phrase), phrase))
 
 
+def _cjk_fuzzy_units(phrase: str) -> list[str]:
+    return [
+        char
+        for char in str(phrase or "")
+        if not char.isspace() and char not in CJK_FUZZY_SEPARATOR_CHARS
+    ]
+
+
+def _hidden_phrase_may_match(text: str, phrase: str) -> bool:
+    phrase_text = str(phrase or "")
+    if not phrase_text:
+        return False
+    if phrase_text in text:
+        return True
+    if _has_cjk_text(phrase_text):
+        units = _cjk_fuzzy_units(phrase_text)
+        if not units or len(units) > CJK_FUZZY_HIDDEN_PHRASE_MAX_UNITS:
+            return False
+        return all(char in text for char in set(units))
+    tokens = _canonical_tokens(phrase_text)
+    if tokens:
+        lowered = text.lower()
+        return all(token in lowered for token in set(tokens))
+    return phrase_text.lower() in text.lower()
+
+
+@functools.lru_cache(maxsize=4096)
 def _hidden_phrase_pattern(phrase: str) -> re.Pattern:
     if _has_cjk_text(phrase):
-        units = [
-            char
-            for char in phrase
-            if not char.isspace() and char not in CJK_FUZZY_SEPARATOR_CHARS
-        ]
-        if units:
+        units = _cjk_fuzzy_units(phrase)
+        if units and len(units) <= CJK_FUZZY_HIDDEN_PHRASE_MAX_UNITS:
             return re.compile(
                 CJK_FUZZY_SEPARATOR_RE.join(re.escape(char) for char in units),
                 re.IGNORECASE,
@@ -306,7 +331,10 @@ def redact_text(text: str, phrases: Iterable[str]) -> str:
     """Redact every hidden phrase match from text."""
     redacted = str(text or "")
     for phrase in phrases:
-        pattern = _hidden_phrase_pattern(str(phrase))
+        phrase_text = str(phrase or "")
+        if not _hidden_phrase_may_match(redacted, phrase_text):
+            continue
+        pattern = _hidden_phrase_pattern(phrase_text)
         redacted = pattern.sub("[redacted]", redacted)
     if redacted.strip(HIDDEN_PHRASE_STRIP_CHARS) == "[redacted]":
         return "[redacted]"

@@ -118,6 +118,17 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
+        repaired = _repair_unescaped_string_quotes(raw)
+        if repaired != raw:
+            try:
+                payload = json.loads(repaired)
+            except json.JSONDecodeError:
+                payload = None
+            else:
+                if isinstance(payload, dict):
+                    return payload
+        if raw.lstrip().startswith("{") and exc.msg != "Extra data":
+            raise AgentExecutionError(f"Agent returned invalid JSON: {exc}") from exc
         decoder = json.JSONDecoder()
         payload = None
         for match in re.finditer(r"\{", raw):
@@ -137,6 +148,186 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return payload
 
 
+def _repair_unescaped_string_quotes(raw: str) -> str:
+    """Escape ASCII quotes that appear inside JSON string values.
+
+    This deliberately does not repair structural JSON errors.  A quote inside a
+    string is considered structural only when the next non-space token can end a
+    JSON string/key (`:`, `,`, `}`, `]`, or EOF).  Otherwise it is preserved as
+    string content by escaping it.
+    """
+
+    text = str(raw or "")
+    if not text:
+        return text
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    length = len(text)
+    for index, char in enumerate(text):
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if in_string and char == "\\":
+            result.append(char)
+            escaped = True
+            continue
+        if char != '"':
+            result.append(char)
+            continue
+        if not in_string:
+            result.append(char)
+            in_string = True
+            continue
+
+        lookahead = index + 1
+        while lookahead < length and text[lookahead].isspace():
+            lookahead += 1
+        next_char = text[lookahead] if lookahead < length else ""
+        if next_char in {"", ":", ",", "}", "]"}:
+            result.append(char)
+            in_string = False
+        else:
+            result.append('\\"')
+    return "".join(result)
+
+
+def _repair_json_string_controls(raw: str) -> str:
+    text = str(raw or "")
+    if not text:
+        return text
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if in_string and char == "\\":
+            result.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            result.append(char)
+            in_string = not in_string
+            continue
+        if in_string and char == "\n":
+            result.append("\\n")
+            continue
+        if in_string and char == "\r":
+            result.append("\\r")
+            continue
+        if in_string and char == "\t":
+            result.append("\\t")
+            continue
+        result.append(char)
+    return "".join(result)
+
+
+def _loads_json_relaxed(raw: str) -> Any:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    attempts = [text]
+    repaired_controls = _repair_json_string_controls(text)
+    if repaired_controls != text:
+        attempts.append(repaired_controls)
+    for item in list(attempts):
+        repaired_quotes = _repair_unescaped_string_quotes(item)
+        if repaired_quotes != item:
+            attempts.append(repaired_quotes)
+    seen = set()
+    for item in attempts:
+        if item in seen:
+            continue
+        seen.add(item)
+        try:
+            return json.loads(item)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _with_attempt_rejection_feedback(prompt: str, error: AgentExecutionError | None) -> str:
+    if error is None:
+        return prompt
+    return (
+        prompt.rstrip()
+        + "\n\n## Previous Attempt Rejection\n\n"
+        + f"The previous response was rejected: {error}\n"
+        + "Return a corrected artifact as exactly one valid JSON object. "
+        + "Escape every ASCII double quote inside string values as `\\\"`, or use Chinese corner quotes such as `「」` "
+        + "for dialogue inside content strings. Do not return prose, Markdown explanation, or partial JSON.\n"
+    )
+
+
+def _strip_markdown_json_fence(text: str) -> str:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    return raw
+
+
+def _decode_json_field_value(raw: str, key: str, *, start: int = 0) -> Any:
+    marker = f'"{key}"'
+    pos = raw.find(marker, max(0, start))
+    if pos < 0:
+        return None
+    colon = raw.find(":", pos + len(marker))
+    if colon < 0:
+        return None
+    value_start = colon + 1
+    while value_start < len(raw) and raw[value_start].isspace():
+        value_start += 1
+    try:
+        value, _ = json.JSONDecoder().raw_decode(raw[value_start:])
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
+def _recover_story_payload_from_malformed_json(text: str, error: AgentExecutionError) -> Dict[str, Any]:
+    raw = _strip_markdown_json_fence(text)
+    content_start = raw.find("<content>")
+    content_end = raw.find("</content>", content_start)
+    content_field = raw.find('"content"')
+    if content_start < 0 or content_end < 0 or content_field < 0 or content_field > content_start:
+        raise error
+    if raw.find(":", content_field, content_start) < 0:
+        raise error
+
+    content_end += len("</content>")
+    dialogue_tag_start = raw.find("<character_dialogues>", content_end)
+    top_level_dialogues = raw.find('"character_dialogues"', content_end)
+    if dialogue_tag_start >= 0 and (top_level_dialogues < 0 or dialogue_tag_start < top_level_dialogues):
+        dialogue_tag_end = raw.find("</character_dialogues>", dialogue_tag_start)
+        if dialogue_tag_end >= 0:
+            content_end = dialogue_tag_end + len("</character_dialogues>")
+
+    content = raw[content_start:content_end]
+    dialogues = _decode_json_field_value(raw, "character_dialogues", start=content_end)
+    if not isinstance(dialogues, list):
+        dialogues = []
+    metadata = _decode_json_field_value(raw, "metadata", start=content_end)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata = dict(metadata)
+    metadata.setdefault("recovered_from_malformed_story_json", True)
+    metadata.setdefault("recovery_error", str(error)[:240])
+    return {
+        "content": content,
+        "character_dialogues": dialogues,
+        "metadata": metadata,
+    }
+
+
 def _outer_prompt(agent_key: str, subagent_prompt: str, extra_context: Dict[str, Any] | None = None) -> str:
     extra = ""
     if extra_context:
@@ -148,6 +339,7 @@ Do not attempt to read files, inspect run_dir, or require filesystem access.
 Do not block because run_dir, story.input.json, story.output.json, or card files are inaccessible; their required contents are embedded below when needed.
 If Runtime Input contains `previous_rejected_story_output`, treat it only as a rejected anti-example. Rebuild from `story_input`, current GM/player/character artifacts, and the repair instruction; do not preserve unsupported details from the rejected draft.
 Return only one valid JSON object and no prose. Follow the full RP subagent prompt inside the XML-style block below exactly. The prompt may contain Markdown fences; do not treat those fences as the end of the task.
+All string values must be valid JSON strings. Escape ASCII double quotes inside dialogue/content strings as `\"`, or use Chinese corner quotes such as `「」` instead.
 
 <subagent_prompt>
 {subagent_prompt}
@@ -431,14 +623,24 @@ def _dispatch_agent_payload(
     run_claude: Callable[[str, str, str | Path], str],
     extra_context: Dict[str, Any] | None = None,
     attempts: int = 2,
+    initial_error: AgentExecutionError | None = None,
 ) -> Dict[str, Any]:
-    last_error: AgentExecutionError | None = None
+    last_error: AgentExecutionError | None = initial_error
     attempts = max(1, int(attempts or 1))
     for attempt in range(attempts):
         try:
-            stream = run_claude(agent_key, _outer_prompt(agent_key, prompt_text, extra_context), cwd)
+            prompt = _with_attempt_rejection_feedback(
+                _outer_prompt(agent_key, prompt_text, extra_context),
+                last_error,
+            )
+            stream = run_claude(agent_key, prompt, cwd)
             text = _extract_agent_or_direct_text(stream)
-            payload = _extract_json_object(text)
+            try:
+                payload = _extract_json_object(text)
+            except AgentExecutionError as exc:
+                if agent_key != "story":
+                    raise
+                payload = _recover_story_payload_from_malformed_json(text, exc)
             return _validate(agent_key, payload, extra_context)
         except AgentExecutionError as exc:
             last_error = exc
@@ -455,6 +657,7 @@ def _dispatch_and_write(
     run_claude: Callable[[str, str, str | Path], str],
     extra_context: Dict[str, Any] | None = None,
     attempts: int = 2,
+    initial_error: AgentExecutionError | None = None,
 ) -> Dict[str, Any]:
     normalized = _dispatch_agent_payload(
         agent_key,
@@ -463,6 +666,7 @@ def _dispatch_and_write(
         run_claude,
         extra_context=extra_context,
         attempts=attempts,
+        initial_error=initial_error,
     )
     agent_run.write_json(output_path, normalized)
     return normalized
@@ -840,10 +1044,12 @@ def _normalize_story_output(story: Dict[str, Any], story_input: Dict[str, Any] |
     normalized.pop("token_usage", None)
     normalized.pop("metadata_tokens", None)
     content = str(normalized.get("content") or "")
+    derived_edits = _story_output_derived_content_edits(normalized)
     content = _strip_tag_ci(content, "polished_input")
     content = _strip_tag_ci(content, "tokens")
     content = _strip_tag_ci(content, "metadata")
     content = _strip_tag_ci(content, "character_dialogues")
+    content = _strip_tag_ci(content, "derived_content_edits")
     content = _normalize_update_variable_analysis(content)
 
     dialogues = normalized.get("character_dialogues")
@@ -853,6 +1059,10 @@ def _normalize_story_output(story: Dict[str, Any], story_input: Dict[str, Any] |
         dialogues = _dialogues_from_story_input(story_input)
     normalized["character_dialogues"] = dialogues
     dialogue_block = "<character_dialogues>" + json.dumps(dialogues, ensure_ascii=False) + "</character_dialogues>"
+    if derived_edits:
+        normalized["derived_content_edits"] = derived_edits
+        edit_block = "<derived_content_edits>" + json.dumps(derived_edits, ensure_ascii=False) + "</derived_content_edits>"
+        content = edit_block + "\n" + content.lstrip()
 
     if "<summary>" in content:
         content = content.replace("<summary>", dialogue_block + "\n<summary>", 1)
@@ -992,24 +1202,165 @@ def _is_unsupported_placeholder_corruption_failure(item: Any, story: Dict[str, A
     return False
 
 
-def _normalize_critic_report_for_story(critic: Dict[str, Any], story: Dict[str, Any]) -> Dict[str, Any]:
+_DERIVED_CONTENT_EDIT_FIELDS = (
+    "ai",
+    "content",
+    "new_ai",
+    "summary",
+    "first_paragraph",
+    "new_first_paragraph",
+)
+_DERIVED_CONTENT_FULL_EDIT_FIELDS = ("ai", "content", "new_ai")
+
+
+def _story_input_requires_derived_content_edits(story_input: Dict[str, Any] | None) -> bool:
+    if not isinstance(story_input, dict):
+        return False
+    player_inputs = story_input.get("player_inputs")
+    if not isinstance(player_inputs, dict):
+        return False
+    analysis = player_inputs.get("input_analysis")
+    if not isinstance(analysis, dict):
+        return False
+    directives = analysis.get("narrative_directives")
+    if isinstance(directives, dict) and directives.get("rewrite_previous_output") is True:
+        return True
+    world_updates = analysis.get("world_updates")
+    if isinstance(world_updates, dict):
+        retcons = world_updates.get("retcon_requests")
+        if isinstance(retcons, list) and any(isinstance(item, dict) for item in retcons):
+            return True
+    units = analysis.get("semantic_units")
+    if isinstance(units, list):
+        return any(
+            isinstance(unit, dict)
+            and str(unit.get("type") or "") == "edit_request"
+            for unit in units
+        )
+    return False
+
+
+def _story_output_derived_content_edits(story: Dict[str, Any]) -> list[Dict[str, Any]]:
+    edits: list[Dict[str, Any]] = []
+    direct = story.get("derived_content_edits") if isinstance(story, dict) else None
+    if isinstance(direct, list):
+        edits.extend(_normalize_derived_content_edit(item) for item in direct if isinstance(item, dict))
+    content = str(story.get("content") or "") if isinstance(story, dict) else ""
+    raw = _extract_tag(content, "derived_content_edits")
+    if raw:
+        parsed = _loads_json_relaxed(raw)
+        if isinstance(parsed, list):
+            edits.extend(_normalize_derived_content_edit(item) for item in parsed if isinstance(item, dict))
+    return [edit for edit in edits if edit]
+
+
+def _normalize_derived_content_edit(edit: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(edit)
+    if "turn_index" not in normalized:
+        raw_turn = normalized.get("turn")
+        if raw_turn is None:
+            raw_turn = normalized.get("target_turn_index")
+        try:
+            turn_index = int(raw_turn)
+        except (TypeError, ValueError):
+            turn_index = None
+        if turn_index is not None:
+            if "turn" in normalized and turn_index > 0:
+                turn_index -= 1
+            normalized["turn_index"] = turn_index
+
+    replacement = normalized.get("replacement")
+    if replacement is None:
+        replacement = normalized.get("value")
+    if replacement is None:
+        replacement = normalized.get("new_value")
+    if isinstance(replacement, str) and replacement.strip():
+        action = str(normalized.get("action") or normalized.get("op") or "").strip().lower()
+        field = str(normalized.get("field") or "").strip().lower()
+        if action in {"replace_ai", "rewrite_ai", "replace_turn", "rewrite_turn", "replace"} or field in {"ai", "content"}:
+            normalized.setdefault("ai", replacement.strip())
+        elif "first_paragraph" in action or field in {"first_paragraph", "new_first_paragraph"}:
+            normalized.setdefault("first_paragraph", replacement.strip())
+        else:
+            normalized.setdefault("content", replacement.strip())
+
+    note = normalized.get("note")
+    if isinstance(note, str) and note.strip() and not str(normalized.get("reason") or "").strip():
+        normalized["reason"] = note.strip()
+    for alias in ("turn", "target_turn_index", "replacement", "value", "new_value", "note"):
+        normalized.pop(alias, None)
+    return normalized
+
+
+def _has_actionable_derived_content_edits(story: Dict[str, Any], *, require_full_ai: bool = False) -> bool:
+    fields = _DERIVED_CONTENT_FULL_EDIT_FIELDS if require_full_ai else _DERIVED_CONTENT_EDIT_FIELDS
+    for edit in _story_output_derived_content_edits(story):
+        if "turn_index" not in edit:
+            continue
+        if any(isinstance(edit.get(field), str) and edit.get(field).strip() for field in fields):
+            return True
+    return False
+
+
+def _force_retcon_derived_edit_revise(critic: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(critic)
     hard_failures = normalized.get("hard_failures")
-    if not isinstance(hard_failures, list) or _story_has_token_placeholder(story):
-        return normalized
+    if not isinstance(hard_failures, list):
+        hard_failures = []
+    failure = (
+        "missing <derived_content_edits>: player authority requires repairing earlier "
+        "AI-derived content before continuing this turn."
+    )
+    if not any("derived_content_edits" in str(item) for item in hard_failures):
+        hard_failures.append(failure)
+    normalized["hard_failures"] = hard_failures
+    if str(normalized.get("decision") or "") == "pass":
+        normalized["decision"] = "revise"
+    instruction = str(normalized.get("repair_instruction") or "").strip()
+    derived_instruction = (
+        "Emit an actionable <derived_content_edits> JSON array that updates the affected "
+        "earlier AI turn while preserving every player input field, then rewrite the current scene. "
+        "For dream/retcon repairs, provide a complete replacement of the affected previous AI "
+        "turn with `turn_index: 0` and `ai`; do not only replace the first paragraph."
+    )
+    normalized["repair_instruction"] = (
+        instruction + "\n" + derived_instruction if instruction else derived_instruction
+    )
+    if not isinstance(normalized.get("repair_routing"), dict):
+        normalized["repair_routing"] = {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": True,
+            "risk": "low",
+        }
+    return normalized
 
-    cleaned = [
-        item
-        for item in hard_failures
-        if not _is_token_only_placeholder_failure(item)
-        and not _is_unsupported_placeholder_corruption_failure(item, story)
-    ]
-    if len(cleaned) == len(hard_failures):
-        return normalized
 
-    normalized["hard_failures"] = cleaned
-    if not cleaned:
-        normalized["decision"] = "pass"
+def _normalize_critic_report_for_story(
+    critic: Dict[str, Any],
+    story: Dict[str, Any],
+    story_input: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    normalized = dict(critic)
+    hard_failures = normalized.get("hard_failures")
+    if isinstance(hard_failures, list) and not _story_has_token_placeholder(story):
+        cleaned = [
+            item
+            for item in hard_failures
+            if not _is_token_only_placeholder_failure(item)
+            and not _is_unsupported_placeholder_corruption_failure(item, story)
+        ]
+        if len(cleaned) != len(hard_failures):
+            normalized["hard_failures"] = cleaned
+            if not cleaned:
+                normalized["decision"] = "pass"
+
+    if (
+        _story_input_requires_derived_content_edits(story_input)
+        and not _has_actionable_derived_content_edits(story, require_full_ai=True)
+    ):
+        return _force_retcon_derived_edit_revise(normalized)
     return normalized
 
 
@@ -1126,6 +1477,7 @@ def _ensure_input_analysis(
                 root,
                 run_claude,
                 attempts=1,
+                initial_error=last_error,
             )
             return _apply_input_analysis(card, root)
         except AgentExecutionError as exc:

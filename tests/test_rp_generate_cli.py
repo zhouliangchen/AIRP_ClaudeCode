@@ -311,6 +311,23 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(payload["agent"], "critic")
         self.assertTrue(payload["passed"])
 
+    def test_extract_json_object_rejects_malformed_top_level_object_instead_of_nested_fallback(self):
+        malformed = (
+            '{"agent":"gm","scene_beats":[{"content":"He said hello",'
+            '"metadata":{"npc":"Ada"}}'
+        )
+
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "invalid JSON"):
+            self.module._extract_json_object(malformed)
+
+    def test_extract_json_object_repairs_unescaped_quotes_inside_string_values(self):
+        malformed = '{"text":"大家都"一如往常"地交流","ok":true}'
+
+        payload = self.module._extract_json_object(malformed)
+
+        self.assertEqual(payload["text"], '大家都"一如往常"地交流')
+        self.assertTrue(payload["ok"])
+
     def test_outer_prompt_does_not_wrap_nested_prompt_in_markdown_fence(self):
         nested_prompt = '## Required Output Contract\n```json\n{"agent":"gm"}\n```\n## Context Packet\n```json\n{"role_channel":"I ask."}\n```'
 
@@ -438,6 +455,63 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertEqual(result["decision"], "pass")
         self.assertEqual(len(attempts), 2)
+
+    def test_dispatch_agent_payload_adds_json_repair_feedback_after_malformed_output(self):
+        payload = _gm_output(actor_calls=[], stop_reason="complete")
+        attempts = []
+        malformed = (
+            '```json\n'
+            '{"agent":"gm","scene_beats":[{"content":"He said "hello" without escaping.",'
+            '"metadata":{"npc":"Ada"}}]}\n'
+            '```'
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            attempts.append(prompt)
+            if len(attempts) == 1:
+                return _agent_stream(malformed)
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        result = self.module._dispatch_agent_payload(
+            "gm",
+            "# gm\n",
+            self.root,
+            fake_run_claude,
+        )
+
+        self.assertEqual(result["agent"], "gm")
+        self.assertEqual(len(attempts), 2)
+        self.assertIn("Previous Attempt Rejection", attempts[1])
+        self.assertIn("valid JSON", attempts[1])
+        self.assertIn("Escape", attempts[1])
+
+    def test_dispatch_agent_payload_recovers_story_content_from_malformed_json_string(self):
+        attempts = []
+        malformed = (
+            '```json\n'
+            '{"content":"<content><p>Ada said "hello" by the window.</p></content>",'
+            '"character_dialogues":[{"agent_id":"character:Ada","content":"hi"}],'
+            '"metadata":{"round_id":"round-1"}}\n'
+            '```'
+        )
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            attempts.append(prompt)
+            return _agent_stream(malformed)
+
+        result = self.module._dispatch_agent_payload(
+            "story",
+            "# story\n",
+            self.root,
+            fake_run_claude,
+        )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertIn('"hello"', result["content"])
+        self.assertEqual(result["character_dialogues"][0]["agent_id"], "character:Ada")
+        self.assertEqual(result["metadata"]["round_id"], "round-1")
+        self.assertTrue(result["metadata"]["recovered_from_malformed_story_json"])
+        self.assertIn("invalid JSON", result["metadata"]["recovery_error"])
 
     def test_run_claude_agent_reports_stdout_tail_when_stderr_empty(self):
         original_run = self.module.subprocess.run
@@ -1076,6 +1150,66 @@ class RpGenerateCliTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.module.AgentExecutionError, "input analysis output must be a JSON object"):
             self.module._ensure_input_analysis(self.run_dir, manifest, self.card, self.root, fail_run_claude)
+
+    def test_ensure_input_analysis_retries_malformed_json_with_rejection_feedback(self):
+        (self.run_dir / "prompts" / "input_analyst.prompt.md").write_text("# input analyst\n", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["input_analyst"] = "prompts/input_analyst.prompt.md"
+        manifest["expected_outputs"]["input_analysis"] = "input_analysis.output.json"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        attempts = []
+        malformed = (
+            '```json\n'
+            '{"schema_version":1 "routing":{"user_instruction_channel":"设定重要角色：苏黎"}}\n'
+            '```'
+        )
+        valid_analysis = {
+            "schema_version": 1,
+            "round_id": "round-000002",
+            "analysis_mode": "fixture",
+            "source_integrity": {"raw_preserved": True},
+            "semantic_units": [],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+                "must_stop_for_player_decision": False,
+            },
+            "routing": {"gm": True, "player": True, "characters": []},
+            "routing_requests": [],
+            "capability_requests": [],
+            "risks": [],
+        }
+        original_apply = getattr(self.module, "input_analysis_apply", None)
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            self.assertEqual(agent_key, "input_analyst")
+            attempts.append(prompt)
+            if len(attempts) == 1:
+                return _agent_stream(malformed)
+            return _agent_stream(json.dumps(valid_analysis, ensure_ascii=False))
+
+        try:
+            self.module.input_analysis_apply = SimpleNamespace(apply_current_run=lambda _card, _root: {"applied": True})
+            result = self.module._ensure_input_analysis(self.run_dir, manifest, self.card, self.root, fake_run_claude)
+        finally:
+            if original_apply is None:
+                delattr(self.module, "input_analysis_apply")
+            else:
+                self.module.input_analysis_apply = original_apply
+
+        self.assertEqual(result, {"applied": True})
+        self.assertEqual(len(attempts), 2)
+        self.assertIn("Previous Attempt Rejection", attempts[1])
+        self.assertIn("valid JSON", attempts[1])
+        written = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["schema_version"], 1)
 
     def test_run_round_without_input_analysis_expected_output_is_noop(self):
         self._queue_run_gm_turn()
@@ -1935,6 +2069,57 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("token_usage", normalized)
         self.assertIn("<character_dialogues>[]</character_dialogues>", content)
         self.assertLess(content.index("<character_dialogues>"), content.index("<summary>"))
+
+    def test_normalize_story_output_normalizes_derived_content_edit_aliases(self):
+        story = {
+            "content": (
+                "<derived_content_edits>\n"
+                "[{\"turn\": 1, \"field\": \"ai\", \"action\": \"replace\", "
+                "\"replacement\": \"（梦中）\n教室像隔着水声。\"}]\n"
+                "</derived_content_edits>\n"
+                "<p>Current scene.</p>"
+            ),
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_story_output(story)
+
+        self.assertEqual(normalized["derived_content_edits"][0]["turn_index"], 0)
+        self.assertIn("教室像隔着水声", normalized["derived_content_edits"][0]["ai"])
+        self.assertIn("<derived_content_edits>", normalized["content"])
+        self.assertIn('"turn_index": 0', normalized["content"])
+        self.assertNotIn('"turn": 1', normalized["content"])
+
+    def test_normalize_critic_report_revises_retcon_story_with_only_first_paragraph_edit(self):
+        critic = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<p>Current.</p>",
+            "character_dialogues": [],
+            "derived_content_edits": [
+                {"turn_index": 0, "first_paragraph": "（梦中）教室像隔着水声。"}
+            ],
+        }
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "narrative_directives": {"rewrite_previous_output": True},
+                    "world_updates": {"retcon_requests": [{"id": "r1", "text": "dream"}]},
+                }
+            }
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertIn("derived_content_edits", "\n".join(normalized["hard_failures"]))
+        self.assertIn("complete replacement", normalized["repair_instruction"])
 
     def test_run_round_ignores_stale_critic_token_placeholder_failure_when_story_is_clean(self):
         self._queue_run_gm_turn()

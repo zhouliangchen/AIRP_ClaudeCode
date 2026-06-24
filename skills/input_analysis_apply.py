@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -116,6 +117,64 @@ def _validate_important_characters_for_profile(world_updates: Any) -> None:
             )
 
 
+def _important_character_profile_text(record: Dict[str, Any]) -> str:
+    for key in (
+        "authoritative_setting",
+        "setting_text",
+        "description",
+        "profile",
+        "summary",
+        "text",
+    ):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (dict, list)) and value:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return ""
+
+
+_ACTOR_UNAWARE_PROFILE_PATTERNS = (
+    re.compile(r"(?:本人|角色本人|当事人|角色|玩家|主角).{0,16}(?:不知|不清楚|不知道|未察觉|尚未察觉|尚不知)"),
+    re.compile(r"(?:不知情|尚不知情|并不知情|毫不知情|尚未知情)"),
+    re.compile(r"\b(?:unknown|not known|unaware|does not know|do not know)\b", re.IGNORECASE),
+)
+
+
+def _profile_declares_actor_unaware(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value) and any(pattern.search(value) for pattern in _ACTOR_UNAWARE_PROFILE_PATTERNS)
+
+
+def _filter_actor_unaware_important_characters(world_updates: Any) -> tuple[Dict[str, Any], list[str]]:
+    if not isinstance(world_updates, dict):
+        return {}, []
+    important_records = world_updates.get("important_characters", [])
+    if not isinstance(important_records, list):
+        return dict(world_updates), []
+
+    kept = []
+    skipped = []
+    for record in important_records:
+        if not isinstance(record, dict):
+            kept.append(record)
+            continue
+        visibility = str(record.get("visibility") or "").strip()
+        profile_text = _important_character_profile_text(record)
+        if visibility == "character_private_and_gm" and _profile_declares_actor_unaware(profile_text):
+            name = str(record.get("name") or record.get("character_name") or "").strip()
+            if name:
+                skipped.append(name)
+            continue
+        kept.append(record)
+
+    if len(kept) == len(important_records):
+        return dict(world_updates), []
+    filtered = dict(world_updates)
+    filtered["important_characters"] = kept
+    return filtered, skipped
+
+
 def _source_input_id(raw_request: Dict[str, Any]) -> str:
     explicit_payload = raw_request.get("explicit_payload")
     if isinstance(explicit_payload, dict):
@@ -174,6 +233,91 @@ def _semantic_unit_raw_excerpt(source_channel: str, raw_request: Dict[str, Any])
     return str(raw_request.get("raw_text") or "")
 
 
+def _contains_text(haystack: str, needle: str) -> bool:
+    return bool(needle.strip()) and needle.strip() in haystack
+
+
+def _semantic_unit_text(unit: Dict[str, Any]) -> str:
+    for key in ("text", "raw_excerpt", "derived_summary", "content"):
+        value = unit.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _semantic_units_claim_instruction_as_style(
+    semantic_units: Any,
+    raw_request: Dict[str, Any],
+) -> bool:
+    instruction_text = str(raw_request.get("user_instruction_text") or "").strip()
+    if not instruction_text or not isinstance(semantic_units, list):
+        return False
+    for unit in semantic_units:
+        if not isinstance(unit, dict):
+            continue
+        if str(unit.get("type") or "").strip() != "style_guidance":
+            continue
+        evidence = str(unit.get("raw_excerpt") or unit.get("text") or "").strip()
+        if evidence == instruction_text:
+            return True
+    return False
+
+
+def _normalize_semantic_unit_provenance(
+    unit: Dict[str, Any],
+    raw_request: Dict[str, Any],
+    *,
+    instruction_claimed_as_style: bool,
+) -> tuple[Dict[str, Any], bool]:
+    normalized = dict(unit)
+    role_text = str(raw_request.get("role_text") or "")
+    instruction_text = str(raw_request.get("user_instruction_text") or "")
+    source_channel = str(normalized.get("source_channel") or "").strip()
+    raw_excerpt = str(normalized.get("raw_excerpt") or "").strip()
+    unit_text = _semantic_unit_text(normalized)
+
+    excerpt_in_role = _contains_text(role_text, raw_excerpt)
+    excerpt_in_instruction = _contains_text(instruction_text, raw_excerpt)
+    text_in_role = _contains_text(role_text, unit_text)
+    text_in_instruction = _contains_text(instruction_text, unit_text)
+
+    target_channel = ""
+    target_excerpt = ""
+    if (
+        instruction_claimed_as_style
+        and source_channel == "user_instruction"
+        and raw_excerpt
+        and raw_excerpt == instruction_text.strip()
+        and str(normalized.get("type") or "").strip() != "style_guidance"
+        and role_text.strip()
+        and not text_in_instruction
+    ):
+        target_channel = "role_input"
+        target_excerpt = unit_text if text_in_role else role_text
+    elif excerpt_in_role and not excerpt_in_instruction:
+        target_channel = "role_input"
+        target_excerpt = raw_excerpt
+    elif excerpt_in_instruction and not excerpt_in_role:
+        target_channel = "user_instruction"
+        target_excerpt = raw_excerpt
+    elif text_in_role and not text_in_instruction:
+        target_channel = "role_input"
+        target_excerpt = unit_text
+    elif text_in_instruction and not text_in_role:
+        target_channel = "user_instruction"
+        target_excerpt = unit_text
+    if not target_channel:
+        return normalized, False
+    if (
+        normalized.get("source_channel") == target_channel
+        and normalized.get("raw_excerpt") == target_excerpt
+    ):
+        return normalized, False
+    normalized["source_channel"] = target_channel
+    normalized["raw_excerpt"] = target_excerpt
+    return normalized, True
+
+
 def _normalize_legacy_semantic_units(
     analysis: Dict[str, Any], raw_request: Dict[str, Any]
 ) -> tuple[Dict[str, Any], bool]:
@@ -188,6 +332,10 @@ def _normalize_legacy_semantic_units(
         for unit in semantic_units
         if isinstance(unit, dict) and str(unit.get("id") or "").strip()
     }
+    instruction_claimed_as_style = _semantic_units_claim_instruction_as_style(
+        semantic_units,
+        raw_request,
+    )
     next_index = 1
     for unit in semantic_units:
         if not isinstance(unit, dict):
@@ -218,6 +366,13 @@ def _normalize_legacy_semantic_units(
                 raw_request,
             )
             changed = True
+
+        normalized, provenance_changed = _normalize_semantic_unit_provenance(
+            normalized,
+            raw_request,
+            instruction_claimed_as_style=instruction_claimed_as_style,
+        )
+        changed = changed or provenance_changed
 
         if not isinstance(normalized.get("derived_summary"), str):
             content = normalized.get("content")
@@ -464,6 +619,14 @@ def apply_current_run(card_folder, root_dir=None):
 
     source_input_id = _source_input_id(raw_request)
     world_updates = analysis.get("world_updates", {})
+    world_updates, skipped_important_characters = _filter_actor_unaware_important_characters(world_updates)
+    if skipped_important_characters:
+        analysis = dict(analysis)
+        analysis["world_updates"] = world_updates
+        (run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     _validate_important_characters_for_profile(world_updates)
     card_data = _read_card_data(card_folder)
 
@@ -533,6 +696,7 @@ def apply_current_run(card_folder, root_dir=None):
         "important_characters_persisted": [
             item.get("name") for item in character_records if isinstance(item, dict)
         ],
+        "important_characters_skipped": skipped_important_characters,
         "routed_input": routed_input,
         "routing_requests": analysis.get("routing_requests", []),
         "capability_requests": analysis.get("capability_requests", []),

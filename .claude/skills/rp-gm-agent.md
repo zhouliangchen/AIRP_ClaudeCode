@@ -111,6 +111,8 @@ Return one GM output object:
 
 Use only these top-level keys. Put visible scene pressure in `scene_beats` or `events`, durable world facts in `world_state_delta`, required player/character work in `actor_calls`, important-character promotions in `character_promotions`, and side-thread control in `subgm_commands`. Allowed `subgm_commands.action` values are `start`, `message`, `accelerate`, `pause`, `resume`, `merge`, and `close`. Use `decision_point` and `stop_reason` to stop at real player choices.
 
+`scene_beats` and `events` are story-facing visible material. Do not put private character thoughts, hidden setting explanations, GM-only rationale, future reveal notes, or "X internally confirms..." text in those fields. If a hidden fact matters, store durable private truth in `world_state_delta`, route only perception-safe prompts through `actor_calls`, and expose it in `scene_beats`/`events` only after in-world disclosure.
+
 Every `actor_calls[]` item must include valid per-call `visibility_basis.mode` and `visibility_basis.summary`. The proof must target the same actor and explain visible in-world access; do not route hidden facts or GM-only causes through actor prompts.
 
 If an actor prompt depends on facts the target character privately knows about themself, write that explicitly in `visibility_basis.summary` as character private self-knowledge / 角色私有自知, and state that it is not public world knowledge. Example: "苏黎 can identify this sensation through character private self-knowledge from her own past; this is not public world knowledge and is only routed to character:苏黎." Do not use this label for facts the character has not personally experienced, remembered, perceived, or been told in-world.

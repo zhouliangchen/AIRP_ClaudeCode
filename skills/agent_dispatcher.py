@@ -59,6 +59,84 @@ class _DispatcherModuleProxy:
 _DISPATCHER_MODULE = _DispatcherModuleProxy()
 
 
+_GM_RUNTIME_WORLD_DUPLICATE_KEYS = {
+    "raw_text",
+    "explicit_payload",
+    "routed_input",
+    "role_channel",
+    "user_instruction_channel",
+    "components",
+    "gm_only_hidden_settings",
+    "objective_world",
+    "recent_chat",
+    "card_data",
+    "character_contexts",
+    "runtime_settings",
+    "style_profile",
+}
+
+_GM_INPUT_ANALYSIS_KEEP_KEYS = (
+    "schema_version",
+    "round_id",
+    "analysis_mode",
+    "semantic_units",
+    "world_updates",
+    "narrative_directives",
+    "routing_requests",
+    "capability_requests",
+    "risks",
+)
+
+_GM_INPUT_ANALYSIS_DUPLICATE_KEYS = {"raw_excerpt", "source_integrity", "routing", "text"}
+_GM_RUNTIME_PACKET_DUPLICATE_KEYS = {"components"}
+
+
+def _strip_prompt_duplicate_keys(value: Any, duplicate_keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_prompt_duplicate_keys(item, duplicate_keys)
+            for key, item in value.items()
+            if str(key) not in duplicate_keys
+        }
+    if isinstance(value, list):
+        return [_strip_prompt_duplicate_keys(item, duplicate_keys) for item in value]
+    return value
+
+
+def _compact_gm_input_analysis_for_prompt(analysis: Any) -> Any:
+    if not isinstance(analysis, dict):
+        return analysis
+    compact = {
+        key: analysis[key]
+        for key in _GM_INPUT_ANALYSIS_KEEP_KEYS
+        if key in analysis
+    }
+    return _strip_prompt_duplicate_keys(compact, _GM_INPUT_ANALYSIS_DUPLICATE_KEYS)
+
+
+def _compact_gm_runtime_packet_for_prompt(packet: Any) -> Any:
+    if not isinstance(packet, dict):
+        return packet
+    compact = {
+        key: value
+        for key, value in packet.items()
+        if str(key) not in _GM_RUNTIME_PACKET_DUPLICATE_KEYS
+    }
+    world_state = compact.get("world_state")
+    if isinstance(world_state, dict):
+        compact_world = {
+            key: value
+            for key, value in world_state.items()
+            if str(key) not in _GM_RUNTIME_WORLD_DUPLICATE_KEYS
+        }
+        if "input_analysis" in world_state:
+            compact_world["input_analysis"] = _compact_gm_input_analysis_for_prompt(
+                world_state.get("input_analysis")
+            )
+        compact["world_state"] = compact_world
+    return compact
+
+
 def dispatch_next(
     run_dir: str | Path,
     card_folder: str | Path,
@@ -144,7 +222,7 @@ def _execute_supported_intent(
 ) -> dict[str, Any]:
     intent_type = str(intent.get("type") or "")
     if intent_type == "analyze_input":
-        return _execute_analyze_input(run_dir, card_folder, root_dir, intent)
+        return _execute_analyze_input(run_dir, card_folder, root_dir, intent, run_claude)
     if intent_type == "run_gm_turn":
         return _execute_run_gm_turn(run_dir, root_dir, intent, run_claude)
     if intent_type == "request_projection":
@@ -230,6 +308,8 @@ def _dispatch_agent_payload(
     packet = None
     if isinstance(extra_context, dict):
         candidate = extra_context.get("packet")
+        if not isinstance(candidate, dict):
+            candidate = extra_context.get("actor_packet")
         if isinstance(candidate, dict):
             packet = candidate
     if agent_key.startswith("subGM:") or agent_key.startswith("character:") or agent_key == "player":
@@ -242,6 +322,8 @@ def _dispatch_agent_payload(
     elif agent_key == "projection":
         projection_packet = extra_context.get("projection_packet") if isinstance(extra_context, dict) else None
         prompt = agent_prompts.projection_prompt_text(projection_packet if isinstance(projection_packet, dict) else {})
+    elif agent_key == "postprocess":
+        prompt = agent_prompts.build_postprocess_prompt(extra_context if isinstance(extra_context, dict) else {})
     else:
         prompt = _read_prompt(run_dir, agent_key)
     return rp_generate_cli._dispatch_agent_payload(
@@ -258,8 +340,9 @@ def _execute_analyze_input(
     card_folder: Path,
     root_dir: Path,
     intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None = None,
 ) -> dict[str, Any]:
-    return input_executor.execute(_DISPATCHER_MODULE, run_dir, card_folder, root_dir, intent)
+    return input_executor.execute(_DISPATCHER_MODULE, run_dir, card_folder, root_dir, intent, run_claude=run_claude)
 
 
 def _execute_analyze_input_impl(
@@ -267,12 +350,22 @@ def _execute_analyze_input_impl(
     card_folder: Path,
     root_dir: Path,
     intent: dict[str, Any],
+    run_claude: Callable[[str, str, str | Path], str] | None = None,
 ) -> dict[str, Any]:
     intent_id = str(intent.get("id") or "")
     agent_intents.accept_intent(run_dir, intent_id, outputs={"executor": "analyze_input"})
 
     try:
-        applied = input_analysis_apply.apply_current_run(card_folder, root_dir)
+        if not (run_dir / "input_analysis.output.json").exists() and run_claude is not None:
+            applied = rp_generate_cli._ensure_input_analysis(
+                run_dir,
+                _load_manifest(run_dir),
+                card_folder,
+                root_dir,
+                run_claude,
+            )
+        else:
+            applied = input_analysis_apply.apply_current_run(card_folder, root_dir)
         artifacts = []
         source_path = run_dir / "input_analysis.output.json"
         if source_path.exists():
@@ -399,8 +492,9 @@ def _execute_compose_story(
         payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
         repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
         story_input = agent_outputs.build_story_input(run_dir)
+        story_context = agent_outputs.story_prompt_context(story_input)
         artifacts.append("artifacts/story.input.json")
-        extra_context: dict[str, Any] = {"story_input": story_input}
+        extra_context: dict[str, Any] = {"story_input": story_context}
         if repair_context is not None:
             extra_context["repair_context"] = repair_context
         story_output = _dispatch_agent_payload(
@@ -410,7 +504,7 @@ def _execute_compose_story(
             run_claude,
             extra_context,
         )
-        story_output = rp_generate_cli._normalize_story_output(story_output, story_input)
+        story_output = rp_generate_cli._normalize_story_output(story_output, story_context)
         write_artifact(run_dir, "story.output.json", story_output)
         artifacts.append("artifacts/story.output.json")
         follow_up = _ensure_follow_up_intent(
@@ -752,6 +846,83 @@ def _gm_fanout_ready_for_continuation(run_dir: Path, fanout: dict[str, Any], cur
     return all(source_call_id in completed for source_call_id in fanout["expected_source_call_ids"])
 
 
+def _gm_fanout_has_player_actor_decision_required(
+    run_dir: Path,
+    batch_id: str,
+    *,
+    current_actor_id: str = "",
+    current_player_decision_required: bool = False,
+) -> bool:
+    if current_actor_id == "player" and current_player_decision_required:
+        return True
+    for existing in agent_intents.list_intents(run_dir, "completed"):
+        if existing.get("type") != "run_actor":
+            continue
+        payload = existing.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        fanout = _normalize_actor_fanout(payload.get("fanout"))
+        if not fanout or fanout["batch_id"] != batch_id:
+            continue
+        result = existing.get("result")
+        outputs = result.get("outputs") if isinstance(result, dict) else None
+        if not isinstance(outputs, dict) or outputs.get("player_decision_required") is not True:
+            continue
+        actor_id = str(outputs.get("actor_id") or payload.get("actor_id") or "")
+        if actor_id == "player":
+            return True
+    return False
+
+
+def _ensure_actor_fanout_decision_story_follow_up(
+    run_dir: Path,
+    source_actor_intent_id: str,
+    actor_id: str,
+    resolved_source_call_id: str,
+    response_message_id: str,
+    fanout: dict[str, Any],
+    *,
+    current_player_decision_required: bool,
+) -> dict[str, Any] | None:
+    if not _gm_fanout_ready_for_continuation(run_dir, fanout, resolved_source_call_id):
+        return None
+    if _gm_fanout_has_player_actor_decision_required(
+        run_dir,
+        fanout["batch_id"],
+        current_actor_id=actor_id,
+        current_player_decision_required=current_player_decision_required,
+    ):
+        return None
+    completed_source_call_ids = _gm_fanout_completed_source_call_ids(
+        run_dir,
+        fanout["batch_id"],
+        resolved_source_call_id,
+    )
+    return _ensure_follow_up_intent_by_payload(
+        run_dir,
+        fanout["source_gm_intent_id"],
+        {
+            "requested_by": actor_id,
+            "type": "compose_story",
+            "payload": {
+                "reason": "actor_fanout_player_decision",
+                "fanout_batch_id": fanout["batch_id"],
+                "source_gm_intent_id": fanout["source_gm_intent_id"],
+                "expected_source_call_ids": fanout["expected_source_call_ids"],
+                "completed_source_call_ids": completed_source_call_ids,
+                "actor_response_message_id": response_message_id,
+                "actor_outputs_path": "artifacts/actor.outputs.json",
+            },
+            "policy": {
+                "source_intent_id": fanout["source_gm_intent_id"],
+                "source_actor_intent_id": source_actor_intent_id,
+                "fanout_batch_id": fanout["batch_id"],
+            },
+        },
+        payload_keys=("fanout_batch_id",),
+    )
+
+
 def _gm_fanout_has_player_decision_required(run_dir: Path, batch_id: str) -> bool:
     for existing in agent_intents.list_intents(run_dir, "completed"):
         if existing.get("type") != "run_actor":
@@ -870,6 +1041,38 @@ def _execute_run_actor_impl(
                 "player decision required after actor response",
             )
             fanout_continuation_blocked_by_player_decision = bool(fanout)
+            if actor_id != "player":
+                if fanout:
+                    follow_up = _ensure_actor_fanout_decision_story_follow_up(
+                        run_dir,
+                        intent_id,
+                        actor_id,
+                        resolved_source_call_id,
+                        response_message_id,
+                        fanout,
+                        current_player_decision_required=True,
+                    )
+                else:
+                    follow_up = _ensure_follow_up_intent(
+                        run_dir,
+                        intent_id,
+                        {
+                            "requested_by": actor_id,
+                            "type": "compose_story",
+                            "payload": {
+                                "reason": "actor_player_decision",
+                                "actor_id": actor_id,
+                                "source_call_id": resolved_source_call_id,
+                                "actor_response_message_id": response_message_id,
+                                "actor_outputs_path": "artifacts/actor.outputs.json",
+                            },
+                            "policy": {"source_intent_id": intent_id},
+                        },
+                    )
+                if follow_up is not None:
+                    follow_up_id = str(follow_up.get("id") or "")
+                    if follow_up.get("created"):
+                        created_intents.append(follow_up_id)
         if not player_decision_required:
             follow_up_reason = (
                 "actor_response_requires_resolution"
@@ -878,7 +1081,19 @@ def _execute_run_actor_impl(
             )
             if fanout and fanout_player_decision_required:
                 fanout_continuation_blocked_by_player_decision = True
-                follow_up_id = ""
+                follow_up = _ensure_actor_fanout_decision_story_follow_up(
+                    run_dir,
+                    intent_id,
+                    actor_id,
+                    resolved_source_call_id,
+                    response_message_id,
+                    fanout,
+                    current_player_decision_required=False,
+                )
+                if follow_up is not None:
+                    follow_up_id = str(follow_up.get("id") or "")
+                    if follow_up.get("created"):
+                        created_intents.append(follow_up_id)
             elif fanout and not _gm_fanout_ready_for_continuation(run_dir, fanout, resolved_source_call_id):
                 follow_up_id = ""
             elif fanout:
@@ -1194,7 +1409,11 @@ def _execute_review_critic(
                 "quality_metrics": quality_metrics,
             },
         )
-        critic_report = rp_generate_cli._normalize_critic_report_for_story(critic_report, story_output)
+        critic_report = rp_generate_cli._normalize_critic_report_for_story(
+            critic_report,
+            story_output,
+            story_input,
+        )
         write_artifact(run_dir, "critic.report.json", critic_report)
         artifacts.append("artifacts/critic.report.json")
         decision = str(critic_report.get("decision") or "")
@@ -1253,11 +1472,12 @@ def _execute_run_postprocess(
 
     try:
         story_input = read_artifact(run_dir, "story.input.json")
+        story_prompt_input = agent_outputs.story_prompt_context(story_input)
         story_output = read_artifact(run_dir, "story.output.json")
         critic_report = read_artifact(run_dir, "critic.report.json")
         critical_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
         context = {
-            "story_input": story_input,
+            "story_input": story_prompt_input,
             "story_output": story_output,
             "critic_report": critic_report,
             "critical_action_evidence": critical_evidence,
@@ -2582,9 +2802,9 @@ def _execute_run_gm_turn(
         repair_context = payload.get("repair_context") if isinstance(payload.get("repair_context"), dict) else None
 
         def dispatch(agent_key: str, packet: dict[str, Any]) -> dict[str, Any]:
+            runtime_packet = _compact_gm_runtime_packet_for_prompt(packet) if agent_key == "gm" else packet
             extra_context: dict[str, Any] = {
-                "packet": packet,
-                "loop_packet": packet,
+                "packet": runtime_packet,
                 "intent_type": "run_gm_turn",
                 "source_intent_id": intent_id,
             }
@@ -2603,12 +2823,18 @@ def _execute_run_gm_turn(
 
         player_decision_required = str(loop_result.get("stop_reason") or "") == "player_decision"
         actor_calls = [call for call in loop_result.get("actor_calls", []) if isinstance(call, dict)]
+        executable_actor_calls = [
+            call
+            for call in actor_calls
+            if str(call.get("actor_id") or "")
+            and not (player_decision_required and str(call.get("actor_id") or "") == "player")
+        ]
         runnable_side_threads = [
             summary for summary in loop_result.get("runnable_side_threads", []) if isinstance(summary, dict)
         ]
         expected_actor_call_ids = [
             str(call.get("call_id") or "")
-            for call in actor_calls
+            for call in executable_actor_calls
             if str(call.get("actor_id") or "") and str(call.get("call_id") or "")
         ]
         fanout = None
@@ -2619,24 +2845,28 @@ def _execute_run_gm_turn(
                 "expected_source_call_ids": expected_actor_call_ids,
             }
 
-        if not player_decision_required:
-            for call in actor_calls:
-                actor_id = str(call.get("actor_id") or "")
-                if not actor_id:
-                    continue
-                actor_packet = agent_actor_runtime.require_actor_context_packet(run_dir, actor_id)
-                message_id, projection_intent_id = agent_actor_runtime.record_request_actor(
-                    run_dir,
-                    "gm",
-                    actor_id,
-                    call,
-                    packet=actor_packet,
-                    source_intent_id=intent_id,
-                    fanout=fanout,
-                )
-                created_messages.append(message_id)
-                created_projection_intents.append(projection_intent_id)
+        for call in executable_actor_calls:
+            actor_id = str(call.get("actor_id") or "")
+            embedded_actor_packet = call.get("packet") if isinstance(call.get("packet"), dict) else None
+            actor_packet = agent_actor_runtime.load_actor_context_packet(run_dir, actor_id)
+            if actor_packet is None:
+                if embedded_actor_packet is not None:
+                    actor_packet = embedded_actor_packet
+                else:
+                    actor_packet = agent_actor_runtime.require_actor_context_packet(run_dir, actor_id)
+            message_id, projection_intent_id = agent_actor_runtime.record_request_actor(
+                run_dir,
+                "gm",
+                actor_id,
+                call,
+                packet=actor_packet,
+                source_intent_id=intent_id,
+                fanout=fanout,
+            )
+            created_messages.append(message_id)
+            created_projection_intents.append(projection_intent_id)
 
+        if not player_decision_required:
             for summary in runnable_side_threads:
                 thread_id = str(summary.get("thread_id") or "")
                 if not thread_id:
@@ -2659,45 +2889,53 @@ def _execute_run_gm_turn(
                 if follow_up.get("created"):
                     created_subgm_intents.append(subgm_intent_id)
 
-            if not created_projection_intents and not created_subgm_intents:
-                stop_reason = str(loop_result.get("stop_reason") or "")
-                if stop_reason in {"complete", "word_target", "max_steps"}:
-                    follow_up_payload: dict[str, Any] = {
-                        "reason": "gm_step_complete",
-                        "loop_result": loop_result,
-                    }
-                    if repair_context is not None:
-                        follow_up_payload["repair_context"] = repair_context
-                    follow_up = _ensure_follow_up_intent(
-                        run_dir,
-                        intent_id,
-                        {
-                            "requested_by": "gm",
-                            "type": "compose_story",
-                            "payload": follow_up_payload,
-                            "policy": {"source_intent_id": intent_id},
-                        },
-                    )
-                    follow_up_id = str(follow_up.get("id") or "")
-                    if follow_up.get("created"):
-                        created_progression_intents.append(follow_up_id)
+        if not created_projection_intents and not created_subgm_intents:
+            stop_reason = str(loop_result.get("stop_reason") or "")
+            terminal_stop = stop_reason in {"complete", "word_target", "max_steps", "player_decision"}
+            no_collaboration_work = not executable_actor_calls and not runnable_side_threads
+            if terminal_stop or no_collaboration_work:
+                if stop_reason == "player_decision":
+                    follow_up_reason = "gm_player_decision"
+                elif terminal_stop:
+                    follow_up_reason = "gm_step_complete"
                 else:
-                    follow_up = _ensure_follow_up_intent(
-                        run_dir,
-                        intent_id,
-                        {
-                            "requested_by": "gm",
-                            "type": "run_gm_turn",
-                            "payload": {
-                                "reason": "gm_step_continue",
-                                "loop_result": loop_result,
-                            },
-                            "policy": {"source_intent_id": intent_id},
+                    follow_up_reason = "gm_no_collaboration_work"
+                follow_up_payload: dict[str, Any] = {
+                    "reason": follow_up_reason,
+                    "loop_result": loop_result,
+                }
+                if repair_context is not None:
+                    follow_up_payload["repair_context"] = repair_context
+                follow_up = _ensure_follow_up_intent(
+                    run_dir,
+                    intent_id,
+                    {
+                        "requested_by": "gm",
+                        "type": "compose_story",
+                        "payload": follow_up_payload,
+                        "policy": {"source_intent_id": intent_id},
+                    },
+                )
+                follow_up_id = str(follow_up.get("id") or "")
+                if follow_up.get("created"):
+                    created_progression_intents.append(follow_up_id)
+            else:
+                follow_up = _ensure_follow_up_intent(
+                    run_dir,
+                    intent_id,
+                    {
+                        "requested_by": "gm",
+                        "type": "run_gm_turn",
+                        "payload": {
+                            "reason": "gm_step_continue",
+                            "loop_result": loop_result,
                         },
-                    )
-                    follow_up_id = str(follow_up.get("id") or "")
-                    if follow_up.get("created"):
-                        created_progression_intents.append(follow_up_id)
+                        "policy": {"source_intent_id": intent_id},
+                    },
+                )
+                follow_up_id = str(follow_up.get("id") or "")
+                if follow_up.get("created"):
+                    created_progression_intents.append(follow_up_id)
     except Exception as exc:
         return _block_executor_failure(run_dir, intent_id, "run_gm_turn", "run_gm_turn_failed", exc, artifacts)
 

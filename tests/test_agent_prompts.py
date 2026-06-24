@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -77,6 +78,81 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("postprocess owns summary, options, current goal, and frontend data", prompt)
         self.assertIn("Do not write `<UpdateVariable>`", prompt)
         self.assertIn("postprocess owns MVU variable update commands", prompt)
+        self.assertIn("do not narrate that action as actually performed", prompt)
+
+    def test_critic_prompt_does_not_require_story_summary_or_options_tags(self):
+        prompt = self.agent_prompts._critic_prompt({})
+
+        self.assertIn("does not require `<summary>` or `<options>`", prompt)
+        self.assertIn("postprocess owns `core.summary` and `core.options`", prompt)
+        self.assertIn(
+            "Do not require `<summary>` or `<options>` in `story.output.json`; postprocess owns frontend summary/options",
+            prompt,
+        )
+        self.assertIn("Explicit player-action polarity", prompt)
+        self.assertIn("hard-fail if `story_output.content` narrates a player action as completed", prompt)
+
+    def test_write_round_prompts_compacts_gm_prompt_raw_channel_duplicates(self):
+        role = "我叫雨蒙，一名普通的高一男生。至少在今天早上之前"
+        instruction = "作品基调：日式轻小说风格，青春活力，严肃和欢乐交织的校园非日常喜剧。"
+        gm_packet = {
+            "agent": "gm",
+            "role_channel": role,
+            "user_instruction_channel": instruction,
+            "components": [
+                {"channel": "role", "text": role},
+                {"channel": "user_instruction", "text": instruction},
+            ],
+            "world_state": {
+                "role_channel": role,
+                "user_instruction_channel": instruction,
+                "components": [
+                    {"channel": "role", "text": role},
+                    {"channel": "user_instruction", "text": instruction},
+                ],
+                "input_analysis": {
+                    "schema_version": 1,
+                    "round_id": "round-000001",
+                    "analysis_mode": "ai",
+                    "source_integrity": {"raw_text_sha256": "hash"},
+                    "semantic_units": [
+                        {
+                            "id": "su-001",
+                            "type": "style_guidance",
+                            "text": instruction,
+                            "raw_excerpt": instruction,
+                            "derived_summary": "Use a lively school light-novel tone.",
+                            "visibility": "gm_only",
+                        }
+                    ],
+                    "routing": {
+                        "role_channel": role,
+                        "user_instruction_channel": instruction,
+                    },
+                    "world_updates": {},
+                    "narrative_directives": {},
+                },
+                "runtime_settings": {"style": "轻松活泼", "wordCount": 4000},
+                "style_profile": {"name": "轻松活泼", "content": "short"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "round-000001"
+            self.agent_prompts.write_round_prompts(
+                run_dir,
+                gm_packet,
+                {"agent": "player"},
+                {},
+                runtime_settings_payload={"style": "轻松活泼", "wordCount": 4000},
+            )
+            prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
+
+        self.assertEqual(prompt.count(role), 1)
+        self.assertEqual(prompt.count(instruction), 1)
+        self.assertNotIn('"components"', prompt)
+        self.assertNotIn('"raw_excerpt"', prompt)
+        self.assertNotIn('"text": "' + instruction, prompt)
+        self.assertIn("Use a lively school light-novel tone.", prompt)
 
     def test_projection_prompt_contains_contract_context_and_no_reveal_rule(self):
         prompt = self.agent_prompts.projection_prompt_text(

@@ -1025,6 +1025,41 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
 
+    def test_apply_current_run_does_not_persist_actor_unaware_hidden_truth_as_profile(self):
+        analysis = self._analysis()
+        unaware_hidden_text = (
+            "雨蒙是被选中的人，粉色花朵吊坠是魔法少女变身器。"
+            "战斗将燃烧男性身份与记忆转化为魔力。本人目前不知这些真相。"
+        )
+        analysis["world_updates"]["hidden_facts"] = [
+            {
+                "id": "hidden-yumeng-truth",
+                "text": unaware_hidden_text,
+                "visibility": "gm_only",
+                "status": "active",
+            }
+        ]
+        analysis["world_updates"]["important_characters"] = [
+            {
+                "name": "雨蒙",
+                "authoritative_setting": unaware_hidden_text,
+                "visibility": "character_private_and_gm",
+                "status": "active",
+            }
+        ]
+        (self.run_dir / "input_analysis.output.json").write_text(
+            json.dumps(analysis, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        hidden_text = (self.card / "memory" / "gm_only_hidden_truths.jsonl").read_text(encoding="utf-8")
+        self.assertIn(unaware_hidden_text, hidden_text)
+        self.assertEqual(result["important_characters_persisted"], [])
+        self.assertEqual(result["important_characters_skipped"], ["雨蒙"])
+        self.assertFalse((self.card / "memory" / "characters" / "雨蒙" / "profile.md").exists())
+
     def test_apply_current_run_normalizes_legacy_semantic_units_before_validation(self):
         analysis = self._analysis()
         analysis["semantic_units"] = [
