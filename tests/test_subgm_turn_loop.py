@@ -81,6 +81,27 @@ def character_output(actor_id="character:SuLi"):
     return "I found chalk dust by the vent."
 
 
+def projection_pass(packet):
+    return {
+        "decision": "pass",
+        "target_actor_id": str(packet.get("target_actor_id") or ""),
+        "source_call_id": str(packet.get("source_call_id") or ""),
+        "final_actor_message": str(packet.get("requested_actor_message") or ""),
+        "feedback": "",
+    }
+
+
+def wrap_dispatch_with_projection(dispatch):
+    def wrapped(agent_key, packet):
+        if agent_key == "projection":
+            if getattr(dispatch, "handles_projection", False):
+                return dispatch(agent_key, packet)
+            return projection_pass(packet)
+        return dispatch(agent_key, packet)
+
+    return wrapped
+
+
 class SubgmTurnLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -118,6 +139,18 @@ class SubgmTurnLoopTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.subgm_turn_loop = load_module("subgm_turn_loop")
+        run_side_thread = self.subgm_turn_loop.run_side_thread
+
+        def run_with_projection(run_dir, thread_id, dispatch, *args, **kwargs):
+            return run_side_thread(
+                run_dir,
+                thread_id,
+                wrap_dispatch_with_projection(dispatch),
+                *args,
+                **kwargs,
+            )
+
+        self.subgm_turn_loop.run_side_thread = run_with_projection
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -320,6 +353,58 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertEqual(packet_basis.get("visible_to"), ["character:SuLi"])
         self.assertEqual(packet_basis.get("sensory_channels"), ["visual"])
         self.assertEqual(packet_basis.get("target_actor"), "character:SuLi")
+
+    def test_subgm_actor_call_runs_projection_before_actor_dispatch(self):
+        actor_dir = Path(self.tmp.name) / "characters" / "SuLi"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "profile.md").write_text(
+            "I am SuLi, and rooftop messages always make me cautious.",
+            encoding="utf-8",
+        )
+        projection_packets = []
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "You hear the rooftop vent rattle.",
+                            "reason": "SuLi is physically present in the side thread.",
+                            "visibility_basis": visibility_basis("character:SuLi"),
+                        }
+                    ]
+                )
+            if agent_key == "projection":
+                projection_packets.append(packet)
+                return {
+                    "decision": "edited",
+                    "target_actor_id": "character:SuLi",
+                    "source_call_id": "call-character-SuLi-1",
+                    "final_actor_message": "You hear the rooftop vent rattle twice.",
+                    "feedback": "",
+                }
+            if agent_key == "character:SuLi":
+                actor_packets.append(packet)
+                return character_output()
+            raise AssertionError(agent_key)
+
+        dispatch.handles_projection = True
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(projection_packets), 1)
+        self.assertIn("rooftop messages", projection_packets[0]["actor_context"])
+        self.assertEqual(actor_packets[0]["gm_prompt"], "You hear the rooftop vent rattle twice.")
+        short_term = (actor_dir / "short_term_memories.md").read_text(encoding="utf-8")
+        self.assertIn("You hear the rooftop vent rattle twice.", short_term)
+        self.assertIn("I found chalk dust by the vent.", short_term)
 
     def test_actor_packet_visibility_basis_preserves_top_level_subgm_call_metadata(self):
         actor_packets = []
@@ -806,6 +891,51 @@ class SubgmTurnLoopTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.subgm_turn_loop.SubgmTurnLoopError, "important character"):
             self.subgm_turn_loop.run_side_thread(self.run_dir, "side_ada_library", dispatch)
+
+    def test_run_side_thread_accepts_canonical_character_actor_id(self):
+        self.subgm_threads.apply_gm_commands(
+            self.run_dir,
+            [start_command(thread_id="side_self_shadow", allowed=["character:character__self"])],
+        )
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["character_contexts"]["characters"] = [
+            {
+                "name": "_self",
+                "role": "reserved witness",
+                "location": "school rooftop",
+                "sensory_channels": ["visual"],
+            }
+        ]
+        (self.run_dir / "input.json").write_text(
+            json.dumps(input_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_self_shadow":
+                return subgm_output(
+                    thread_id="side_self_shadow",
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-character__self-1",
+                            "actor_id": "character:character__self",
+                            "prompt": "You notice chalk dust near the vent.",
+                            "reason": "The canonical character is present in the side thread.",
+                        }
+                    ],
+                    character_usage=["character:character__self"],
+                )
+            if agent_key == "character:character__self":
+                actor_packets.append(packet)
+                return character_output("character:character__self")
+            raise AssertionError(agent_key)
+
+        result = self.subgm_turn_loop.run_side_thread(self.run_dir, "side_self_shadow", dispatch)
+
+        self.assertEqual(result["called_actors"], ["character:character__self"])
+        self.assertEqual(actor_packets[0]["actor_id"], "character:character__self")
+        self.assertEqual(actor_packets[0]["self_knowledge"]["name"], "_self")
 
     def test_run_side_thread_updates_thread_status_and_messages_on_completion(self):
         def dispatch(agent_key, packet):

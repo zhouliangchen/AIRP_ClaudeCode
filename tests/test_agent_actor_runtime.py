@@ -31,6 +31,20 @@ class AgentActorRuntimeTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_load_actor_context_packet_accepts_raw_character_name_with_canonical_file(self):
+        char_dir = self.run_dir / "characters"
+        char_dir.mkdir()
+        (char_dir / "Ada_Zero.context.json").write_text(
+            json.dumps({"actor_id": "character:Ada_Zero", "immersive_context": "我是 Ada Zero。"}),
+            encoding="utf-8",
+        )
+
+        packet = self.runtime.load_actor_context_packet(self.run_dir, "character:Ada//Zero")
+
+        self.assertIsNotNone(packet)
+        self.assertEqual(packet["actor_id"], "character:Ada_Zero")
+        self.assertEqual(packet["immersive_context"], "我是 Ada Zero。")
+
     def test_record_request_actor_creates_message_and_request_projection_intent(self):
         call = {
             "call_id": "call-character-Ada-1",

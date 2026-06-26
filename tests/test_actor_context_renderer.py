@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,83 @@ def load_module(name):
 class ActorContextRendererTest(unittest.TestCase):
     def setUp(self):
         self.renderer = load_module("actor_context_renderer")
+
+    def test_render_context_reads_root_actor_memory_when_card_folder_is_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            card = Path(temp) / "card"
+            actor_dir = card / "characters" / "Ada"
+            objective_dir = card / "memory" / "characters" / "Ada"
+            actor_dir.mkdir(parents=True)
+            objective_dir.mkdir(parents=True)
+            (actor_dir / "profile.md").write_text("我是 Ada，我习惯先观察再行动。", encoding="utf-8")
+            (actor_dir / "long_term_memories.md").write_text("我记得玩家曾在雨夜保护我。", encoding="utf-8")
+            (actor_dir / "short_term_memories.md").write_text("刚才我听见门后有脚步声。", encoding="utf-8")
+            (actor_dir / "key_memories.json").write_text(
+                json.dumps(
+                    {
+                        "memories": [
+                            {
+                                "tag": "雨夜",
+                                "summary": "玩家把披风借给我",
+                                "detail": "detail-secret: 他在钟楼背面说出了暗号。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (objective_dir / "profile.md").write_text("客观设定：Ada 是档案管理员。", encoding="utf-8")
+            (objective_dir / "background.md").write_text("客观背景：档案馆位于旧城区。", encoding="utf-8")
+
+            rendered = self.renderer.render_actor_context(
+                "character:Ada",
+                {"name": "Ada", "card_folder": str(card)},
+                {},
+            )
+            text = rendered["immersive_context"]
+
+            self.assertIn("我是 Ada，我习惯先观察再行动。", text)
+            self.assertIn("我记得：我记得玩家曾在雨夜保护我。", text)
+            self.assertIn("刚才我记得：刚才我听见门后有脚步声。", text)
+            self.assertIn("我想回忆：雨夜", text)
+            self.assertIn("玩家把披风借给我", text)
+            self.assertNotIn("detail-secret", text)
+            self.assertNotIn("钟楼背面", text)
+            self.assertNotIn("客观设定", text)
+            self.assertNotIn("客观背景", text)
+
+    def test_render_context_filters_profile_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            card = Path(temp) / "card"
+            actor_dir = card / "characters" / "Ada"
+            actor_dir.mkdir(parents=True)
+            (actor_dir / "profile.md").write_text(
+                "\n".join([
+                    "# Ada",
+                    "",
+                    "- source_agent: gm",
+                    "- player_authoritative: false",
+                    "- round_id: round-000001",
+                    "",
+                    "我是 Ada。",
+                    "我的情况：我习惯先观察再行动。",
+                ]),
+                encoding="utf-8",
+            )
+
+            rendered = self.renderer.render_actor_context(
+                "character:Ada",
+                {"name": "Ada", "card_folder": str(card)},
+                {},
+            )
+            text = rendered["immersive_context"]
+
+            self.assertIn("我是 Ada。", text)
+            self.assertIn("我的情况：我习惯先观察再行动。", text)
+            self.assertNotIn("source_agent", text)
+            self.assertNotIn("player_authoritative", text)
+            self.assertNotIn("round-000001", text)
 
     def test_render_character_context_is_immersive_and_subjective(self):
         actor = {

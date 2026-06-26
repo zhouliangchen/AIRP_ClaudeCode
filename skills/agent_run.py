@@ -46,6 +46,7 @@ def create_run_dir(card_folder, turn_index=None):
     """Create and return a run directory for the given turn index."""
     root = run_root(card_folder)
     root.mkdir(parents=True, exist_ok=True)
+    numbers = _existing_round_numbers(root)
 
     if turn_index is None:
         if root.joinpath("current").exists():
@@ -58,11 +59,14 @@ def create_run_dir(card_folder, turn_index=None):
                     except ValueError:
                         turn_index = None
         if turn_index is None:
-            numbers = _existing_round_numbers(root)
             turn_index = numbers[-1] if numbers else 0
 
-    turn_index = int(turn_index or 0)
-    run_name = f"round-{turn_index + 1:06d}"
+    round_number = int(turn_index or 0) + 1
+    used = set(numbers)
+    while round_number in used:
+        round_number += 1
+
+    run_name = f"round-{round_number:06d}"
     run_dir = root / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     run_root(card_folder).joinpath("current").write_text(str(run_dir.resolve()), encoding="utf-8")

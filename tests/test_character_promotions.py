@@ -43,12 +43,25 @@ class CharacterPromotionsTest(unittest.TestCase):
         self.assertEqual(result["promoted"], ["SuLi"])
         data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
         self.assertIn("SuLi", data["character_orchestration"]["major"])
-        self.assertTrue((self.card / "memory" / "characters" / "SuLi" / "profile.json").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "SuLi" / "profile.json").exists())
         profile_md = (self.card / "memory" / "characters" / "SuLi" / "profile.md").read_text(encoding="utf-8")
+        actor_dir = self.card / "characters" / "SuLi"
+        self.assertTrue((actor_dir / "profile.md").exists())
+        actor_profile = (actor_dir / "profile.md").read_text(encoding="utf-8")
+        self.assertTrue((actor_dir / "long_term_memories.md").exists())
+        self.assertTrue((actor_dir / "key_memories.json").exists())
+        self.assertTrue((actor_dir / "short_term_memories.md").exists())
+        self.assertTrue((self.card / "memory" / "characters" / "SuLi" / "background.md").exists())
         self.assertIn("## GM-Originated Promotion Seed", profile_md)
         self.assertIn("- source: character_promotion", profile_md)
         self.assertIn("- player_authoritative: false", profile_md)
         self.assertNotIn("## Authoritative Player Setting", profile_md)
+        self.assertIn("我是SuLi。", actor_profile)
+        self.assertIn("我的情况：Cold classmate with occult expertise.", actor_profile)
+        self.assertNotIn("source_agent", actor_profile)
+        self.assertNotIn("player_authoritative", actor_profile)
+        self.assertEqual(result["contexts"][0]["profile_summary"], "Cold classmate with occult expertise.")
+        self.assertEqual(result["contexts"][0]["source_agent"], "gm")
 
     def test_subgm_promotion_is_rejected(self):
         with self.assertRaisesRegex(self.promotions.CharacterPromotionError, "subGM"):
@@ -70,12 +83,11 @@ class CharacterPromotionsTest(unittest.TestCase):
             "activation": "current_turn",
         }], round_id="round-000002")
         self.assertEqual(preprocess["promoted"], ["SuLi"])
-        profile_path = self.card / "memory" / "characters" / "SuLi" / "profile.json"
         profile_md_path = self.card / "memory" / "characters" / "SuLi" / "profile.md"
-        before = json.loads(profile_path.read_text(encoding="utf-8"))
         before_md = profile_md_path.read_text(encoding="utf-8")
         self.assertIn("## Authoritative Player Setting", before_md)
         self.assertIn("- source: input_analysis", before_md)
+        self.assertFalse((self.card / "memory" / "characters" / "SuLi" / "profile.json").exists())
 
         gm = self.promotions.apply_promotions(self.card, [{
             "name": "SuLi",
@@ -86,29 +98,17 @@ class CharacterPromotionsTest(unittest.TestCase):
             "activation": "current_turn",
         }], round_id="round-000003")
 
-        after = json.loads(profile_path.read_text(encoding="utf-8"))
         after_md = profile_md_path.read_text(encoding="utf-8")
         self.assertEqual(gm["promoted"], [])
-        self.assertEqual(after["authoritative_setting"], before["authoritative_setting"])
-        self.assertEqual(after.get("source_agent"), "preprocess")
         self.assertEqual(after_md, before_md)
+        self.assertEqual(gm["contexts"][0]["source_agent"], "preprocess")
 
     def test_gm_promotion_preserves_existing_player_profile(self):
         char_dir = self.card / "memory" / "characters" / "SuLi"
         char_dir.mkdir(parents=True)
-        profile = {
-            "name": "SuLi",
-            "source": "player",
-            "source_agent": "player",
-            "authoritative_setting": "Player-authored profile.",
-        }
-        (char_dir / "profile.json").write_text(
-            json.dumps(profile, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
         (char_dir / "profile.md").write_text("Player-authored profile.", encoding="utf-8")
 
-        self.promotions.apply_promotions(self.card, [{
+        result = self.promotions.apply_promotions(self.card, [{
             "name": "SuLi",
             "source_agent": "gm",
             "reason": "GM wants a thinner profile.",
@@ -117,9 +117,60 @@ class CharacterPromotionsTest(unittest.TestCase):
             "activation": "current_turn",
         }], round_id="round-000003")
 
-        after = json.loads((char_dir / "profile.json").read_text(encoding="utf-8"))
-        self.assertEqual(after["authoritative_setting"], "Player-authored profile.")
-        self.assertEqual(after["source_agent"], "player")
+        self.assertFalse((char_dir / "profile.json").exists())
+        self.assertEqual((char_dir / "profile.md").read_text(encoding="utf-8"), "Player-authored profile.")
+        self.assertEqual(result["contexts"][0]["profile_summary"], "Player-authored profile.")
+        self.assertEqual(result["contexts"][0]["source_agent"], "player")
+
+    def test_gm_promotion_preserves_existing_actor_profile_summary(self):
+        actor_dir = self.card / "characters" / "SuLi"
+        actor_dir.mkdir(parents=True)
+        actor_profile = "\n".join([
+            "# SuLi actor profile",
+            "",
+            "- source_agent: preprocess",
+            "",
+            "Actor-facing existing profile.",
+        ])
+        (actor_dir / "profile.md").write_text(actor_profile, encoding="utf-8")
+
+        result = self.promotions.apply_promotions(self.card, [{
+            "name": "SuLi",
+            "source_agent": "gm",
+            "reason": "GM wants a thinner profile.",
+            "profile_seed": "Weaker GM-only summary.",
+            "visibility": "character_private_and_gm",
+            "activation": "current_turn",
+        }], round_id="round-000003")
+
+        self.assertEqual(result["promoted"], [])
+        self.assertEqual(result["contexts"][0]["profile_summary"], actor_profile)
+        self.assertEqual(result["contexts"][0]["source_agent"], "preprocess")
+
+    def test_gm_promotion_preserves_existing_background_summary(self):
+        char_dir = self.card / "memory" / "characters" / "SuLi"
+        char_dir.mkdir(parents=True)
+        background = "\n".join([
+            "# SuLi background",
+            "",
+            "- source_agent: player",
+            "",
+            "Background-only existing profile.",
+        ])
+        (char_dir / "background.md").write_text(background, encoding="utf-8")
+
+        result = self.promotions.apply_promotions(self.card, [{
+            "name": "SuLi",
+            "source_agent": "gm",
+            "reason": "GM wants a thinner profile.",
+            "profile_seed": "Weaker GM-only summary.",
+            "visibility": "character_private_and_gm",
+            "activation": "current_turn",
+        }], round_id="round-000003")
+
+        self.assertEqual(result["promoted"], [])
+        self.assertEqual(result["contexts"][0]["profile_summary"], background)
+        self.assertEqual(result["contexts"][0]["source_agent"], "player")
 
 
 if __name__ == "__main__":

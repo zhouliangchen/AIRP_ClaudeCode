@@ -44,7 +44,7 @@ def add_visibility_basis(output):
 
 
 def actor_stub_reply(agent_key, output):
-    if agent_key == "gm" or str(agent_key).startswith("subGM:"):
+    if agent_key == "gm" or agent_key == "projection" or str(agent_key).startswith("subGM:"):
         return output
     if not isinstance(output, dict) or "natural_reply" in output:
         return output
@@ -77,8 +77,22 @@ def actor_stub_reply(agent_key, output):
     return output
 
 
+def projection_pass(packet):
+    return {
+        "decision": "pass",
+        "target_actor_id": str(packet.get("target_actor_id") or ""),
+        "source_call_id": str(packet.get("source_call_id") or ""),
+        "final_actor_message": str(packet.get("requested_actor_message") or ""),
+        "feedback": "",
+    }
+
+
 def wrap_dispatch_with_visibility(dispatch):
     def wrapped(agent_key, packet):
+        if agent_key == "projection":
+            if getattr(dispatch, "handles_projection", False):
+                return dispatch(agent_key, packet)
+            return projection_pass(packet)
         output = dispatch(agent_key, packet)
         if agent_key == "gm" or str(agent_key).startswith("subGM:"):
             add_visibility_basis(output)
@@ -130,6 +144,24 @@ class AgentTurnLoopTest(unittest.TestCase):
         payload["character_contexts"] = {"characters": [dict(character) for character in characters]}
         self.agent_run.write_json(self.run_dir / "input.json", payload)
 
+    def test_filter_gm_actor_calls_drops_player_calls_and_keeps_characters(self):
+        gm_output = {
+            "actor_calls": [
+                {"actor_id": "player", "prompt": "Say what you do next."},
+                {"actor_id": "character:SuLi", "prompt": "你看见雨蒙攥着吊坠。"},
+            ],
+        }
+
+        filtered = self.agent_turn_loop._filter_gm_actor_calls(
+            gm_output,
+            {"player", "character:SuLi"},
+        )
+
+        self.assertEqual(
+            filtered["actor_calls"],
+            [{"actor_id": "character:SuLi", "prompt": "你看见雨蒙攥着吊坠。"}],
+        )
+
     def promote_loop_outputs_to_artifacts(self):
         artifacts = self.run_dir / "artifacts"
         self.agent_run.write_json(
@@ -140,6 +172,22 @@ class AgentTurnLoopTest(unittest.TestCase):
             artifacts / "actor.outputs.json",
             self.agent_run.read_json(self.run_dir / "actor.outputs.json"),
         )
+
+    def test_characters_by_actor_id_registers_raw_and_canonical_actor_ids(self):
+        payload = {
+            "character_contexts": {
+                "characters": [
+                    {"name": "Ada//Zero", "role": "archivist"},
+                ],
+            },
+        }
+
+        registered = self.agent_turn_loop._characters_by_actor_id(payload)
+
+        self.assertIn("character:Ada//Zero", registered)
+        self.assertIn("character:Ada_Zero", registered)
+        self.assertNotIn("character:Ada__Zero", registered)
+        self.assertEqual(registered["character:Ada_Zero"]["role"], "archivist")
 
     def test_actor_call_creates_intent_projected_message_and_actor_response_message(self):
         self.register_characters("Ada")
@@ -242,6 +290,64 @@ class AgentTurnLoopTest(unittest.TestCase):
         actor_events = [event for event in trace["events"] if event.get("actor") == "character:Ada"]
         self.assertEqual(actor_events[0]["type"], "reply")
         self.assertEqual(actor_events[0]["content"], reply)
+
+    def test_main_actor_call_runs_projection_before_actor_dispatch(self):
+        self.register_characters("Ada")
+        actor_dir = self.tmp.name and Path(self.tmp.name) / "characters" / "Ada"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "profile.md").write_text(
+            "I am Ada, and I only trust messages delivered through the archive door.",
+            encoding="utf-8",
+        )
+        projection_packets = []
+        actor_packets = []
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear a knock.",
+                        "reason": "Ada hears the door.",
+                        "visibility_basis": visibility_basis("character:Ada"),
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "projection":
+                projection_packets.append(packet)
+                return {
+                    "decision": "edited",
+                    "target_actor_id": "character:Ada",
+                    "source_call_id": "call-character-Ada-1",
+                    "final_actor_message": "You hear two careful knocks at the archive door.",
+                    "feedback": "",
+                }
+            if agent_key == "character:Ada":
+                actor_packets.append(packet)
+                return "I listen before answering."
+            raise AssertionError(agent_key)
+
+        dispatch.handles_projection = True
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(projection_packets), 1)
+        self.assertIn("only trust messages", projection_packets[0]["actor_context"])
+        self.assertNotIn("self_knowledge", json.dumps(projection_packets[0], ensure_ascii=False))
+        self.assertEqual(actor_packets[0]["gm_prompt"], "You hear two careful knocks at the archive door.")
+        inbox = self.agent_messages.read_inbox(self.run_dir, "character:Ada")
+        projected_payload = [item for item in inbox if item.get("type") == "projected_message"][0]["payload"]
+        self.assertEqual(projected_payload["natural_message"], "You hear two careful knocks at the archive door.")
+        short_term = (actor_dir / "short_term_memories.md").read_text(encoding="utf-8")
+        self.assertIn("You hear two careful knocks at the archive door.", short_term)
+        self.assertIn("I listen before answering.", short_term)
 
     def test_actor_dispatch_wraps_runtime_write_exceptions_as_loop_errors(self):
         self.register_characters("Ada")
@@ -2009,7 +2115,15 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertIn("character:ClassRep", actor_outputs)
         card_data = self.agent_run.read_json(self.run_dir.parent / ".card_data.json")
         self.assertIn("ClassRep", card_data["character_orchestration"]["major"])
-        self.assertTrue((self.run_dir.parent / "memory" / "characters" / "ClassRep" / "profile.json").exists())
+        objective_dir = self.run_dir.parent / "memory" / "characters" / "ClassRep"
+        actor_dir = self.run_dir.parent / "characters" / "ClassRep"
+        self.assertTrue((objective_dir / "profile.md").exists())
+        self.assertTrue((objective_dir / "background.md").exists())
+        self.assertTrue((actor_dir / "profile.md").exists())
+        self.assertFalse((objective_dir / "profile.json").exists())
+        actor_profile = (actor_dir / "profile.md").read_text(encoding="utf-8")
+        self.assertIn("Rule-bound class monitor with a sharp eye.", actor_profile)
+        self.assertNotIn("source_agent", actor_profile)
 
     def test_gm_loop_rejects_invalid_subgm_command_before_persisting_promotion(self):
         initial_card_data = {"character_orchestration": {"major": []}}
@@ -2684,13 +2798,13 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         self.assertEqual(result["called_actors"], ["character:ClassRep"])
         self.assertEqual(len(actor_packets), 1)
-        profile_path = self.run_dir.parent / "memory" / "characters" / "ClassRep" / "profile.json"
         profile_md_path = self.run_dir.parent / "memory" / "characters" / "ClassRep" / "profile.md"
+        actor_profile_path = self.run_dir.parent / "characters" / "ClassRep" / "profile.md"
         persisted_gm = json.dumps(self.agent_run.read_json(self.run_dir / "gm.output.json"), ensure_ascii=False)
         combined = "\n".join([
             json.dumps(actor_packets[0], ensure_ascii=False),
-            profile_path.read_text(encoding="utf-8"),
             profile_md_path.read_text(encoding="utf-8"),
+            actor_profile_path.read_text(encoding="utf-8"),
             persisted_gm,
         ]).lower()
         self.assertNotIn(hidden_fact, combined)

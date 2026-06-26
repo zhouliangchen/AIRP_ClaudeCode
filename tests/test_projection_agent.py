@@ -2,6 +2,7 @@ import copy
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -206,7 +207,6 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertEqual(packet["source_message_id"], "msg-paladin-1")
         self.assertEqual(packet["requested_actor_message"], "You discover the cursed hero in the market.")
         self.assertIn("cursed heroes", packet["actor_context"])
-        self.assertIn("traveler enters", packet["actor_context"])
         self.assertIn("framed by the king", packet["review_reference"])
         self.assertNotIn("actor_visible_events", packet)
         self.assertIsInstance(packet["actor_context"], str)
@@ -215,6 +215,131 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertIn("edited", packet["instruction"])
         self.assertIn("needs_rewrite", packet["instruction"])
         self.assertIn("blocked", packet["instruction"])
+
+    def test_build_review_packet_reads_actor_memory_store_without_structured_review_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            actor_dir = card / "characters" / "Ada"
+            objective_dir = card / "memory" / "characters" / "Ada"
+            actor_dir.mkdir(parents=True)
+            objective_dir.mkdir(parents=True)
+            (actor_dir / "profile.md").write_text(
+                "I am Ada, the archivist who trusts sealed oaths.",
+                encoding="utf-8",
+            )
+            (actor_dir / "long_term_memories.md").write_text(
+                "I remember the west archive flood.",
+                encoding="utf-8",
+            )
+            (actor_dir / "key_memories.json").write_text(
+                json.dumps(
+                    {
+                        "memories": [
+                            {
+                                "tag": "sealed ledger",
+                                "summary": "I vaguely remember a sealed ledger.",
+                                "detail": "The ledger names the hidden witness.",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (actor_dir / "short_term_memories.md").write_text(
+                "Someone told me the old door clicked.",
+                encoding="utf-8",
+            )
+            (objective_dir / "profile.md").write_text(
+                "Ada is the archive keeper assigned to the west wing.",
+                encoding="utf-8",
+            )
+            (objective_dir / "background.md").write_text(
+                "Ada grew up in the coastal archive after the flood.",
+                encoding="utf-8",
+            )
+
+            packet = self.projection.build_review_packet(
+                actor_id="character:Ada",
+                source_call_id="call-ada-1",
+                source_message_id="msg-ada-1",
+                requested_actor_message="You hear the sealed ledger shift behind the door.",
+                actor_packet={
+                    "card_folder": str(card),
+                    "immersive_context": "I can smell wet paper from the west stacks.",
+                    "self_knowledge": {"identity": "structured identity must not leak"},
+                    "memory": {"long_term": ["structured memory must not leak"]},
+                    "visible_events": [{"content": "structured event must not leak"}],
+                    "gm_visibility_basis": {"mode": "direct"},
+                    "actor_visible_events": [{"content": "structured bucket must not leak"}],
+                    "gm_only_hidden_settings": [{"fact": "hidden setting must not leak"}],
+                },
+                objective_context={
+                    "facts": ["The door is mechanically sealed."],
+                    "gm_only_hidden_settings": [{"fact": "Ada's patron forged the ledger."}],
+                },
+            )
+
+        actor_context = packet["actor_context"]
+        review_reference = packet["review_reference"]
+        serialized_prompt_text = actor_context + "\n" + review_reference
+
+        self.assertIn("wet paper", actor_context)
+        self.assertIn("archivist who trusts sealed oaths", actor_context)
+        self.assertIn("west archive flood", actor_context)
+        self.assertIn("I vaguely remember a sealed ledger", actor_context)
+        self.assertIn("old door clicked", actor_context)
+        self.assertNotIn("hidden witness", actor_context)
+        self.assertIn("archive keeper assigned to the west wing", review_reference)
+        self.assertIn("coastal archive after the flood", review_reference)
+        self.assertIn("The door is mechanically sealed.", review_reference)
+
+        for forbidden in (
+            "self_knowledge",
+            "memory",
+            "visible_events",
+            "gm_visibility_basis",
+            "actor_visible_events",
+            "gm_only_hidden_settings",
+            "structured identity must not leak",
+            "structured memory must not leak",
+            "structured event must not leak",
+            "structured bucket must not leak",
+            "hidden setting must not leak",
+            "Ada's patron forged the ledger",
+            "facts",
+        ):
+            self.assertNotIn(forbidden, serialized_prompt_text)
+
+    def test_build_review_packet_reads_card_folder_from_projected_actor_packet(self):
+        import agent_projection
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            actor_dir = card / "characters" / "Ada"
+            actor_dir.mkdir(parents=True)
+            (actor_dir / "profile.md").write_text(
+                "I am Ada and I never open a sealed archive without a witness.",
+                encoding="utf-8",
+            )
+            actor_packet = agent_projection.project_actor_context(
+                "character:Ada",
+                {},
+                {"name": "Ada", "card_folder": str(card)},
+                "You hear the archive lock click.",
+            )
+
+            packet = self.projection.build_review_packet(
+                actor_id="character:Ada",
+                source_call_id="call-ada-1",
+                source_message_id="msg-ada-1",
+                requested_actor_message="You hear the archive lock click.",
+                actor_packet=actor_packet,
+                objective_context={},
+            )
+
+        self.assertEqual(actor_packet["card_folder"], str(card))
+        self.assertIn("never open a sealed archive", packet["actor_context"])
 
     def test_subjective_false_belief_stays_in_actor_context_without_false_label(self):
         packet = self.projection.build_review_packet(

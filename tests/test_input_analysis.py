@@ -986,7 +986,8 @@ class InputAnalysisApplyTest(unittest.TestCase):
         ]
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
         profile_md = self.card / "memory" / "characters" / "Suli" / "profile.md"
-        profile_json = self.card / "memory" / "characters" / "Suli" / "profile.json"
+        background_md = self.card / "memory" / "characters" / "Suli" / "background.md"
+        actor_dir = self.card / "characters" / "Suli"
         input_json = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
         gm_packet = json.loads((self.run_dir / "gm.context.json").read_text(encoding="utf-8"))
         player_packet = json.loads((self.run_dir / "player.context.json").read_text(encoding="utf-8"))
@@ -998,13 +999,14 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(hidden_entries[0]["source_input_id"], "input-analysis-apply-1")
         self.assertIn("Suli", card_data["character_orchestration"]["major"])
         self.assertTrue(profile_md.exists())
-        self.assertTrue(profile_json.exists())
+        self.assertTrue(background_md.exists())
+        self.assertTrue((actor_dir / "profile.md").exists())
+        self.assertTrue((actor_dir / "long_term_memories.md").exists())
+        self.assertTrue((actor_dir / "key_memories.json").exists())
+        self.assertTrue((actor_dir / "short_term_memories.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Suli" / "profile.json").exists())
         self.assertIn(self.important_text, profile_md.read_text(encoding="utf-8"))
-        profile = json.loads(profile_json.read_text(encoding="utf-8"))
-        self.assertEqual(profile["source"], "input_analysis")
-        self.assertEqual(profile["source_agent"], "preprocess")
-        self.assertEqual(profile["history"][-1]["source_agent"], "preprocess")
-        self.assertEqual(profile["authoritative_setting"], self.important_text)
+        self.assertIn("## Authoritative Player Setting", profile_md.read_text(encoding="utf-8"))
         self.assertEqual(input_json["raw_text"], self.raw_text)
         self.assertEqual(input_json["routed_input"]["role_channel"], self.role_text)
         self.assertEqual(
@@ -1016,7 +1018,8 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertNotIn(self.hidden_text, json.dumps(player_packet, ensure_ascii=False))
         self.assertEqual(character_packet["actor_id"], "character:Suli")
         self.assertEqual(character_packet["self_knowledge"]["name"], "Suli")
-        self.assertIn(self.important_text, json.dumps(character_packet["memory"], ensure_ascii=False))
+        self.assertIn(self.important_text, (actor_dir / "profile.md").read_text(encoding="utf-8"))
+        self.assertIn(self.important_text, character_packet["immersive_context"])
         self.assertNotIn(self.role_text, json.dumps(character_packet, ensure_ascii=False))
         self.assertNotIn("raw_text", gm_packet["input_analysis_request"])
         self.assertEqual(manifest["stage"], "analysis_applied")
@@ -1111,6 +1114,25 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(normalized["capability_requests"], [])
         self.assertEqual(result["routing_requests"], [])
         self.assertEqual(result["capability_requests"], [])
+
+    def test_apply_current_run_normalizes_user_instruction_text_routing_alias(self):
+        analysis = self._analysis()
+        analysis["routing"].pop("user_instruction_channel")
+        analysis["routing"]["user_instruction_text"] = self.input_payload["user_instruction_text"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card, self.root)
+
+        normalized = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            normalized["routing"]["user_instruction_channel"],
+            self.input_payload["user_instruction_text"],
+        )
+        self.assertNotIn("user_instruction_text", normalized["routing"])
+        self.assertEqual(
+            result["routed_input"]["user_instruction_channel"],
+            self.input_payload["user_instruction_text"],
+        )
 
     def test_apply_current_run_maps_legacy_routing_requests_to_capability_requests(self):
         analysis = self._analysis()
@@ -1236,9 +1258,69 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertEqual(result["routed_input"]["characters"], ["Ada"])
         self.assertEqual(character_packet["actor_id"], "character:Ada")
         self.assertEqual(character_packet["self_knowledge"]["name"], "Ada")
-        self.assertIn("Ada is already known.", json.dumps(character_packet["memory"], ensure_ascii=False))
+        self.assertNotIn("Ada is already known.", json.dumps(character_packet, ensure_ascii=False))
         self.assertNotIn(self.role_text, json.dumps(character_packet, ensure_ascii=False))
         self.assertFalse((ada_dir / "profile.json").exists())
+        self.assertEqual(card_data_after["character_orchestration"]["major"], [])
+
+    def test_apply_current_run_ignores_legacy_actor_files_as_existing_profile_evidence(self):
+        card_data = {
+            "mode": "story",
+            "source_type": "imported",
+            "character_orchestration": {
+                "major": [],
+                "minor_policy": "main_agent",
+                "max_parallel_subagents": 3,
+            },
+        }
+        (self.card / ".card_data.json").write_text(
+            json.dumps(card_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        legacy_dir = self.card / "memory" / "characters" / "Ada"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "profile.json").write_text("{}", encoding="utf-8")
+        (legacy_dir / "state.json").write_text("{}", encoding="utf-8")
+        (legacy_dir / "goals.md").write_text("legacy goals", encoding="utf-8")
+        analysis = self._analysis()
+        analysis["world_updates"]["hidden_facts"] = []
+        analysis["world_updates"]["important_characters"] = []
+        analysis["routing"]["characters"] = ["Ada"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        self.assertEqual(result["routed_input"]["characters"], ["Ada"])
+        self.assertFalse((self.run_dir / "characters" / "Ada.context.json").exists())
+        card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        self.assertEqual(card_data_after["character_orchestration"]["major"], [])
+
+    def test_apply_current_run_ignores_empty_new_actor_memory_scaffold_as_profile_evidence(self):
+        card_data = {
+            "mode": "story",
+            "source_type": "imported",
+            "character_orchestration": {
+                "major": [],
+                "minor_policy": "main_agent",
+                "max_parallel_subagents": 3,
+            },
+        }
+        (self.card / ".card_data.json").write_text(
+            json.dumps(card_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.apply_mod.actor_memory_store.ensure_actor_files(self.card, "character:Ada")
+        analysis = self._analysis()
+        analysis["world_updates"]["hidden_facts"] = []
+        analysis["world_updates"]["important_characters"] = []
+        analysis["routing"]["characters"] = ["Ada"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        self.assertEqual(result["routed_input"]["characters"], ["Ada"])
+        self.assertFalse((self.run_dir / "characters" / "Ada.context.json").exists())
+        card_data_after = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
         self.assertEqual(card_data_after["character_orchestration"]["major"], [])
 
     def test_apply_current_run_includes_routed_character_from_existing_run_context_only(self):

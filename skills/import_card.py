@@ -22,6 +22,8 @@ import base64
 from datetime import date, datetime
 from pathlib import Path
 
+import actor_memory_store
+
 
 def _json_dumps(obj, **kwargs):
     """JSON serializer that handles date/datetime objects."""
@@ -1075,20 +1077,11 @@ def ensure_base_memory_files(memory_dir: str, card_name: str, world_name: str, b
             f.write("---\nname: 剧情规划\ndescription: 待首次规划\ntype: project\nnext_plan_at: 第8轮\n---\n\n# 剧情规划\n\n待触发。\n")
 
     if blank_mode:
-        char_dir = os.path.join(memory_dir, "characters", "_self")
-        os.makedirs(char_dir, exist_ok=True)
-        profile_json = os.path.join(char_dir, "profile.json")
-        if not os.path.exists(profile_json):
-            with open(profile_json, "w", encoding="utf-8") as f:
-                json.dump(create_blank_card_data()["evolving_profile"], f, ensure_ascii=False, indent=2)
-        profile_md = os.path.join(char_dir, "profile.md")
-        if not os.path.exists(profile_md):
-            with open(profile_md, "w", encoding="utf-8") as f:
-                f.write("# 自定义角色卡\n\n空白启动中。角色身份、关系、世界观会根据游玩逐轮沉淀。\n")
-        recent_md = os.path.join(char_dir, "recent.md")
-        if not os.path.exists(recent_md):
-            with open(recent_md, "w", encoding="utf-8") as f:
-                f.write("# 近期角色沉淀\n\n暂无。\n")
+        actor_memory_store.ensure_actor_files(
+            Path(memory_dir).parent,
+            "player",
+            profile="# 自定义角色卡\n\n空白启动中。角色身份、关系、世界观会根据游玩逐轮沉淀。\n",
+        )
 
     create_memory_index(memory_dir, card_name, world_name)
 

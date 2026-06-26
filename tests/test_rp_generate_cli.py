@@ -434,6 +434,46 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn(".claude/skills/rp-subgm-agent.md", prompt)
         self.assertIn("no player participation", prompt)
 
+    def test_read_loop_prompt_generates_projection_prompt(self):
+        prompt = self.module._read_loop_prompt(
+            self.run_dir,
+            json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8")),
+            "projection",
+            {
+                "target_actor_id": "character:Ada",
+                "source_call_id": "call-ada-1",
+                "actor_context": "I am Ada and I only know what I can perceive.",
+                "gm_message": "You hear two careful knocks at the archive door.",
+            },
+        )
+
+        self.assertIn("Projection Agent Prompt", prompt)
+        self.assertIn("character:Ada", prompt)
+        self.assertIn("call-ada-1", prompt)
+        self.assertIn("You hear two careful knocks at the archive door.", prompt)
+
+    def test_read_loop_prompt_uses_current_character_packet_over_static_prompt(self):
+        character_prompt = self.run_dir / "prompts" / "characters" / "Ada.prompt.md"
+        character_prompt.parent.mkdir(parents=True)
+        character_prompt.write_text("STATIC PROMPT WITHOUT PROJECTED MESSAGE", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["prompts"]["characters"] = {"Ada": "prompts/characters/Ada.prompt.md"}
+
+        prompt = self.module._read_loop_prompt(
+            self.run_dir,
+            manifest,
+            "character:Ada",
+            {
+                "actor_id": "character:Ada",
+                "character_name": "Ada",
+                "gm_prompt": "You hear two careful knocks at the archive door.",
+                "immersive_context": "我是 Ada。",
+            },
+        )
+
+        self.assertIn("You hear two careful knocks at the archive door.", prompt)
+        self.assertNotIn("STATIC PROMPT WITHOUT PROJECTED MESSAGE", prompt)
+
     def test_validate_normalizes_gm_world_state_delta_for_memory(self):
         payload = _gm_output(
             actor_calls=[],

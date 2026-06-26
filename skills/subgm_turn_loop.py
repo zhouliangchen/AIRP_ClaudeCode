@@ -16,6 +16,8 @@ import agent_run
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import actor_memory_store
+import projection_agent
 import runtime_settings
 import subgm_threads
 
@@ -149,8 +151,10 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
         name = str(item.get("name") or item.get("character_name") or "").strip()
         if not name:
             continue
+        canonical_id = actor_memory_store.canonical_actor_id(f"character:{name}")
         result[f"character:{name}"] = item
         result[f"character:{agent_run.safe_name(name)}"] = item
+        result[canonical_id] = item
 
     for key, value in contexts.items():
         if key == "characters" or not isinstance(value, dict):
@@ -159,6 +163,7 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
         if not actor_id.startswith("character:"):
             actor_id = f"character:{actor_id}"
         result[actor_id] = value
+        result[actor_memory_store.canonical_actor_id(actor_id)] = value
     return result
 
 
@@ -272,6 +277,73 @@ def _record_actor_event(side_dir: Path, actor_id: str, event: dict, source_call_
         target=str(event.get("target") or ""),
         source_call_id=source_call_id,
     )
+
+
+def _validate_projection_result(actor_id: str, source_call_id: str, payload: Any) -> dict:
+    try:
+        result = projection_agent.validate_projection_output(
+            payload,
+            actor_id=actor_id,
+            source_call_id=source_call_id,
+        )
+    except projection_agent.ProjectionValidationError as exc:
+        raise SubgmTurnLoopError(f"invalid projection output: {exc}") from exc
+    decision = str(result.get("decision") or "")
+    if decision not in {"pass", "edited"}:
+        feedback = str(result.get("feedback") or "").strip()
+        detail = f": {feedback}" if feedback else ""
+        raise SubgmTurnLoopError(f"projection rejected actor message with {decision}{detail}")
+    return result
+
+
+def _project_subgm_actor_message(
+    *,
+    run_dir: Path,
+    side_dir: Path,
+    state: dict,
+    actor_id: str,
+    call: dict,
+    packet: dict,
+    prompt: str,
+    call_id: str,
+    dispatch: DispatchFn,
+) -> dict:
+    card_folder = _card_folder_for_run(run_dir)
+    projection_packet = projection_agent.build_review_packet(
+        actor_id=actor_id,
+        source_call_id=call_id,
+        source_message_id=f"{side_dir.name}:{call_id}",
+        requested_actor_message=prompt,
+        actor_packet=packet,
+        objective_context={"objective_reference": str(state.get("objective") or "")},
+        card_folder=str(card_folder),
+    )
+    projection_output = dispatch("projection", projection_packet)
+    projection_result = _validate_projection_result(actor_id, call_id, projection_output)
+    final_message = str(projection_result.get("final_actor_message") or "").strip()
+    projected_packet = dict(packet)
+    if final_message:
+        projected_packet["gm_prompt"] = final_message
+    return projected_packet
+
+
+def _append_short_term_dialogue(
+    card_folder: Path,
+    actor_id: str,
+    speaker: str,
+    content: str,
+    source_id: str,
+) -> None:
+    try:
+        actor_memory_store.append_short_term_dialogue(
+            card_folder,
+            actor_id,
+            speaker,
+            content,
+            source_id=source_id,
+        )
+    except Exception as exc:
+        raise SubgmTurnLoopError(f"append short-term memory failed: {exc}") from exc
 
 
 def _subgm_packet(run_dir: Path, side_dir: Path, thread_id: str, state: dict, input_payload: dict) -> dict:
@@ -393,6 +465,26 @@ def _route_actor_calls(
             agent_visibility.actor_call_basis(call),
         )
         packet = agent_lifecycle.attach_actor_context_version(_card_folder_for_run(run_dir), actor_id, packet)
+        packet = _project_subgm_actor_message(
+            run_dir=run_dir,
+            side_dir=side_dir,
+            state=state,
+            actor_id=actor_id,
+            call=call,
+            packet=packet,
+            prompt=prompt,
+            call_id=call_id,
+            dispatch=dispatch,
+        )
+        final_prompt = str(packet.get("gm_prompt") or "").strip()
+        card_folder = _card_folder_for_run(run_dir)
+        _append_short_term_dialogue(
+            card_folder,
+            actor_id,
+            "subgm",
+            final_prompt,
+            f"{side_dir.name}:{call_id}:subgm",
+        )
         _write_progress_safe(
             "gm_loop.actor_dispatch",
             "支线角色行动中",
@@ -404,6 +496,13 @@ def _route_actor_calls(
             },
         )
         actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
+        _append_short_term_dialogue(
+            card_folder,
+            actor_id,
+            actor_id,
+            str(actor_output.get("natural_reply") or ""),
+            f"{side_dir.name}:{call_id}:actor",
+        )
         called_actors.append(actor_id)
         _persist_actor_output(side_dir, actor_id, actor_output)
         for event in actor_output.get("events", []):

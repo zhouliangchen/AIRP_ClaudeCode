@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable
 import agent_memory_model
 import agent_run
 import agent_visibility
+import actor_memory_store
 
 
 CST = timezone(timedelta(hours=8))
@@ -191,29 +192,6 @@ def _prepare_actor_memory_delta(
         return None
 
     return recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts), key, normalized_id
-
-
-def memory_summary_due(round_id: str, interval: int = 6) -> bool:
-    """Return whether a run should ask actor subagents to summarize memory."""
-    try:
-        interval = int(interval)
-    except (TypeError, ValueError):
-        return False
-    if interval <= 0:
-        return False
-
-    match = SUMMARY_ROUND_RE.match(str(round_id or ""))
-    if not match:
-        return False
-    return int(match.group(1)) % interval == 0
-
-
-def _summary_output_path(agent_id: str) -> str:
-    return f"memory_summaries/{_safe_name(agent_id)}.summary.json"
-
-
-def _summary_prompt_path(agent_id: str) -> str:
-    return f"prompts/memory/{_safe_name(agent_id)}.prompt.md"
 
 
 def _post_round_job_output_path(agent_id: str) -> str:
@@ -506,22 +484,19 @@ def _post_round_dialogue_text(round_dialogue: Any) -> str:
 
 
 def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
-    recent = str(job_payload.get("recent_memory") or "").strip()
-    goals = job_payload.get("current_goals", {})
-    goal_lines = _natural_lines(goals, limit=20)
-    allowed = job_payload.get("allowed_outputs", {})
-    allowed_names = []
-    if isinstance(allowed, dict):
-        allowed_names = [str(key) for key, value in allowed.items() if value]
+    long_term = str(job_payload.get("long_term_memories") or "").strip()
+    short_term = str(job_payload.get("short_term_memories") or "").strip()
+    key_cues = job_payload.get("key_memory_cues", [])
+    key_lines = _natural_lines(key_cues, limit=20)
     sections = [
-        "## 我当前已有的近期记忆",
-        recent if recent else "暂无。",
+        "## 我当前已有的长期记忆",
+        long_term if long_term else "暂无。",
         "",
-        "## 我当前目标",
-        "\n".join(goal_lines) if goal_lines else "暂无。",
+        "## 我当前已有的重点记忆线索",
+        "\n".join(key_lines) if key_lines else "暂无。",
         "",
-        "## 本次允许整理的记忆范围",
-        "、".join(allowed_names) if allowed_names else "短期记忆、长期记忆、重点记忆和目标。",
+        "## 本轮自动记录的短期记忆",
+        short_term if short_term else "暂无。",
     ]
     return "\n".join(sections)
 
@@ -532,22 +507,21 @@ def _post_round_job_payload(
     story_input: Dict[str, Any],
     agent_id: str,
 ) -> Dict[str, Any]:
-    character_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
+    character_name = agent_id.split(":", 1)[1] if agent_id.startswith("character:") else ""
+    stored = actor_memory_store.read_actor_memory(card, agent_id)
+    key_cues = [
+        {"tag": str(item.get("tag") or ""), "summary": str(item.get("summary") or "")}
+        for item in stored.get("key_memories", [])
+        if isinstance(item, dict) and (item.get("tag") or item.get("summary"))
+    ]
     payload = {
         "agent_id": agent_id,
-        "character_name": character_name if agent_id.startswith("character:") else "",
+        "character_name": character_name,
         "round_id": str(story_input.get("round_id") or run_dir.name),
         "round_dialogue": _round_dialogue_for_actor(story_input, agent_id),
-        "actor_outputs": _post_round_actor_outputs(story_input, agent_id),
-        "visible_events": _actor_visible_events(story_input, agent_id),
-        "recent_memory": _read_optional_text(recent_path),
-        "current_goals": _read_json(memory_dir / "goals.json", {}),
-        "allowed_outputs": {
-            "short_term": True,
-            "key_memories": True,
-            "long_term": True,
-            "goals": True,
-        },
+        "short_term_memories": str(stored.get("short_term") or ""),
+        "long_term_memories": str(stored.get("long_term") or ""),
+        "key_memory_cues": key_cues,
     }
     _validate_post_round_actor_safe_payload(payload, "post_round_memory_job")
     return payload
@@ -562,20 +536,10 @@ def _post_round_memory_prompt(
     contract = {
         "agent_id": agent_id,
         "character_name": job_payload.get("character_name", ""),
-        "source": "self",
-        "visibility": "actor",
-        "long_term": {
-            "self_understanding": [],
-            "stable_beliefs": [],
-            "relationship_models": [],
-        },
+        "long_term_memories": "1000字以内的第一人称长期记忆",
         "key_memories": [
-            {"content": "specific remembered event", "importance": "high", "details": []}
+            {"tag": "20字内标签", "summary": "100字内摘要", "detail": "600字内详情"}
         ],
-        "short_term": [
-            {"content": "current-scene memory", "expires_after": "scene_end"}
-        ],
-        "goals": {"active": [], "paused": [], "resolved": []},
     }
     round_dialogue = job_payload.get("round_dialogue", [])
     dialogue_text = _post_round_dialogue_text(round_dialogue)
@@ -590,8 +554,9 @@ Required output path: `{output_path}`
 现在我需要整理一下我的记忆，以帮助我理清思路。
 我只整理自己的第一人称记忆和目标，不修改人设、背景、人格、身体事实或权威设定。
 不要加入幕后事实、全知信息、隐藏备注、外部指令或别人的私密记忆。
-短期记忆只能来自“本轮我和对我说话者的对话”，不要把其他可见事件直接写进短期记忆。
+长期记忆和重点记忆只能来自“本轮我和对我说话者的对话”、本轮自动记录的短期记忆、以及我已有的长期/重点记忆线索。
 如果某件事没有出现在本轮对话或我已有记忆里，我不能把它整理成自己的记忆。
+我不输出短期记忆；系统会在成功写入长期/重点记忆后自动清空短期记忆。
 
 ## Required JSON Contract
 
@@ -688,6 +653,28 @@ def _post_round_output_path(root: Path, relative_path: Any) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _validate_post_round_memory_update(payload: Any, expected_agent_id: str, path: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise MemoryIngestionError(f"{path.name}: summary payload must be an object")
+    declared_agent = str(payload.get("agent_id") or expected_agent_id).strip()
+    if declared_agent != expected_agent_id:
+        raise MemoryIngestionError(
+            f"{path.name}: agent_id mismatch, expected {expected_agent_id}, got {declared_agent}"
+        )
+    if expected_agent_id.startswith("character:"):
+        declared_name = str(payload.get("character_name") or "").strip()
+        expected_name = expected_agent_id.split(":", 1)[1]
+        if declared_name and declared_name != expected_name:
+            raise MemoryIngestionError(
+                f"{path.name}: character_name mismatch, expected {expected_name}, got {declared_name}"
+            )
+    _validate_post_round_actor_safe_payload(payload, path.name)
+    try:
+        return actor_memory_store.validate_memory_update(payload)
+    except Exception as exc:
+        raise MemoryIngestionError(f"{path.name}: {exc}") from exc
+
+
 def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
     """Persist completed `post_round_memory_jobs/*.summary.json` outputs into actor memory."""
     card = Path(card_folder)
@@ -745,25 +732,15 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
 
     ingested: list[str] = []
     missing: Dict[str, str] = {}
-    for expected_agent_id, (path, output_rel) in sorted(
-        scheduled.items(),
-        key=lambda item: _summary_sort_key((item[0], item[1][0])),
-    ):
+    for expected_agent_id, (path, output_rel) in sorted(scheduled.items(), key=lambda item: item[0]):
         if not path.exists():
             missing[expected_agent_id] = output_rel
             continue
         try:
             payload = _read_json(path, {})
-            if not isinstance(payload, dict):
-                raise MemoryIngestionError(f"{path.name}: summary payload must be an object")
-            update = _validate_memory_summary(payload, path)
-            agent_id = update["agent_id"]
-            if agent_id != expected_agent_id:
-                raise MemoryIngestionError(
-                    f"{path.name}: agent_id mismatch, expected {expected_agent_id}, got {agent_id}"
-                )
-            _validate_character_name_matches_agent_id(agent_id, update, path)
-            ingested.extend(_apply_memory_summary_updates(card, [update]))
+            update = _validate_post_round_memory_update(payload, expected_agent_id, path)
+            actor_memory_store.apply_memory_update(card, expected_agent_id, update)
+            ingested.append(expected_agent_id)
         except Exception as exc:
             failed[expected_agent_id] = str(exc)
 
@@ -828,113 +805,6 @@ def previous_post_round_memory_state(card_folder: str | Path) -> Dict[str, Any]:
     return {}
 
 
-def _memory_summary_prompt(card: Path, run_dir: Path, agent_id: str, output_path: str) -> str:
-    actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
-    long_term = _read_optional_text(memory_dir / "long_term.md")
-    key_memories = _read_optional_text(memory_dir / "key_memories.md")
-    short_term = _read_optional_text(memory_dir / "short_term.md")
-    recent_memory = _read_optional_text(recent_path)
-    goals = _read_optional_text(memory_dir / "goals.json")
-    contract = {
-        "agent_id": agent_id,
-        "character_name": actor_name if agent_id.startswith("character:") else "",
-        "source": "self",
-        "visibility": "actor",
-        "long_term": {
-            "self_understanding": [],
-            "stable_beliefs": [],
-            "relationship_models": [],
-        },
-        "key_memories": [
-            {"content": "specific remembered event", "importance": "high", "details": []}
-        ],
-        "short_term": [
-            {"content": "current-scene memory", "expires_after": "scene_end"}
-        ],
-        "goals": {"active": [], "paused": [], "resolved": []},
-    }
-    return f"""
-# Memory Summary Prompt
-
-Agent id: `{agent_id}`
-Round id: `{run_dir.name}`
-Required output: `{output_path}`
-
-You are organizing only this actor's first-person memory. organization is not compression:
-do not replace specific remembered events with vague summaries. Key memories should
-preserve enough details for the actor to recall what happened, who was involved, and
-why it mattered. You may organize memory and goals only. Do not edit profile,
-background, personality, body_facts, authoritative_setting, or character_sheet data.
-Do not add GM-only, omniscient, world-truth, hidden-note, or out-of-character knowledge.
-
-## Required JSON Contract
-
-```json
-{json.dumps(contract, ensure_ascii=False, indent=2)}
-```
-
-## Current Long-Term Memory
-
-```markdown
-{long_term or "(none)"}
-```
-
-## Current Key Memories
-
-```markdown
-{key_memories or "(none)"}
-```
-
-## Current Short-Term Memory
-
-```markdown
-{short_term or "(none)"}
-```
-
-## Recent First-Person Memory
-
-```markdown
-{recent_memory or "(none)"}
-```
-
-## Current Goals
-
-```json
-{goals or "{}"}
-```
-"""
-
-
-def write_memory_summary_prompts(
-    card_folder: str | Path,
-    run_dir: str | Path,
-    manifest: Dict[str, Any],
-    agents: Iterable[str],
-) -> Dict[str, Any]:
-    """Materialize actor memory-summary prompts and update the manifest in place."""
-    card = Path(card_folder)
-    root = Path(run_dir)
-    scheduled: list[str] = []
-
-    prompts = manifest.setdefault("prompts", {})
-    expected_outputs = manifest.setdefault("expected_outputs", {})
-    memory_prompts = prompts.setdefault("memory_summaries", {})
-    memory_outputs = expected_outputs.setdefault("memory_summaries", {})
-
-    for raw_agent_id in agents:
-        agent_id = str(raw_agent_id or "").strip()
-        if not agent_id:
-            continue
-        output_rel = _summary_output_path(agent_id)
-        prompt_rel = _summary_prompt_path(agent_id)
-        _write_text(root / prompt_rel, _memory_summary_prompt(card, root, agent_id, output_rel))
-        memory_prompts[agent_id] = prompt_rel
-        memory_outputs[agent_id] = output_rel
-        scheduled.append(agent_id)
-
-    return {"ok": True, "scheduled": scheduled}
-
-
 def _canonical_tokens(text: str) -> list[str]:
     raw = str(text or "")
     acronym_separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
@@ -977,126 +847,6 @@ def _validate_no_forbidden_marker(value: Any, path: str) -> None:
         marker = _contains_forbidden_marker(value)
         if marker:
             raise MemoryIngestionError(f"{path}: forbidden summary marker {marker}")
-
-
-def _validate_memory_summary(payload: Dict[str, Any], path: Path) -> Dict[str, Any]:
-    try:
-        return agent_memory_model.validate_memory_update(payload)
-    except agent_memory_model.AgentMemoryModelError as exc:
-        raise MemoryIngestionError(f"{path.name}: {exc}") from exc
-
-
-def _validate_character_name_matches_agent_id(agent_id: str, payload: Dict[str, Any], path: Path) -> None:
-    if not agent_id.startswith("character:"):
-        return
-    declared = str(payload.get("character_name") or "").strip()
-    if declared and declared != agent_id.split(":", 1)[1]:
-        raise MemoryIngestionError(
-            f"{path.name}: character_name mismatch, expected {agent_id.split(':', 1)[1]}, got {declared}"
-        )
-
-
-def _scheduled_memory_summaries(root: Path) -> Dict[str, Path]:
-    manifest = _read_json(root / "manifest.json", {})
-    if not isinstance(manifest, dict):
-        return {}
-    expected_outputs = manifest.get("expected_outputs", {})
-    if not isinstance(expected_outputs, dict):
-        return {}
-    summaries = expected_outputs.get("memory_summaries", {})
-    if not isinstance(summaries, dict):
-        return {}
-
-    scheduled: Dict[str, Path] = {}
-    for agent_id, relative_path in summaries.items():
-        agent_key = str(agent_id or "").strip()
-        if not agent_key:
-            continue
-        scheduled[agent_key] = root / str(relative_path)
-    return scheduled
-
-
-def _summary_sort_key(item: tuple[str, Path]) -> tuple[int, str]:
-    agent_id, _path = item
-    return (0 if agent_id == "player" else 1, agent_id)
-
-
-def _apply_memory_summary_updates(card: Path, records: list[Dict[str, Any]]) -> list[str]:
-    pending_writes: list[tuple[Path, str, Any]] = []
-    pending_deletes: list[Path] = []
-    ingested: list[str] = []
-    for update in records:
-        agent_id = update["agent_id"]
-        _actor_name, memory_dir, recent_path = _actor_memory_paths(card, agent_id)
-        pending_writes.extend(
-            [
-                (memory_dir / "long_term.md", "text", agent_memory_model.render_long_term_markdown(update)),
-                (memory_dir / "key_memories.md", "text", agent_memory_model.render_key_memories_markdown(update)),
-                (memory_dir / "short_term.md", "text", agent_memory_model.render_short_term_markdown(update)),
-                (memory_dir / "goals.json", "json", agent_memory_model.render_goals_json(update)),
-            ]
-        )
-        pending_deletes.append(recent_path)
-        ingested.append(agent_id)
-
-    snapshot_paths = [path for path, _kind, _content in pending_writes]
-    snapshot_paths.extend(pending_deletes)
-    snapshots = _snapshot_files(snapshot_paths)
-    try:
-        for path, kind, content in pending_writes:
-            if kind == "json":
-                _write_json(path, content)
-            else:
-                _write_text(path, content)
-        for path in pending_deletes:
-            _delete_file(path)
-    except Exception:
-        _restore_files(snapshots)
-        raise
-    return ingested
-
-
-def ingest_memory_summaries(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
-    """Persist actor self-summary artifacts from `memory_summaries/*.summary.json`."""
-    card = Path(card_folder)
-    root = Path(run_dir)
-    summary_root = root / "memory_summaries"
-    scheduled = _scheduled_memory_summaries(root)
-    if not summary_root.exists() and not scheduled:
-        return {"ok": True, "round_id": root.name, "ingested": []}
-    if scheduled and not summary_root.exists():
-        missing = ", ".join(str(path.relative_to(root).as_posix()) for path in scheduled.values())
-        raise MemoryIngestionError(f"missing scheduled memory summaries: {missing}")
-
-    actual_paths = {path.resolve() for path in summary_root.glob("*.summary.json")} if summary_root.exists() else set()
-    scheduled_paths = {path.resolve() for path in scheduled.values()}
-    extra_paths = sorted(actual_paths - scheduled_paths)
-    if extra_paths:
-        extra = ", ".join(path.name for path in extra_paths)
-        raise MemoryIngestionError(f"unscheduled memory summary files: {extra}")
-
-    missing_paths = [(agent_id, path) for agent_id, path in scheduled.items() if not path.exists()]
-    if missing_paths:
-        missing = ", ".join(f"{agent_id}:{path.relative_to(root).as_posix()}" for agent_id, path in missing_paths)
-        raise MemoryIngestionError(f"missing scheduled memory summaries: {missing}")
-
-    records: list[Dict[str, Any]] = []
-    for expected_agent_id, path in sorted(scheduled.items(), key=_summary_sort_key):
-        payload = _read_json(path, {})
-        if not isinstance(payload, dict):
-            raise MemoryIngestionError(f"{path.name}: summary payload must be an object")
-        update = _validate_memory_summary(payload, path)
-        agent_id = update["agent_id"]
-        if agent_id != expected_agent_id:
-            raise MemoryIngestionError(
-                f"{path.name}: agent_id mismatch, expected {expected_agent_id}, got {agent_id}"
-            )
-        _validate_character_name_matches_agent_id(agent_id, update, path)
-        records.append(update)
-
-    ingested = _apply_memory_summary_updates(card, records)
-
-    return {"ok": True, "round_id": root.name, "ingested": ingested}
 
 
 def ingest_memory_deltas(card_folder: str | Path, run_dir: str | Path, date_str: str | None = None) -> Dict[str, Any]:

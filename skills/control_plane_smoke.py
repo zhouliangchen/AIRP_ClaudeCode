@@ -465,65 +465,32 @@ def _postprocess_output_fixture(run_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _summary_payload(agent_id: str) -> Dict[str, Any]:
-    goals = {"active": [], "paused": [], "resolved": []}
+def _post_round_memory_update(agent_id: str) -> Dict[str, Any]:
     if agent_id == "player":
         return {
             "agent_id": "player",
-            "source": "self",
-            "visibility": "actor",
-            "long_term": {
-                "self_understanding": ["I remember entering the archive beside Ada's lamp."],
-                "stable_beliefs": ["The archive should be explored carefully."],
-                "relationship_models": ["Ada is close enough to guide me with her lamp."],
-            },
+            "long_term_memories": "I remember entering the archive beside Ada's lamp. The archive should be explored carefully.",
             "key_memories": [
                 {
-                    "content": "I entered the archive beside Ada's raised lamp.",
-                    "importance": "high",
-                    "details": ["Cold air leaked from the archive.", "I heard machinery behind the door."],
+                    "tag": "archive threshold",
+                    "summary": "I entered the archive beside Ada's raised lamp.",
+                    "detail": "Cold air leaked from the archive, and I heard machinery behind the door.",
                 }
             ],
-            "short_term": [
-                {
-                    "content": "I am still near Ada at the archive threshold.",
-                    "expires_after": "scene_end",
-                }
-            ],
-            "goals": {
-                **goals,
-                "active": ["Stay close to Ada while exploring the archive."],
-            },
         }
 
     if agent_id == "character:SuLi":
         return {
             "agent_id": "character:SuLi",
             "character_name": "SuLi",
-            "source": "self",
-            "visibility": "actor",
-            "long_term": {
-                "self_understanding": ["I am SuLi, a reserved classmate who knows old occult signs."],
-                "stable_beliefs": ["The pendant scene matters because old rites respond to attention."],
-                "relationship_models": ["The player may need careful warning before trusting the pendant."],
-            },
+            "long_term_memories": "I am SuLi, a reserved classmate who knows old occult signs. The pendant scene matters because old rites respond to attention.",
             "key_memories": [
                 {
-                    "content": "I noticed the player carrying a pendant tied to old rites.",
-                    "importance": "high",
-                    "details": ["I warned that the pendant was older than the school.", "The next choice belonged to the player."],
+                    "tag": "old pendant",
+                    "summary": "I noticed the player carrying a pendant tied to old rites.",
+                    "detail": "I warned that the pendant was older than the school, then left the next choice to the player.",
                 }
             ],
-            "short_term": [
-                {
-                    "content": "I am near the player while the pendant remains unresolved.",
-                    "expires_after": "scene_end",
-                }
-            ],
-            "goals": {
-                **goals,
-                "active": ["Find out why the pendant reacted near the archive."],
-            },
         }
 
     if agent_id.startswith("character:"):
@@ -531,71 +498,41 @@ def _summary_payload(agent_id: str) -> Dict[str, Any]:
         return {
             "agent_id": agent_id,
             "character_name": character_name,
-            "source": "self",
-            "visibility": "actor",
-            "long_term": {
-                "self_understanding": ["I remember guiding the player into the archive with my lamp raised."],
-                "stable_beliefs": ["The player needs a steady guide near the archive threshold."],
-                "relationship_models": ["The player hesitates before entering unfamiliar spaces."],
-            },
+            "long_term_memories": "I remember guiding the player into the archive with my lamp raised. The player needs a steady guide near the archive threshold.",
             "key_memories": [
                 {
-                    "content": "I raised my lamp and guided the player at the archive door.",
-                    "importance": "high",
-                    "details": ["The player stayed close.", "Cold air and machinery came from inside."],
+                    "tag": "archive guide",
+                    "summary": "I raised my lamp and guided the player at the archive door.",
+                    "detail": "The player stayed close while cold air and machinery came from inside.",
                 }
             ],
-            "short_term": [
-                {
-                    "content": "I am beside the player with my lamp raised.",
-                    "expires_after": "scene_end",
-                }
-            ],
-            "goals": {
-                **goals,
-                "active": ["Keep the player close enough to protect."],
-            },
         }
 
     return {
         "agent_id": agent_id,
-        "source": "self",
-        "visibility": "actor",
-        "long_term": {
-            "self_understanding": [f"{agent_id} completed the smoke memory organization."],
-            "stable_beliefs": [],
-            "relationship_models": [],
-        },
+        "long_term_memories": f"{agent_id} completed the smoke memory organization.",
         "key_memories": [],
-        "short_term": [],
-        "goals": goals,
     }
 
 
-def _write_scheduled_memory_summaries(run_dir: Path) -> Dict[str, str]:
+def _write_scheduled_post_round_memory_outputs(run_dir: Path) -> Dict[str, str]:
     manifest = _read_json(run_dir / "manifest.json")
-    expected_outputs = manifest.get("expected_outputs", {})
-    summaries = expected_outputs.get("memory_summaries", {})
-    if not isinstance(summaries, dict) or not summaries:
-        raise RuntimeError("memory summaries were not scheduled")
+    jobs = manifest.get("post_round_memory_jobs", {})
+    scheduled = jobs.get("scheduled", {}) if isinstance(jobs, dict) else {}
+    if not isinstance(scheduled, dict) or not scheduled:
+        raise RuntimeError("post-round memory jobs were not scheduled")
 
     written: Dict[str, str] = {}
-    for agent_id, relative_path in summaries.items():
-        path = run_dir / str(relative_path)
-        _write_json(path, _summary_payload(str(agent_id)))
-        written[str(agent_id)] = str(relative_path)
+    for agent_id, entry in scheduled.items():
+        if not isinstance(entry, dict):
+            continue
+        relative_path = str(entry.get("output") or "")
+        if not relative_path:
+            continue
+        path = run_dir / relative_path
+        _write_json(path, _post_round_memory_update(str(agent_id)))
+        written[str(agent_id)] = relative_path
     return written
-
-
-def _schedule_suli_memory_summary(card: Path, run_dir: Path, agent_memory) -> None:
-    manifest = _read_json(run_dir / "manifest.json")
-    agent_memory.write_memory_summary_prompts(
-        card,
-        run_dir,
-        manifest,
-        ["player", "character:SuLi"],
-    )
-    _write_json(run_dir / "manifest.json", manifest)
 
 
 def _promotion_evidence(card: Path) -> Dict[str, Any]:
@@ -605,38 +542,37 @@ def _promotion_evidence(card: Path) -> Dict[str, Any]:
         if isinstance(card_data.get("character_orchestration"), dict)
         else []
     )
-    profile = _read_json(card / "memory" / "characters" / "SuLi" / "profile.json")
+    objective_profile = _read_text(card / "memory" / "characters" / "SuLi" / "profile.md")
+    subjective_profile = _read_text(card / "characters" / "SuLi" / "profile.md")
     promoted = []
     if (
         PROMOTED_CHARACTER in major
-        and profile.get("source_agent") == "gm"
-        and profile.get("authoritative_setting") == PROMOTION_RECORD["profile_seed"]
+        and PROMOTION_RECORD["profile_seed"] in objective_profile
+        and PROMOTION_RECORD["profile_seed"] in subjective_profile
     ):
         promoted.append(PROMOTED_CHARACTER)
     return {
         "promoted": promoted,
         "registered": [name for name in major if name == PROMOTED_CHARACTER],
-        "profile_source_agent": profile.get("source_agent", ""),
+        "profile_source_agent": "gm" if promoted else "",
     }
 
 
 def _structured_memory_evidence(card: Path) -> Dict[str, Any]:
-    memory_dir = card / "memory" / "characters" / "SuLi"
-    long_term = _read_text(memory_dir / "long_term.md")
-    key_memories = _read_text(memory_dir / "key_memories.md")
-    short_term = _read_text(memory_dir / "short_term.md")
-    goals = _read_json(memory_dir / "goals.json") if (memory_dir / "goals.json").exists() else {}
-    has_suli_buckets = (
-        (memory_dir / "long_term.md").exists()
-        and (memory_dir / "key_memories.md").exists()
-        and (memory_dir / "short_term.md").exists()
-        and (memory_dir / "goals.json").exists()
-        and "character:SuLi" in long_term
-        and "pendant tied to old rites" in key_memories
-        and "pendant remains unresolved" in short_term
-        and "Find out why the pendant reacted near the archive." in json.dumps(goals, ensure_ascii=False)
+    memory_dir = card / "characters" / "Ada"
+    long_term = _read_text(memory_dir / "long_term_memories.md")
+    key_memories = _read_json(memory_dir / "key_memories.json") if (memory_dir / "key_memories.json").exists() else {}
+    short_term = _read_text(memory_dir / "short_term_memories.md")
+    serialized_key_memories = json.dumps(key_memories, ensure_ascii=False)
+    has_ada_buckets = (
+        (memory_dir / "long_term_memories.md").exists()
+        and (memory_dir / "key_memories.json").exists()
+        and (memory_dir / "short_term_memories.md").exists()
+        and "I remember guiding the player" in long_term
+        and "I raised my lamp" in serialized_key_memories
+        and short_term == ""
     )
-    return {"character:SuLi": has_suli_buckets}
+    return {"character:Ada": has_ada_buckets}
 
 
 def _visibility_guard_evidence(run_dir: Path, captured_loop: Dict[str, Any]) -> Dict[str, Any]:
@@ -992,7 +928,6 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             capability_result = applied_analysis.get("capability_requests_result", {})
             if not isinstance(capability_result, dict):
                 capability_result = {}
-            _schedule_suli_memory_summary(card, run_dir, agent_memory)
         finally:
             rp_generate_cli._dispatch_agent_payload = original_dispatch
             rp_generate_cli._run_delivery = original_delivery
@@ -1005,9 +940,9 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             run_dir,
             date_str="2026-06-16 12:00",
         )
-        scheduled_summaries = _write_scheduled_memory_summaries(run_dir)
-        memory_summary = agent_memory.ingest_memory_summaries(card, run_dir)
         post_round_jobs = agent_memory.schedule_post_round_memory_jobs(card, run_dir)
+        scheduled_post_round_outputs = _write_scheduled_post_round_memory_outputs(run_dir)
+        post_round_memory = agent_memory.ingest_post_round_memory_jobs(card, run_dir)
         round_state.write_progress_state(
             styles_dir,
             "agent_lifecycle.cleanup",
@@ -1129,8 +1064,8 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "round_id": memory_delta.get("round_id"),
                 "ingested": memory_delta.get("ingested", []),
             },
-            "memory_summary": memory_summary,
-            "scheduled_memory_summaries": scheduled_summaries,
+            "post_round_memory": post_round_memory,
+            "scheduled_post_round_memory_outputs": scheduled_post_round_outputs,
             "post_round_memory_jobs": {
                 "status": post_round_manifest.get("status")
                 or ("pending" if post_round_jobs.get("scheduled") else "not_required"),

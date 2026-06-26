@@ -13,6 +13,7 @@ import agent_prompts
 import agent_memory
 import agent_lifecycle
 import agent_messages
+import actor_memory_store
 import objective_world
 import input_analysis
 import postprocess_outputs
@@ -269,43 +270,23 @@ def _empty_structured_memory() -> Dict[str, list[Any]]:
 def _player_actor_state(card_folder=None) -> Dict[str, Any]:
     return {
         "name": "player",
+        "card_folder": str(card_folder) if card_folder is not None else "",
         "memory": _load_actor_memory(card_folder, "player"),
     }
 
 
 def _character_actor_id(character: Dict[str, Any]) -> str:
     name = _to_text(character.get("name") or character.get("character_name")).strip()
-    return f"character:{agent_run.safe_name(name)}" if name else "character:unknown"
+    if not name:
+        return "character:unknown"
+    return actor_memory_store.canonical_actor_id(f"character:{name}")
 
 
-def _actor_memory_dir(card_folder: Any, actor_id: str) -> Path | None:
-    if card_folder is None:
-        return None
-    card = Path(card_folder)
-    if actor_id == "player":
-        return card / "memory" / "player"
-    if actor_id.startswith("character:"):
-        safe = agent_run.safe_name(actor_id.split(":", 1)[1] or "_unknown")
-        return card / "memory" / "characters" / safe
-    return None
-
-
-def _read_optional_text(path: Path, limit: int = 12000) -> str:
-    try:
-        if not path.exists():
-            return ""
-        return path.read_text(encoding="utf-8")[:limit].strip()
-    except Exception:
-        return ""
-
-
-def _read_json(path: Path, default: Any) -> Any:
-    try:
-        if not path.exists():
-            return default
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
+def _safe_context_name_from_actor_id(actor_id: Any) -> str:
+    text = _to_text(actor_id)
+    if text.startswith("character:"):
+        return agent_run.safe_name(text.split(":", 1)[1] or "_unknown")
+    return agent_run.safe_name(text or "_unknown")
 
 
 def _append_unique(items: list[Any], value: Any) -> None:
@@ -338,26 +319,21 @@ def _append_goals_json(memory: Dict[str, list[Any]], value: Any) -> None:
 
 def _load_actor_memory(card_folder: Any, actor_id: str) -> Dict[str, list[Any]]:
     memory = _empty_structured_memory()
-    memory_dir = _actor_memory_dir(card_folder, actor_id)
-    if memory_dir is None:
+    if card_folder is None:
         return memory
 
-    for filename, key in (
-        ("long_term.md", "long_term"),
-        ("key_memories.md", "key_memories"),
-        ("short_term.md", "short_term"),
-    ):
-        text = _read_optional_text(memory_dir / filename)
-        if text:
-            memory[key].append(text)
-
-    recent = _read_optional_text(memory_dir / "recent.md")
-    if recent:
-        memory["short_term"].append(recent)
-
-    goals_payload = _read_json(memory_dir / "goals.json", {})
-    if isinstance(goals_payload, dict):
-        _append_goals_json(memory, goals_payload)
+    stored = actor_memory_store.read_actor_memory(card_folder, actor_id)
+    _append_structured_value(memory, "long_term", stored.get("long_term"))
+    _append_structured_value(
+        memory,
+        "key_memories",
+        [
+            {"tag": item.get("tag", ""), "summary": item.get("summary", "")}
+            for item in _as_memory_items(stored.get("key_memories"))
+            if isinstance(item, dict)
+        ],
+    )
+    _append_structured_value(memory, "short_term", stored.get("short_term"))
     return memory
 
 
@@ -392,18 +368,9 @@ def _append_memory_value(memory: Dict[str, Any], key: str, value: Any) -> None:
 
 def _projectable_character_state(character: Dict[str, Any], card_folder=None) -> Dict[str, Any]:
     state = dict(character or {})
+    state["card_folder"] = str(card_folder) if card_folder is not None else ""
     memory = _load_actor_memory(card_folder, _character_actor_id(state))
     _merge_memory(memory, state.get("memory"))
-
-    _append_structured_value(memory, "long_term", state.get("profile_summary"))
-    profile = state.get("profile")
-    if isinstance(profile, dict):
-        _append_structured_value(memory, "long_term", profile.get("authoritative_setting"))
-        _append_structured_value(memory, "long_term", profile.get("summary") or profile.get("description"))
-    else:
-        _append_structured_value(memory, "long_term", profile)
-    _append_structured_value(memory, "short_term", state.get("recent_state"))
-    _append_goals_json(memory, {"goals": state.get("goals")})
 
     state["memory"] = memory
     return state
@@ -412,6 +379,7 @@ def _projectable_character_state(character: Dict[str, Any], card_folder=None) ->
 def _projectable_player_state(card_folder, actor_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if isinstance(actor_state, dict):
         state = dict(actor_state)
+        state["card_folder"] = str(card_folder) if card_folder is not None else ""
         memory = _load_actor_memory(card_folder, "player")
         _merge_memory(memory, state.get("memory"))
         _append_goals_json(memory, {"goals": state.get("goals")})
@@ -737,9 +705,8 @@ def prepare_agent_run(
 
     character_packets = {}
     for character in _iter_characters(character_contexts):
-        name = character.get("name") if isinstance(character, dict) else ""
-        safe = agent_run.safe_name(name)
         packet = build_character_packet(card_folder, character, routed_input, safe_chat_log, world_state=world_state)
+        safe = _safe_context_name_from_actor_id(packet.get("actor_id"))
         agent_run.write_json(run_dir / "characters" / f"{safe}.context.json", packet)
         character_packets[safe] = packet
 
@@ -859,9 +826,8 @@ def rebuild_agent_run_from_analysis(
 
     character_packets = {}
     for character in _iter_characters(character_contexts):
-        name = character.get("name") if isinstance(character, dict) else ""
-        safe = agent_run.safe_name(name)
         packet = build_character_packet(card_folder, character, routed_input, chat_log, world_state=world_state)
+        safe = _safe_context_name_from_actor_id(packet.get("actor_id"))
         agent_run.write_json(root / "characters" / f"{safe}.context.json", packet)
         character_packets[safe] = packet
 

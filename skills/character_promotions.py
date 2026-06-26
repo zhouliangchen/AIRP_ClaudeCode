@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -68,14 +67,6 @@ def validate_promotion(record: Any, path: str) -> dict:
     }
 
 
-def _read_json_object(path: str | Path) -> dict:
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _read_text(path: str | Path) -> str:
     try:
         return Path(path).read_text(encoding="utf-8").strip()
@@ -84,9 +75,8 @@ def _read_text(path: str | Path) -> str:
 
 
 def _context_from_persisted_item(item: dict) -> dict:
-    profile = _read_json_object(str(item.get("profile_json") or ""))
-    name = str(profile.get("name") or item.get("name") or "").strip()
-    authoritative = str(profile.get("authoritative_setting") or "").strip()
+    name = str(item.get("name") or "").strip()
+    authoritative = str(item.get("authoritative_setting") or item.get("profile_text") or "").strip()
     if not authoritative:
         authoritative = _read_text(str(item.get("profile_md") or ""))
     context = {
@@ -97,7 +87,7 @@ def _context_from_persisted_item(item: dict) -> dict:
             "recent": [],
             "goals": [],
         },
-        "source_agent": str(profile.get("source_agent") or item.get("existing_source_agent") or ""),
+        "source_agent": str(item.get("source_agent") or item.get("existing_source_agent") or ""),
         "profile_preserved": bool(item.get("profile_preserved")),
     }
     return context

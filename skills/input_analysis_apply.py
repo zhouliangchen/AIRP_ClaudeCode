@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 import agent_packets
 import agent_run
+import actor_memory_store
 import capability_registry
 import character_registry
 import hidden_settings
@@ -434,6 +435,24 @@ def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[s
     return normalized, True
 
 
+def _normalize_routing_channel_aliases(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    routing = analysis.get("routing")
+    if not isinstance(routing, dict):
+        return analysis, False
+    if isinstance(routing.get("user_instruction_channel"), str):
+        return analysis, False
+    alias = routing.get("user_instruction_text")
+    if not isinstance(alias, str):
+        return analysis, False
+
+    normalized_routing = dict(routing)
+    normalized_routing["user_instruction_channel"] = alias
+    normalized_routing.pop("user_instruction_text", None)
+    normalized = dict(analysis)
+    normalized["routing"] = normalized_routing
+    return normalized, True
+
+
 def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
     names: set[str] = set()
     if not isinstance(card_data, dict):
@@ -460,12 +479,17 @@ def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
 
 
 def _character_memory_exists(card_folder: Any, name: str) -> bool:
-    char_dir = Path(card_folder) / "memory" / "characters" / agent_run.safe_name(name)
-    if not char_dir.exists() or not char_dir.is_dir():
-        return False
-    for filename in ("profile.md", "profile.json", "recent.md", "goals.md", "state.json"):
-        if (char_dir / filename).exists():
-            return True
+    paths = actor_memory_store.actor_paths(card_folder, f"character:{name}")
+    for path in (
+        paths.objective_profile,
+        paths.background,
+        paths.profile,
+    ):
+        try:
+            if path.exists() and path.read_text(encoding="utf-8").strip():
+                return True
+        except OSError:
+            continue
     return False
 
 
@@ -594,8 +618,9 @@ def apply_current_run(card_folder, root_dir=None):
     raw_request = _read_json_required(run_dir / "input.raw.json")
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
+    analysis, normalized_channel_aliases = _normalize_routing_channel_aliases(analysis)
     analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
-    normalized = normalized or normalized_routing_requests
+    normalized = normalized or normalized_channel_aliases or normalized_routing_requests
     input_analysis.validate_input_analysis(
         analysis,
         raw_text=str(raw_request.get("raw_text") or ""),

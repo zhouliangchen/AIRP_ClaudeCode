@@ -9,7 +9,9 @@ Use this policy when preparing `actor_calls`, interaction sequencing, and GM con
 
 ## Participation Points
 
-Call an actor only when the current scene gives that actor a meaningful participation point: a direct player action to embody, a visible stimulus to perceive, a dialogue turn to answer, a goal conflict to resolve, or a decision boundary that depends on that actor's agency.
+Call a character actor only when the current scene gives that character a meaningful participation point: a visible stimulus to perceive, a dialogue turn to answer, a goal conflict to resolve, or a decision boundary that depends on that character's agency.
+
+The real player is not an LLM actor in the default live path. Player input is already authoritative through `routed_input.role_channel`; when the next meaningful choice belongs to the real player, set `decision_point` and `stop_reason: "player_decision"` instead of creating `actor_calls[]` for `player`.
 
 Do not call an important character merely because they exist in the cast. Do not ask an actor to confirm GM exposition or carry hidden setup.
 

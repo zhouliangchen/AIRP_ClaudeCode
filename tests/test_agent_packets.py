@@ -88,11 +88,13 @@ class CriticGateSourceTest(unittest.TestCase):
         self.assertIn("import agent_memory", source)
         self.assertIn("ingest_memory_deltas", source)
 
-    def test_round_deliver_ingests_agent_memory_summaries(self):
+    def test_round_deliver_ingests_post_round_memory_jobs(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
 
         self.assertIn("import agent_memory", source)
-        self.assertIn("ingest_memory_summaries", source)
+        self.assertIn("schedule_post_round_memory_jobs", source)
+        self.assertIn("ingest_post_round_memory_jobs", source)
+        self.assertNotIn("ingest_memory_summaries", source)
 
     def test_round_deliver_runs_agent_lifecycle_cleanup(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
@@ -591,6 +593,16 @@ class AgentRunTest(unittest.TestCase):
         self.assertEqual(first.name, "round-000001")
         self.assertEqual(second.name, "round-000002")
 
+    def test_create_run_dir_does_not_reuse_existing_explicit_turn_directory(self):
+        self.agent_run.create_run_dir(self.card, turn_index=0)
+        self.agent_run.create_run_dir(self.card, turn_index=1)
+        existing = self.agent_run.create_run_dir(self.card, turn_index=2)
+        repeated_turn = self.agent_run.create_run_dir(self.card, turn_index=2)
+
+        self.assertEqual(existing.name, "round-000003")
+        self.assertEqual(repeated_turn.name, "round-000004")
+        self.assertTrue((self.card / ".agent_runs" / "current").read_text(encoding="utf-8").endswith("round-000004"))
+
     def test_current_run_dir_with_relative_card_path(self):
         relative_parent = Path(self.tmp.name) / "parent"
         relative_parent.mkdir()
@@ -818,37 +830,53 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("dream echo", char_prompt)
         self.assertNotIn("moon base", char_prompt)
 
-    def test_prepare_agent_run_reads_structured_actor_memory_files(self):
-        player_dir = self.card / "memory" / "player"
-        ada_dir = self.card / "memory" / "characters" / "Ada"
-        for directory in (player_dir, ada_dir):
+    def test_prepare_agent_run_reads_root_actor_memory_files(self):
+        player_dir = self.card / "characters" / "_self"
+        ada_dir = self.card / "characters" / "Ada"
+        legacy_player_dir = self.card / "memory" / "player"
+        legacy_ada_dir = self.card / "memory" / "characters" / "Ada"
+        for directory in (player_dir, ada_dir, legacy_player_dir, legacy_ada_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
-        (player_dir / "long_term.md").write_text("# Player Long-Term\n\nI remember the archive code.", encoding="utf-8")
-        (player_dir / "key_memories.md").write_text(
-            "# Player Key\n\nI found the sealed index beneath Ada's lamp after the rain stopped.",
-            encoding="utf-8",
-        )
-        (player_dir / "short_term.md").write_text("# Player Short\n\nI am holding the door open.", encoding="utf-8")
-        (player_dir / "recent.md").write_text("# Player Agent Memory\n\n- recent player delta", encoding="utf-8")
-        (player_dir / "summary.md").write_text("stale player summary should not be loaded", encoding="utf-8")
+        (player_dir / "profile.md").write_text("我是玩家，我正在追查档案馆暗门。", encoding="utf-8")
+        (player_dir / "long_term_memories.md").write_text("我记得自己学会了档案馆密码。", encoding="utf-8")
         _write_json(
-            player_dir / "goals.json",
-            {"goals": {"active": ["Read the sealed index."], "paused": [], "resolved": []}},
+            player_dir / "key_memories.json",
+            {
+                "memories": [
+                    {
+                        "tag": "封存索引",
+                        "summary": "我知道它和 Ada 的灯有关",
+                        "detail": "detail-secret: 索引藏在 Ada 灯座下方。",
+                    }
+                ]
+            },
         )
+        (player_dir / "short_term_memories.md").write_text("我正扶着门不让它关上。", encoding="utf-8")
 
-        (ada_dir / "long_term.md").write_text("# Ada Long-Term\n\nI remember lending my lamp.", encoding="utf-8")
-        (ada_dir / "key_memories.md").write_text(
-            "# Ada Key\n\nI saw the player hide the archive note under the third shelf.",
-            encoding="utf-8",
-        )
-        (ada_dir / "short_term.md").write_text("# Ada Short\n\nI am beside the player.", encoding="utf-8")
-        (ada_dir / "recent.md").write_text("# Character Recent Memory\n\n- recent Ada delta", encoding="utf-8")
-        (ada_dir / "summary.md").write_text("stale Ada summary should not be loaded", encoding="utf-8")
+        (legacy_player_dir / "long_term.md").write_text("legacy player long term should not load", encoding="utf-8")
+        (legacy_player_dir / "recent.md").write_text("legacy player recent should not load", encoding="utf-8")
+        _write_json(legacy_player_dir / "goals.json", {"goals": {"active": ["legacy player goal should not load"]}})
+
+        (ada_dir / "profile.md").write_text("我是 Ada，我习惯把线索藏进灯影里。", encoding="utf-8")
+        (ada_dir / "long_term_memories.md").write_text("我记得曾把灯借给玩家。", encoding="utf-8")
         _write_json(
-            ada_dir / "goals.json",
-            {"goals": {"active": ["Keep the player close."], "paused": [], "resolved": []}},
+            ada_dir / "key_memories.json",
+            {
+                "memories": [
+                    {
+                        "tag": "第三层书架",
+                        "summary": "我看见玩家在那里停下",
+                        "detail": "detail-secret: 纸条压在第三层最左侧。",
+                    }
+                ]
+            },
         )
+        (ada_dir / "short_term_memories.md").write_text("我现在站在玩家旁边。", encoding="utf-8")
+
+        (legacy_ada_dir / "long_term.md").write_text("legacy Ada long term should not load", encoding="utf-8")
+        (legacy_ada_dir / "recent.md").write_text("legacy Ada recent should not load", encoding="utf-8")
+        _write_json(legacy_ada_dir / "goals.json", {"goals": {"active": ["legacy Ada goal should not load"]}})
 
         result = self.agent_packets.prepare_agent_run(
             self.card,
@@ -867,19 +895,22 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(sorted(player_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertEqual(sorted(character_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
-        self.assertIn("I remember the archive code.", player_memory)
-        self.assertIn("我想回忆：", player_memory)
-        self.assertNotIn("beneath Ada's lamp", player_memory)
-        self.assertIn("I am holding the door open.", player_memory)
-        self.assertIn("recent player delta", player_memory)
-        self.assertIn("Read the sealed index.", player_memory)
-        self.assertIn("I remember lending my lamp.", character_memory)
-        self.assertIn("我想回忆：", character_memory)
-        self.assertNotIn("under the third shelf", character_memory)
-        self.assertIn("recent Ada delta", character_memory)
-        self.assertIn("Keep the player close.", character_memory)
-        self.assertNotIn("stale player summary", player_memory)
-        self.assertNotIn("stale Ada summary", character_memory)
+        self.assertIn("我记得自己学会了档案馆密码。", player_memory)
+        self.assertIn("我想回忆：封存索引", player_memory)
+        self.assertIn("我知道它和 Ada 的灯有关", player_memory)
+        self.assertIn("我正扶着门不让它关上。", player_memory)
+        self.assertNotIn("detail-secret", player_memory)
+        self.assertNotIn("灯座下方", player_memory)
+        self.assertNotIn("legacy player", player_memory)
+        self.assertNotIn("legacy player", player_packet["immersive_context"])
+        self.assertIn("我记得曾把灯借给玩家。", character_memory)
+        self.assertIn("我想回忆：第三层书架", character_memory)
+        self.assertIn("我看见玩家在那里停下", character_memory)
+        self.assertIn("我现在站在玩家旁边。", character_memory)
+        self.assertNotIn("detail-secret", character_memory)
+        self.assertNotIn("最左侧", character_memory)
+        self.assertNotIn("legacy Ada", character_memory)
+        self.assertNotIn("legacy Ada", character_packet["immersive_context"])
 
     def test_prepare_agent_run_does_not_project_old_actor_memory_aliases(self):
         result = self.agent_packets.prepare_agent_run(
@@ -926,40 +957,67 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("old key-memory alias", serialized)
         self.assertNotIn("old bare memory list", serialized)
 
-    def test_prepare_agent_run_drops_stale_recent_after_summary_ingestion(self):
+    def test_prepare_agent_run_does_not_import_objective_or_legacy_character_context_as_memory(self):
+        legacy_dir = self.card / "memory" / "characters" / "Ada"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "profile.md").write_text("OBJECTIVE_ONLY_SECRET", encoding="utf-8")
+        (legacy_dir / "recent.md").write_text("LEGACY_RECENT_SECRET", encoding="utf-8")
+        _write_json(legacy_dir / "profile.json", {"summary": "LEGACY_PROFILE_JSON_SECRET"})
+        _write_json(legacy_dir / "goals.json", {"goals": {"active": ["LEGACY_GOAL_SECRET"]}})
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.",
+            chat_log=[],
+            card_data={"title": "Objective Leakage Test"},
+            character_contexts={
+                "characters": [
+                    {
+                        "name": "Ada",
+                        "profile_summary": "OBJECTIVE_CONTEXT_SUMMARY_SECRET",
+                        "profile": {"summary": "OBJECTIVE_PROFILE_SUMMARY_SECRET"},
+                        "recent_state": "OBJECTIVE_RECENT_STATE_SECRET",
+                        "goals": ["OBJECTIVE_GOAL_SECRET"],
+                    }
+                ],
+            },
+            turn_index=0,
+        )
+
+        run_dir = Path(result["run_dir"])
+        ada_packet = json.loads((run_dir / "characters" / "Ada.context.json").read_text(encoding="utf-8"))
+        serialized = json.dumps(ada_packet, ensure_ascii=False)
+
+        for forbidden in (
+            "OBJECTIVE_ONLY_SECRET",
+            "LEGACY_RECENT_SECRET",
+            "LEGACY_PROFILE_JSON_SECRET",
+            "LEGACY_GOAL_SECRET",
+            "OBJECTIVE_CONTEXT_SUMMARY_SECRET",
+            "OBJECTIVE_PROFILE_SUMMARY_SECRET",
+            "OBJECTIVE_RECENT_STATE_SECRET",
+            "OBJECTIVE_GOAL_SECRET",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_prepare_agent_run_ignores_legacy_recent_without_summary_ingestion(self):
         player_dir = self.card / "memory" / "player"
         player_dir.mkdir(parents=True, exist_ok=True)
         (player_dir / "recent.md").write_text(
             "# Player Agent Memory\n\n- stale recent player delta\n",
             encoding="utf-8",
         )
-        summary_run = self.card / ".agent_runs" / "round-000006"
-        _write_json(
-            summary_run / "manifest.json",
-            {"expected_outputs": {"memory_summaries": {"player": "memory_summaries/player.summary.json"}}},
+        new_player_dir = self.card / "characters" / "_self"
+        new_player_dir.mkdir(parents=True, exist_ok=True)
+        (new_player_dir / "long_term_memories.md").write_text(
+            "I remember organizing the archive threshold.",
+            encoding="utf-8",
         )
-        _write_json(
-            summary_run / "memory_summaries" / "player.summary.json",
-            {
-                "agent_id": "player",
-                "source": "self",
-                "visibility": "actor",
-                "long_term": {
-                    "self_understanding": ["I remember organizing the archive threshold."],
-                    "stable_beliefs": [],
-                    "relationship_models": [],
-                },
-                "key_memories": [],
-                "short_term": [
-                    {
-                        "content": "I am choosing what to inspect after the organization.",
-                        "expires_after": "scene_end",
-                    }
-                ],
-                "goals": {"active": ["Inspect the archive shelves."], "paused": [], "resolved": []},
-            },
+        (new_player_dir / "short_term_memories.md").write_text(
+            "I am choosing what to inspect after the organization.",
+            encoding="utf-8",
         )
-        self.agent_memory.ingest_memory_summaries(self.card, summary_run)
+        _write_json(new_player_dir / "key_memories.json", {"memories": []})
 
         result = self.agent_packets.prepare_agent_run(
             self.card,
@@ -971,8 +1029,9 @@ class AgentPacketTest(unittest.TestCase):
         )
 
         memory = json.dumps(result["player_packet"]["memory"], ensure_ascii=False)
+        self.assertIn("I remember organizing the archive threshold.", memory)
         self.assertIn("I am choosing what to inspect after the organization.", memory)
-        self.assertIn("Inspect the archive shelves.", memory)
+        self.assertNotIn("Inspect the archive shelves.", memory)
         self.assertNotIn("stale recent player delta", memory)
 
     def test_prepare_agent_run_does_not_expose_private_role_text_to_character_context(self):
@@ -995,8 +1054,11 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn(private_role_text, json.dumps(character_packet, ensure_ascii=False))
 
     def test_prepare_agent_run_uses_safe_character_actor_id_in_context_and_prompt(self):
-        display_name = "Ada/Zero?"
-        safe_name = self.agent_run.safe_name(display_name)
+        display_name = "Ada//Zero"
+        safe_name = "Ada_Zero"
+        actor_dir = self.card / "characters" / safe_name
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "profile.md").write_text("我是 Ada Zero。", encoding="utf-8")
         result = self.agent_packets.prepare_agent_run(
             self.card,
             user_text="I listen at the sealed door.",
@@ -1020,11 +1082,13 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotEqual(display_name, safe_name)
         self.assertEqual(character_packet["actor_id"], f"character:{safe_name}")
         self.assertEqual(character_packet["self_knowledge"]["name"], display_name)
+        self.assertIn("我是 Ada Zero。", character_packet["immersive_context"])
         self.assertIn(f"# 我的行动提示：{display_name}", char_prompt)
         self.assertIn(f"我是 {display_name}", char_prompt)
         self.assertNotIn('"agent_id"', char_prompt)
         self.assertNotIn('"character_name"', char_prompt)
         self.assertNotIn(f'"agent_id": "character:{display_name}"', char_prompt)
+        self.assertFalse((run_dir / "characters" / "Ada__Zero.context.json").exists())
 
     def test_prepare_agent_run_materializes_all_registered_major_character_contexts(self):
         round_prepare = _load_round_prepare()
@@ -1199,7 +1263,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
         self.assertIn("gm.output.json", gm_prompt)
         self.assertIn("dream echo", gm_prompt)
-        self.assertIn("我只用自然语言回复", player_prompt)
+        self.assertIn("我直接用自然语言对刚刚与我说话的人回应", player_prompt)
         self.assertIn("我能感知到的内容", player_prompt)
         self.assertNotIn(".claude/skills/rp-player-agent.md", player_prompt)
         self.assertNotIn("actor.outputs.json", player_prompt)
@@ -1214,7 +1278,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("GM resolution", player_prompt)
         self.assertNotIn("player.output.json", player_prompt)
         self.assertNotIn("dream echo", player_prompt)
-        self.assertIn("我只用自然语言回复", char_prompt)
+        self.assertIn("我直接用自然语言对刚刚与我说话的人回应", char_prompt)
         self.assertIn("我能感知到的内容", char_prompt)
         self.assertNotIn(".claude/skills/rp-character-agent.md", char_prompt)
         self.assertNotIn("actor.outputs.json", char_prompt)
@@ -1965,7 +2029,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("MUST emit a second", skill)
         self.assertIn("the character personally retains, remembers, knows, or can use", skill)
 
-    def test_prepare_agent_run_schedules_memory_summary_prompts_on_interval(self):
+    def test_prepare_agent_run_does_not_schedule_memory_summary_prompts_on_interval(self):
         result = self.agent_packets.prepare_agent_run(
             self.card,
             user_text="I open the archive door.",
@@ -1979,27 +2043,10 @@ class AgentPacketTest(unittest.TestCase):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["round_id"], "round-000006")
-        self.assertTrue((run_dir / "prompts" / "memory" / "player.prompt.md").exists())
-        self.assertTrue((run_dir / "prompts" / "memory" / "character_Ada.prompt.md").exists())
-        self.assertEqual(
-            manifest["expected_outputs"]["memory_summaries"]["player"],
-            "memory_summaries/player.summary.json",
-        )
-        self.assertEqual(
-            manifest["expected_outputs"]["memory_summaries"]["character:Ada"],
-            "memory_summaries/character_Ada.summary.json",
-        )
-        self.assertEqual(
-            manifest["prompts"]["memory_summaries"]["character:Ada"],
-            "prompts/memory/character_Ada.prompt.md",
-        )
-        player_prompt = (run_dir / "prompts" / "memory" / "player.prompt.md").read_text(encoding="utf-8")
-        self.assertIn('"long_term"', player_prompt)
-        self.assertIn('"key_memories"', player_prompt)
-        self.assertIn('"short_term"', player_prompt)
-        self.assertIn('"goals"', player_prompt)
-        self.assertIn("organization is not compression", player_prompt)
-        self.assertIn("preserve enough details", player_prompt)
+        self.assertFalse((run_dir / "prompts" / "memory" / "player.prompt.md").exists())
+        self.assertFalse((run_dir / "prompts" / "memory" / "character_Ada.prompt.md").exists())
+        self.assertNotIn("memory_summaries", manifest["expected_outputs"])
+        self.assertNotIn("memory_summaries", manifest["prompts"])
 
     def test_prepare_agent_run_prefers_explicit_dual_channel_payload(self):
         explicit_payload = {

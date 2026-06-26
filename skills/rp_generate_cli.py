@@ -709,10 +709,15 @@ def _read_loop_prompt(
 ) -> str:
     if agent_key in {"gm", "player"}:
         return _read_prompt(run_dir, manifest, agent_key)
+    if agent_key == "projection":
+        return agent_prompts.projection_prompt_text(packet or {})
     if agent_key.startswith("subGM:"):
         return agent_prompts.subgm_prompt_text(packet or {})
     if not agent_key.startswith("character:"):
         raise AgentExecutionError(f"Unknown loop agent key: {agent_key}")
+
+    if packet is not None:
+        return agent_prompts.character_prompt_text(packet)
 
     prompts = manifest.get("prompts") or {}
     character_prompts = prompts.get("characters") if isinstance(prompts, dict) else None
@@ -721,15 +726,11 @@ def _read_loop_prompt(
     actor_name = agent_key.split(":", 1)[1]
     prompt_rel = character_prompts.get(actor_name) or character_prompts.get(agent_run.safe_name(actor_name))
     if not isinstance(prompt_rel, str) or not prompt_rel:
-        if packet is not None:
-            return agent_prompts.character_prompt_text(packet)
         raise AgentExecutionError(f"Missing prompt path for {agent_key}.")
     prompt_path = run_dir / prompt_rel
     try:
         return prompt_path.read_text(encoding="utf-8")
     except OSError as exc:
-        if packet is not None:
-            return agent_prompts.character_prompt_text(packet)
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
 
 
@@ -794,7 +795,7 @@ def _reset_round_progression_outputs(run_dir: Path) -> None:
             except OSError:
                 pass
 
-    for name in ["side_threads", "memory_summaries"]:
+    for name in ["side_threads"]:
         path = run_dir / name
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)

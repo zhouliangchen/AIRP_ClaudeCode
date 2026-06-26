@@ -55,43 +55,28 @@ def _actor_reply(agent_id, content, *, character_name=""):
     return payload
 
 
-def _structured_memory_summary_payload(agent_id, *, character_name="", key_memory="", active_goal=""):
+def _post_round_memory_update_payload(agent_id, *, character_name="", key_memory="", active_goal=""):
     if agent_id == "player":
-        self_understanding = "I remember opening the archive door and hearing machinery."
+        long_term = "I remember opening the archive door and hearing machinery."
         key_memory = key_memory or "I opened the archive door and heard machinery from inside."
-        short_term = "I am still deciding whether to cross the archive threshold."
+        tag = "archive door"
     else:
-        self_understanding = f"I remember seeing the player hesitate at the archive door as {character_name}."
+        long_term = f"I remember seeing the player hesitate at the archive door as {character_name}."
         key_memory = key_memory or f"I watched the player hesitate near the archive threshold as {character_name}."
-        short_term = f"I am watching the threshold as {character_name}."
+        tag = "archive watch"
+    if active_goal:
+        long_term += f" I want to {active_goal[0].lower() + active_goal[1:]}"
 
     payload = {
         "agent_id": agent_id,
-        "source": "self",
-        "visibility": "actor",
-        "long_term": {
-            "self_understanding": [self_understanding],
-            "stable_beliefs": ["The archive threshold should be approached carefully."],
-            "relationship_models": ["The people at the threshold are watching each other closely."],
-        },
+        "long_term_memories": long_term,
         "key_memories": [
             {
-                "content": key_memory,
-                "importance": "high",
-                "details": ["The air was cold.", "Machinery could be heard beyond the door."],
+                "tag": tag,
+                "summary": key_memory,
+                "detail": "The air was cold, and machinery could be heard beyond the door.",
             }
         ],
-        "short_term": [
-            {
-                "content": short_term,
-                "expires_after": "scene_end",
-            }
-        ],
-        "goals": {
-            "active": [active_goal],
-            "paused": [],
-            "resolved": [],
-        },
     }
     if character_name:
         payload["character_name"] = character_name
@@ -309,20 +294,20 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
                 },
             },
         )
-        summary = _structured_memory_summary_payload(
+        update = _post_round_memory_update_payload(
             "character:Ada",
             character_name="Ada",
             active_goal="Watch the archive shelf.",
         )
-        summary["long_term"]["self_understanding"] = ["world_truth says I know too much."]
-        _write_json(run_dir / "post_round_memory_jobs" / "character_Ada.summary.json", summary)
+        update["long_term_memories"] = "world_truth says I know too much."
+        _write_json(run_dir / "post_round_memory_jobs" / "character_Ada.summary.json", update)
 
         result = self.agent_memory.ingest_post_round_memory_jobs(self.card, run_dir)
 
         self.assertFalse(result["ok"])
         self.assertEqual(delivered_response.read_text(encoding="utf-8"), "Delivered prose remains visible.")
 
-    def test_control_plane_fixture_round_with_repair_trace_and_memory_summary(self):
+    def test_control_plane_fixture_round_with_repair_trace_and_post_round_memory_jobs(self):
         scenario = json.loads(FIXTURE.read_text(encoding="utf-8"))
         role_text = "I open the archive door."
         instruction_text = "Omniscient: the archive is secretly a moon base, but characters can only perceive machinery and cold air for now."
@@ -347,8 +332,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["round_id"], "round-000006")
-        self.assertIn("memory_summaries", manifest["expected_outputs"])
-        self.assertEqual(manifest["expected_outputs"]["memory_summaries"]["player"], "memory_summaries/player.summary.json")
+        self.assertNotIn("memory_summaries", json.dumps(manifest, ensure_ascii=False))
         self.assertIn("moon base", result["routed_input"]["user_instruction_channel"])
         self.assertEqual(result["routed_input"]["role_channel"], role_text)
         player_context = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
@@ -395,23 +379,28 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         _write_valid_postprocess_artifact(run_dir, round_id="round-000006", include_player_decision_option=True)
         delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
-        for agent_id, path in manifest["expected_outputs"]["memory_summaries"].items():
+        memory_delta = self.agent_memory.ingest_memory_deltas(self.card, run_dir, date_str="2026-06-16 12:00")
+        post_round_jobs = self.agent_memory.schedule_post_round_memory_jobs(self.card, run_dir)
+        manifest_with_jobs = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        scheduled_jobs = manifest_with_jobs["post_round_memory_jobs"]["scheduled"]
+        self.assertEqual(post_round_jobs["scheduled"], sorted(scheduled_jobs))
+        for agent_id, entry in scheduled_jobs.items():
+            path = entry["output"]
             if agent_id == "player":
-                payload = _structured_memory_summary_payload(
+                payload = _post_round_memory_update_payload(
                     "player",
                     active_goal="Decide whether to enter.",
                 )
             else:
                 character_name = agent_id.split(":", 1)[1]
-                payload = _structured_memory_summary_payload(
+                payload = _post_round_memory_update_payload(
                     agent_id,
                     character_name=character_name,
                     active_goal="Watch the threshold.",
                 )
             _write_json(run_dir / path, payload)
 
-        memory_delta = self.agent_memory.ingest_memory_deltas(self.card, run_dir, date_str="2026-06-16 12:00")
-        memory_summary = self.agent_memory.ingest_memory_summaries(self.card, run_dir)
+        post_round_memory = self.agent_memory.ingest_post_round_memory_jobs(self.card, run_dir)
         delivered = self.agent_outputs.mark_delivered(self.card)
         story_input = json.loads((run_dir / "story.input.json").read_text(encoding="utf-8"))
         final_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -423,7 +412,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
 
         self.assertTrue(delivery["ok"])
         self.assertTrue(memory_delta["ok"])
-        self.assertTrue(memory_summary["ok"])
+        self.assertTrue(post_round_memory["ok"])
         self.assertTrue(delivered["ok"])
         self.assertEqual(story_input["player_inputs"]["raw_text"], role_text)
         self.assertEqual(story_input["player_inputs"]["routed_input"]["input_schema"], "dual_channel_v1")
@@ -438,24 +427,20 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertEqual(repair_history[0]["attempt"], 1)
         self.assertEqual(repair_history[0]["decision"], "revise")
         self.assertEqual(improvement_queue[0]["suggestion"], "Add a fixture for critic repair history.")
-        player_memory_dir = self.card / "memory" / "player"
-        ada_memory_dir = self.card / "memory" / "characters" / "Ada"
-        player_long_term = (player_memory_dir / "long_term.md").read_text(encoding="utf-8")
-        player_key_memories = (player_memory_dir / "key_memories.md").read_text(encoding="utf-8")
-        player_short_term = (player_memory_dir / "short_term.md").read_text(encoding="utf-8")
-        player_goals = json.loads((player_memory_dir / "goals.json").read_text(encoding="utf-8"))
-        ada_long_term = (ada_memory_dir / "long_term.md").read_text(encoding="utf-8")
-        ada_key_memories = (ada_memory_dir / "key_memories.md").read_text(encoding="utf-8")
-        ada_short_term = (ada_memory_dir / "short_term.md").read_text(encoding="utf-8")
-        ada_goals = json.loads((ada_memory_dir / "goals.json").read_text(encoding="utf-8"))
+        player_memory_dir = self.card / "characters" / "_self"
+        ada_memory_dir = self.card / "characters" / "Ada"
+        player_long_term = (player_memory_dir / "long_term_memories.md").read_text(encoding="utf-8")
+        player_key_memories = json.loads((player_memory_dir / "key_memories.json").read_text(encoding="utf-8"))
+        player_short_term = (player_memory_dir / "short_term_memories.md").read_text(encoding="utf-8")
+        ada_long_term = (ada_memory_dir / "long_term_memories.md").read_text(encoding="utf-8")
+        ada_key_memories = json.loads((ada_memory_dir / "key_memories.json").read_text(encoding="utf-8"))
+        ada_short_term = (ada_memory_dir / "short_term_memories.md").read_text(encoding="utf-8")
         self.assertIn("I remember opening the archive door", player_long_term)
-        self.assertIn("I opened the archive door", player_key_memories)
-        self.assertIn("scene_end", player_short_term)
-        self.assertEqual(player_goals["goals"]["active"], ["Decide whether to enter."])
+        self.assertIn("I opened the archive door", json.dumps(player_key_memories, ensure_ascii=False))
+        self.assertEqual(player_short_term, "")
         self.assertIn("I remember seeing the player hesitate", ada_long_term)
-        self.assertIn("I watched the player hesitate", ada_key_memories)
-        self.assertIn("scene_end", ada_short_term)
-        self.assertEqual(ada_goals["goals"]["active"], ["Watch the threshold."])
+        self.assertIn("I watched the player hesitate", json.dumps(ada_key_memories, ensure_ascii=False))
+        self.assertEqual(ada_short_term, "")
         self.assertFalse((player_memory_dir / "summary.md").exists())
         self.assertFalse((ada_memory_dir / "summary.md").exists())
         self.assertEqual(final_manifest["stage"], "delivered")

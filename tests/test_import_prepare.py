@@ -112,6 +112,17 @@ class ImportPrepareTest(unittest.TestCase):
         self.assertTrue(card_dir.is_dir())
         self.assertTrue((card_dir / ".card_data.json").exists())
         self.assertTrue((card_dir / "memory").is_dir())
+        self.assertTrue((card_dir / "characters" / "_self" / "profile.md").exists())
+        self.assertTrue((card_dir / "characters" / "_self" / "long_term_memories.md").exists())
+        self.assertTrue((card_dir / "characters" / "_self" / "key_memories.json").exists())
+        self.assertTrue((card_dir / "characters" / "_self" / "short_term_memories.md").exists())
+        self.assertTrue((card_dir / "memory" / "characters" / "_self" / "profile.md").exists())
+        self.assertTrue((card_dir / "memory" / "characters" / "_self" / "background.md").exists())
+        self.assertFalse((card_dir / "memory" / "characters" / "_self" / "profile.json").exists())
+        self.assertFalse((card_dir / "memory" / "characters" / "_self" / "state.json").exists())
+        self.assertFalse((card_dir / "memory" / "characters" / "_self" / "goals.md").exists())
+        self.assertFalse((card_dir / "memory" / "characters" / "_self" / "goals.json").exists())
+        self.assertFalse((card_dir / "memory" / "player").exists())
 
     def test_run_import_continues_existing_save_without_treating_runtime_json_as_card(self):
         import_card = _load_import_card()

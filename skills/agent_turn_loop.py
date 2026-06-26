@@ -18,7 +18,9 @@ import agent_run
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import actor_memory_store
 import character_promotions
+import projection_agent
 import subgm_threads
 import subgm_turn_loop
 
@@ -66,7 +68,8 @@ def _read_input(run_dir: Path) -> dict:
 
 def _safe_character_actor_suffix(name: str) -> str:
     raw = str(name or "")
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", agent_run.safe_name(raw))
+    canonical = actor_memory_store.canonical_actor_id(f"character:{raw}").split(":", 1)[1]
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", canonical)
     if not re.match(r"^[A-Za-z]", safe):
         digest = hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:8]
         safe = f"C_{digest}"
@@ -86,8 +89,10 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
         name = str(item.get("name") or item.get("character_name") or "").strip()
         if not name:
             continue
+        canonical_id = actor_memory_store.canonical_actor_id(f"character:{name}")
         result[f"character:{name}"] = item
         result[f"character:{_safe_character_actor_suffix(name)}"] = item
+        result[canonical_id] = item
 
     for key, value in contexts.items():
         if key == "characters" or not isinstance(value, dict):
@@ -96,6 +101,7 @@ def _characters_by_actor_id(input_payload: dict) -> dict[str, dict]:
         if not actor_id.startswith("character:"):
             actor_id = f"character:{actor_id}"
         result[actor_id] = value
+        result[actor_memory_store.canonical_actor_id(actor_id)] = value
     return result
 
 
@@ -441,19 +447,78 @@ def _record_request_actor_intent(run_dir: Path, sender: str, actor_id: str, call
         raise _runtime_write_error("record request_actor intent", exc) from exc
 
 
-def _record_projected_actor_message(
-    run_dir: Path,
-    actor_id: str,
-    call: dict,
-    packet: dict,
-    intent_id: str,
-) -> str:
+def _complete_projection_intent(root: Path, intent_id: str, projected_message_id: str) -> None:
     try:
-        return agent_actor_runtime.record_projected_actor_message(run_dir, actor_id, call, packet, intent_id)
+        agent_actor_runtime._require_intent_result(
+            "complete request_projection intent",
+            agent_actor_runtime.agent_intents.complete_intent(
+                root,
+                intent_id,
+                outputs={"projected_message_id": projected_message_id},
+            ),
+        )
     except agent_actor_runtime.AgentActorRuntimeError as exc:
         _actor_runtime_loop_error(exc)
     except Exception as exc:
-        raise _runtime_write_error("record projected actor message", exc) from exc
+        raise _runtime_write_error("complete request_projection intent", exc) from exc
+
+
+def _validate_projection_result(actor_id: str, source_call_id: str, payload: Any) -> dict:
+    try:
+        result = projection_agent.validate_projection_output(
+            payload,
+            actor_id=actor_id,
+            source_call_id=source_call_id,
+        )
+    except projection_agent.ProjectionValidationError as exc:
+        raise AgentTurnLoopError(f"invalid projection output: {exc}") from exc
+    decision = str(result.get("decision") or "")
+    if decision not in {"pass", "edited"}:
+        feedback = str(result.get("feedback") or "").strip()
+        detail = f": {feedback}" if feedback else ""
+        raise AgentTurnLoopError(f"projection rejected actor message with {decision}{detail}")
+    return result
+
+
+def _project_actor_message(
+    run_dir: Path,
+    card_folder: Path,
+    actor_id: str,
+    call: dict,
+    packet: dict,
+    source_message_id: str,
+    intent_id: str,
+    dispatch: DispatchFn,
+) -> dict:
+    call_id = str(call.get("call_id") or "")
+    try:
+        projection_packet = projection_agent.build_review_packet(
+            actor_id=actor_id,
+            source_call_id=call_id,
+            source_message_id=source_message_id,
+            requested_actor_message=str(call.get("prompt") or ""),
+            actor_packet=packet,
+            objective_context={},
+            card_folder=str(card_folder),
+        )
+        projection_output = dispatch("projection", projection_packet)
+        projection_result = _validate_projection_result(actor_id, call_id, projection_output)
+        projected = agent_actor_runtime.project_actor_request(
+            run_dir,
+            actor_id=actor_id,
+            source_message_id=source_message_id,
+            source_call_id=call_id,
+            projection_result=projection_result,
+        )
+        projected_message_id = str(projected.get("projected_message_id") or "")
+        _complete_projection_intent(Path(run_dir), intent_id, projected_message_id)
+        return projection_result
+    except agent_actor_runtime.AgentActorRuntimeError as exc:
+        _actor_runtime_loop_error(exc)
+    except AgentTurnLoopError:
+        raise
+    except Exception as exc:
+        raise _runtime_write_error("project actor message", exc) from exc
 
 
 def _record_actor_response_message(run_dir: Path, actor_id: str, call: dict, actor_output: dict) -> str:
@@ -463,6 +528,25 @@ def _record_actor_response_message(run_dir: Path, actor_id: str, call: dict, act
         _actor_runtime_loop_error(exc)
     except Exception as exc:
         raise _runtime_write_error("record actor_response message", exc) from exc
+
+
+def _append_short_term_dialogue(
+    card_folder: Path,
+    actor_id: str,
+    speaker: str,
+    content: str,
+    source_id: str,
+) -> None:
+    try:
+        actor_memory_store.append_short_term_dialogue(
+            card_folder,
+            actor_id,
+            speaker,
+            content,
+            source_id=source_id,
+        )
+    except Exception as exc:
+        raise AgentTurnLoopError(f"append short-term memory failed: {exc}") from exc
 
 
 def _dispatch_actor_call(
@@ -491,19 +575,49 @@ def _dispatch_actor_call(
     )
     packet = agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
     root = Path(run_dir)
-    _request_message_id, intent_id = _record_request_actor_intent(root, "gm", actor_id, call)
-    _record_projected_actor_message(root, actor_id, call, packet, intent_id)
+    request_message_id, intent_id = _record_request_actor_intent(root, "gm", actor_id, call)
+    projection_result = _project_actor_message(
+        root,
+        card_folder,
+        actor_id,
+        call,
+        packet,
+        request_message_id,
+        intent_id,
+        dispatch,
+    )
+    final_actor_message = str(projection_result.get("final_actor_message") or "").strip()
+    if final_actor_message:
+        packet = dict(packet)
+        packet["gm_prompt"] = final_actor_message
+        call = dict(call)
+        call["prompt"] = final_actor_message
+    call_id = str(call.get("call_id") or "")
+    _append_short_term_dialogue(
+        card_folder,
+        actor_id,
+        "gm",
+        final_actor_message,
+        f"{root.name}:{call_id}:gm",
+    )
     _write_progress_safe(
         "gm_loop.actor_dispatch",
         "actor dispatch",
         percent=48,
         detail={
             "actor": actor_id,
-            "actor_call_id": str(call.get("call_id") or ""),
+            "actor_call_id": call_id,
         },
     )
     raw_actor_payload = dispatch(_dispatch_actor_key(actor_id), packet)
     actor_output = _validate_actor(actor_id, raw_actor_payload)
+    _append_short_term_dialogue(
+        card_folder,
+        actor_id,
+        actor_id,
+        str(actor_output.get("natural_reply") or ""),
+        f"{root.name}:{call_id}:actor",
+    )
     _record_actor_response_message(root, actor_id, call, actor_output)
     returned_version = _dict(raw_actor_payload.get("context_version")) if isinstance(raw_actor_payload, dict) else {}
     returned_hash = str(returned_version.get("hash") or "").strip()
@@ -693,7 +807,8 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
     filtered["actor_calls"] = [
         call
         for call in gm_output.get("actor_calls", [])
-        if str(call.get("actor_id") or "") in registered_actor_targets
+        if str(call.get("actor_id") or "") != "player"
+        and str(call.get("actor_id") or "") in registered_actor_targets
     ]
     return filtered
 

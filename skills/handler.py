@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import actor_memory_store
 from mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
 from io_utils import read_json as _read_json_file, write_json as _write_json_file
 from response_parser import (
@@ -903,6 +904,26 @@ def _stat_max_guess(val):
     return int(math.ceil(val / mag) * mag)
 
 
+def _html_escape(text):
+    """Minimal HTML escaping."""
+    if not isinstance(text, str):
+        text = str(text)
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+
+def _display_value_html(value):
+    """Render variable values as readable text inside the fallback status panel."""
+    text = str(value)
+    text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
+    text = re.sub(r"(?i)</\s*(p|div|li|tr|h[1-6])\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(line for line in lines if line).strip()
+    return _html_escape(text).replace("\n", "<br>")
+
+
 def _render_stat_bar(label, val, max_val=None):
     """Render a single stat bar as inline HTML."""
     if max_val is None:
@@ -911,19 +932,12 @@ def _render_stat_bar(label, val, max_val=None):
     color = _stat_color(label)
     return (
         '<div class="tv-stat-row">'
-        '<span class="tv-stat-label">' + label + '</span>'
+        '<span class="tv-stat-label">' + _html_escape(label) + '</span>'
         '<div class="tv-stat-bar-bg"><div class="tv-stat-bar-fill" style="width:'
         + str(pct) + '%;background:' + color + '"></div></div>'
-        '<span class="tv-stat-value">' + str(val) + '</span>'
+        '<span class="tv-stat-value">' + _html_escape(val) + '</span>'
         '</div>'
     )
-
-
-def _html_escape(text):
-    """Minimal HTML escaping."""
-    if not isinstance(text, str):
-        text = str(text)
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
 def _build_beautify_panel(stat_data, delta, beautify_data):
@@ -1005,7 +1019,7 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
         body_html += '<div class="beautify-info-grid">'
         for key in world_data:
             val = world_data[key]
-            body_html += '<div class="beautify-info-card"><div class="beautify-info-label">' + _html_escape(key) + '</div><div class="beautify-info-value">' + _html_escape(str(val)) + '</div></div>'
+            body_html += '<div class="beautify-info-card"><div class="beautify-info-label">' + _html_escape(key) + '</div><div class="beautify-info-value">' + _display_value_html(val) + '</div></div>'
         body_html += '</div></div>'
 
     # Character tabs
@@ -1030,7 +1044,7 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
 
         # Current condition
         if cd.get('当前状况'):
-            body_html += '<div class="beautify-char-condition">' + _html_escape(str(cd['当前状况'])) + '</div>'
+            body_html += '<div class="beautify-char-condition">' + _display_value_html(cd['当前状况']) + '</div>'
 
         # Stat bars
         stat_items = [(k, v) for k, v in cd.items() if isinstance(v, (int, float))]
@@ -1060,12 +1074,12 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
             if outfit:
                 body_html += '<div class="beautify-sub-card"><div class="beautify-sub-title">着装</div>'
                 for sk, sv in outfit.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
+                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _display_value_html(sv) + '</span></div>'
                 body_html += '</div>'
             if body_stats:
                 body_html += '<div class="beautify-sub-card"><div class="beautify-sub-title">身体</div>'
                 for sk, sv in body_stats.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
+                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _display_value_html(sv) + '</span></div>'
                 body_html += '</div>'
             body_html += '</div>'
 
@@ -1074,7 +1088,7 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
             if isinstance(val, dict) and key not in ('着装', '身体状况'):
                 body_html += '<details class="beautify-sub"><summary>' + _html_escape(key) + '</summary>'
                 for sk, sv in val.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
+                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _display_value_html(sv) + '</span></div>'
                 body_html += '</details>'
 
         # Delta changes
@@ -1089,7 +1103,7 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
             for dk, dv in char_delta.items():
                 old_v = dv.get('old', '?') if isinstance(dv, dict) else '?'
                 new_v = dv.get('new', '?') if isinstance(dv, dict) else str(dv)
-                body_html += '<div class="beautify-delta-item"><span class="beautify-delta-key">' + _html_escape(dk) + '</span> <span class="beautify-delta-old">' + _html_escape(str(old_v)) + '</span> → <span class="beautify-delta-new">' + _html_escape(str(new_v)) + '</span></div>'
+                body_html += '<div class="beautify-delta-item"><span class="beautify-delta-key">' + _html_escape(dk) + '</span> <span class="beautify-delta-old">' + _display_value_html(old_v) + '</span> → <span class="beautify-delta-new">' + _display_value_html(new_v) + '</span></div>'
             body_html += '</div>'
 
         body_html += '</div>'  # end tab-panel
@@ -1101,7 +1115,8 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
     if font_css:
         panel_html += '<style>' + font_css + '</style>'
 
-    panel_html += '<div class="beautify-panel-inline" style="' + bg_style + '">'
+    panel_class = 'beautify-panel-inline has-background' if panel_bg else 'beautify-panel-inline'
+    panel_html += '<div class="' + panel_class + '" style="' + bg_style + '">'
 
     # Overlay for readability when bg is set
     if panel_bg:
@@ -1543,8 +1558,7 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     card_data.setdefault("data", {})["extensions"] = card_data.get("data", {}).get("extensions", {})
     _write_json_file(card_path, card_data)
 
-    char_dir = Path(card_folder) / "memory" / "characters" / "_self"
-    _write_json_file(char_dir / "profile.json", profile)
+    paths = actor_memory_store.ensure_actor_files(card_folder, "player")
     md = [
         "# 自定义角色卡",
         "",
@@ -1561,12 +1575,25 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     ]
     for item in fields.get("world_assumptions", []) or []:
         md.append(f"- {item}")
-    _write_json_file(char_dir / "profile.json", profile)
-    (char_dir / "profile.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    recent_lines = ["# 近期角色沉淀", ""]
-    for obs in profile.get("recent_observations", [])[-8:]:
-        recent_lines.append(f"- 第 {obs.get('turn')} 轮：{obs.get('summary', '')}")
-    (char_dir / "recent.md").write_text("\n".join(recent_lines) + "\n", encoding="utf-8")
+    subjective_text = "\n".join(md) + "\n"
+    paths.profile.write_text(subjective_text, encoding="utf-8")
+
+    objective_lines = [
+        "# 玩家角色客观档案",
+        "",
+        f"- 最后更新轮次: {turn_index}",
+        f"- 姓名: {card_data.get('name', '')}",
+        f"- 身份/定位: {fields.get('role', '')}",
+        "",
+        "## 可确认背景",
+        fields.get("motivation", ""),
+    ]
+    paths.objective_profile.write_text("\n".join(objective_lines).rstrip() + "\n", encoding="utf-8")
+
+    background_lines = ["# 玩家角色背景", ""]
+    for item in fields.get("world_assumptions", []) or []:
+        background_lines.append(f"- {item}")
+    paths.background.write_text("\n".join(background_lines).rstrip() + "\n", encoding="utf-8")
 
 
 # ═══ Turn Operations ═══

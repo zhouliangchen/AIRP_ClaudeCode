@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +50,28 @@ def run_round(
 
     critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
     stages.append("critic")
+    repair_attempts = 0
+    while str(critic.get("decision") or "") != "pass" and _critic_allows_story_repair(critic):
+        if repair_attempts >= 1:
+            break
+        repair_attempts += 1
+        _record_story_repair_attempt(run_dir, critic, repair_attempts)
+        story_output = _run_story(
+            root,
+            run_dir,
+            manifest,
+            run_claude,
+            story_input,
+            repair_context={
+                "critic_report": critic,
+                "repair_instruction": str(critic.get("repair_instruction") or ""),
+                "previous_rejected_story_output": story_output,
+            },
+        )
+        stages.append("story_repair")
+        critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
+        stages.append("critic_repair")
+
     if str(critic.get("decision") or "") != "pass":
         return _blocked(
             run_dir,
@@ -207,13 +230,14 @@ def _run_gm_collaboration(
 ) -> dict[str, Any]:
     def dispatch(agent_key: str, packet: dict[str, Any]) -> dict[str, Any]:
         prompt = rp_generate_cli._read_loop_prompt(run_dir, manifest, agent_key, packet)
+        context_key = "projection_packet" if agent_key == "projection" else "loop_packet"
         return _dispatch(
             run_dir,
             root,
             run_claude,
             agent_key,
             prompt,
-            extra_context={"loop_packet": packet},
+            extra_context={context_key: packet},
         )
 
     try:
@@ -231,8 +255,12 @@ def _run_story(
     manifest: dict[str, Any],
     run_claude: Callable[[str, str, str | Path], str],
     story_input: dict[str, Any],
+    repair_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     story_context = agent_outputs.story_prompt_context(story_input)
+    runtime_input = {"story_input": story_context}
+    if isinstance(repair_context, dict) and repair_context:
+        runtime_input.update(repair_context)
     prompt = _prompt_text(run_dir, manifest, "story", "prompts/story.prompt.md")
     story_output = _dispatch(
         run_dir,
@@ -240,9 +268,10 @@ def _run_story(
         run_claude,
         "story",
         prompt,
-        extra_context={"story_input": story_context},
+        extra_context=runtime_input,
     )
     story_output = rp_generate_cli._normalize_story_output(story_output, story_context)
+    agent_run.write_json(run_dir / "story.output.json", story_output)
     _write_artifact(run_dir, "story.output.json", story_output)
     return story_output
 
@@ -271,8 +300,41 @@ def _run_critic(
         },
     )
     critic = rp_generate_cli._normalize_critic_report_for_story(critic, story_output, story_context)
+    agent_run.write_json(run_dir / "critic.report.json", critic)
     _write_artifact(run_dir, "critic.report.json", critic)
     return critic
+
+
+def _critic_allows_story_repair(critic: dict[str, Any]) -> bool:
+    routing = critic.get("repair_routing")
+    if not isinstance(routing, dict):
+        return False
+    if routing.get("can_auto_repair") is not True:
+        return False
+    if str(routing.get("rollback") or "") != "story_only":
+        return False
+    targets = routing.get("target_agents")
+    if isinstance(targets, list) and targets:
+        return all(str(item) == "story" for item in targets)
+    return str(routing.get("stage") or "") == "story_composition"
+
+
+def _record_story_repair_attempt(run_dir: Path, critic: dict[str, Any], attempt: int) -> None:
+    manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    manifest["critic_retry_count"] = int(manifest.get("critic_retry_count", 0) or 0) + 1
+    agent_run.write_json(run_dir / "manifest.json", manifest)
+    record = {
+        "attempt": attempt,
+        "stage": "story_composition",
+        "rollback": "story_only",
+        "repair_instruction": critic.get("repair_instruction", ""),
+        "hard_failures": critic.get("hard_failures", []),
+        "repair_routing": critic.get("repair_routing", {}),
+    }
+    with (run_dir / "repair_history.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _run_postprocess(

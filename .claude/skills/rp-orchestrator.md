@@ -60,7 +60,8 @@ Use the current `.agent_runs/<round>/` folder as a mailbox:
 - `story.output.json`
 - `critic.report.json`
 - `postprocess.output.json`
-- `memory_summaries/*.summary.json`: scheduled actor self-summary outputs, usually every 6 rounds.
+- `post_round_memory_jobs/*.job.json`: natural-language post-round actor memory organization jobs for actors who participated this round.
+- `post_round_memory_jobs/*.summary.json`: completed actor memory organization outputs; successful ingestion rewrites `characters/<actor>/long_term_memories.md` and `key_memories.json`, then clears `short_term_memories.md`.
 - `repair_history.jsonl`: critic revise/block audit for this round.
 - `.agent_runs/improvement_queue.jsonl`: session-level backlog for systemic prompt/code/process improvements.
 - `manifest.json` with stages such as `awaiting_input_analysis`, `analysis_applied`, `awaiting_agent_outputs`, `story_ready`, `critic_passed`, `delivered`, or `blocked`.

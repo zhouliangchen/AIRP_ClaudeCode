@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import actor_memory_store
 import agent_run
 import subgm_threads
 
@@ -17,17 +18,6 @@ ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked", "max
 TERMINAL_SIDE_THREAD_STATUSES = {"completed", "closed"}
 PAUSED_SIDE_THREAD_STATUS = "paused"
 DEFAULT_NEXT_RESUME_POINT = "resume when the main GM schedules this side thread in a later round"
-ACTOR_VERSION_FILES = (
-    "profile.md",
-    "profile.json",
-    "long_term.md",
-    "key_memories.md",
-    "short_term.md",
-    "recent.md",
-    "goals.json",
-)
-
-
 def _now() -> str:
     return datetime.now(CST).isoformat(timespec="seconds")
 
@@ -87,25 +77,28 @@ def _canonical_source_file_content(path: Path) -> str:
 
 def actor_memory_dir(card_folder: str | Path, actor_id: str) -> Path:
     """Return the current-format structured memory directory for an actor."""
-    card = Path(card_folder)
-    actor = str(actor_id or "").strip()
-    if actor == "player":
-        return card / "memory" / "player"
-    if actor.startswith("character:"):
-        name = actor.split(":", 1)[1] or "_unknown"
-        return card / "memory" / "characters" / agent_run.safe_name(name)
-    return card / "memory" / "characters" / "_unknown"
+    return actor_memory_store.actor_paths(card_folder, actor_id).actor_dir
+
+
+def _actor_context_source_files(card_folder: str | Path, actor_id: str) -> list[Path]:
+    paths = actor_memory_store.actor_paths(card_folder, actor_id)
+    return [
+        paths.profile,
+        paths.long_term,
+        paths.key_memories,
+        paths.short_term,
+        paths.objective_profile,
+        paths.background,
+    ]
 
 
 def compute_actor_context_version(card_folder: str | Path, actor_id: str, packet: dict[str, Any]) -> dict[str, Any]:
     """Hash the actor-facing packet projection and structured actor memory files."""
     card = Path(card_folder)
     packet = packet if isinstance(packet, dict) else {}
-    memory_dir = actor_memory_dir(card, actor_id)
     memory_files: list[dict[str, Any]] = []
     source_paths: list[str] = []
-    for filename in ACTOR_VERSION_FILES:
-        path = memory_dir / filename
+    for path in _actor_context_source_files(card, actor_id):
         if not path.exists() or not path.is_file():
             continue
         source_path = _relative_source_path(card, path)
@@ -345,7 +338,6 @@ def cleanup_round_agents(card_folder: str | Path, run_dir: str | Path, *, reason
 
 __all__ = [
     "ACTIVE_SIDE_THREAD_STATUSES",
-    "ACTOR_VERSION_FILES",
     "TERMINAL_SIDE_THREAD_STATUSES",
     "actor_memory_dir",
     "attach_actor_context_version",

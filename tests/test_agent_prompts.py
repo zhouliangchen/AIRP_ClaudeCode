@@ -224,8 +224,11 @@ class AgentPromptsTest(unittest.TestCase):
 
         for prompt in (player_prompt, character_prompt):
             self.assertIn("我是", prompt)
-            self.assertIn("我只用自然语言回复", prompt)
-            self.assertIn("我的行动准则", prompt)
+            self.assertIn("我直接用自然语言对刚刚与我说话的人回应", prompt)
+            self.assertTrue(
+                "我的行动方式" in prompt or "我的独立视角" in prompt,
+                prompt,
+            )
             for forbidden in (
                 '"events"',
                 "custom_action",

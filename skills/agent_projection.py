@@ -215,7 +215,7 @@ def project_actor_context(
     actor = _as_dict(actor_state)
     rendered = actor_context_renderer.render_actor_context(actor_key, actor, world)
 
-    return {
+    packet = {
         "actor_id": actor_key,
         "agent": _agent_type(actor_key),
         "visibility": _actor_visibility(actor_key),
@@ -232,6 +232,10 @@ def project_actor_context(
         "visible_events": _visible_events(world, actor_key, actor),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
     }
+    card_folder = _text(actor.get("card_folder")).strip()
+    if card_folder:
+        packet["card_folder"] = card_folder
+    return packet
 
 
 __all__ = ["FORBIDDEN_WORLD_KEYS", "project_actor_context"]

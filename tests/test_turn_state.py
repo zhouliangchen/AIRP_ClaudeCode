@@ -522,10 +522,18 @@ class TurnStateTest(unittest.TestCase):
         )
 
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
-        profile = json.loads((self.card / "memory" / "characters" / "_self" / "profile.json").read_text(encoding="utf-8"))
+        subjective_profile = (
+            self.card / "characters" / "_self" / "profile.md"
+        ).read_text(encoding="utf-8")
+        objective_profile = (
+            self.card / "memory" / "characters" / "_self" / "profile.md"
+        ).read_text(encoding="utf-8")
 
         self.assertEqual(card_data["name"], "雨蒙")
-        self.assertEqual(profile["fields"]["role"], "普通的高一男生")
+        self.assertIn("普通的高一男生", subjective_profile)
+        self.assertIn("雨蒙", objective_profile)
+        self.assertTrue((self.card / "memory" / "characters" / "_self" / "background.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "_self" / "profile.json").exists())
 
     def test_frontend_polls_progress_and_refreshes_after_submit(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
@@ -1451,6 +1459,32 @@ round_total: 7
 
         state_js = (self.card / "state.js").read_text(encoding="utf-8")
         self.assertIn('quest: "Quest from state patch"', state_js)
+
+    def test_fallback_beautify_panel_strips_card_html_from_variable_values(self):
+        html = self.handler._build_beautify_panel(
+            {
+                "世界": {
+                    "时间": '<span style="color:Orange">黄昏</span><br>雨夜',
+                },
+                "铃天阳子": {
+                    "当前状况": '<span style="color:Orange">强装镇定</span>',
+                    "着装": {
+                        "上衣": '<span style="color:#fff">白色校服</span>',
+                    },
+                    "身体状况": {
+                        "疲劳": "轻微",
+                    },
+                },
+            },
+            {},
+            {},
+        )
+
+        self.assertIn("黄昏<br>雨夜", html)
+        self.assertIn("强装镇定", html)
+        self.assertIn("白色校服", html)
+        self.assertNotIn("&lt;span", html)
+        self.assertNotIn("style=&quot;color", html)
 
     def test_append_turn_uses_postprocess_current_goal_when_quest_patch_missing(self):
         self._write_postprocess_output(

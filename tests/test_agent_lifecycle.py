@@ -138,9 +138,23 @@ class AgentLifecycleTest(unittest.TestCase):
         self.assertEqual((self.run_dir / "manifest.json").read_text(encoding="utf-8"), original_manifest)
 
     def test_compute_actor_context_version_changes_when_memory_changes(self):
-        memory = self.card / "memory" / "characters" / "Ada"
-        memory.mkdir(parents=True)
-        (memory / "long_term.md").write_text("Ada trusts the player.", encoding="utf-8")
+        subjective = self.card / "characters" / "Ada"
+        objective = self.card / "memory" / "characters" / "Ada"
+        subjective.mkdir(parents=True)
+        objective.mkdir(parents=True)
+        (subjective / "profile.md").write_text("我是 Ada。", encoding="utf-8")
+        (subjective / "long_term_memories.md").write_text("Ada trusts the player.", encoding="utf-8")
+        (subjective / "key_memories.json").write_text(
+            '{"memories":[{"tag":"lamp","summary":"Ada lent a lamp","detail":"secret detail"}]}',
+            encoding="utf-8",
+        )
+        (subjective / "short_term_memories.md").write_text("Ada is near the door.", encoding="utf-8")
+        (objective / "profile.md").write_text("Ada is an archivist.", encoding="utf-8")
+        (objective / "background.md").write_text("Ada works in the old archive.", encoding="utf-8")
+        legacy = self.card / "memory" / "characters" / "Ada"
+        (legacy / "profile.json").write_text('{"legacy": true}', encoding="utf-8")
+        (legacy / "recent.md").write_text("legacy recent should not affect version", encoding="utf-8")
+        (legacy / "goals.json").write_text('{"goals":{"active":["legacy"]}}', encoding="utf-8")
         packet = {
             "agent_id": "character:Ada",
             "actor": {"name": "Ada"},
@@ -150,11 +164,19 @@ class AgentLifecycleTest(unittest.TestCase):
         }
 
         first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
-        (memory / "long_term.md").write_text("Ada distrusts the player.", encoding="utf-8")
+        (subjective / "long_term_memories.md").write_text("Ada distrusts the player.", encoding="utf-8")
         second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
 
         self.assertNotEqual(first["hash"], second["hash"])
-        self.assertIn("memory/characters/Ada/long_term.md", first["source_paths"])
+        self.assertIn("characters/Ada/profile.md", first["source_paths"])
+        self.assertIn("characters/Ada/long_term_memories.md", first["source_paths"])
+        self.assertIn("characters/Ada/key_memories.json", first["source_paths"])
+        self.assertIn("characters/Ada/short_term_memories.md", first["source_paths"])
+        self.assertIn("memory/characters/Ada/profile.md", first["source_paths"])
+        self.assertIn("memory/characters/Ada/background.md", first["source_paths"])
+        self.assertNotIn("memory/characters/Ada/profile.json", first["source_paths"])
+        self.assertNotIn("memory/characters/Ada/recent.md", first["source_paths"])
+        self.assertNotIn("memory/characters/Ada/goals.json", first["source_paths"])
 
     def test_compute_actor_context_version_changes_when_packet_memory_changes(self):
         packet = {
@@ -173,7 +195,7 @@ class AgentLifecycleTest(unittest.TestCase):
         self.assertNotEqual(first["hash"], second["hash"])
 
     def test_compute_actor_context_version_normalizes_json_source_key_order(self):
-        memory = self.card / "memory" / "characters" / "Ada"
+        memory = self.card / "characters" / "Ada"
         memory.mkdir(parents=True)
         packet = {
             "actor_id": "character:Ada",
@@ -182,15 +204,15 @@ class AgentLifecycleTest(unittest.TestCase):
             "gm_prompt": "You see the corridor.",
             "visible_events": [],
         }
-        goals_path = memory / "goals.json"
+        goals_path = memory / "key_memories.json"
         goals_path.write_text(
-            '{"goals":{"active":["Protect the key"],"paused":[],"resolved":[]}}',
+            '{"memories":[{"tag":"key","summary":"Protect the key","detail":"exact shelf"}]}',
             encoding="utf-8",
         )
 
         first = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)
         goals_path.write_text(
-            '{\n  "goals": {\n    "resolved": [],\n    "paused": [],\n    "active": ["Protect the key"]\n  }\n}',
+            '{\n  "memories": [\n    {\n      "summary": "Protect the key",\n      "detail": "exact shelf",\n      "tag": "key"\n    }\n  ]\n}',
             encoding="utf-8",
         )
         second = self.agent_lifecycle.compute_actor_context_version(self.card, "character:Ada", packet)

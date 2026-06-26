@@ -212,6 +212,88 @@ class RoundRuntimeTest(unittest.TestCase):
         messages = self.round_runtime.agent_messages.read_messages(self.run_dir)
         self.assertIn("unsupported_capability", {item.get("type") for item in messages})
 
+    def test_run_round_auto_repairs_story_only_critic_revision(self):
+        calls = {"story": 0, "critic": 0, "repair_context_seen": False}
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "story":
+                calls["story"] += 1
+                if "previous_rejected_story_output" in prompt and "repair_instruction" in prompt:
+                    calls["repair_context_seen"] = True
+                return json.dumps(
+                    {
+                        "content": (
+                            "<content>修正版剧情。</content>"
+                            if calls["story"] > 1
+                            else "<content>初稿剧情。</content>"
+                        ),
+                        "character_dialogues": [],
+                        "metadata": {},
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "critic":
+                calls["critic"] += 1
+                if calls["critic"] == 1:
+                    return json.dumps(
+                        {
+                            "decision": "revise",
+                            "hard_failures": ["missing derived_content_edits"],
+                            "soft_issues": [],
+                            "repair_instruction": "Rewrite story with the required edit artifact.",
+                            "system_iteration_suggestion": "",
+                            "quality_checks": {},
+                            "repair_routing": {
+                                "stage": "story_composition",
+                                "target_agents": ["story"],
+                                "rollback": "story_only",
+                                "can_auto_repair": True,
+                                "risk": "low",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "decision": "pass",
+                        "hard_failures": [],
+                        "soft_issues": [],
+                        "repair_instruction": "",
+                        "system_iteration_suggestion": "",
+                        "quality_checks": {},
+                    },
+                    ensure_ascii=False,
+                )
+            return _fake_run_claude(agent_key, prompt, cwd)
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["story"], 2)
+        self.assertEqual(calls["critic"], 2)
+        self.assertTrue(calls["repair_context_seen"])
+        story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
+        self.assertIn("修正版剧情", story["content"])
+        history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
+        self.assertIn("story_composition", history)
+
 
 if __name__ == "__main__":
     unittest.main()

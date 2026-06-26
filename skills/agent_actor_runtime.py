@@ -10,6 +10,7 @@ import agent_intents
 import agent_interactions
 import agent_messages
 import agent_run
+import actor_memory_store
 
 
 class AgentActorRuntimeError(RuntimeError):
@@ -614,7 +615,7 @@ def _actor_context_packet_path(run_dir: Path, actor_id: str) -> Path | None:
     if actor_id == "player":
         return run_dir / "player.context.json"
     if actor_id.startswith("character:"):
-        safe = agent_run.safe_name(actor_id.split(":", 1)[1] or "_unknown")
+        safe = actor_memory_store.canonical_actor_id(actor_id).split(":", 1)[1]
         return run_dir / "characters" / f"{safe}.context.json"
     return None
 
@@ -623,13 +624,14 @@ def _validated_actor_context_packet(actor_id: str, packet: dict | None) -> dict 
     if not isinstance(packet, dict):
         return None
     projected = copy.deepcopy(packet)
-    packet_actor_id = str(projected.get("actor_id") or actor_id)
-    if packet_actor_id != actor_id:
+    requested_actor_id = actor_memory_store.canonical_actor_id(actor_id)
+    packet_actor_id = actor_memory_store.canonical_actor_id(str(projected.get("actor_id") or actor_id))
+    if packet_actor_id != requested_actor_id:
         raise AgentActorProjectionError(
             "actor_context_actor_mismatch",
-            {"expected_actor_id": actor_id, "packet_actor_id": packet_actor_id},
+            {"expected_actor_id": requested_actor_id, "packet_actor_id": packet_actor_id},
         )
-    projected["actor_id"] = actor_id
+    projected["actor_id"] = requested_actor_id
     return projected
 
 

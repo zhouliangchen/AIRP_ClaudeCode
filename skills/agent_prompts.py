@@ -807,10 +807,6 @@ def write_round_prompts(
         "runtime_settings": runtime_payload["settings"],
         "style_profile": runtime_payload["style_profile"],
     }
-    if card_folder is not None and agent_memory.memory_summary_due(root.name):
-        summary_agents = ["player"] + [f"character:{name}" for name in character_prompts.keys()]
-        agent_memory.write_memory_summary_prompts(card_folder, root, manifest, summary_agents)
-
     agent_run.append_manifest_stage(manifest, "prepared", "Agent run directory and context packets are prepared.")
     agent_run.append_manifest_stage(manifest, "prompts_ready", "Subagent prompts are materialized.")
     agent_run.append_manifest_stage(manifest, "awaiting_agent_outputs", "Waiting for Claude Code subagent output artifacts.")

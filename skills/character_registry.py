@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-import agent_run
+import actor_memory_store
 
 
 def _to_text(value: Any) -> str:
@@ -57,14 +57,6 @@ def _write_card_data(card_folder: Any, card_data: Dict[str, Any]) -> None:
     )
 
 
-def _read_json_object(path: Path) -> Dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _profile_markdown(
     *,
     name: str,
@@ -100,35 +92,46 @@ def _profile_markdown(
     )
 
 
-def _profile_json(
-    *,
-    name: str,
-    setting_text: str,
-    source_input_id: str,
-    round_id: str,
-    source_unit_id: str,
-    source_agent: str,
-) -> Dict[str, Any]:
-    history_entry = {
-        "source_agent": source_agent,
-        "source": "input_analysis" if source_agent == "preprocess" else "character_promotion",
-        "source_unit_id": source_unit_id,
-        "source_input_id": source_input_id,
-        "round_id": round_id,
-    }
-    return {
-        "name": name,
-        "importance": "major",
-        "source": history_entry["source"],
-        "source_agent": source_agent,
-        "source_unit_id": source_unit_id,
-        "source_input_id": source_input_id,
-        "round_id": round_id,
-        "visibility": "character_private_and_gm",
-        "status": "active",
-        "authoritative_setting": setting_text,
-        "history": [history_entry],
-    }
+def _actor_profile_markdown(*, name: str, setting_text: str) -> str:
+    lines = [
+        f"# {name}",
+        "",
+        f"我是{name}。",
+    ]
+    text = _to_text(setting_text).strip()
+    if text:
+        lines.extend(["", f"我的情况：{text}"])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _profile_source_agent(markdown: str) -> str:
+    for line in str(markdown or "").splitlines():
+        if line.strip().startswith("- source_agent:"):
+            return line.split(":", 1)[1].strip()
+        if line.strip().startswith("- source: input_analysis"):
+            return "preprocess"
+        if line.strip().startswith("- source: character_promotion"):
+            return "gm"
+        if line.strip().startswith("- source: player"):
+            return "player"
+    return ""
+
+
+def _read_nonempty_text(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text
+
+
+def _first_existing_profile_text(*paths: Path) -> str:
+    for path in paths:
+        text = _read_nonempty_text(path)
+        if text:
+            return text
+    return ""
 
 
 def persist_important_characters(
@@ -143,7 +146,7 @@ def persist_important_characters(
     """Persist input-analysis important/core character records.
 
     Updates `.card_data.json.character_orchestration.major` and writes each
-    character's profile markdown/JSON under `memory/characters/<name>/`.
+    character's objective and actor-facing markdown stores.
     """
     if not isinstance(records, list):
         return []
@@ -178,56 +181,59 @@ def persist_important_characters(
             major.append(name)
             changed_card_data = True
 
-        safe = agent_run.safe_name(name)
-        char_dir = Path(card_folder) / "memory" / "characters" / safe
-        char_dir.mkdir(parents=True, exist_ok=True)
-        profile_md_path = char_dir / "profile.md"
-        profile_json_path = char_dir / "profile.json"
-        profile_exists = profile_md_path.exists() or profile_json_path.exists()
-        source_unit_id = _to_text(record.get("id") or record.get("source_unit_id")).strip()
+        paths = actor_memory_store.ensure_actor_files(card_folder, f"character:{name}")
+        safe = paths.name
+        profile_md_path = paths.objective_profile
+        actor_profile_path = paths.profile
+        background_md_path = paths.background
+        existing_profile = _first_existing_profile_text(
+            profile_md_path,
+            actor_profile_path,
+            background_md_path,
+        )
 
-        if profile_exists and not allow_profile_overwrite:
-            existing = _read_json_object(profile_json_path)
+        if existing_profile and not allow_profile_overwrite:
             persisted.append(
                 {
                     "name": name,
                     "safe_name": safe,
                     "profile_md": str(profile_md_path.resolve()),
-                    "profile_json": str(profile_json_path.resolve()),
+                    "actor_profile_md": str(actor_profile_path.resolve()),
+                    "background_md": str(background_md_path.resolve()),
+                    "profile_text": existing_profile,
+                    "authoritative_setting": "",
                     "profile_preserved": True,
-                    "existing_source_agent": existing.get("source_agent") or existing.get("source") or "",
+                    "existing_source_agent": _profile_source_agent(existing_profile) or "player",
                 }
             )
             continue
 
-        profile_md_path.write_text(
-            _profile_markdown(
-                name=name,
-                setting_text=setting_text,
-                source_input_id=_to_text(source_input_id),
-                round_id=_to_text(round_id),
-                source_agent=source_agent,
-            ),
-            encoding="utf-8",
-        )
-        profile = _profile_json(
+        profile_text = _profile_markdown(
             name=name,
             setting_text=setting_text,
             source_input_id=_to_text(source_input_id),
             round_id=_to_text(round_id),
-            source_unit_id=source_unit_id,
             source_agent=source_agent,
         )
-        profile_json_path.write_text(
-            json.dumps(profile, ensure_ascii=False, indent=2),
+        profile_md_path.write_text(
+            profile_text,
             encoding="utf-8",
         )
+        actor_profile_path.write_text(
+            _actor_profile_markdown(name=name, setting_text=setting_text),
+            encoding="utf-8",
+        )
+        background_md_path.write_text(setting_text.rstrip() + ("\n" if setting_text else ""), encoding="utf-8")
         persisted.append(
             {
                 "name": name,
                 "safe_name": safe,
                 "profile_md": str(profile_md_path.resolve()),
-                "profile_json": str(profile_json_path.resolve()),
+                "actor_profile_md": str(actor_profile_path.resolve()),
+                "background_md": str(background_md_path.resolve()),
+                "profile_text": profile_text,
+                "authoritative_setting": setting_text,
+                "source_agent": source_agent,
                 "profile_preserved": False,
             }
         )
