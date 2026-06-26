@@ -12,6 +12,7 @@ import agent_memory
 import agent_outputs
 import agent_prompts
 import agent_run
+import agent_runtime_pump
 import agent_turn_loop
 import input_analysis_apply
 import input_routing_requests
@@ -41,6 +42,12 @@ def run_round(
 
     input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
     stages.append("input_analysis")
+    runtime_pump = {
+        "after_input_analysis": input_analysis_result.get("runtime_pump", {}).get(
+            "after_input_analysis",
+            {"ok": True, "phase": "after_input_analysis", "processed": [], "blocked": [], "rejected": [], "deferred": []},
+        )
+    }
 
     loop_result = _run_gm_collaboration(card, root, run_dir, manifest, run_claude)
     stages.append("gm_collaboration")
@@ -81,6 +88,14 @@ def run_round(
             {"critic": critic, "loop_result": loop_result},
         )
 
+    runtime_pump["after_critic"] = agent_runtime_pump.run_pending_intents(
+        card,
+        run_dir,
+        phase="after_critic",
+        runtime_settings=_runtime_settings_from_applied(input_analysis_result),
+        run_command=run_command,
+    )
+
     _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
     stages.append("postprocess")
 
@@ -100,6 +115,7 @@ def run_round(
         "input_analysis": input_analysis_result,
         "delivery": delivery,
         "loop_result": loop_result,
+        "runtime_pump": runtime_pump,
         "post_round_memory": post_round_memory,
     }
     _write_artifact(run_dir, "runtime.result.json", result)
@@ -206,6 +222,14 @@ def _ensure_input_analysis(
         runtime_settings=runtime_settings,
         source_intent_id="input_analysis",
     )
+    applied["runtime_pump"] = {
+        "after_input_analysis": agent_runtime_pump.run_pending_intents(
+            card,
+            run_dir,
+            phase="after_input_analysis",
+            runtime_settings=runtime_settings,
+        )
+    }
     _copy_to_artifact(run_dir, "input_analysis.output.json")
     _append_message_once(
         run_dir,
@@ -219,6 +243,12 @@ def _ensure_input_analysis(
         },
     )
     return applied
+
+
+def _runtime_settings_from_applied(applied: dict[str, Any]) -> dict[str, Any]:
+    manifest = applied.get("manifest") if isinstance(applied.get("manifest"), dict) else {}
+    settings = manifest.get("runtime_settings") if isinstance(manifest.get("runtime_settings"), dict) else {}
+    return settings
 
 
 def _append_message_once(run_dir: Path, message_type: str, payload: dict[str, Any]) -> None:

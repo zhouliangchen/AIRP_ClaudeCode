@@ -191,6 +191,23 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
         "routing_requests": [],
         "capability_requests": [
             {
+                "id": "scene-image",
+                "requested_by": "input_analyst",
+                "target": "assets-ui",
+                "capability": "assets.generate_image",
+                "summary": "Supported assets capability smoke fixture.",
+                "reason": "Prove supported capability intents are consumed by the runtime pump.",
+                "source_channel": "user_instruction",
+                "risk": "low",
+                "authorization_gate": "none",
+                "payload": {
+                    "kind": "scene",
+                    "target": "archive-door",
+                    "prompt": "archive classroom door with a warm warning light",
+                },
+                "evidence": {"semantic_unit_ids": ["fixture-assets-capability-1"], "raw_excerpt": "make an image"},
+            },
+            {
                 "id": "unknown-capability",
                 "requested_by": "input_analyst",
                 "target": "weather",
@@ -1037,6 +1054,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
                 "mode": delivery.get("mode"),
             },
             "runtime": runtime_result,
+            "runtime_pump": round_result.get("runtime_pump", {}),
             "capability_requests": {
                 "unsupported_count": sum(
                     1

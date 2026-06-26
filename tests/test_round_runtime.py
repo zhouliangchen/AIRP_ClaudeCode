@@ -212,6 +212,63 @@ class RoundRuntimeTest(unittest.TestCase):
         messages = self.round_runtime.agent_messages.read_messages(self.run_dir)
         self.assertIn("unsupported_capability", {item.get("type") for item in messages})
 
+    def test_run_round_executes_input_analysis_capability_intents(self):
+        request = {
+            "id": "scene-image",
+            "requested_by": "input_analyst",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "Create a scene image.",
+            "reason": "The player explicitly requested a visual update.",
+            "source_channel": "user_instruction",
+            "risk": "low",
+            "authorization_gate": "none",
+            "payload": {
+                "kind": "scene",
+                "target": "doorway",
+                "prompt": "a dim doorway with warm light",
+            },
+            "evidence": {"raw_excerpt": "生成一张门后的图"},
+        }
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [request],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=_fake_run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        pump_path = self.run_dir / "artifacts" / "runtime_pump" / "after_input_analysis.json"
+        self.assertTrue(pump_path.exists())
+        pump = json.loads(pump_path.read_text(encoding="utf-8"))
+        self.assertEqual(pump["phase"], "after_input_analysis")
+        self.assertEqual(pump["processed"], [])
+        self.assertEqual(pump["skipped"][0]["type"], "assets_task")
+        self.assertEqual(pump["skipped"][0]["reason"], "phase_deferred")
+        after_critic = result["runtime_pump"]["after_critic"]
+        self.assertEqual(after_critic["processed"][0]["type"], "assets_task")
+        self.assertIn(after_critic["processed"][0]["outputs"]["status"], {"queued", "deferred"})
+        self.assertEqual(
+            result["runtime_pump"]["after_critic"]["processed"][0]["type"],
+            "assets_task",
+        )
+        agent_intents = _load_module("agent_intents")
+        pending = agent_intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending, [])
+        completed = agent_intents.list_intents(self.run_dir, "completed")
+        self.assertEqual(completed[0]["type"], "assets_task")
+
     def test_run_round_auto_repairs_story_only_critic_revision(self):
         calls = {"story": 0, "critic": 0, "repair_context_seen": False}
 

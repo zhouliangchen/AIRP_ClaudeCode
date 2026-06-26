@@ -110,20 +110,33 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         )
         self.assertIn("capability_requests", payload)
         self.assertEqual(payload["capability_requests"]["unsupported_count"], 1)
-        self.assertEqual(len(payload["capability_requests"]["artifacts"]), 1)
-        capability_artifact = payload["capability_requests"]["artifacts"][0]
+        self.assertEqual(len(payload["capability_requests"]["artifacts"]), 2)
+        capability_artifact = [
+            item
+            for item in payload["capability_requests"]["artifacts"]
+            if "unknown-capability" in item
+        ][0]
         self.assertTrue(capability_artifact.startswith("artifacts/capability_requests/unknown-capability-"))
         self.assertTrue(capability_artifact.endswith(".json"))
-        self.assertEqual(
+        self.assertIn(
+            {
+                "artifact": capability_artifact,
+                "status": "unsupported_capability",
+                "capability": "external.weather_lookup",
+            },
             payload["capability_requests"]["audits"],
-            [
-                {
-                    "artifact": capability_artifact,
-                    "status": "unsupported_capability",
-                    "capability": "external.weather_lookup",
-                }
-            ],
         )
+        self.assertIn("runtime_pump", payload)
+        input_pump = payload["runtime_pump"]["after_input_analysis"]
+        self.assertEqual(input_pump["phase"], "after_input_analysis")
+        self.assertEqual(input_pump["processed"], [])
+        self.assertEqual(input_pump["skipped"][0]["type"], "assets_task")
+        self.assertEqual(input_pump["skipped"][0]["reason"], "phase_deferred")
+        critic_pump = payload["runtime_pump"]["after_critic"]
+        self.assertEqual(critic_pump["processed"][0]["type"], "assets_task")
+        self.assertIn(critic_pump["processed"][0]["outputs"]["status"], {"queued", "deferred"})
+        if critic_pump["processed"][0]["outputs"]["status"] == "deferred":
+            self.assertEqual(critic_pump["deferred"][0]["type"], "assets_task")
         self.assertEqual(
             payload["postprocess"]["core"]["summary"],
             "Ada warns you about the pendant as the next decision waits.",
