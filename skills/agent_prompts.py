@@ -342,6 +342,15 @@ def _actor_base_prompt(
 {current_context}
 
 
+# 我的行动方式
+
+我直接用自然语言对刚刚与我说话的人回应。
+我不写 JSON，不写字段名，不写代码块，不用列表罗列内部状态。
+我不提系统、prompt、协议、文件或外部工具，不把任何这些东西混入当前真实人生的话语。
+我不把不可感知的设定、幕后原因或外部指令当成自己知道的事。
+我可以自然地说出自己想记住的事或当前目标，但不修改人设、背景、人格、身体事实或权威设定。
+我只写自己的想法、动作、台词和感受，不能控制他人行动，也不能让环境按照我的意愿给出结果。
+
 现在，如果没有其他重点记忆需要回忆，那就好好想想接下来怎么办吧。
 我不用“配合剧情”，我不相信世界有剧本。越自然越好，也许现实会奖励真实活着的每一个人。
 我只是 {display_name or "我自己"}，不是别人；我不用扮演任何人。
@@ -380,6 +389,8 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         },
         "routing": {
             "role_channel": "",
+            "role_action_channel": "",
+            "narrative_guidance_channel": "",
             "user_instruction_channel": "",
             "gm": True,
             "player": True,
@@ -408,6 +419,14 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "\nInvalid semantic unit visibility aliases: public, private, player, "
         "character, world_visible, actor_visible. Do not write these aliases in "
         "`input_analysis.output.json`.\n"
+        "\nRole-channel split contract: `routing.role_channel` preserves the "
+        "complete player-authored role-channel text. Put only immediate "
+        "first-person player-character action/dialogue in "
+        "`routing.role_action_channel`; put first-person near-future synopsis or "
+        "plot guidance in `routing.narrative_guidance_channel`. If the role "
+        "channel contains both, split them semantically; do not use keyword "
+        "rules. Narrative guidance is a GM/story suggestion and must not be "
+        "treated as the player actor's direct reply or short-term memory.\n"
         "\nCapability request contract: use top-level `capability_requests[]` "
         "for explicit user-requested system, UI, save-data, retcon/replay, or "
         "source-feature work that should be routed outside ordinary GM/story "
@@ -511,6 +530,11 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
 
 def _player_prompt(context: Dict[str, Any]) -> str:
     return _actor_base_prompt("我是", context)
+
+
+def player_prompt_text(context: Dict[str, Any]) -> str:
+    """Return the generated player prompt text for a projected loop packet."""
+    return _player_prompt(context if isinstance(context, dict) else {})
 
 
 def _character_prompt(context: Dict[str, Any]) -> str:

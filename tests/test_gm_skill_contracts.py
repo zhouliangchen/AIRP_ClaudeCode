@@ -175,7 +175,7 @@ class GmSkillContractsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp)
             for actor_name, profile in (
-                ("_self", "我只能相信自己感知到的事。\n"),
+                ("雨蒙", "我只能相信自己感知到的事。\n"),
                 ("Ada", "我有自己的记忆、信念和感官。\n"),
             ):
                 actor_dir = card / "characters" / actor_name
@@ -184,6 +184,10 @@ class GmSkillContractsTest(unittest.TestCase):
                 (actor_dir / "long_term_memories.md").write_text("", encoding="utf-8")
                 (actor_dir / "key_memories.json").write_text('{"memories":[]}', encoding="utf-8")
                 (actor_dir / "short_term_memories.md").write_text("", encoding="utf-8")
+            (card / "characters" / "player.md").write_text(
+                "name: 雨蒙\npath: characters/雨蒙\n",
+                encoding="utf-8",
+            )
             combined = "\n".join([
                 agent_prompts._player_prompt({"card_folder": str(card), "actor_id": "player"}),
                 agent_prompts._character_prompt(
@@ -198,6 +202,8 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertNotIn("misconceptions", combined)
         self.assertIn("我只能相信自己感知到的事。", combined)
         self.assertIn("我有自己的记忆、信念和感官。", combined)
+        self.assertIn("我是 雨蒙。", combined)
+        self.assertNotIn("我是 _self。", combined)
         self.assertIn("我不把不可感知的设定", combined)
 
     def test_delivery_skill_documents_post_round_memory_jobs(self):
@@ -232,6 +238,21 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("passive observation", text)
         self.assertIn("new visible stimulus", text)
         self.assertIn("stop_reason", text)
+
+    def test_gm_agent_requires_player_actor_before_player_decision(self):
+        text = self.read(".claude/skills/rp-gm-agent.md")
+
+        self.assertIn("never act as the player agent", text)
+        self.assertIn("never act as any important character agent", text)
+        self.assertIn("Before the player actor has responded in this loop", text)
+        self.assertIn("GM may serve as the actor's senses", text)
+        self.assertIn("pain, itch, dizziness", text)
+        self.assertIn("Do not write the actor's new voluntary actions", text)
+        self.assertIn("do not write their seat as empty", text)
+        self.assertIn("Do not set `stop_reason: \"player_decision\"` in the same GM output", text)
+        self.assertIn("player_decision requires a prior player actor response", text)
+        self.assertIn("actor_id\": \"player\"", text)
+        self.assertIn("send it to postprocess as one of the player-facing action options", text)
 
     def test_actor_routing_stop_reasons_match_schema(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")

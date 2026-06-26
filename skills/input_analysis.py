@@ -185,12 +185,17 @@ def analysis_to_routed_input(data, explicit_payload=None):
             explicit_payload.get("user_instruction_text")
         )
 
+    role_action_channel, narrative_guidance_channel = _role_input_split(data, role_channel)
     characters = routing.get("characters", [])
     if not isinstance(characters, list):
         characters = []
 
     components = []
-    if role_channel:
+    if narrative_guidance_channel:
+        if role_action_channel:
+            components.append({"channel": "role_action", "text": role_action_channel})
+        components.append({"channel": "narrative_guidance", "text": narrative_guidance_channel})
+    elif role_channel:
         components.append({"channel": "role", "text": role_channel})
     if user_instruction_channel:
         components.append(
@@ -203,12 +208,51 @@ def analysis_to_routed_input(data, explicit_payload=None):
             data.get("analysis_mode", "") if isinstance(data, dict) else ""
         ),
         "role_channel": role_channel,
+        "role_action_channel": role_action_channel,
+        "narrative_guidance_channel": narrative_guidance_channel,
         "user_instruction_channel": user_instruction_channel,
         "gm": bool(routing.get("gm", bool(user_instruction_channel))),
         "player": bool(routing.get("player", bool(role_channel))),
         "characters": characters,
         "components": components,
     }
+
+
+def _role_input_split(data, role_channel):
+    action_parts = []
+    guidance_parts = []
+    semantic_units = data.get("semantic_units") if isinstance(data, dict) else []
+    if isinstance(semantic_units, list):
+        for unit in semantic_units:
+            if not isinstance(unit, dict):
+                continue
+            if str(unit.get("source_channel") or "").strip() != "role_input":
+                continue
+            text = _to_text(unit.get("raw_excerpt")).strip()
+            if not text:
+                continue
+            unit_type = str(unit.get("type") or "").strip()
+            if unit_type == "action":
+                action_parts.append(text)
+            elif unit_type == "synopsis":
+                guidance_parts.append(text)
+    action = "\n".join(_dedupe_nonempty(action_parts))
+    guidance = "\n".join(_dedupe_nonempty(guidance_parts))
+    if not action and not guidance:
+        action = _to_text(role_channel).strip()
+    return action, guidance
+
+
+def _dedupe_nonempty(items):
+    result = []
+    seen = set()
+    for item in items:
+        text = _to_text(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def build_fallback_analysis(
@@ -266,6 +310,8 @@ def build_fallback_analysis(
         },
         "routing": {
             "role_channel": role_text,
+            "role_action_channel": role_text,
+            "narrative_guidance_channel": "",
             "user_instruction_channel": user_instruction_text,
             "gm": bool(user_instruction_text),
             "player": bool(role_text),
@@ -359,6 +405,9 @@ def _validate_routing(routing):
 
     for key in ("role_channel", "user_instruction_channel"):
         if not isinstance(routing.get(key), str):
+            raise InputAnalysisError(f"routing.{key} must be a string")
+    for key in ("role_action_channel", "narrative_guidance_channel"):
+        if key in routing and not isinstance(routing.get(key), str):
             raise InputAnalysisError(f"routing.{key} must be a string")
 
     for key in ("gm", "player"):
@@ -483,7 +532,7 @@ def _validate_routing_grounded(routing, *, raw_text, explicit_payload=None):
     if not isinstance(routing, dict):
         return
     raw = _to_text(raw_text)
-    for key in ("role_channel", "user_instruction_channel"):
+    for key in ("role_channel", "role_action_channel", "narrative_guidance_channel", "user_instruction_channel"):
         text = _to_text(routing.get(key)).strip()
         if text and text not in raw:
             raise InputAnalysisError(f"routing.{key} must be present in raw_text")

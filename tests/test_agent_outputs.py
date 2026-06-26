@@ -451,26 +451,36 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_extracts_player_critical_action_evidence_from_story_input(self):
         story_input = {
-            "gm": [
-                {
-                    "stop_reason": "player_decision",
-                    "decision_point": {
-                        "id": "gm-decision-1",
-                        "required_label": "Pry open the sealed door",
-                    },
+            "loop_outputs": {
+                "gm": {
+                    "outputs": [
+                        {
+                            "stop_reason": "player_decision",
+                            "decision_point": {
+                                "id": "gm-decision-1",
+                                "required_label": "Pry open the sealed door",
+                            },
+                        },
+                        {
+                            "stop_reason": "complete",
+                            "decision_point": {
+                                "id": "ignored",
+                                "required_label": "This is not a player decision",
+                            },
+                        },
+                    ],
                 },
-                {
-                    "stop_reason": "complete",
-                    "decision_point": {
-                        "id": "ignored",
-                        "required_label": "This is not a player decision",
-                    },
+                "actors": {
+                    "player": [
+                        {
+                            "agent": "player",
+                            "agent_id": "player",
+                            "natural_reply": "I brace my shoulder and pry open the sealed door.",
+                            "events": [],
+                        },
+                    ],
                 },
-                {
-                    "stop_reason": "player_decision",
-                    "decision_point": {},
-                },
-            ],
+            },
         }
 
         result = self.agent_outputs.extract_player_critical_action_evidence(story_input)
@@ -480,11 +490,33 @@ class AgentOutputsTest(unittest.TestCase):
             [
                 {
                     "id": "gm-decision-1",
-                    "required_label": "Pry open the sealed door",
+                    "required_label": "I brace my shoulder and pry open the sealed door.",
                     "risk_level": "gm_decision",
                 }
             ],
         )
+
+    def test_critical_action_evidence_requires_player_actor_reply(self):
+        story_input = {
+            "loop_outputs": {
+                "gm": {
+                    "outputs": [
+                        {
+                            "stop_reason": "player_decision",
+                            "decision_point": {
+                                "id": "gm-decision-1",
+                                "required_label": "Pry open the sealed door",
+                            },
+                        },
+                    ],
+                },
+                "actors": {},
+            },
+        }
+
+        result = self.agent_outputs.extract_player_critical_action_evidence(story_input)
+
+        self.assertEqual(result, [])
 
     def test_build_story_input_copies_runtime_guidance_without_removed_settings(self):
         manifest_path = self.run_dir / "manifest.json"
@@ -2269,7 +2301,7 @@ class AgentOutputsTest(unittest.TestCase):
             "player_decision",
         )
 
-    def test_build_story_input_allows_player_decision_call_without_actor_output(self):
+    def test_build_story_input_rejects_player_decision_call_without_actor_output(self):
         actor_path = self.run_dir / "artifacts" / "actor.outputs.json"
         actor_path.unlink()
         _write_json(
@@ -2299,12 +2331,11 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
 
-        story_input = self.agent_outputs.build_story_input(self.run_dir)
-
-        gm_output = story_input["loop_outputs"]["gm"]["outputs"][0]
-        self.assertEqual(gm_output["stop_reason"], "player_decision")
-        self.assertEqual(gm_output["actor_calls"][0]["actor_id"], "player")
-        self.assertFalse(actor_path.exists())
+        with self.assertRaisesRegex(
+            self.agent_outputs.AgentOutputError,
+            "required artifact is missing|player_decision requires player actor output",
+        ):
+            self.agent_outputs.build_story_input(self.run_dir)
 
     def test_build_story_input_rejects_duplicate_output_source_for_persisted_gm_call_without_overwrite(self):
         sentinel = {"existing": "do not replace"}

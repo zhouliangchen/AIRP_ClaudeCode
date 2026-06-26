@@ -486,7 +486,7 @@ class TurnStateTest(unittest.TestCase):
             self.handler._write_json_file = old_write_json_file
 
     def test_blank_profile_derives_self_identity_from_authoritative_player_input(self):
-        (self.card / "memory" / "characters" / "_self").mkdir(parents=True)
+        (self.card / "memory" / "characters" / "雨蒙").mkdir(parents=True)
         (self.card / ".card_data.json").write_text(
             json.dumps(
                 {
@@ -523,18 +523,25 @@ class TurnStateTest(unittest.TestCase):
         )
 
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        player_mapping = (self.card / "characters" / "player.md").read_text(encoding="utf-8")
         subjective_profile = (
-            self.card / "characters" / "_self" / "profile.md"
+            self.card / "characters" / "雨蒙" / "profile.md"
         ).read_text(encoding="utf-8")
         objective_profile = (
-            self.card / "memory" / "characters" / "_self" / "profile.md"
+            self.card / "memory" / "characters" / "雨蒙" / "profile.md"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(card_data["name"], "雨蒙")
+        self.assertIn("name: 雨蒙", player_mapping)
+        self.assertIn("path: characters/雨蒙", player_mapping)
+        self.assertIn("我是雨蒙。", subjective_profile)
         self.assertIn("普通的高一男生", subjective_profile)
+        self.assertNotIn("# 自定义角色卡", subjective_profile)
+        self.assertNotIn("- 身份/定位:", subjective_profile)
         self.assertIn("雨蒙", objective_profile)
-        self.assertTrue((self.card / "memory" / "characters" / "_self" / "background.md").exists())
-        self.assertFalse((self.card / "memory" / "characters" / "_self" / "profile.json").exists())
+        self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "background.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "雨蒙" / "profile.json").exists())
+        self.assertFalse((self.card / "characters" / "_self").exists())
 
     def test_frontend_polls_progress_and_refreshes_after_submit(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")

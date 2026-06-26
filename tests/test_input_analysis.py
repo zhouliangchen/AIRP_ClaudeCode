@@ -705,6 +705,47 @@ class InputAnalysisTest(unittest.TestCase):
             ],
         )
 
+    def test_routing_splits_role_action_and_narrative_guidance(self):
+        action_text = "我扶住门框，低声问她是不是也听见了铃声。"
+        guidance_text = "接下来我希望剧情推进到走廊灯忽然熄灭。"
+        data = self._analysis()
+        data["routing"]["role_channel"] = action_text + "\n" + guidance_text
+        data["semantic_units"] = [
+            {
+                "id": "role-action-1",
+                "source_channel": "role_input",
+                "type": "action",
+                "raw_excerpt": action_text,
+                "derived_summary": "玩家角色扶住门框并发问。",
+                "confidence": 0.91,
+                "visibility": "player_pov",
+                "persist": False,
+            },
+            {
+                "id": "role-guidance-1",
+                "source_channel": "role_input",
+                "type": "synopsis",
+                "raw_excerpt": guidance_text,
+                "derived_summary": "玩家给出接下来剧情推进方向。",
+                "confidence": 0.87,
+                "visibility": "player_pov",
+                "persist": False,
+            },
+        ]
+
+        result = self.mod.analysis_to_routed_input(data)
+
+        self.assertEqual(result["role_action_channel"], action_text)
+        self.assertEqual(result["narrative_guidance_channel"], guidance_text)
+        self.assertEqual(
+            result["components"],
+            [
+                {"channel": "role_action", "text": action_text},
+                {"channel": "narrative_guidance", "text": guidance_text},
+                {"channel": "user_instruction", "text": self.instruction},
+            ],
+        )
+
     def test_validate_rejects_non_explicit_routing_text_not_in_raw_input(self):
         data = self._analysis()
         data["routing"]["role_channel"] = "I do something the player never wrote."

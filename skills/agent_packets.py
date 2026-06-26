@@ -168,6 +168,8 @@ def route_player_input(text: str) -> Dict[str, Any]:
 
     return {
         "role_channel": raw,
+        "role_action_channel": raw,
+        "narrative_guidance_channel": "",
         "user_instruction_channel": "",
         "components": [{"channel": "role", "text": raw}],
     }
@@ -186,6 +188,8 @@ def route_input_payload(user_text: str, input_payload: Dict[str, Any] | None = N
             components.append({"channel": "user_instruction", "text": instruction})
         return {
             "role_channel": role,
+            "role_action_channel": role,
+            "narrative_guidance_channel": "",
             "user_instruction_channel": instruction,
             "components": components,
             "input_schema": "dual_channel_v1",
@@ -220,6 +224,9 @@ def _actor_visible_role_channel(routed_input: Dict[str, Any]) -> str:
     """Return actor-visible role text only after explicit or analysis-applied routing."""
     schema = _to_text(routed_input.get("input_schema")).strip()
     if schema in {"dual_channel_v1", "analysis_v1"}:
+        action = _to_text(routed_input.get("role_action_channel")).strip()
+        if action:
+            return action
         return _to_text(routed_input.get("role_channel")).strip()
     return ""
 
@@ -233,7 +240,11 @@ def _actor_visible_world_state(world_state: Dict[str, Any], routed_input: Dict[s
 
 
 def _filter_role_components(routed_input: Dict[str, Any]) -> list[Dict[str, str]]:
-    return [item for item in routed_input.get("components", []) if item.get("channel") == "role"]
+    return [
+        item
+        for item in routed_input.get("components", [])
+        if item.get("channel") in {"role", "role_action"}
+    ]
 
 
 def _build_world_state(
@@ -250,6 +261,8 @@ def _build_world_state(
         events.extend(visible_events)
     return {
         "role_channel": _to_text(routed_input.get("role_channel")),
+        "role_action_channel": _to_text(routed_input.get("role_action_channel")),
+        "narrative_guidance_channel": _to_text(routed_input.get("narrative_guidance_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
         "recent_chat": _sanitize_recent_chat_for_packets(recent_chat),
         "gm_only_hidden_settings": hidden_setting_records or [],
@@ -268,8 +281,11 @@ def _empty_structured_memory() -> Dict[str, list[Any]]:
 
 
 def _player_actor_state(card_folder=None) -> Dict[str, Any]:
+    name = "player"
+    if card_folder is not None:
+        name = actor_memory_store.read_actor_memory(card_folder, "player").get("name") or "player"
     return {
-        "name": "player",
+        "name": name,
         "card_folder": str(card_folder) if card_folder is not None else "",
         "memory": _load_actor_memory(card_folder, "player"),
     }
@@ -384,18 +400,15 @@ def _projectable_player_state(card_folder, actor_state: Dict[str, Any] | None = 
         _merge_memory(memory, state.get("memory"))
         _append_goals_json(memory, {"goals": state.get("goals")})
         state["memory"] = memory
+        if not state.get("name") and card_folder is not None:
+            state["name"] = actor_memory_store.read_actor_memory(card_folder, "player").get("name") or "player"
         state.setdefault("name", "player")
         return state
     return _player_actor_state(card_folder)
 
 
 def _actor_prompt_from_role(routed_input: Dict[str, Any], *, for_character: bool = False) -> str:
-    role_channel = _actor_visible_role_channel(routed_input)
-    if not role_channel:
-        return "Use only your projected first-person context for this turn."
-    if for_character:
-        return "React only to visible events and your own memory for this turn."
-    return f"Current first-person role-channel anchor: {role_channel}"
+    return ""
 
 
 def build_gm_packet(
@@ -419,6 +432,8 @@ def build_gm_packet(
         "agent": "gm",
         "card_folder": str(card_folder),
         "role_channel": _to_text(routed_input.get("role_channel")),
+        "role_action_channel": _to_text(routed_input.get("role_action_channel")),
+        "narrative_guidance_channel": _to_text(routed_input.get("narrative_guidance_channel")),
         "user_instruction_channel": _to_text(routed_input.get("user_instruction_channel")),
         "gm_only_hidden_settings": hidden_setting_records or [],
         "objective_world": objective_payload,

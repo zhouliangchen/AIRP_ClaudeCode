@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import agent_messages
+import agent_memory
 import agent_outputs
 import agent_prompts
 import agent_run
@@ -86,6 +87,11 @@ def run_round(
     delivery = _run_delivery(card, root, run_dir, run_command)
     stages.append("delivery")
     ok = rp_generate_cli._delivery_complete(delivery)
+    post_round_memory = {"ok": True, "status": "not_required", "scheduled": []}
+    if ok:
+        post_round_memory = _run_post_round_memory_jobs(card, root, run_dir, run_claude)
+        if post_round_memory.get("status") != "not_required":
+            stages.append("post_round_memory")
     result = {
         "ok": ok,
         "action": "generated" if ok else "blocked",
@@ -94,6 +100,7 @@ def run_round(
         "input_analysis": input_analysis_result,
         "delivery": delivery,
         "loop_result": loop_result,
+        "post_round_memory": post_round_memory,
     }
     _write_artifact(run_dir, "runtime.result.json", result)
     if ok:
@@ -371,6 +378,79 @@ def _run_postprocess(
         raise RoundRuntimeError("postprocess output normalization failed.")
     _write_artifact(run_dir, "postprocess.output.json", output)
     return output
+
+
+def _run_post_round_memory_jobs(
+    card: Path,
+    root: Path,
+    run_dir: Path,
+    run_claude: Callable[[str, str, str | Path], str],
+) -> dict[str, Any]:
+    scheduled_result = agent_memory.schedule_post_round_memory_jobs(card, run_dir)
+    scheduled_agents = scheduled_result.get("scheduled")
+    if not isinstance(scheduled_agents, list) or not scheduled_agents:
+        return {
+            "ok": True,
+            "status": "not_required",
+            "scheduled": [],
+            "ingested": [],
+            "missing": {},
+            "failed": {},
+        }
+
+    manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
+    jobs = manifest.get("post_round_memory_jobs") if isinstance(manifest, dict) else {}
+    scheduled = jobs.get("scheduled") if isinstance(jobs, dict) else {}
+    if not isinstance(scheduled, dict):
+        raise RoundRuntimeError("post_round_memory_jobs.scheduled is missing or invalid.")
+
+    failed: dict[str, str] = {}
+    for agent_id in sorted(str(item) for item in scheduled_agents):
+        entry = scheduled.get(agent_id)
+        if not isinstance(entry, dict):
+            failed[agent_id] = "post_round_memory job entry is missing"
+            continue
+        prompt_rel = str(entry.get("prompt") or "").strip()
+        job_rel = str(entry.get("job") or "").strip()
+        output_rel = str(entry.get("output") or "").strip()
+        if not (prompt_rel and job_rel and output_rel):
+            failed[agent_id] = "post_round_memory job paths are incomplete"
+            continue
+        try:
+            prompt = (run_dir / prompt_rel).read_text(encoding="utf-8")
+            job_payload = agent_run.read_json(run_dir / job_rel, {}) or {}
+            if not isinstance(job_payload, dict):
+                raise RoundRuntimeError(f"{job_rel}: post_round_memory job payload must be an object.")
+            _dispatch(
+                run_dir,
+                root,
+                run_claude,
+                f"post_round_memory:{agent_run.safe_name(agent_id)}",
+                prompt,
+                extra_context={
+                    "card_folder": str(card),
+                    "post_round_memory_job": job_payload,
+                    "post_round_output_path": output_rel,
+                },
+                output_path=run_dir / output_rel,
+            )
+        except Exception as exc:
+            failed[agent_id] = str(exc)
+
+    if failed:
+        agent_memory._update_post_round_job_status(run_dir, "degraded_memory_state", failed=failed)
+        return {
+            "ok": False,
+            "status": "degraded_memory_state",
+            "scheduled": scheduled_agents,
+            "ingested": [],
+            "missing": {},
+            "failed": failed,
+        }
+
+    ingested = agent_memory.ingest_post_round_memory_jobs(card, run_dir)
+    ingested["scheduled"] = scheduled_agents
+    return ingested
 
 
 def _run_delivery(

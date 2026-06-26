@@ -831,7 +831,12 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("moon base", char_prompt)
 
     def test_prepare_agent_run_reads_root_actor_memory_files(self):
-        player_dir = self.card / "characters" / "_self"
+        (self.card / "characters").mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        player_dir = self.card / "characters" / "雨蒙"
         ada_dir = self.card / "characters" / "Ada"
         legacy_player_dir = self.card / "memory" / "player"
         legacy_ada_dir = self.card / "memory" / "characters" / "Ada"
@@ -893,6 +898,7 @@ class AgentPacketTest(unittest.TestCase):
         player_memory = json.dumps(player_packet["memory"], ensure_ascii=False)
         character_memory = json.dumps(character_packet["memory"], ensure_ascii=False)
 
+        self.assertEqual(player_packet["self_knowledge"]["name"], "雨蒙")
         self.assertEqual(sorted(player_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertEqual(sorted(character_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertIn("我记得自己学会了档案馆密码。", player_memory)
@@ -1007,7 +1013,12 @@ class AgentPacketTest(unittest.TestCase):
             "# Player Agent Memory\n\n- stale recent player delta\n",
             encoding="utf-8",
         )
-        new_player_dir = self.card / "characters" / "_self"
+        (self.card / "characters").mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        new_player_dir = self.card / "characters" / "雨蒙"
         new_player_dir.mkdir(parents=True, exist_ok=True)
         (new_player_dir / "long_term_memories.md").write_text(
             "I remember organizing the archive threshold.",
@@ -1265,7 +1276,9 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("dream echo", gm_prompt)
         self.assertIn("我直接用自然语言对刚刚与我说话的人回应", player_prompt)
         self.assertIn("现在：", player_prompt)
-        self.assertIn("Use only your projected first-person context for this turn.", player_prompt)
+        self.assertIn("暂时没有新的外部话语。", player_prompt)
+        self.assertNotIn("Use only your projected first-person context for this turn.", player_prompt)
+        self.assertNotIn("Current first-person role-channel anchor", player_prompt)
         self.assertNotIn("我能感知到的内容：", player_prompt)
         self.assertNotIn("刚刚对我说的话：", player_prompt)
         self.assertNotIn("我此刻延续的第一人称意图：", player_prompt)

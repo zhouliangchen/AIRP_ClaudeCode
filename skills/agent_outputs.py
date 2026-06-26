@@ -835,8 +835,6 @@ def _gm_output_stops_for_player_decision(gm_output: Dict[str, Any]) -> bool:
 
 
 def _gm_actor_call_requires_output(gm_output: Dict[str, Any], actor_id: str) -> bool:
-    if actor_id == "player" and _gm_output_stops_for_player_decision(gm_output):
-        return False
     return True
 
 
@@ -1004,6 +1002,12 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
                 )
             normalized_outputs.append(normalized)
         normalized_actor_outputs[actor_key] = normalized_outputs
+
+    if any(_gm_output_stops_for_player_decision(output) for output in normalized_gm_outputs):
+        if not normalized_actor_outputs.get("player"):
+            raise AgentOutputError(
+                f"{actor_path.as_posix()}.player: player_decision requires player actor output"
+            )
 
     return {
         "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
@@ -1308,15 +1312,36 @@ def _compact_story_input_analysis_for_prompt(analysis: Any, hidden_phrases: list
 def _story_player_inputs_for_prompt(input_payload: Dict[str, Any], hidden_phrases: list[str]) -> Dict[str, Any]:
     routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
     role_channel = str(routed.get("role_channel") or input_payload.get("role_channel") or input_payload.get("raw_text") or "")
+    role_action = str(routed.get("role_action_channel") or input_payload.get("role_action_channel") or "").strip()
+    narrative_guidance = str(
+        routed.get("narrative_guidance_channel")
+        or input_payload.get("narrative_guidance_channel")
+        or ""
+    ).strip()
+    if not role_action and not narrative_guidance:
+        role_action = role_channel
     safe_routed = {
         key: routed[key]
-        for key in ("input_schema", "analysis_mode", "role_channel", "gm", "player", "characters")
+        for key in (
+            "input_schema",
+            "analysis_mode",
+            "role_channel",
+            "role_action_channel",
+            "narrative_guidance_channel",
+            "gm",
+            "player",
+            "characters",
+        )
         if key in routed
     }
     if "role_channel" not in safe_routed:
         safe_routed["role_channel"] = role_channel
+    if "role_action_channel" not in safe_routed:
+        safe_routed["role_action_channel"] = role_action
+    if narrative_guidance and "narrative_guidance_channel" not in safe_routed:
+        safe_routed["narrative_guidance_channel"] = narrative_guidance
     safe_inputs = {
-        "raw_text": role_channel,
+        "raw_text": role_action,
         "routed_input": safe_routed,
         "input_analysis": _compact_story_input_analysis_for_prompt(
             input_payload.get("input_analysis"),
@@ -1386,7 +1411,14 @@ def build_relaxed_story_input(run_dir: str | Path) -> Dict[str, Any]:
     settings = runtime_payload["settings"]
     style_profile = runtime_payload["style_profile"]
     routed = input_payload.get("routed_input") if isinstance(input_payload.get("routed_input"), dict) else {}
-    role_text = str(routed.get("role_channel") or input_payload.get("role_channel") or input_payload.get("raw_text") or "")
+    role_text = str(
+        routed.get("role_action_channel")
+        or input_payload.get("role_action_channel")
+        or routed.get("role_channel")
+        or input_payload.get("role_channel")
+        or input_payload.get("raw_text")
+        or ""
+    )
     side_threads = {"threads": _relaxed_side_thread_summaries(root)}
 
     story_input = {
@@ -1539,6 +1571,9 @@ def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]
                 gm_outputs = gm_branch.get("outputs")
     if not isinstance(gm_outputs, list):
         return evidence
+    player_actions = _player_actor_replies_for_critical_action(story_input)
+    if not player_actions:
+        return evidence
     for index, output in enumerate(gm_outputs):
         if not isinstance(output, dict):
             continue
@@ -1547,13 +1582,14 @@ def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]
         decision_point = output.get("decision_point")
         if not isinstance(decision_point, dict):
             continue
-        label = str(
+        gm_label = str(
             decision_point.get("required_label")
             or decision_point.get("content")
             or decision_point.get("summary")
             or decision_point.get("reason")
             or ""
         ).strip()
+        label = player_actions[-1] if player_actions else gm_label
         if not label:
             continue
         evidence_id = str(decision_point.get("id") or "").strip() or f"player-decision-{index + 1}"
@@ -1565,6 +1601,39 @@ def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]
             }
         )
     return evidence
+
+
+def _player_actor_replies_for_critical_action(story_input: Dict[str, Any]) -> list[str]:
+    loop_outputs = story_input.get("loop_outputs")
+    if not isinstance(loop_outputs, dict):
+        return []
+    actors = loop_outputs.get("actors")
+    if not isinstance(actors, dict):
+        return []
+    player_outputs = actors.get("player")
+    if not isinstance(player_outputs, list):
+        return []
+    replies: list[str] = []
+    for output in player_outputs:
+        if not isinstance(output, dict):
+            continue
+        natural = str(output.get("natural_reply") or "").strip()
+        if natural:
+            replies.append(natural)
+            continue
+        events = output.get("events")
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("type") or "") != "reply":
+                continue
+            content = str(event.get("content") or "").strip()
+            if content:
+                replies.append(content)
+                break
+    return replies
 
 
 def build_critic_quality_metrics(run_dir: str | Path, story_output: Dict[str, Any]) -> Dict[str, Any]:

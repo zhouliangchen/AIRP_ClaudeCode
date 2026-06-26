@@ -484,11 +484,15 @@ def _post_round_dialogue_text(round_dialogue: Any) -> str:
 
 
 def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
+    profile = str(job_payload.get("profile") or "").strip()
     long_term = str(job_payload.get("long_term_memories") or "").strip()
     short_term = str(job_payload.get("short_term_memories") or "").strip()
     key_cues = job_payload.get("key_memory_cues", [])
     key_lines = _natural_lines(key_cues, limit=20)
     sections = [
+        "## 我是谁",
+        profile if profile else "暂无。",
+        "",
         "## 我当前已有的长期记忆",
         long_term if long_term else "暂无。",
         "",
@@ -517,7 +521,9 @@ def _post_round_job_payload(
     payload = {
         "agent_id": agent_id,
         "character_name": character_name,
+        "display_name": str(stored.get("name") or "").strip(),
         "round_id": str(story_input.get("round_id") or run_dir.name),
+        "profile": str(stored.get("profile") or ""),
         "round_dialogue": _round_dialogue_for_actor(story_input, agent_id),
         "short_term_memories": str(stored.get("short_term") or ""),
         "long_term_memories": str(stored.get("long_term") or ""),
@@ -544,21 +550,24 @@ def _post_round_memory_prompt(
     round_dialogue = job_payload.get("round_dialogue", [])
     dialogue_text = _post_round_dialogue_text(round_dialogue)
     reference_text = _post_round_reference_text(job_payload)
+    display_name = str(job_payload.get("display_name") or "").strip()
+    name_line = f"我是 {display_name}。" if display_name else "我是当前正在整理记忆的这个人。"
     return f"""
-# Post-Round Actor Memory Job
+# 我的记忆整理
 
-Agent id: `{agent_id}`
-Round id: `{run_dir.name}`
-Required output path: `{output_path}`
+{name_line}
 
 现在我需要整理一下我的记忆，以帮助我理清思路。
 我只整理自己的第一人称记忆和目标，不修改人设、背景、人格、身体事实或权威设定。
 不要加入幕后事实、全知信息、隐藏备注、外部指令或别人的私密记忆。
 长期记忆和重点记忆只能来自“本轮我和对我说话者的对话”、本轮自动记录的短期记忆、以及我已有的长期/重点记忆线索。
 如果某件事没有出现在本轮对话或我已有记忆里，我不能把它整理成自己的记忆。
+我可以小幅修补长期记忆，也可以完整重写长期记忆；无论哪种方式，最终都输出整理后的完整长期记忆。
+我可以新增、更新或忘记重点记忆；无论怎么调整，最终都输出整理后的完整重点记忆列表。
 我不输出短期记忆；系统会在成功写入长期/重点记忆后自动清空短期记忆。
+整理完成后，我只返回一个 JSON 对象，系统会把它保存到 `{output_path}`。
 
-## Required JSON Contract
+## 输出 JSON 契约
 
 ```json
 {json.dumps(contract, ensure_ascii=False, indent=2)}
@@ -570,7 +579,7 @@ Required output path: `{output_path}`
 
 {reference_text}
 
-请只根据这些自然语言材料整理记忆，并按 Required JSON Contract 输出。
+请只根据这些自然语言材料整理记忆，并按“输出 JSON 契约”输出。
 """
 
 

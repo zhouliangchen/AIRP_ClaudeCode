@@ -106,7 +106,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertEqual(payload["runtime"]["mode"], "thin")
         self.assertEqual(
             payload["runtime"]["stages"],
-            ["input_analysis", "gm_collaboration", "story", "critic", "postprocess", "delivery"],
+            ["input_analysis", "gm_collaboration", "story", "critic", "postprocess", "delivery", "post_round_memory"],
         )
         self.assertIn("capability_requests", payload)
         self.assertEqual(payload["capability_requests"]["unsupported_count"], 1)

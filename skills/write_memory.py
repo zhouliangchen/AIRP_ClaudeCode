@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import actor_memory_store
 from io_utils import read_json as _read_json
 from response_parser import parse_response
 
@@ -44,18 +45,20 @@ def _write_character_memory(card: Path, date_str: str, summary: str, recent_turn
     """Maintain lightweight per-character memory files for blank/subagent contexts."""
     updated = []
     card_data = _read_json(card / ".card_data.json", {}) or {}
-    memory_dir = card / "memory" / "characters"
-
-    targets = []
+    targets: list[tuple[str, Path]] = []
+    seen: set[str] = set()
     if card_data.get("mode") == "blank_bootstrap" or card_data.get("source_type") == "blank":
-        targets.append("_self")
+        paths = actor_memory_store.ensure_actor_files(card, "player")
+        targets.append((paths.name, paths.objective_dir))
+        seen.add(paths.name)
 
     orchestration = card_data.get("character_orchestration", {})
     for name in orchestration.get("major", []) or []:
         if isinstance(name, str) and name.strip():
-            safe = re.sub(r'[\\/:*?"<>|]+', "_", name.strip())
-            if safe not in targets:
-                targets.append(safe)
+            paths = actor_memory_store.ensure_actor_files(card, f"character:{name.strip()}")
+            if paths.name not in seen:
+                targets.append((paths.name, paths.objective_dir))
+                seen.add(paths.name)
 
     if not targets:
         return updated
@@ -63,8 +66,7 @@ def _write_character_memory(card: Path, date_str: str, summary: str, recent_turn
     last = recent_turns[-1] if recent_turns else {}
     stat_data = last.get("variables", {}).get("stat_data", {}) if isinstance(last.get("variables"), dict) else {}
 
-    for target in targets:
-        char_dir = memory_dir / target
+    for target, char_dir in targets:
         char_dir.mkdir(parents=True, exist_ok=True)
         recent_path = char_dir / "recent.md"
         existing = recent_path.read_text(encoding="utf-8") if recent_path.exists() else "# 近期角色沉淀\n"

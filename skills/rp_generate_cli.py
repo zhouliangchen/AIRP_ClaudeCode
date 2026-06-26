@@ -15,6 +15,8 @@ from typing import Any, Callable, Dict
 import agent_outputs
 import agent_prompts
 import agent_run
+import actor_memory_store
+import agent_memory
 import agent_schemas
 import input_analysis_apply
 import model_debug
@@ -516,6 +518,84 @@ def _is_actor_agent_key(agent_key: str) -> bool:
     return agent_key == "player" or agent_key.startswith("character:")
 
 
+def _is_post_round_memory_agent(agent_key: str) -> bool:
+    return agent_key == "post_round_memory" or agent_key.startswith("post_round_memory:")
+
+
+def _actor_protocol_identity(agent_key: str, extra_context: Dict[str, Any] | None) -> tuple[str, Path | None]:
+    context = extra_context if isinstance(extra_context, dict) else {}
+    if _is_actor_agent_key(agent_key):
+        packet = context.get("loop_packet")
+        packet = packet if isinstance(packet, dict) else {}
+        actor_id = str(packet.get("actor_id") or agent_key).strip() or agent_key
+        card_folder = str(packet.get("card_folder") or context.get("card_folder") or "").strip()
+        return actor_id, Path(card_folder) if card_folder else None
+    if _is_post_round_memory_agent(agent_key):
+        job = context.get("post_round_memory_job")
+        job = job if isinstance(job, dict) else {}
+        actor_id = str(job.get("agent_id") or context.get("actor_id") or "").strip()
+        card_folder = str(context.get("card_folder") or "").strip()
+        return actor_id, Path(card_folder) if card_folder else None
+    return "", None
+
+
+def _recall_protocol_query(text: Any) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(actor_memory_store.RECALL_PREFIX):
+            return actor_memory_store._normalize_recall_query(stripped)
+        return ""
+    return ""
+
+
+def _actor_protocol_query_from_payload(payload: Dict[str, Any]) -> str:
+    return _recall_protocol_query(payload.get("natural_reply"))
+
+
+def _format_recalled_memory(query: str, memory: Dict[str, str]) -> str:
+    tag = str(memory.get("tag") or "").strip()
+    summary = str(memory.get("summary") or "").strip()
+    detail = str(memory.get("detail") or "").strip()
+    if not (tag or summary or detail):
+        return f"我试着回忆“{query}”，但没有想起更清晰的内容。"
+    lines = [f"我刚刚回忆起：{tag or query}"]
+    if summary:
+        lines.append(f"摘要：{summary}")
+    if detail:
+        lines.append(f"详情：{detail}")
+    return "\n".join(lines)
+
+
+def _run_actor_protocol_tool(
+    agent_key: str,
+    query: str,
+    extra_context: Dict[str, Any] | None,
+) -> str:
+    actor_id, card_folder = _actor_protocol_identity(agent_key, extra_context)
+    if not actor_id or card_folder is None:
+        return f"我试着回忆“{query}”，但这里没有可用的记忆档案。"
+    memory = actor_memory_store.recall_key_memory(card_folder, actor_id, query)
+    return _format_recalled_memory(query, memory)
+
+
+def _inject_actor_protocol_results(prompt_text: str, tool_results: list[str]) -> str:
+    if not tool_results:
+        return prompt_text
+    sections = [
+        "## 我刚刚想起的重点记忆",
+        "",
+        "\n\n".join(item for item in tool_results if item).strip() or "暂无。",
+        "",
+        "请把这些刚刚想起的内容当作我现在已经回忆起来的第一人称记忆，然后继续完成当前任务。",
+    ]
+    return prompt_text.rstrip() + "\n\n" + "\n".join(sections).strip() + "\n"
+
+
 def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     wrapper = ""
     if agent_key == "gm":
@@ -532,6 +612,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "postprocess_output"
     elif agent_key == "projection":
         wrapper = "projection_output"
+    elif _is_post_round_memory_agent(agent_key):
+        wrapper = "post_round_memory"
 
     nested = payload.get(wrapper) if wrapper else None
     if isinstance(nested, dict):
@@ -636,9 +718,25 @@ def _validate(
                 actor_id=actor_id,
                 source_call_id=source_call_id,
             )
+        if _is_post_round_memory_agent(agent_key):
+            context = validation_context if isinstance(validation_context, dict) else {}
+            job = context.get("post_round_memory_job")
+            job = job if isinstance(job, dict) else {}
+            expected_agent_id = str(job.get("agent_id") or context.get("actor_id") or "").strip()
+            if not expected_agent_id:
+                raise AgentExecutionError("post_round_memory validation requires agent_id")
+            path = Path(str(context.get("post_round_output_path") or "post_round_memory.summary.json"))
+            update = agent_memory._validate_post_round_memory_update(payload, expected_agent_id, path)
+            normalized = {"agent_id": expected_agent_id, **update}
+            character_name = str(payload.get("character_name") or job.get("character_name") or "").strip()
+            if character_name:
+                normalized["character_name"] = character_name
+            return normalized
     except agent_schemas.ValidationError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     except projection_agent.ProjectionValidationError as exc:
+        raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
+    except agent_memory.MemoryIngestionError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     raise AgentExecutionError(f"Unknown agent key: {agent_key}")
 
@@ -654,23 +752,49 @@ def _dispatch_agent_payload(
 ) -> Dict[str, Any]:
     last_error: AgentExecutionError | None = initial_error
     attempts = max(1, int(attempts or 1))
+    protocol_enabled = _is_actor_agent_key(agent_key) or _is_post_round_memory_agent(agent_key)
+    max_protocol_iterations = 4
     for attempt in range(attempts):
+        tool_results: list[str] = []
         try:
-            prompt = _with_attempt_rejection_feedback(
-                _outer_prompt(agent_key, prompt_text, extra_context),
-                last_error,
-            )
-            stream = run_claude(agent_key, prompt, cwd)
-            text = _extract_agent_or_direct_text(stream)
-            try:
-                payload = _extract_json_object(text)
-            except AgentExecutionError as exc:
-                if _is_actor_agent_key(agent_key):
-                    return _validate(agent_key, text, extra_context)
-                if agent_key != "story":
-                    raise
-                payload = _recover_story_payload_from_malformed_json(text, exc)
-            return _validate(agent_key, payload, extra_context)
+            for protocol_iteration in range(max_protocol_iterations + 1):
+                prompt_body = _inject_actor_protocol_results(prompt_text, tool_results)
+                prompt = _with_attempt_rejection_feedback(
+                    _outer_prompt(agent_key, prompt_body, extra_context),
+                    last_error,
+                )
+                stream = run_claude(agent_key, prompt, cwd)
+                text = _extract_agent_or_direct_text(stream)
+                try:
+                    payload = _extract_json_object(text)
+                except AgentExecutionError as exc:
+                    protocol_query = _recall_protocol_query(text) if protocol_enabled else ""
+                    if protocol_query:
+                        if protocol_iteration >= max_protocol_iterations:
+                            raise AgentExecutionError(
+                                f"{agent_key} kept invoking actor protocol after {max_protocol_iterations} iterations"
+                            ) from exc
+                        tool_results.append(_run_actor_protocol_tool(agent_key, protocol_query, extra_context))
+                        continue
+                    if _is_actor_agent_key(agent_key):
+                        return _validate(agent_key, text, extra_context)
+                    if agent_key != "story":
+                        raise
+                    payload = _recover_story_payload_from_malformed_json(text, exc)
+                normalized = _validate(agent_key, payload, extra_context)
+                protocol_query = (
+                    _actor_protocol_query_from_payload(normalized)
+                    if protocol_enabled and _is_actor_agent_key(agent_key)
+                    else ""
+                )
+                if protocol_query:
+                    if protocol_iteration >= max_protocol_iterations:
+                        raise AgentExecutionError(
+                            f"{agent_key} kept invoking actor protocol after {max_protocol_iterations} iterations"
+                        )
+                    tool_results.append(_run_actor_protocol_tool(agent_key, protocol_query, extra_context))
+                    continue
+                return normalized
         except AgentExecutionError as exc:
             last_error = exc
             if attempt == attempts - 1:
@@ -707,7 +831,11 @@ def _read_loop_prompt(
     agent_key: str,
     packet: Dict[str, Any] | None = None,
 ) -> str:
-    if agent_key in {"gm", "player"}:
+    if agent_key == "gm":
+        return _read_prompt(run_dir, manifest, agent_key)
+    if agent_key == "player":
+        if packet is not None:
+            return agent_prompts.player_prompt_text(packet)
         return _read_prompt(run_dir, manifest, agent_key)
     if agent_key == "projection":
         return agent_prompts.projection_prompt_text(packet or {})

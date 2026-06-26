@@ -14,8 +14,8 @@ SULI = SU + LI
 SULI_PROFILE = SULI + "\u7684\u4eba\u8bbe"
 GM_LINE = "\u4f60\u542c\u89c1\u65e7\u95e8\u8f74\u5728\u54cd\u3002"
 SELF_LINE = "\u6211\u505c\u5728\u95e8\u53e3\u3002"
-GM_MEMORY_LINE = "\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a" + GM_LINE
-SELF_MEMORY_LINE = "\u6211\u56de\u5e94\uff1a" + SELF_LINE
+GM_MEMORY_LINE = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a" + GM_LINE
+SELF_MEMORY_LINE = "\u6211\uff1a" + SELF_LINE
 OLD_ARCHIVE = "\u65e7\u6863\u6848\u5ba4"
 KEY_SUMMARY = "\u6211\u66fe\u5728\u65e7\u6863\u6848\u5ba4\u53d1\u73b0\u5c01\u5b58\u540d\u518c\u3002"
 KEY_DETAIL = "\u90a3\u672c\u540d\u518c\u8bb0\u5f55\u4e86\u82cf\u9ece\u5931\u8e2a\u524d\u6700\u540e\u4e00\u6b21\u767b\u8bb0\u3002"
@@ -49,34 +49,45 @@ class ActorMemoryStoreTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_player_maps_to_self_subjective_and_objective_dirs(self):
+    def test_player_maps_through_player_md_to_current_character_dir(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
         paths = self.store.ensure_actor_files(self.card, "player", profile=SELF_PROFILE)
 
-        self.assertEqual(paths.name, "_self")
-        self.assertEqual(paths.actor_dir, self.card / "characters" / "_self")
-        self.assertEqual(paths.objective_dir, self.card / "memory" / "characters" / "_self")
-        self.assertTrue((self.card / "characters" / "_self" / "profile.md").exists())
-        self.assertTrue((self.card / "memory" / "characters" / "_self" / "profile.md").exists())
-        self.assertTrue((self.card / "memory" / "characters" / "_self" / "background.md").exists())
+        self.assertEqual(paths.name, "雨蒙")
+        self.assertEqual(paths.actor_dir, self.card / "characters" / "雨蒙")
+        self.assertEqual(paths.objective_dir, self.card / "memory" / "characters" / "雨蒙")
+        self.assertTrue((self.card / "characters" / "雨蒙" / "profile.md").exists())
+        self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "profile.md").exists())
+        self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "background.md").exists())
         self.assertFalse((self.card / "memory" / "player").exists())
+        self.assertFalse((self.card / "characters" / "_self").exists())
 
         memory = self.store.read_actor_memory(self.card, "player")
 
-        self.assertEqual(memory["name"], "_self")
+        self.assertEqual(memory["name"], "雨蒙")
         self.assertIn(SELF_PROFILE, memory["profile"])
 
     def test_actor_paths_exposes_expected_public_paths(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
         paths = self.store.actor_paths(self.card, "player")
         expected = {
             "card": self.card,
             "actor_id": "player",
-            "name": "_self",
-            "actor_dir": self.card / "characters" / "_self",
-            "objective_dir": self.card / "memory" / "characters" / "_self",
-            "profile": self.card / "characters" / "_self" / "profile.md",
-            "long_term": self.card / "characters" / "_self" / "long_term_memories.md",
-            "key_memories": self.card / "characters" / "_self" / "key_memories.json",
-            "short_term": self.card / "characters" / "_self" / "short_term_memories.md",
+            "name": "雨蒙",
+            "actor_dir": self.card / "characters" / "雨蒙",
+            "objective_dir": self.card / "memory" / "characters" / "雨蒙",
+            "profile": self.card / "characters" / "雨蒙" / "profile.md",
+            "long_term": self.card / "characters" / "雨蒙" / "long_term_memories.md",
+            "key_memories": self.card / "characters" / "雨蒙" / "key_memories.json",
+            "short_term": self.card / "characters" / "雨蒙" / "short_term_memories.md",
         }
 
         for attr, expected_path in expected.items():
@@ -87,8 +98,8 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertEqual(paths.profile.read_text(encoding="utf-8"), SELF_PROFILE)
 
     def test_actor_name_mapping_avoids_reserved_empty_and_player_collisions(self):
-        self.assertEqual(self.store.actor_paths(self.card, "player").name, "_self")
-        self.assertEqual(self.store.actor_paths(self.card, "").name, "_self")
+        self.assertEqual(self.store.actor_paths(self.card, "player").name, "player")
+        self.assertEqual(self.store.actor_paths(self.card, "").name, "player")
         self.assertEqual(self.store.actor_paths(self.card, "character:").name, "_unknown_character")
         self.assertEqual(self.store.actor_paths(self.card, "character:.").name, "_unknown_character")
         self.assertEqual(self.store.actor_paths(self.card, "character:   ").name, "_unknown_character")
@@ -213,15 +224,18 @@ class ActorMemoryStoreTest(unittest.TestCase):
             )
         )
 
-        text = (self.card / "characters" / "_self" / "short_term_memories.md").read_text(encoding="utf-8")
+        text = self.store.actor_paths(self.card, "player").short_term.read_text(encoding="utf-8")
         self.assertEqual(text.count(GM_LINE), 1)
         self.assertIn(GM_MEMORY_LINE, text)
         self.assertIn(SELF_MEMORY_LINE, text)
+        self.assertIn(GM_MEMORY_LINE + "\n\n" + SELF_MEMORY_LINE + "\n", text)
+        self.assertNotIn("\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a", text)
+        self.assertNotIn("\u6211\u56de\u5e94\uff1a", text)
         self.assertFalse(self.store.append_short_term_dialogue(self.card, "player", "gm", "", source_id="empty"))
 
     def test_recall_key_memory_matches_natural_query_with_fullwidth_and_ascii_colons(self):
         self.store.ensure_actor_files(self.card, "player")
-        key_path = self.card / "characters" / "_self" / "key_memories.json"
+        key_path = self.store.actor_paths(self.card, "player").key_memories
         key_path.write_text(
             json.dumps(
                 {
@@ -251,7 +265,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
 
     def test_damaged_key_memories_json_raises_store_error(self):
         self.store.ensure_actor_files(self.card, "player")
-        key_path = self.card / "characters" / "_self" / "key_memories.json"
+        key_path = self.store.actor_paths(self.card, "player").key_memories
         key_path.write_text("{bad json", encoding="utf-8")
 
         with self.assertRaises(self.store.ActorMemoryStoreError):
@@ -359,7 +373,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
 
     def test_apply_memory_update_validation_failure_preserves_short_term(self):
         self.store.ensure_actor_files(self.card, "player")
-        short_term = self.card / "characters" / "_self" / "short_term_memories.md"
+        short_term = self.store.actor_paths(self.card, "player").short_term
         short_term.write_text(OLD_SHORT_TERM, encoding="utf-8")
 
         with self.assertRaises(ValueError):

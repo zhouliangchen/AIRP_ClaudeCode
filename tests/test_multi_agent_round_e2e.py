@@ -427,7 +427,10 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertEqual(repair_history[0]["attempt"], 1)
         self.assertEqual(repair_history[0]["decision"], "revise")
         self.assertEqual(improvement_queue[0]["suggestion"], "Add a fixture for critic repair history.")
-        player_memory_dir = self.card / "characters" / "_self"
+        player_mapping = (self.card / "characters" / "player.md").read_text(encoding="utf-8")
+        self.assertIn("name: player", player_mapping)
+        self.assertIn("path: characters/player", player_mapping)
+        player_memory_dir = self.card / "characters" / "player"
         ada_memory_dir = self.card / "characters" / "Ada"
         player_long_term = (player_memory_dir / "long_term_memories.md").read_text(encoding="utf-8")
         player_key_memories = json.loads((player_memory_dir / "key_memories.json").read_text(encoding="utf-8"))
@@ -443,6 +446,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertEqual(ada_short_term, "")
         self.assertFalse((player_memory_dir / "summary.md").exists())
         self.assertFalse((ada_memory_dir / "summary.md").exists())
+        self.assertFalse((self.card / "characters" / "_self").exists())
         self.assertEqual(final_manifest["stage"], "delivered")
         self.assertEqual((self.styles_dir / "response.txt").read_text(encoding="utf-8"), scenario["story_content"])
 

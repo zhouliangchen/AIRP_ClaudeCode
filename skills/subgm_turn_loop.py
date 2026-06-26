@@ -478,13 +478,6 @@ def _route_actor_calls(
         )
         final_prompt = str(packet.get("gm_prompt") or "").strip()
         card_folder = _card_folder_for_run(run_dir)
-        _append_short_term_dialogue(
-            card_folder,
-            actor_id,
-            "subgm",
-            final_prompt,
-            f"{side_dir.name}:{call_id}:subgm",
-        )
         _write_progress_safe(
             "gm_loop.actor_dispatch",
             "支线角色行动中",
@@ -496,6 +489,13 @@ def _route_actor_calls(
             },
         )
         actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
+        _append_short_term_dialogue(
+            card_folder,
+            actor_id,
+            "subgm",
+            final_prompt,
+            f"{side_dir.name}:{call_id}:subgm",
+        )
         _append_short_term_dialogue(
             card_folder,
             actor_id,

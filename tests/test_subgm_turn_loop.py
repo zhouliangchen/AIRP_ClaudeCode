@@ -403,8 +403,13 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertIn("rooftop messages", projection_packets[0]["actor_context"])
         self.assertEqual(actor_packets[0]["gm_prompt"], "You hear the rooftop vent rattle twice.")
         short_term = (actor_dir / "short_term_memories.md").read_text(encoding="utf-8")
-        self.assertIn("You hear the rooftop vent rattle twice.", short_term)
-        self.assertIn("I found chalk dust by the vent.", short_term)
+        self.assertIn(
+            "记忆的回声：You hear the rooftop vent rattle twice.\n\n"
+            "我：I found chalk dust by the vent.\n",
+            short_term,
+        )
+        self.assertNotIn("有人对我说：", short_term)
+        self.assertNotIn("我回应：", short_term)
 
     def test_actor_packet_visibility_basis_preserves_top_level_subgm_call_metadata(self):
         actor_packets = []

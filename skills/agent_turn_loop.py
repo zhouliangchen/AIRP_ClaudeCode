@@ -181,6 +181,14 @@ def _initial_world_state(input_payload: dict) -> dict:
     routed = _dict(input_payload.get("routed_input"))
     world_state = dict(input_payload)
     world_state["role_channel"] = routed.get("role_channel", input_payload.get("role_channel", ""))
+    world_state["role_action_channel"] = routed.get(
+        "role_action_channel",
+        input_payload.get("role_action_channel", ""),
+    )
+    world_state["narrative_guidance_channel"] = routed.get(
+        "narrative_guidance_channel",
+        input_payload.get("narrative_guidance_channel", ""),
+    )
     world_state["user_instruction_channel"] = routed.get(
         "user_instruction_channel",
         input_payload.get("user_instruction_channel", ""),
@@ -342,6 +350,10 @@ def _update_visible_events(run_dir: Path, world_state: dict) -> None:
 def _gm_packet(run_dir: Path, world_state: dict, step_index: int) -> dict:
     return {
         "step": step_index,
+        "role_channel": str(world_state.get("role_channel") or ""),
+        "role_action_channel": str(world_state.get("role_action_channel") or ""),
+        "narrative_guidance_channel": str(world_state.get("narrative_guidance_channel") or ""),
+        "user_instruction_channel": str(world_state.get("user_instruction_channel") or ""),
         "world_state": dict(world_state),
         "trace_summary": agent_interactions.summarize_for_story_input(run_dir),
     }
@@ -549,6 +561,29 @@ def _append_short_term_dialogue(
         raise AgentTurnLoopError(f"append short-term memory failed: {exc}") from exc
 
 
+def _initial_player_action_text(input_payload: dict) -> str:
+    routed = _dict(input_payload.get("routed_input"))
+    return str(routed.get("role_action_channel") or input_payload.get("role_action_channel") or "").strip()
+
+
+def _record_initial_player_action(
+    card_folder: Path | None,
+    run_dir: Path,
+    input_payload: dict,
+) -> bool:
+    action = _initial_player_action_text(input_payload)
+    if not action or card_folder is None:
+        return False
+    _append_short_term_dialogue(
+        card_folder,
+        "player",
+        "player",
+        action,
+        f"{run_dir.name}:player_input:actor",
+    )
+    return True
+
+
 def _dispatch_actor_call(
     *,
     run_dir: Path,
@@ -592,14 +627,9 @@ def _dispatch_actor_call(
         packet["gm_prompt"] = final_actor_message
         call = dict(call)
         call["prompt"] = final_actor_message
+    packet = dict(packet)
+    packet["card_folder"] = str(card_folder)
     call_id = str(call.get("call_id") or "")
-    _append_short_term_dialogue(
-        card_folder,
-        actor_id,
-        "gm",
-        final_actor_message,
-        f"{root.name}:{call_id}:gm",
-    )
     _write_progress_safe(
         "gm_loop.actor_dispatch",
         "actor dispatch",
@@ -611,6 +641,13 @@ def _dispatch_actor_call(
     )
     raw_actor_payload = dispatch(_dispatch_actor_key(actor_id), packet)
     actor_output = _validate_actor(actor_id, raw_actor_payload)
+    _append_short_term_dialogue(
+        card_folder,
+        actor_id,
+        "gm",
+        final_actor_message,
+        f"{root.name}:{call_id}:gm",
+    )
     _append_short_term_dialogue(
         card_folder,
         actor_id,
@@ -753,20 +790,7 @@ def run_gm_only_step(
     all_gm_outputs = _append_gm_output(root, gm_output)
 
     gm_stop = str(gm_output.get("stop_reason") or "continue")
-    gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
     decision_point: Any = None
-    if gm_has_decision:
-        decision_point = _mark_decision(
-            root,
-            gm_output.get("decision_point"),
-            "The player must make the next decision.",
-        )
-        _write_progress_safe(
-            "gm_loop.waiting_player_decision",
-            "等待玩家决策",
-            percent=60,
-            detail={"reason": "gm_decision_point"},
-        )
 
     actor_calls = []
     actor_calls.extend([call for call in gm_output.get("actor_calls", []) or [] if isinstance(call, dict)])
@@ -786,7 +810,7 @@ def run_gm_only_step(
         )
         actor_work.append(call_for_projection)
     runnable_side_threads = _runnable_side_thread_summaries(root)
-    stop_reason = "player_decision" if gm_has_decision else (gm_stop if gm_stop in STOP_REASONS else "continue")
+    stop_reason = gm_stop if gm_stop in STOP_REASONS and gm_stop != "player_decision" else "continue"
 
     return {
         "ok": True,
@@ -807,8 +831,7 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
     filtered["actor_calls"] = [
         call
         for call in gm_output.get("actor_calls", [])
-        if str(call.get("actor_id") or "") != "player"
-        and str(call.get("actor_id") or "") in registered_actor_targets
+        if str(call.get("actor_id") or "") in registered_actor_targets
     ]
     return filtered
 
@@ -832,6 +855,18 @@ def _mark_decision(run_dir: Path, decision_point: Any, fallback_reason: str) -> 
     if isinstance(decision_point, dict):
         return decision_point
     return {"reason": reason, "options": options}
+
+
+def _player_actor_participated(called_actors: Iterable[str]) -> bool:
+    return any(str(actor_id or "") == "player" for actor_id in called_actors)
+
+
+def _gm_output_calls_player(gm_output: dict) -> bool:
+    return any(
+        str(call.get("actor_id") or "") == "player"
+        for call in gm_output.get("actor_calls", []) or []
+        if isinstance(call, dict)
+    )
 
 
 def _apply_world_state_delta(world_state: dict, gm_output: dict) -> None:
@@ -1078,8 +1113,14 @@ def run_interactive_loop(
     stop_reason = "continue"
     decision_point: Any = None
     side_thread_results: list[dict] = []
+    initial_player_action_seen = _record_initial_player_action(
+        card_for_versions,
+        root,
+        input_payload,
+    )
 
     for step_index in range(step_limit):
+        player_participated_before_gm = initial_player_action_seen or _player_actor_participated(called_actors)
         _refresh_side_thread_state(root, world_state)
         _write_progress_safe(
             "gm_loop.gm_dispatch",
@@ -1112,7 +1153,7 @@ def run_interactive_loop(
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
         gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
-        gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS else ""
+        gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS and gm_stop != "player_decision" else ""
 
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
         pending_parallel_groups = gm_output.get("parallel_groups") or []
@@ -1224,7 +1265,7 @@ def run_interactive_loop(
 
         if stop_reason in STOP_REASONS:
             break
-        if gm_has_decision:
+        if gm_has_decision and player_participated_before_gm and not _gm_output_calls_player(gm_output):
             decision_point = _mark_decision(
                 root,
                 gm_output.get("decision_point"),

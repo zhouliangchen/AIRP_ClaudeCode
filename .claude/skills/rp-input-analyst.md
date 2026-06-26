@@ -19,7 +19,7 @@ You are the input analyst subagent. You do not write fiction, roleplay, summariz
 Use semantic judgment instead of keyword matching. A sentence can contain more than one unit. Classify units as:
 
 - `action`: immediate first-person player-character action.
-- `synopsis`: first-person plot summary that story must expand before advancing.
+- `synopsis`: first-person plot guidance or near-future summary that GM/story may expand before advancing, but which is not the player actor's direct reply.
 - `omniscient_setting`: author-level world fact or rule.
 - `hidden_setting`: GM-only long-term truth, future reveal, cost, premise, or secret.
 - `character_declaration`: important/core character creation, promotion, demotion, or profile update.
@@ -127,6 +127,8 @@ Required shape:
   },
   "routing": {
     "role_channel": "",
+    "role_action_channel": "",
+    "narrative_guidance_channel": "",
     "user_instruction_channel": "",
     "gm": true,
     "player": true,
@@ -139,3 +141,5 @@ Required shape:
 ```
 
 For every `semantic_units` item include `id`, `source_channel`, `type`, `raw_excerpt`, `derived_summary`, `confidence`, `visibility`, and `persist`.
+
+`routing.role_channel` must preserve the complete role-channel text. `routing.role_action_channel` contains only the first-person player-character action/dialogue that should be treated like a player actor reply to GM. `routing.narrative_guidance_channel` contains first-person plot guidance/synopsis from the role channel. If both appear in one sentence, split them semantically. Narrative guidance may guide GM/story but must not be treated as player short-term memory.

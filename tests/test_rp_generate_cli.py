@@ -474,6 +474,26 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("You hear two careful knocks at the archive door.", prompt)
         self.assertNotIn("STATIC PROMPT WITHOUT PROJECTED MESSAGE", prompt)
 
+    def test_read_loop_prompt_uses_current_player_packet_over_static_prompt(self):
+        player_prompt = self.run_dir / "prompts" / "player.prompt.md"
+        player_prompt.parent.mkdir(parents=True, exist_ok=True)
+        player_prompt.write_text("STATIC PLAYER PROMPT WITHOUT PROJECTED MESSAGE", encoding="utf-8")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        prompt = self.module._read_loop_prompt(
+            self.run_dir,
+            manifest,
+            "player",
+            {
+                "actor_id": "player",
+                "gm_prompt": "你听见班长在桌前问：你的作业呢？",
+                "card_folder": str(self.card),
+            },
+        )
+
+        self.assertIn("你听见班长在桌前问：你的作业呢？", prompt)
+        self.assertNotIn("STATIC PLAYER PROMPT WITHOUT PROJECTED MESSAGE", prompt)
+
     def test_validate_normalizes_gm_world_state_delta_for_memory(self):
         payload = _gm_output(
             actor_calls=[],
@@ -517,6 +537,103 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(result["natural_reply"], reply)
         self.assertEqual(result["events"], [{"type": "reply", "target": "gm", "content": reply, "metadata": {}}])
         self.assertNotIn("stop_reason", result)
+
+    def test_dispatch_actor_reruns_after_key_memory_recall_protocol(self):
+        actor_dir = self.card / "characters" / "雨蒙"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "封存索引",
+                            "summary": "我知道它和Ada的灯有关",
+                            "detail": "索引藏在Ada灯座下方。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream("我想回忆：封存索引")
+            return _agent_stream("我想起灯座下方的索引，低声提醒自己。")
+
+        result = self.module._dispatch_agent_payload(
+            "player",
+            "# player\n",
+            self.root,
+            fake_run_claude,
+            extra_context={"loop_packet": {"actor_id": "player", "card_folder": str(self.card)}},
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("索引藏在Ada灯座下方。", prompts[1])
+        self.assertEqual(result["natural_reply"], "我想起灯座下方的索引，低声提醒自己。")
+
+    def test_dispatch_post_round_memory_reruns_after_key_memory_recall_protocol(self):
+        actor_dir = self.card / "characters" / "Ada"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "雨夜披风",
+                            "summary": "玩家曾把披风借给我",
+                            "detail": "那天雨很冷，我记得披风边缘有银线。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream("我想回忆：雨夜披风")
+            payload = {
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "long_term_memories": "我记得雨夜里玩家借给我披风。",
+                "key_memories": [
+                    {
+                        "tag": "雨夜披风",
+                        "summary": "玩家曾把披风借给我",
+                        "detail": "那天雨很冷，我记得披风边缘有银线。",
+                    }
+                ],
+            }
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        result = self.module._dispatch_agent_payload(
+            "post_round_memory",
+            "# memory\n",
+            self.root,
+            fake_run_claude,
+            extra_context={
+                "card_folder": str(self.card),
+                "post_round_memory_job": {"agent_id": "character:Ada", "character_name": "Ada"},
+                "post_round_output_path": "post_round_memory_jobs/character_Ada.summary.json",
+            },
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("披风边缘有银线", prompts[1])
+        self.assertEqual(result["agent_id"], "character:Ada")
+        self.assertIn("雨夜", result["long_term_memories"])
 
     def test_stdout_json_is_ascii_safe_for_windows_console(self):
         text = self.module._stdout_json({"ok": True, "text": "中文\ufffd"})

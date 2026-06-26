@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,8 +18,9 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{index}" for index in range(1, 10)),
 }
 RECALL_PREFIX = "\u6211\u60f3\u56de\u5fc6"
-GM_SAID_PREFIX = "\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a"
-SELF_REPLIED_PREFIX = "\u6211\u56de\u5e94\uff1a"
+GM_SAID_PREFIX = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a"
+SELF_REPLIED_PREFIX = "\u6211\uff1a"
+PLAYER_MAPPING_FILE = "player.md"
 
 
 class ActorMemoryStoreError(RuntimeError):
@@ -66,10 +68,82 @@ def _safe_actor_name(value: str) -> str:
     return name
 
 
+def _player_mapping_path(card_folder: str | Path) -> Path:
+    return Path(card_folder) / "characters" / PLAYER_MAPPING_FILE
+
+
+def _parse_player_mapping(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().casefold()
+        value = value.strip()
+        if key in {"name", "path"} and value:
+            result[key] = value
+    return result
+
+
+def _player_mapping(card_folder: str | Path) -> tuple[str, Path]:
+    card = Path(card_folder)
+    mapping = _parse_player_mapping(_read_text(_player_mapping_path(card)))
+    raw_name = mapping.get("name") or "player"
+    name = _safe_component(raw_name, "player")
+    if name.casefold() == "_self":
+        name = "player"
+
+    raw_path = mapping.get("path") or f"characters/{name}"
+    path = Path(raw_path)
+    if path.is_absolute() or ".." in path.parts:
+        path = Path("characters") / name
+    parts = path.parts
+    if not parts or parts[0] != "characters" or len(parts) != 2:
+        path = Path("characters") / name
+    folder = _safe_component(path.parts[1], name)
+    if folder.casefold() == "_self":
+        folder = name
+    return name, card / "characters" / folder
+
+
+def _write_default_player_mapping(card_folder: str | Path, paths: "ActorMemoryPaths") -> None:
+    mapping_path = _player_mapping_path(card_folder)
+    if mapping_path.exists():
+        return
+    rel_actor_dir = paths.actor_dir.relative_to(paths.card).as_posix()
+    _write_text_atomic(
+        mapping_path,
+        f"name: {paths.name}\npath: {rel_actor_dir}\n",
+    )
+
+
+def write_player_mapping(card_folder: str | Path, name: Any, relative_path: Any = "") -> dict[str, str]:
+    card = Path(card_folder)
+    safe_name = _safe_component(str(name or "").strip(), "player")
+    if safe_name.casefold() == "_self":
+        safe_name = "player"
+    rel_text = str(relative_path or "").strip() or f"characters/{safe_name}"
+    rel = Path(rel_text)
+    if rel.is_absolute() or ".." in rel.parts:
+        rel = Path("characters") / safe_name
+    if not rel.parts or rel.parts[0] != "characters" or len(rel.parts) != 2:
+        rel = Path("characters") / safe_name
+    folder = _safe_component(rel.parts[1], safe_name)
+    if folder.casefold() == "_self":
+        folder = safe_name
+    normalized_rel = f"characters/{folder}"
+    _write_text_atomic(
+        _player_mapping_path(card),
+        f"name: {safe_name}\npath: {normalized_rel}\n",
+    )
+    return {"name": safe_name, "path": normalized_rel}
+
+
 def _actor_name(actor_id: Any) -> str:
     text = str(actor_id or "").strip()
     if not text or text == "player":
-        return "_self"
+        return "player"
     if text.startswith("character:"):
         return _safe_character_name(text.split(":", 1)[1])
     return _safe_actor_name(text)
@@ -86,8 +160,12 @@ def canonical_actor_id(actor_id: Any) -> str:
 
 def actor_paths(card_folder: str | Path, actor_id: Any) -> ActorMemoryPaths:
     card = Path(card_folder)
-    name = _actor_name(actor_id)
-    actor_dir = card / "characters" / name
+    actor_text = str(actor_id or "").strip()
+    if not actor_text or actor_text == "player":
+        name, actor_dir = _player_mapping(card)
+    else:
+        name = _actor_name(actor_id)
+        actor_dir = card / "characters" / name
     objective_dir = card / "memory" / "characters" / name
     return ActorMemoryPaths(
         card=card,
@@ -166,6 +244,12 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def ensure_actor_files(card_folder: str | Path, actor_id: Any, profile: str = "") -> ActorMemoryPaths:
     paths = actor_paths(card_folder, actor_id)
+    actor_text = str(actor_id or "").strip()
+    if not actor_text or actor_text == "player":
+        legacy_self = Path(card_folder) / "characters" / "_self"
+        if legacy_self.exists():
+            shutil.rmtree(legacy_self)
+        _write_default_player_mapping(card_folder, paths)
     _write_text_if_missing(paths.profile, str(profile or ""))
     _write_text_if_missing(paths.long_term, "")
     _write_json_if_missing(paths.key_memories, {"memories": []})
@@ -237,8 +321,8 @@ def append_short_term_dialogue(
     existing = _read_text(paths.short_term)
     next_text = existing.rstrip()
     if next_text:
-        next_text += "\n"
-    next_text += f"{prefix}{text}\n"
+        next_text += "\n\n"
+    next_text += f"{prefix}{text}\n\n"
     _write_text_atomic(paths.short_term, next_text)
 
     if source_key:

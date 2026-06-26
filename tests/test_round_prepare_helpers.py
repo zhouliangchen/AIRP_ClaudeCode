@@ -66,7 +66,7 @@ class RoundPrepareHelperTest(unittest.TestCase):
         self.assertEqual(result["characters"][1]["scene_relevance"], "normal")
         self.assertEqual(result["characters"][2]["profile_summary"], "Cora profile.")
 
-    def test_build_character_contexts_keeps_blank_self_and_all_explicit_major_characters(self):
+    def test_build_character_contexts_does_not_inject_blank_player_as_character(self):
         round_prepare = _load_round_prepare()
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp)
@@ -86,9 +86,9 @@ class RoundPrepareHelperTest(unittest.TestCase):
 
         self.assertEqual(
             [item["name"] for item in result["characters"]],
-            ["_self", "Ada", "Bert", "Cora"],
+            ["Ada", "Bert", "Cora"],
         )
-        self.assertEqual(result["characters"][0]["scene_relevance"], "high")
+        self.assertEqual(result["characters"][0]["scene_relevance"], "normal")
         self.assertEqual(result["characters"][2]["scene_relevance"], "normal")
 
     def test_build_character_contexts_keeps_passive_card_structure_fallback_small(self):

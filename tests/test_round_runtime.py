@@ -294,6 +294,84 @@ class RoundRuntimeTest(unittest.TestCase):
         history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
         self.assertIn("story_composition", history)
 
+    def test_run_post_round_memory_jobs_executes_recall_protocol_before_ingest(self):
+        actor_dir = self.card / "characters" / "Ada"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (actor_dir / "profile.md").write_text("我是Ada。", encoding="utf-8")
+        (actor_dir / "long_term_memories.md").write_text("", encoding="utf-8")
+        (actor_dir / "short_term_memories.md").write_text("记忆的回声：雨夜很冷。\n\n我：我裹紧披风。\n\n", encoding="utf-8")
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "雨夜披风",
+                            "summary": "玩家曾把披风借给我",
+                            "detail": "那天雨很冷，我记得披风边缘有银线。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": self.run_dir.name,
+                "loop_outputs": {
+                    "actors": {
+                        "character:Ada": [
+                            {
+                                "agent": "character",
+                                "agent_id": "character:Ada",
+                                "character_name": "Ada",
+                                "events": [
+                                    {"type": "reply", "target": "gm", "content": "我裹紧披风。"}
+                                ],
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+        prompts = []
+
+        def run_claude(agent_key, prompt, cwd):
+            prompts.append((agent_key, prompt))
+            if len(prompts) == 1:
+                return "我想回忆：雨夜披风"
+            return json.dumps(
+                {
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "long_term_memories": "我记得雨夜里玩家借给我披风。",
+                    "key_memories": [
+                        {
+                            "tag": "雨夜披风",
+                            "summary": "玩家曾把披风借给我",
+                            "detail": "那天雨很冷，我记得披风边缘有银线。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+        result = self.round_runtime._run_post_round_memory_jobs(
+            self.card,
+            self.root,
+            self.run_dir,
+            run_claude,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(prompts[0][0], "post_round_memory:character_Ada")
+        self.assertIn("披风边缘有银线", prompts[1][1])
+        self.assertIn("玩家借给我披风", (actor_dir / "long_term_memories.md").read_text(encoding="utf-8"))
+        self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

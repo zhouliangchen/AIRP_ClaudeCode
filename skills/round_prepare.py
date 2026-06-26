@@ -223,11 +223,6 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
         if isinstance(name, str) and name.strip():
             major.append(name.strip())
 
-    # Blank self-card is always a candidate so the emergent role can keep continuity.
-    if isinstance(card_data, dict) and (card_data.get("mode") == "blank_bootstrap" or card_data.get("source_type") == "blank"):
-        if "_self" not in major:
-            major.insert(0, "_self")
-
     # Use card structure characters as passive major candidates only when explicitly configured absent.
     if not major and isinstance(card_structure, dict):
         for name in (card_structure.get("characters", {}) or {}).keys():
@@ -254,12 +249,10 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
         state_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "state.json") or {}
         profile_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "profile.json") or {}
         stat_slice = latest_vars.get(name, {}) if isinstance(latest_vars, dict) else {}
-        if name == "_self" and not stat_slice:
-            stat_slice = latest_vars.get("角色", {}) if isinstance(latest_vars, dict) else {}
         packets.append({
             "name": name,
             "importance": "major",
-            "scene_relevance": "high" if name == "_self" else "normal",
+            "scene_relevance": "normal",
             "profile_summary": profile_md[:1200],
             "recent_state": recent_md[:1200],
             "goals": goals_md[:1000],

@@ -86,6 +86,25 @@ class AgentMemoryTest(unittest.TestCase):
             },
         )
 
+    def _write_actor_files(
+        self,
+        actor_name,
+        *,
+        profile,
+        long_term="",
+        key_memories=None,
+        short_term="",
+    ):
+        actor_dir = self.card / "characters" / actor_name
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (actor_dir / "profile.md").write_text(profile, encoding="utf-8")
+        (actor_dir / "long_term_memories.md").write_text(long_term, encoding="utf-8")
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps({"memories": key_memories or []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (actor_dir / "short_term_memories.md").write_text(short_term, encoding="utf-8")
+
     def _structured_memory_update(
         self,
         agent_id="player",
@@ -757,6 +776,102 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertNotIn("Actor-Safe Job Input", prompt_text)
         self.assertNotIn('"round_dialogue"', prompt_text)
         self.assertNotIn('"visible_events"', prompt_text)
+
+    def test_post_round_memory_prompts_use_unified_file_backed_actor_context(self):
+        self._write_actor_files(
+            "雨蒙",
+            profile="我是玩家角色，我用第一人称整理自己的记忆。\n",
+            long_term="我长期记得档案馆的入口很冷。\n",
+            key_memories=[
+                {
+                    "tag": "玩家重点",
+                    "summary": "我记得铜钥匙很重要。",
+                    "detail": "玩家重点详情不应常驻进整理提示词。",
+                }
+            ],
+            short_term="刚才GM提醒我门后有脚步声。\n",
+        )
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        self._write_actor_files(
+            "Ada",
+            profile="我是Ada，我习惯先确认门外动静。\n",
+            long_term="我长期记得玩家曾在雨夜保护我。\n",
+            key_memories=[
+                {
+                    "tag": "Ada重点",
+                    "summary": "我记得旧档案室的封条。",
+                    "detail": "Ada重点详情不应常驻进整理提示词。",
+                }
+            ],
+            short_term="刚才GM让我听见走廊的低语。\n",
+        )
+        self._write_story_input(
+            {
+                "player": [
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "events": [{"type": "dialogue", "content": "我握紧铜钥匙。"}],
+                    }
+                ],
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Wrong Packet Name",
+                        "events": [{"type": "dialogue", "content": "我会守住档案室。"}],
+                    }
+                ],
+            }
+        )
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        player_job = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "player.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        ada_job = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        player_prompt = (
+            self.run_dir / "prompts" / "post_round_memory" / "player.prompt.md"
+        ).read_text(encoding="utf-8")
+        ada_prompt = (
+            self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("display_name", player_job)
+        self.assertIn("display_name", ada_job)
+        self.assertEqual(player_job["display_name"], "雨蒙")
+        self.assertEqual(ada_job["display_name"], "Ada")
+        self.assertIn("我是玩家角色，我用第一人称整理自己的记忆。", player_prompt)
+        self.assertIn("我是Ada，我习惯先确认门外动静。", ada_prompt)
+        self.assertIn("我长期记得档案馆的入口很冷。", player_prompt)
+        self.assertIn("我长期记得玩家曾在雨夜保护我。", ada_prompt)
+        self.assertIn("玩家重点", player_prompt)
+        self.assertIn("我记得铜钥匙很重要。", player_prompt)
+        self.assertIn("Ada重点", ada_prompt)
+        self.assertIn("我记得旧档案室的封条。", ada_prompt)
+        self.assertIn("刚才GM提醒我门后有脚步声。", player_prompt)
+        self.assertIn("刚才GM让我听见走廊的低语。", ada_prompt)
+        self.assertIn("我可以小幅修补长期记忆，也可以完整重写长期记忆", player_prompt)
+        self.assertIn("我可以新增、更新或忘记重点记忆", ada_prompt)
+        self.assertIn("整理后的完整长期记忆", player_prompt)
+        self.assertIn("整理后的完整重点记忆列表", player_prompt)
+        self.assertIn("输出 JSON 契约", ada_prompt)
+        self.assertNotIn("Required JSON Contract", player_prompt)
+        self.assertNotIn("玩家重点详情不应常驻进整理提示词", player_prompt)
+        self.assertNotIn("Ada重点详情不应常驻进整理提示词", ada_prompt)
+        self.assertNotIn("Wrong Packet Name", ada_prompt)
+        self.assertNotIn("Post-Round Actor Memory Job", player_prompt)
+        self.assertNotIn("Post-Round Actor Memory Job", ada_prompt)
 
     def test_ingest_post_round_memory_jobs_marks_absent_jobs_not_required(self):
         result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)

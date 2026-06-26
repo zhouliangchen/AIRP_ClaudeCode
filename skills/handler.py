@@ -1456,6 +1456,44 @@ def _find_first_str(obj, names):
     return ""
 
 
+def _as_first_person_sentence(prefix, value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    suffix = "" if text.endswith(("。", "！", "？", ".", "!", "?")) else "。"
+    return f"{prefix}{text}{suffix}"
+
+
+def _subjective_player_profile_markdown(name, fields):
+    display_name = str(name or "").strip()
+    lines = ["# 我是谁", ""]
+    if display_name and display_name != "未命名角色":
+        lines.append(f"我是{display_name}。")
+    else:
+        lines.append("我还没有明确写下自己的名字。")
+
+    prose = [
+        _as_first_person_sentence("我的身份是", fields.get("role")),
+        _as_first_person_sentence("我的外貌给人的印象是", fields.get("appearance")),
+        _as_first_person_sentence("我说话时通常是这样的：", fields.get("voice")),
+        _as_first_person_sentence("我现在的动机和状态是", fields.get("motivation")),
+        _as_first_person_sentence("我和玩家的关系是", fields.get("relationship_to_user")),
+    ]
+    lines.extend(sentence for sentence in prose if sentence)
+
+    assumptions = [
+        str(item or "").strip()
+        for item in (fields.get("world_assumptions", []) or [])
+        if str(item or "").strip()
+    ]
+    if assumptions:
+        lines.append("我当前确认的处境：" + "；".join(assumptions) + "。")
+
+    if len(lines) <= 3:
+        lines.append("除此之外，我的性格、关系和处境还在故事里逐渐清晰。")
+    return "\n\n".join(lines).rstrip() + "\n"
+
+
 def _derive_blank_identity_from_user_text(user_text):
     text = str(user_text or "")
     text = re.sub(r"\[USER_INSTRUCTION\].*", "", text, flags=re.DOTALL).strip()
@@ -1558,24 +1596,10 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     card_data.setdefault("data", {})["extensions"] = card_data.get("data", {}).get("extensions", {})
     _write_json_file(card_path, card_data)
 
+    if card_data.get("name"):
+        actor_memory_store.write_player_mapping(card_folder, card_data.get("name"))
     paths = actor_memory_store.ensure_actor_files(card_folder, "player")
-    md = [
-        "# 自定义角色卡",
-        "",
-        f"- 最后更新轮次: {turn_index}",
-        f"- 置信度: {profile.get('confidence', 'low')}",
-        f"- 姓名: {card_data.get('name', '')}",
-        f"- 身份/定位: {fields.get('role', '')}",
-        f"- 外貌: {fields.get('appearance', '')}",
-        f"- 声口: {fields.get('voice', '')}",
-        f"- 动机/状态: {fields.get('motivation', '')}",
-        f"- 与用户关系: {fields.get('relationship_to_user', '')}",
-        "",
-        "## 世界假设",
-    ]
-    for item in fields.get("world_assumptions", []) or []:
-        md.append(f"- {item}")
-    subjective_text = "\n".join(md) + "\n"
+    subjective_text = _subjective_player_profile_markdown(card_data.get("name", ""), fields)
     paths.profile.write_text(subjective_text, encoding="utf-8")
 
     objective_lines = [
