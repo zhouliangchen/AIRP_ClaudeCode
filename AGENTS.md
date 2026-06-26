@@ -20,9 +20,10 @@
 
 - `python -m unittest discover -s tests -v`
 - `python skills/control_plane_smoke.py --repo .`
-- `python -m py_compile skills/agent_dispatcher.py skills/agent_actor_runtime.py skills/agent_messages.py skills/agent_intents.py skills/agent_snapshots.py skills/control_plane_smoke.py skills/agent_outputs.py skills/agent_prompts.py skills/round_prepare.py skills/input_analysis.py skills/input_analysis_apply.py skills/input_routing_requests.py skills/capability_registry.py skills/replay_capabilities.py skills/character_registry.py skills/rp_generate_cli.py skills/agent_executors/__init__.py skills/agent_executors/input_executor.py skills/agent_executors/actor_executor.py skills/agent_executors/delivery_executor.py`
+- `python -m compileall -q skills` 编译当前实际存在的 Python 运行时代码。
 - 启动 `python skills/start_server.py .`，并验证 `http://localhost:8765`，使用视觉识别确认前端界面显示良好，UI布局合理。
-- 使用docs\测试样例-空白卡.md中描述的测试流程，能快速、无错误地完成一轮完整的测试。
+- 使用docs\测试样例-空白卡.md中描述的测试流程，能快速、无错误地完成一轮完整的测试。（仅在大规模修改后进行此项测试）
+- 测试完成后，需主动关闭所有测试相关的进程服务。
 
 ## 代码风格与命名约定
 
@@ -44,8 +45,15 @@
 
 若发生文件/终端乱码问题，请在解决问题后，把解决方案记录到AGENTS.md，即本文件。
 
+Do not rewrite UTF-8 source files that contain Chinese with PowerShell Get-Content + Set-Content; it can add a BOM or corrupt characters under the active console code page. Prefer apply_patch for edits, and use byte-level scripts only for mechanical fixes such as removing a UTF-8 BOM.
+
+PowerShell 中用 here-string 管道给 `python -` 传递包含中文的内联脚本时，中文字面量可能被当前控制台编码替换成 `?`。需要做字符串断言时，优先在 Python 代码里使用 `\uXXXX` Unicode 转义，或先显式切换 `$OutputEncoding` 和 `[Console]::OutputEncoding` 为 UTF-8 后再传输中文脚本。
+
+PowerShell 中运行 Python 并需要打印包含中文路径或中文 JSON 的 stdout 时，优先临时设置 `$env:PYTHONIOENCODING='utf-8'`，避免 Python 按当前控制台代码页输出导致终端显示乱码；这不影响文件本身的 UTF-8 内容。
+
 在大规模重构时，在有临时备份的准备后，优先进行激进的删除、重构，而不是兼容修改迁移。跑通流程后，删除临时备份。
 
 ## Commit指南
 
 为本仓库创建 git commits 时，commit messages 使用规范的简体中文提交格式。不要提交docs/下的文件，但允许本地修改、添加git追踪。
+

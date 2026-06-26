@@ -1,6 +1,6 @@
 ---
 name: rp-gm-visibility-policy
-description: Use when the GM prepares actor calls, perception feedback, hidden-fact disclosure, or scene information boundaries.
+description: Use when the GM prepares actor calls, natural-language perception feedback, hidden-fact disclosure, or scene information boundaries.
 ---
 
 ## RP GM Visibility Policy
@@ -25,7 +25,7 @@ If visibility cannot be proven, keep the information GM-only. Do not route it to
 
 ## Perception Feedback
 
-Perception feedback must answer only with evidence available to the requesting actor through the requested channel. `perception_responses[].content` and `visibility_basis` are actor-facing. They must not reveal hidden causality, author intent, future stakes, or user-instruction summaries.
+Perception feedback must answer only with evidence available to the requesting actor through the requested channel. Put that answer into a new natural-language `actor_calls[].prompt`; do not use `perceive_request`, `perception_responses`, or pending perception fields as actor-facing protocol. The prompt must not reveal hidden causality, author intent, future stakes, or user-instruction summaries.
 
 ## Disclosure
 

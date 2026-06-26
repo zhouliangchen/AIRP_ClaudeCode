@@ -59,7 +59,6 @@ NARRATIVE_DIRECTIVE_BOOL_KEYS = (
     "rewrite_previous_output",
     "expand_synopsis_before_continue",
     "continue_after_player_action",
-    "must_stop_for_player_decision",
 )
 FALLBACK_HIGH_RISK_TYPES = {
     "hidden_setting",
@@ -264,7 +263,6 @@ def build_fallback_analysis(
             "rewrite_previous_output": False,
             "expand_synopsis_before_continue": False,
             "continue_after_player_action": bool(role_text),
-            "must_stop_for_player_decision": False,
         },
         "routing": {
             "role_channel": role_text,

@@ -29,7 +29,9 @@ class ActorContextRendererTest(unittest.TestCase):
             "role": "royal paladin",
             "memory": {
                 "long_term": ["I was taught that cursed heroes endanger civilians."],
-                "key_memories": ["I swore to protect the market district."],
+                "key_memories": [
+                    "I hid the chapel key beneath the broken altar after Mira betrayed me."
+                ],
                 "short_term": ["I saw an old wanted sigil on the traveler's cloak."],
                 "goals": ["Keep civilians safe."],
             },
@@ -41,9 +43,14 @@ class ActorContextRendererTest(unittest.TestCase):
         serialized = json.dumps(rendered, ensure_ascii=False)
 
         self.assertEqual(rendered["actor_id"], "character:CurrentPaladin")
-        self.assertIn("You are Current Paladin", rendered["immersive_context"])
-        self.assertIn("You remember: I was taught that cursed heroes endanger civilians.", rendered["immersive_context"])
-        self.assertIn("Your current goal is: Keep civilians safe.", rendered["immersive_context"])
+        self.assertIn("我是 Current Paladin。", rendered["immersive_context"])
+        self.assertIn("我的身份是：royal paladin。", rendered["immersive_context"])
+        self.assertIn("我记得：I was taught that cursed heroes endanger civilians.", rendered["immersive_context"])
+        self.assertIn("我现在想要：Keep civilians safe.", rendered["immersive_context"])
+        self.assertIn("我想回忆：", rendered["immersive_context"])
+        self.assertNotIn("chapel key beneath the broken altar", rendered["immersive_context"])
+        self.assertNotIn("You are", rendered["immersive_context"])
+        self.assertNotIn("Your current goal", rendered["immersive_context"])
         self.assertNotIn("misconceptions", serialized)
         self.assertNotIn("objective_truth", serialized)
         self.assertNotIn("gm_only", serialized)
@@ -58,9 +65,11 @@ class ActorContextRendererTest(unittest.TestCase):
 
         rendered = self.renderer.render_actor_context("player", actor, world)
 
-        self.assertIn("You are the player character.", rendered["immersive_context"])
-        self.assertIn("Current first-person anchor: I keep my hand on the doorframe.", rendered["immersive_context"])
+        self.assertIn("我是当前扮演的角色。", rendered["immersive_context"])
+        self.assertIn("我此刻的行动意图：I keep my hand on the doorframe.", rendered["immersive_context"])
         self.assertNotIn("runtime", rendered["immersive_context"].lower())
+        self.assertNotIn("You are", rendered["immersive_context"])
+        self.assertNotIn("Current first-person anchor", rendered["immersive_context"])
 
     def test_render_context_rejects_hidden_and_control_markers_across_actor_inputs(self):
         actor = {
@@ -101,7 +110,7 @@ class ActorContextRendererTest(unittest.TestCase):
         rendered = self.renderer.render_actor_context("character:Ada", actor, {})
         serialized = json.dumps(rendered, ensure_ascii=False).lower()
 
-        self.assertIn("You are Ada.", rendered["immersive_context"])
+        self.assertIn("我是 Ada。", rendered["immersive_context"])
         self.assertIn("steady", serialized)
         self.assertIn("balanced", serialized)
         self.assertIn("trusted", serialized)
@@ -109,9 +118,10 @@ class ActorContextRendererTest(unittest.TestCase):
         self.assertIn("rain on glass", serialized)
         self.assertIn("footsteps", serialized)
         self.assertIn("I distrust the old crown.", rendered["immersive_context"])
-        self.assertIn("I learned the bell schedule.", rendered["immersive_context"])
         self.assertIn("I saw a blue cloak.", rendered["immersive_context"])
         self.assertIn("Keep civilians safe.", rendered["immersive_context"])
+        self.assertIn("我想回忆：", rendered["immersive_context"])
+        self.assertNotIn("You are", rendered["immersive_context"])
 
         for forbidden in (
             "visibility_basis",
@@ -187,10 +197,32 @@ class ActorContextRendererTest(unittest.TestCase):
         rendered = self.renderer.render_actor_context("character:Ada", actor, {})
         text = rendered["immersive_context"]
 
-        self.assertIn("Your injuries: left arm: sore; right leg: bruised", text)
-        self.assertIn("Your fatigue: tired; hungry", text)
-        self.assertIn("Your relationship with Mira: history: last meeting: market argument; trust: fragile", text)
-        self.assertIn("You can sense through sight: far: rain; crowd; near: lantern light", text)
+        self.assertIn("我的 injuries：left arm: sore; right leg: bruised", text)
+        self.assertIn("我的 fatigue：tired; hungry", text)
+        self.assertIn("我和 Mira 的关系：history: last meeting: market argument; trust: fragile", text)
+        self.assertIn("我能通过 sight 感到：far: rain; crowd; near: lantern light", text)
         self.assertNotIn("{", text)
         self.assertNotIn("}", text)
         self.assertNotIn("'", text)
+
+    def test_project_actor_memory_limits_long_term_and_fuzzes_key_memories(self):
+        memory = {
+            "long_term": ["A" * 1200],
+            "key_memories": [
+                {
+                    "content": "I saw the sealed index hidden behind Ada's lamp.",
+                    "details": ["The exact shelf was marked seven."],
+                    "importance": "high",
+                }
+            ],
+            "short_term": ["I am holding the door."],
+            "goals": ["Keep watch."],
+        }
+
+        projected = self.renderer.project_actor_memory(memory)
+        serialized = json.dumps(projected, ensure_ascii=False)
+
+        self.assertLessEqual(sum(len(str(item)) for item in projected["long_term"]), 1000)
+        self.assertIn("我想回忆：", serialized)
+        self.assertNotIn("The exact shelf was marked seven.", serialized)
+        self.assertNotIn("hidden behind Ada's lamp", serialized)

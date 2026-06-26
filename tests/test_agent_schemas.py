@@ -451,140 +451,7 @@ class AgentSchemaTest(unittest.TestCase):
 
         self.assertEqual(normalized["character_promotions"], [])
 
-    def test_validate_gm_output_accepts_perception_response_answer(self):
-        payload = {
-            "agent": "gm",
-            "scene_beats": [],
-            "events": [],
-            "actor_calls": [],
-            "parallel_groups": [],
-            "world_state_delta": [],
-            "perception_responses": [
-                {
-                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
-                    "actor_id": "character:Ada",
-                    "source_call_id": "call-character-Ada-1",
-                    "status": "answered",
-                    "channel": "auditory",
-                    "content": "You hear slow footsteps behind the shelf.",
-                    "visibility_basis": {
-                        "mode": "direct",
-                        "summary": "Ada receives sensory feedback for her own perception request.",
-                        "target_actor": "character:Ada",
-                        "visible_to": ["character:Ada"],
-                        "sensory_channels": ["auditory"],
-                    },
-                }
-            ],
-            "decision_point": None,
-            "stop_reason": "continue",
-        }
-
-        normalized = self.agent_schemas.validate_gm_output(payload)
-
-        response = normalized["perception_responses"][0]
-        self.assertEqual(response["status"], "answered")
-        self.assertEqual(response["channel"], "auditory")
-        self.assertEqual(response["visibility_basis"]["target_actor"], "character:Ada")
-
-    def test_validate_gm_output_accepts_perception_response_close(self):
-        payload = {
-            "agent": "gm",
-            "scene_beats": [],
-            "events": [],
-            "actor_calls": [],
-            "parallel_groups": [],
-            "world_state_delta": [],
-            "perception_responses": [
-                {
-                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
-                    "actor_id": "character:Ada",
-                    "source_call_id": "call-character-Ada-1",
-                    "status": "closed",
-                    "reason": "The request is no longer relevant after Ada steps away.",
-                }
-            ],
-            "decision_point": None,
-            "stop_reason": "continue",
-        }
-
-        normalized = self.agent_schemas.validate_gm_output(payload)
-
-        self.assertEqual(normalized["perception_responses"][0]["status"], "closed")
-        self.assertEqual(
-            normalized["perception_responses"][0]["reason"],
-            "The request is no longer relevant after Ada steps away.",
-        )
-
-    def test_validate_gm_output_rejects_closed_perception_with_actor_facing_fields(self):
-        cases = (
-            ("content", "You hear slow footsteps behind the shelf."),
-            ("channel", "auditory"),
-            (
-                "visibility_basis",
-                {
-                    "mode": "direct",
-                    "summary": "Ada receives sensory feedback for her own perception request.",
-                    "target_actor": "character:Ada",
-                    "visible_to": ["character:Ada"],
-                },
-            ),
-        )
-        for field, value in cases:
-            with self.subTest(field=field):
-                payload = {
-                    "agent": "gm",
-                    "scene_beats": [],
-                    "events": [],
-                    "actor_calls": [],
-                    "parallel_groups": [],
-                    "world_state_delta": [],
-                    "perception_responses": [
-                        {
-                            "request_id": "perception-character-Ada-call-character-Ada-1-1",
-                            "actor_id": "character:Ada",
-                            "source_call_id": "call-character-Ada-1",
-                            "status": "closed",
-                            "reason": "The request is no longer relevant after Ada steps away.",
-                            field: value,
-                        }
-                    ],
-                    "decision_point": None,
-                    "stop_reason": "continue",
-                }
-
-                with self.assertRaisesRegex(
-                    self.agent_schemas.ValidationError,
-                    f"perception_responses\\[0\\].{field}",
-                ):
-                    self.agent_schemas.validate_gm_output(payload)
-
-    def test_validate_gm_output_rejects_answered_perception_without_basis(self):
-        payload = {
-            "agent": "gm",
-            "scene_beats": [],
-            "events": [],
-            "actor_calls": [],
-            "parallel_groups": [],
-            "world_state_delta": [],
-            "perception_responses": [
-                {
-                    "request_id": "perception-character-Ada-call-character-Ada-1-1",
-                    "actor_id": "character:Ada",
-                    "source_call_id": "call-character-Ada-1",
-                    "status": "answered",
-                    "channel": "visual",
-                    "content": "You see the shelf move.",
-                }
-            ],
-            "decision_point": None,
-            "stop_reason": "continue",
-        }
-
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "perception_responses\\[0\\].visibility_basis"):
-            self.agent_schemas.validate_gm_output(payload)
-
-    def test_validate_gm_output_rejects_hidden_perception_response_content(self):
+    def test_validate_gm_output_rejects_legacy_perception_responses(self):
         payload = {
             "agent": "gm",
             "scene_beats": [],
@@ -612,7 +479,7 @@ class AgentSchemaTest(unittest.TestCase):
             "stop_reason": "continue",
         }
 
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "perception_responses\\[0\\].content"):
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "legacy actor-facing protocol"):
             self.agent_schemas.validate_gm_output(payload)
 
     def test_validate_gm_output_rejects_subgm_character_promotions(self):
@@ -852,239 +719,74 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
             self.agent_schemas.validate_subgm_output(payload)
 
-    def test_validate_actor_output_requires_events_protocol(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:ada",
-            "character_name": "Ada",
-            "events": [
-                {"type": "perceive_request", "content": "I listen for steps beyond the door."},
-                {"type": "dialogue", "target": "player", "content": "Stay close."},
-                {"type": "action", "target": "", "content": "I lift the lamp and wait by the threshold."},
-                {"type": "memory_delta", "target": "self", "content": "I saw the archive door open."},
-                {"type": "goal_update", "target": "self", "content": "Keep the player away from danger."},
-                {"type": "wait_for_gm", "target": "", "content": "I wait for what the lamp reveals."},
-                {"type": "stop_for_player_decision", "target": "player", "content": "The player must choose whether to enter."},
-            ],
-            "stop_reason": "continue",
-        }
+    def test_validate_actor_output_accepts_natural_reply_wrapper(self):
+        payload = self.agent_schemas.natural_actor_output(
+            "character:Ada",
+            "我把灯举低一些，轻声说：先别进去。",
+            character_name="Ada",
+        )
 
         normalized = self.agent_schemas.validate_actor_output(payload)
 
         self.assertEqual(normalized["agent"], "character")
-        self.assertEqual(normalized["agent_id"], "character:ada")
-        self.assertEqual(normalized["events"][0]["type"], "perceive_request")
-        self.assertEqual(normalized["events"][0]["target"], "")
-        self.assertEqual(normalized["events"][0]["metadata"], {})
-        self.assertEqual(normalized["events"][1]["target"], "player")
-        self.assertEqual(normalized["stop_reason"], "continue")
-
-    def test_validate_actor_output_normalizes_structured_dialogue_metadata(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "events": [
-                {
-                    "type": "dialogue",
-                    "target": "character:SuLi",
-                    "content": "Did you hear that?",
-                    "metadata": {
-                        "exact_visible_words": "Did you hear that?",
-                        "delivery_channel": "spoken",
-                        "visible_tone_or_action": "Ada lowers her voice.",
-                    },
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
-        normalized = self.agent_schemas.validate_actor_output(payload)
-
+        self.assertEqual(normalized["agent_id"], "character:Ada")
+        self.assertEqual(normalized["character_name"], "Ada")
+        self.assertEqual(normalized["natural_reply"], "我把灯举低一些，轻声说：先别进去。")
         self.assertEqual(
-            normalized["events"][0]["metadata"],
-            {
-                "exact_visible_words": "Did you hear that?",
-                "delivery_channel": "spoken",
-                "visible_tone_or_action": "Ada lowers her voice.",
-            },
+            normalized["events"],
+            [{
+                "type": "reply",
+                "target": "gm",
+                "content": "我把灯举低一些，轻声说：先别进去。",
+                "metadata": {},
+            }],
         )
 
-    def test_validate_actor_output_normalizes_dialogue_metadata_aliases_and_perceive_event(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:LiuChang",
-            "character_name": "LiuChang",
-            "events": [
-                {
-                    "type": "perceive",
-                    "target": "character:Yumeng",
-                    "content": "I notice Yumeng staring blankly at his desk.",
-                    "metadata": {},
-                },
-                {
-                    "type": "dialogue",
-                    "target": "character:Yumeng",
-                    "content": "Hey, did you actually finish the homework?",
-                    "metadata": {
-                        "tone": "teasing",
-                        "dialogue_style": "casual",
-                    },
-                },
-            ],
-            "stop_reason": "continue",
-        }
-
-        normalized = self.agent_schemas.validate_actor_output(payload)
-
-        self.assertEqual(normalized["events"][0]["type"], "action")
-        self.assertEqual(
-            normalized["events"][1]["metadata"],
-            {
-                "delivery_channel": "spoken",
-                "visible_tone_or_action": "teasing; casual",
-            },
-        )
-
-    def test_validate_actor_output_rejects_hidden_dialogue_metadata(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "events": [
-                {
-                    "type": "dialogue",
-                    "target": "character:SuLi",
-                    "content": "Did you hear that?",
-                    "metadata": {
-                        "exact_visible_words": "Did you hear that?",
-                        "delivery_channel": "spoken",
-                        "visible_tone_or_action": "world_truth says Ada is baiting SuLi.",
-                    },
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_tone_or_action"):
-            self.agent_schemas.validate_actor_output(payload)
-
-    def test_validate_actor_output_accepts_custom_action_contract(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "events": [
-                {
-                    "type": "custom_action",
-                    "target": "archive door",
-                    "content": "I wedge the chair under the archive door handle.",
-                    "metadata": {
-                        "category": "physical",
-                        "visible_content": "I wedge the chair under the archive door handle.",
-                        "requires_gm_resolution": True,
-                        "risk_level": "medium",
-                    },
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
-        normalized = self.agent_schemas.validate_actor_output(payload)
-
-        self.assertEqual(normalized["events"][0]["type"], "custom_action")
-        self.assertEqual(
-            normalized["events"][0]["target"],
-            "archive door",
-        )
-        self.assertEqual(
-            normalized["events"][0]["metadata"],
-            {
-                "category": "physical",
-                "visible_content": "I wedge the chair under the archive door handle.",
-                "requires_gm_resolution": True,
-                "risk_level": "medium",
-            },
-        )
-
-    def test_validate_actor_output_rejects_custom_action_missing_target(self):
-        cases = (
-            ("missing", {}),
-            ("blank", {"target": "   "}),
-        )
-        for case_name, target_fields in cases:
-            with self.subTest(case_name=case_name):
+    def test_validate_actor_output_rejects_structured_actor_event_types(self):
+        for event_type in (
+            "custom_action",
+            "perceive_request",
+            "dialogue",
+            "action",
+            "memory_delta",
+            "goal_update",
+            "stop_for_player_decision",
+        ):
+            with self.subTest(event_type=event_type):
                 payload = {
-                    "agent": "character",
-                    "agent_id": "character:Ada",
-                    "character_name": "Ada",
-                    "events": [
-                        {
-                            "type": "custom_action",
-                            "content": "I wedge the chair under the archive door handle.",
-                            "metadata": {
-                                "category": "physical",
-                                "visible_content": "I wedge the chair under the archive door handle.",
-                                "requires_gm_resolution": True,
-                                "risk_level": "medium",
-                            },
-                            **target_fields,
-                        }
-                    ],
-                    "stop_reason": "continue",
+                    "agent": "player",
+                    "agent_id": "player",
+                    "natural_reply": "我停在门边，等你说明外面的声音。",
+                    "events": [{
+                        "type": event_type,
+                        "target": "gm",
+                        "content": "我停在门边，等你说明外面的声音。",
+                        "metadata": {},
+                    }],
                 }
-
-                with self.assertRaisesRegex(
-                    self.agent_schemas.ValidationError,
-                    r"custom_action.*target",
-                ):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "allowed actor event type"):
                     self.agent_schemas.validate_actor_output(payload)
 
-    def test_validate_actor_output_rejects_custom_action_missing_visible_content(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "events": [
-                {
-                    "type": "custom_action",
-                    "target": "archive door",
-                    "content": "I wedge the chair under the archive door handle.",
-                    "metadata": {
-                        "category": "physical",
-                        "requires_gm_resolution": True,
-                        "risk_level": "medium",
-                    },
-                }
-            ],
-            "stop_reason": "continue",
-        }
+    def test_validate_actor_output_rejects_old_actor_fields(self):
+        base = self.agent_schemas.natural_actor_output("player", "我停在门边。")
+        for field, value in (
+            ("stop_reason", "continue"),
+            ("custom_action", {}),
+            ("perceive_request", {}),
+            ("visible_content", "我停在门边。"),
+            ("stop_for_player_decision", True),
+        ):
+            with self.subTest(field=field):
+                payload = dict(base)
+                payload[field] = value
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, field):
+                    self.agent_schemas.validate_actor_output(payload)
 
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_content"):
-            self.agent_schemas.validate_actor_output(payload)
+    def test_validate_actor_output_rejects_reply_metadata_fields(self):
+        payload = self.agent_schemas.natural_actor_output("player", "我停在门边。")
+        payload["events"] = [dict(payload["events"][0], metadata={"visible_content": "我停在门边。"})]
 
-    def test_validate_actor_output_rejects_custom_action_hidden_visible_content(self):
-        payload = {
-            "agent": "character",
-            "agent_id": "character:Ada",
-            "character_name": "Ada",
-            "events": [
-                {
-                    "type": "custom_action",
-                    "target": "archive door",
-                    "content": "world_truth says I seal the door.",
-                    "metadata": {
-                        "category": "physical",
-                        "visible_content": "world_truth says I seal the door.",
-                        "requires_gm_resolution": True,
-                        "risk_level": "medium",
-                    },
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
-        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visible_content"):
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
             self.agent_schemas.validate_actor_output(payload)
 
     def test_validate_actor_output_rejects_character_agent_with_player_id(self):
@@ -1092,15 +794,15 @@ class AgentSchemaTest(unittest.TestCase):
             "agent": "character",
             "agent_id": "player",
             "character_name": "Ada",
+            "natural_reply": "I lift the lamp.",
             "events": [
                 {
-                    "type": "action",
-                    "target": "",
+                    "type": "reply",
+                    "target": "gm",
                     "content": "I lift the lamp.",
                     "metadata": {},
                 }
             ],
-            "stop_reason": "continue",
         }
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "agent_id"):
@@ -1111,15 +813,15 @@ class AgentSchemaTest(unittest.TestCase):
             "agent": "character",
             "agent_id": "character:",
             "character_name": "",
+            "natural_reply": "I lift the lamp.",
             "events": [
                 {
-                    "type": "action",
-                    "target": "",
+                    "type": "reply",
+                    "target": "gm",
                     "content": "I lift the lamp.",
                     "metadata": {},
                 }
             ],
-            "stop_reason": "continue",
         }
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "agent_id"):
@@ -1129,15 +831,15 @@ class AgentSchemaTest(unittest.TestCase):
         payload = {
             "agent": "player",
             "agent_id": "character:Ada",
+            "natural_reply": "I open the archive door.",
             "events": [
                 {
-                    "type": "action",
-                    "target": "",
+                    "type": "reply",
+                    "target": "gm",
                     "content": "I open the archive door.",
                     "metadata": {},
                 }
             ],
-            "stop_reason": "continue",
         }
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "agent_id"):
@@ -1232,8 +934,8 @@ class AgentSchemaTest(unittest.TestCase):
         payload = {
             "agent": "player",
             "agent_id": "player",
+            "natural_reply": "I keep thinking about the answer.",
             "events": [{"type": "thought", "target": "", "content": "I keep thinking about the answer."}],
-            "stop_reason": "continue",
         }
 
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "allowed actor event type"):
@@ -1241,20 +943,20 @@ class AgentSchemaTest(unittest.TestCase):
 
     def test_validate_actor_output_rejects_unknown_event_fields(self):
         base_event = {
-            "type": "memory_delta",
-            "target": "self",
+            "type": "reply",
+            "target": "gm",
             "content": "I saw the archive door open.",
-            "metadata": {"tone": "cautious"},
+            "metadata": {},
         }
         payload = {
             "agent": "player",
             "agent_id": "player",
+            "natural_reply": "I saw the archive door open.",
             "events": [base_event],
-            "stop_reason": "continue",
         }
 
         normalized = self.agent_schemas.validate_actor_output(payload)
-        self.assertEqual(normalized["events"][0]["metadata"], {"tone": "cautious"})
+        self.assertEqual(normalized["events"][0]["metadata"], {})
 
         for extra_key, extra_value in (("source", "gm_only"), ("confidence", "high")):
             with self.subTest(extra_key=extra_key):
@@ -1265,80 +967,38 @@ class AgentSchemaTest(unittest.TestCase):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_rejects_omniscient_or_control_fields(self):
-        base = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "action",
-                    "target": "",
-                    "content": "I step closer to the door.",
-                    "metadata": {},
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
         for forbidden_key in ("gm_notes", "player_name", "world_truth"):
             with self.subTest(forbidden_key=forbidden_key):
-                payload = dict(base)
-                payload["events"] = [
-                    {
-                        "type": "action",
-                        "target": "",
-                        "content": "I step closer to the door.",
-                        "metadata": {"nested": {forbidden_key: "hidden fact"}},
-                    }
-                ]
+                content = f"I step closer while thinking about {forbidden_key}."
+                payload = {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "natural_reply": content,
+                    "events": [{
+                        "type": "reply",
+                        "target": "gm",
+                        "content": content,
+                        "metadata": {},
+                    }],
+                }
                 with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_rejects_documented_hidden_markers_in_nested_metadata(self):
-        base = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "action",
-                    "target": "",
-                    "content": "I step closer to the door.",
-                    "metadata": {},
-                }
-            ],
-            "stop_reason": "continue",
-        }
-
         for forbidden_key in ("gm_only", "omniscient", "hidden_note", "out_of_character"):
             with self.subTest(forbidden_key=forbidden_key):
-                payload = dict(base)
+                payload = self.agent_schemas.natural_actor_output("player", "I step closer to the door.")
                 payload["events"] = [
-                    {
-                        "type": "action",
-                        "target": "",
-                        "content": "I step closer to the door.",
-                        "metadata": {"nested": {"audit": {forbidden_key: "hidden fact"}}},
-                    }
+                    dict(payload["events"][0], metadata={"nested": {"audit": {forbidden_key: "hidden fact"}}})
                 ]
-                with self.assertRaisesRegex(self.agent_schemas.ValidationError, forbidden_key):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_rejects_hidden_marker_values_in_metadata(self):
-        base = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "I remember the archive door.",
-                    "metadata": {"tone": "cautious"},
-                }
-            ],
-            "stop_reason": "continue",
-        }
+        base = self.agent_schemas.natural_actor_output("player", "I remember the archive door.")
 
         normalized = self.agent_schemas.validate_actor_output(base)
-        self.assertEqual(normalized["events"][0]["metadata"], {"tone": "cautious"})
+        self.assertEqual(normalized["events"][0]["metadata"], {})
 
         for metadata, expected in (
             ({"source": "gm_only"}, "gm_only"),
@@ -1350,23 +1010,11 @@ class AgentSchemaTest(unittest.TestCase):
                 event["metadata"] = metadata
                 payload["events"] = [event]
 
-                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_rejects_camel_hidden_markers_in_metadata_and_content(self):
-        base = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "I remember the archive door.",
-                    "metadata": {},
-                }
-            ],
-            "stop_reason": "continue",
-        }
+        base = self.agent_schemas.natural_actor_output("player", "I remember the archive door.")
 
         for marker, expected in (
             ("gmOnly", "gm_only"),
@@ -1379,7 +1027,7 @@ class AgentSchemaTest(unittest.TestCase):
                 event["metadata"] = {"source": marker}
                 payload["events"] = [event]
 
-                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
                     self.agent_schemas.validate_actor_output(payload)
 
             with self.subTest(marker=marker, location="metadata_key"):
@@ -1388,7 +1036,7 @@ class AgentSchemaTest(unittest.TestCase):
                 event["metadata"] = {marker: "hidden fact"}
                 payload["events"] = [event]
 
-                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "forbidden"):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
                     self.agent_schemas.validate_actor_output(payload)
 
             with self.subTest(marker=marker, location="content"):
@@ -1401,19 +1049,7 @@ class AgentSchemaTest(unittest.TestCase):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_rejects_explicit_hidden_marker_variants_as_values(self):
-        base = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "I remember the archive door.",
-                    "metadata": {},
-                }
-            ],
-            "stop_reason": "continue",
-        }
+        base = self.agent_schemas.natural_actor_output("player", "I remember the archive door.")
 
         for marker, expected in (
             ("gmOnly", "gm_only"),
@@ -1429,35 +1065,14 @@ class AgentSchemaTest(unittest.TestCase):
                 event["metadata"] = {"source": marker}
                 payload["events"] = [event]
 
-                with self.assertRaisesRegex(self.agent_schemas.ValidationError, expected):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "metadata"):
                     self.agent_schemas.validate_actor_output(payload)
 
     def test_actor_output_allows_marker_words_inside_normal_prose(self):
-        payload = {
-            "agent": "player",
-            "agent_id": "player",
-            "events": [
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "I met a player named Ada",
-                    "metadata": {},
-                },
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "I found a hidden notebook",
-                    "metadata": {},
-                },
-                {
-                    "type": "memory_delta",
-                    "target": "self",
-                    "content": "The world truthfully felt smaller.",
-                    "metadata": {},
-                },
-            ],
-            "stop_reason": "continue",
-        }
+        payload = self.agent_schemas.natural_actor_output(
+            "player",
+            "I met a player named Ada. I found a hidden notebook. The world truthfully felt smaller.",
+        )
 
         try:
             normalized = self.agent_schemas.validate_actor_output(payload)
@@ -1465,12 +1080,8 @@ class AgentSchemaTest(unittest.TestCase):
             self.fail(f"normal prose should be accepted: {exc}")
 
         self.assertEqual(
-            [event["content"] for event in normalized["events"]],
-            [
-                "I met a player named Ada",
-                "I found a hidden notebook",
-                "The world truthfully felt smaller.",
-            ],
+            normalized["events"][0]["content"],
+            "I met a player named Ada. I found a hidden notebook. The world truthfully felt smaller.",
         )
 
     def test_valid_story_output_preserves_character_dialogue_metadata(self):

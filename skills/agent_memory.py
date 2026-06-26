@@ -300,6 +300,74 @@ def _post_round_actor_outputs(story_input: Dict[str, Any], agent_id: str) -> lis
     return outputs
 
 
+def _actor_call_dialogue_item(call: Any, speaker: str, agent_id: str) -> dict[str, str] | None:
+    if not isinstance(call, dict):
+        return None
+    if str(call.get("actor_id") or "") != agent_id:
+        return None
+    content = str(call.get("prompt") or "").strip()
+    if not content:
+        return None
+    return {
+        "speaker": speaker,
+        "call_id": str(call.get("call_id") or ""),
+        "content": content,
+    }
+
+
+def _actor_response_dialogue_items(outputs: Any) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for output in outputs if isinstance(outputs, list) else []:
+        if not isinstance(output, dict):
+            continue
+        for event in output.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            content = str(event.get("content") or "").strip()
+            if not content:
+                continue
+            items.append(
+                {
+                    "speaker": "我",
+                    "source_call_id": str(event.get("source_call_id") or ""),
+                    "event_type": str(event.get("type") or ""),
+                    "content": content,
+                }
+            )
+    return items
+
+
+def _round_dialogue_for_actor(story_input: Dict[str, Any], agent_id: str) -> list[dict[str, str]]:
+    dialogue: list[dict[str, str]] = []
+    loop_outputs = story_input.get("loop_outputs", {})
+    if isinstance(loop_outputs, dict):
+        gm_loop = loop_outputs.get("gm", {})
+        if isinstance(gm_loop, dict):
+            for output in gm_loop.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
+                for call in output.get("actor_calls") or []:
+                    item = _actor_call_dialogue_item(call, "对我说的话", agent_id)
+                    if item:
+                        dialogue.append(item)
+        dialogue.extend(_actor_response_dialogue_items(_actor_outputs_from_mapping(loop_outputs.get("actors", {}), agent_id)))
+
+    side_threads = story_input.get("side_threads", {})
+    threads = side_threads.get("threads", []) if isinstance(side_threads, dict) else []
+    if isinstance(threads, list):
+        for thread in threads:
+            if not isinstance(thread, dict):
+                continue
+            subgm_output = thread.get("subgm_output")
+            if isinstance(subgm_output, dict):
+                for call in subgm_output.get("actor_calls") or []:
+                    item = _actor_call_dialogue_item(call, "对我说的话", agent_id)
+                    if item:
+                        dialogue.append(item)
+            dialogue.extend(_actor_response_dialogue_items(_actor_outputs_from_mapping(thread.get("actor_outputs", {}), agent_id)))
+    return dialogue
+
+
 def _visible_events(story_input: Dict[str, Any]) -> list[Any]:
     trace = story_input.get("interaction_trace", {})
     if not isinstance(trace, dict):
@@ -361,17 +429,6 @@ def _event_relevant_to_actor(event: Any, agent_id: str) -> bool:
     if isinstance(metadata, dict) and _visibility_list_grants_actor(metadata.get("visible_to", []), agent_id):
         return True
 
-    event_type = str(event.get("type") or "").strip()
-    if event_type == "dialogue_transfer":
-        if _actor_value_matches(event.get("speaker"), agent_id):
-            return True
-        if _actor_value_matches(event.get("target"), agent_id):
-            return True
-    if event_type == "custom_action":
-        if _actor_value_matches(event.get("actor_id"), agent_id):
-            return True
-        if _actor_value_matches(event.get("target"), agent_id):
-            return True
     return False
 
 
@@ -401,6 +458,74 @@ def _validate_post_round_actor_safe_payload(value: Any, path: str) -> None:
             raise MemoryIngestionError(f"{path}: forbidden post-round memory marker {marker}")
 
 
+def _natural_lines(value: Any, *, indent: int = 0, limit: int = 30) -> list[str]:
+    prefix = "  " * indent
+    lines: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if len(lines) >= limit:
+                lines.append(prefix + "- ...")
+                break
+            if isinstance(item, (dict, list)):
+                lines.append(prefix + f"- {key}:")
+                lines.extend(_natural_lines(item, indent=indent + 1, limit=max(1, limit - len(lines))))
+            else:
+                text = str(item).strip()
+                if text:
+                    lines.append(prefix + f"- {key}: {text}")
+        return lines
+    if isinstance(value, list):
+        for item in value:
+            if len(lines) >= limit:
+                lines.append(prefix + "- ...")
+                break
+            if isinstance(item, (dict, list)):
+                lines.extend(_natural_lines(item, indent=indent, limit=max(1, limit - len(lines))))
+            else:
+                text = str(item).strip()
+                if text:
+                    lines.append(prefix + f"- {text}")
+        return lines
+    text = str(value or "").strip()
+    return [prefix + text] if text else []
+
+
+def _post_round_dialogue_text(round_dialogue: Any) -> str:
+    if not isinstance(round_dialogue, list) or not round_dialogue:
+        return "- 本轮没有需要我整理进短期记忆的直接对话。"
+    parts: list[str] = []
+    for index, item in enumerate(round_dialogue, 1):
+        if not isinstance(item, dict):
+            continue
+        speaker = str(item.get("speaker") or "对话").strip()
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        parts.append(f"{index}. {speaker}：{content}")
+    return "\n\n".join(parts) if parts else "- 本轮没有需要我整理进短期记忆的直接对话。"
+
+
+def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
+    recent = str(job_payload.get("recent_memory") or "").strip()
+    goals = job_payload.get("current_goals", {})
+    goal_lines = _natural_lines(goals, limit=20)
+    allowed = job_payload.get("allowed_outputs", {})
+    allowed_names = []
+    if isinstance(allowed, dict):
+        allowed_names = [str(key) for key, value in allowed.items() if value]
+    sections = [
+        "## 我当前已有的近期记忆",
+        recent if recent else "暂无。",
+        "",
+        "## 我当前目标",
+        "\n".join(goal_lines) if goal_lines else "暂无。",
+        "",
+        "## 本次允许整理的记忆范围",
+        "、".join(allowed_names) if allowed_names else "短期记忆、长期记忆、重点记忆和目标。",
+    ]
+    return "\n".join(sections)
+
+
 def _post_round_job_payload(
     card: Path,
     run_dir: Path,
@@ -412,6 +537,7 @@ def _post_round_job_payload(
         "agent_id": agent_id,
         "character_name": character_name if agent_id.startswith("character:") else "",
         "round_id": str(story_input.get("round_id") or run_dir.name),
+        "round_dialogue": _round_dialogue_for_actor(story_input, agent_id),
         "actor_outputs": _post_round_actor_outputs(story_input, agent_id),
         "visible_events": _actor_visible_events(story_input, agent_id),
         "recent_memory": _read_optional_text(recent_path),
@@ -451,6 +577,9 @@ def _post_round_memory_prompt(
         ],
         "goals": {"active": [], "paused": [], "resolved": []},
     }
+    round_dialogue = job_payload.get("round_dialogue", [])
+    dialogue_text = _post_round_dialogue_text(round_dialogue)
+    reference_text = _post_round_reference_text(job_payload)
     return f"""
 # Post-Round Actor Memory Job
 
@@ -458,10 +587,11 @@ Agent id: `{agent_id}`
 Round id: `{run_dir.name}`
 Required output path: `{output_path}`
 
-Organize only this actor's first-person memory after the delivered turn.
-Do not edit profile, background, personality, body_facts, authoritative_setting,
-hidden facts, or another actor's memory. Do not add GM-only, omniscient,
-world-truth, hidden-note, or out-of-character knowledge.
+现在我需要整理一下我的记忆，以帮助我理清思路。
+我只整理自己的第一人称记忆和目标，不修改人设、背景、人格、身体事实或权威设定。
+不要加入幕后事实、全知信息、隐藏备注、外部指令或别人的私密记忆。
+短期记忆只能来自“本轮我和对我说话者的对话”，不要把其他可见事件直接写进短期记忆。
+如果某件事没有出现在本轮对话或我已有记忆里，我不能把它整理成自己的记忆。
 
 ## Required JSON Contract
 
@@ -469,11 +599,13 @@ world-truth, hidden-note, or out-of-character knowledge.
 {json.dumps(contract, ensure_ascii=False, indent=2)}
 ```
 
-## Actor-Safe Job Input
+## 本轮我和对我说话者的对话
 
-```json
-{json.dumps(job_payload, ensure_ascii=False, indent=2)}
-```
+{dialogue_text}
+
+{reference_text}
+
+请只根据这些自然语言材料整理记忆，并按 Required JSON Contract 输出。
 """
 
 

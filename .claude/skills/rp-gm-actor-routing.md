@@ -33,15 +33,13 @@ Use `call_ids` when a group needs exact call identity. Use `actors` or `actor_id
 
 ## Dialogue Transfer
 
-When a character says something that another actor can hear, transfer the spoken line as visible dialogue. Preserve the speaker, target if known, and concrete wording. Do not transfer private intent, hidden motives, or GM interpretation unless it is visible in tone, action, or wording.
+When a character says something that another actor can hear, transfer the spoken line as visible dialogue. Preserve the speaker, target if known, and concrete wording. Never transfer private intent, hidden motives, or GM interpretation unless it is visible in tone, action, or wording.
 
-Important-character dialogue transfer is structured. Actor dialogue metadata may include `exact_visible_words`, `delivery_channel`, and `visible_tone_or_action`; transfer only those visible fields. Never transfer private intent, hidden motive, or GM interpretation.
+Important-character dialogue transfer must be written into the next `actor_calls[].prompt` as natural language. Do not use dialogue-transfer metadata fields. If exact wording matters, quote the visible spoken words in the prompt itself and describe only visible tone or action.
 
 ## Perception Continuation
 
-If an actor requests perception or waits for GM clarification, continue with visible sensory feedback only. The answer should let the actor decide what to do next without revealing hidden causality, future stakes, or authorial framing.
-
-When `pending_perception_requests[]` is present in the GM packet, the next GM output must include one `perception_responses[]` item for every pending request. Use `status: "answered"` with visible sensory `content` to schedule a continuation call for the requesting actor, or `status: "closed"` with a visible `reason` when no continuation is needed. Do not stop the turn or advance unrelated exposition while a pending perception request is unanswered.
+If an actor naturally asks to look, listen, remember, or clarify, continue with a new natural-language `actor_calls[].prompt` containing visible sensory feedback only. The answer should let the actor decide what to do next without revealing hidden causality, future stakes, or authorial framing. Do not use `perceive_request`, `perception_responses`, or pending perception fields in actor-facing protocol.
 
 ## Stop Reasons
 

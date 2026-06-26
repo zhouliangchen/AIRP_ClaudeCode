@@ -123,8 +123,7 @@ Required shape:
   "narrative_directives": {
     "rewrite_previous_output": false,
     "expand_synopsis_before_continue": false,
-    "continue_after_player_action": true,
-    "must_stop_for_player_decision": false
+    "continue_after_player_action": true
   },
   "routing": {
     "role_channel": "",

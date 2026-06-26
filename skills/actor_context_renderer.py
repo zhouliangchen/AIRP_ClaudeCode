@@ -24,6 +24,8 @@ PROJECTION_CONTROL_MARKERS = {
 }
 
 ACTOR_FACING_FORBIDDEN_MARKERS = set(agent_visibility.HIDDEN_MARKERS) | PROJECTION_CONTROL_MARKERS
+LONG_TERM_MEMORY_LIMIT = 1000
+KEY_MEMORY_CUE_LIMIT = 18
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -127,16 +129,101 @@ def _append_line(lines: list[str], prefix: str, value: Any) -> None:
         lines.append(f"{prefix}{text}")
 
 
+def _plain_memory_text(value: Any) -> str:
+    cleaned = _clean_value(value)
+    if isinstance(cleaned, dict) and "content" in cleaned:
+        cleaned = cleaned.get("content")
+    text = _render_value(cleaned).strip()
+    if not text:
+        return ""
+    lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        line = re.sub(r"^[-*]\s*", "", line)
+        line = re.sub(r"^\[[^\]]+\]\s*", "", line)
+        if line.lower() in {"source: self", "visibility: actor"}:
+            continue
+        if line:
+            lines.append(line)
+    return " ".join(lines).strip()
+
+
+def _append_capped_text(items: list[str], text: str, remaining: int) -> int:
+    if remaining <= 0 or not text:
+        return remaining
+    clipped = text[:remaining].rstrip()
+    if clipped:
+        items.append(clipped)
+    return remaining - len(clipped)
+
+
+def _recall_cue(value: Any) -> str:
+    if isinstance(value, dict):
+        topic = value.get("topic") or value.get("title") or value.get("summary")
+        if topic:
+            text = _plain_memory_text(topic)
+        else:
+            text = _plain_memory_text(value.get("content"))
+    else:
+        text = _plain_memory_text(value)
+    if not text:
+        return ""
+    cue = text[:KEY_MEMORY_CUE_LIMIT].rstrip(" ,，.。;；:")
+    if len(text) > len(cue):
+        cue += "..."
+    return f"我想回忆：{cue}"
+
+
+def project_actor_memory(memory: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Return the actor-facing memory projection used in prompts and packets."""
+
+    source = _as_dict(memory)
+    projected = {
+        "long_term": [],
+        "key_memories": [],
+        "short_term": [],
+        "goals": [],
+    }
+    remaining = LONG_TERM_MEMORY_LIMIT
+    for value in _as_list(source.get("long_term")):
+        remaining = _append_capped_text(projected["long_term"], _plain_memory_text(value), remaining)
+        if remaining <= 0:
+            break
+    for value in _as_list(source.get("key_memories")):
+        cue = _recall_cue(value)
+        if cue:
+            projected["key_memories"].append(cue)
+    for value in _as_list(source.get("short_term")):
+        text = _plain_memory_text(value)
+        if text:
+            projected["short_term"].append(text)
+    for value in _as_list(source.get("goals")):
+        text = _plain_memory_text(value)
+        if text:
+            projected["goals"].append(text)
+    return projected
+
+
 def _memory_lines(memory: dict[str, Any]) -> list[str]:
     lines: list[str] = []
-    for value in _as_list(memory.get("long_term")):
-        _append_line(lines, "You remember: ", value)
-    for value in _as_list(memory.get("key_memories")):
-        _append_line(lines, "Important to you: ", value)
-    for value in _as_list(memory.get("short_term")):
-        _append_line(lines, "Recently, you remember: ", value)
-    for value in _as_list(memory.get("goals")):
-        _append_line(lines, "Your current goal is: ", value)
+    projected = project_actor_memory(memory)
+    for value in projected["long_term"]:
+        _append_line(lines, "我记得：", value)
+    if projected["key_memories"]:
+        lines.append(
+            "有些记忆一时间有些模糊，只记得大概。"
+            "如果觉得现在需要想起来，可以想想："
+            + "；".join(projected["key_memories"])
+            + "。"
+        )
+    for value in projected["short_term"]:
+        _append_line(lines, "刚才我记得：", value)
+    for value in projected["goals"]:
+        _append_line(lines, "我现在想要：", value)
     return lines
 
 
@@ -147,32 +234,32 @@ def render_actor_context(actor_id: str, actor_state: dict[str, Any] | None, worl
     lines: list[str] = []
 
     if actor_id == "player":
-        lines.append("You are the player character.")
-        _append_line(lines, "Current first-person anchor: ", world.get("role_channel"))
+        lines.append("我是当前扮演的角色。")
+        _append_line(lines, "我此刻的行动意图：", world.get("role_channel"))
     else:
         name = _clean_text(actor.get("name") or actor.get("character_name") or actor_id.split(":", 1)[-1])
         role = _clean_text(actor.get("role") or actor.get("identity"))
-        lines.append(f"You are {name}." if name else "You are this character.")
+        lines.append(f"我是 {name}。" if name else "我是这个角色。")
         if role:
-            lines.append(f"You understand yourself as: {role}.")
+            lines.append(f"我的身份是：{role}。")
 
     body_state = _as_dict(actor.get("body_state"))
     for key, value in sorted(body_state.items()):
         if _is_forbidden_key(key):
             continue
-        _append_line(lines, f"Your {key}: ", value)
+        _append_line(lines, f"我的 {key}：", value)
 
     relationships = _as_dict(actor.get("relationships"))
     for key, value in sorted(relationships.items()):
         if _is_forbidden_key(key):
             continue
-        _append_line(lines, f"Your relationship with {key}: ", value)
+        _append_line(lines, f"我和 {key} 的关系：", value)
 
     sensory = _as_dict(actor.get("sensory_context") or world.get("sensory_context"))
     for key, value in sorted(sensory.items()):
         if _is_forbidden_key(key):
             continue
-        _append_line(lines, f"You can sense through {key}: ", value)
+        _append_line(lines, f"我能通过 {key} 感到：", value)
 
     lines.extend(_memory_lines(memory))
 

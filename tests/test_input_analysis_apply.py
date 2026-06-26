@@ -76,7 +76,6 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 "rewrite_previous_output": False,
                 "expand_synopsis_before_continue": True,
                 "continue_after_player_action": True,
-                "must_stop_for_player_decision": False,
             },
             "routing": {
                 "role_channel": role_text,
@@ -106,4 +105,3 @@ class InputAnalysisApplyTest(unittest.TestCase):
             role_text=role_text,
             user_instruction_text=instruction_text,
         )
-

@@ -90,7 +90,11 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual(completed[0]["result"]["outputs"], {"projected_message_id": projected_id})
         inbox = self.messages.read_inbox(self.run_dir, "character:Ada")
         self.assertEqual([message["type"] for message in inbox], ["projected_message"])
-        self.assertEqual(inbox[0]["payload"]["packet"], packet)
+        payload = inbox[0]["payload"]
+        self.assertEqual(payload["natural_message"], "Listen at the door.")
+        self.assertNotIn("packet", payload)
+        self.assertNotIn("gm_prompt", payload)
+        self.assertNotIn("call", payload)
 
     def test_project_actor_request_reads_source_and_appends_projected_message(self):
         request = self.messages.append_message(
@@ -128,7 +132,69 @@ class AgentActorRuntimeTest(unittest.TestCase):
         self.assertEqual(result["source_call_id"], "call-character-Ada-1")
         inbox = self.messages.read_inbox(self.run_dir, "character:Ada")
         self.assertEqual([message["type"] for message in inbox], ["projected_message"])
-        self.assertEqual(inbox[0]["payload"]["packet"]["visible_context"], {"scene": "hall"})
+        payload = inbox[0]["payload"]
+        self.assertEqual(payload["natural_message"], "Listen at the door.")
+        self.assertNotIn("packet", payload)
+        self.assertNotIn("visible_context", json.dumps(payload, ensure_ascii=False))
+
+    def test_projected_actor_message_is_natural_language_only(self):
+        request = self.messages.append_message(
+            self.run_dir,
+            {
+                "from": "gm",
+                "to": ["projection"],
+                "type": "request_actor",
+                "visibility": "gm_only",
+                "source_call_id": "call-character-Ada-1",
+                "payload": {
+                    "actor_id": "character:Ada",
+                    "call": {
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You hear someone knock twice.",
+                        "visibility_basis": {"mode": "direct", "summary": "Ada hears the knock."},
+                    },
+                    "packet": {
+                        "actor_id": "character:Ada",
+                        "gm_visibility_basis": {"mode": "direct", "summary": "Ada hears the knock."},
+                        "self_knowledge": {"name": "Ada"},
+                        "memory": {"short_term": ["I am guarding the door."]},
+                        "visible_events": [{"type": "scene", "content": "hall"}],
+                    },
+                },
+            },
+        )["message"]
+
+        result = self.runtime.project_actor_request(
+            self.run_dir,
+            actor_id="character:Ada",
+            source_message_id=request["id"],
+            source_call_id="call-character-Ada-1",
+            projection_result={
+                "decision": "edited",
+                "target_actor_id": "character:Ada",
+                "source_call_id": "call-character-Ada-1",
+                "final_actor_message": "You hear two careful knocks at the door.",
+                "feedback": "",
+            },
+        )
+
+        inbox = self.messages.read_inbox(self.run_dir, "character:Ada")
+        payload = inbox[-1]["payload"]
+        self.assertEqual(result["projected_message_id"], inbox[-1]["id"])
+        self.assertEqual(payload["natural_message"], "You hear two careful knocks at the door.")
+        actor_facing_text = json.dumps(payload, ensure_ascii=False)
+        for forbidden in (
+            "packet",
+            "call",
+            "gm_prompt",
+            "gm_visibility_basis",
+            "visibility_basis",
+            "self_knowledge",
+            "memory",
+            "visible_events",
+        ):
+            self.assertNotIn(forbidden, actor_facing_text)
 
     def test_find_projected_message_matches_delivered_source_call_and_actor(self):
         request = self.messages.append_message(
@@ -171,7 +237,7 @@ class AgentActorRuntimeTest(unittest.TestCase):
                 "payload": {
                     "actor_id": "character:Ada",
                     "source_message_id": request["id"],
-                    "call": {"call_id": "call-character-Ada-1"},
+                    "natural_message": "Listen at the door.",
                 },
             },
         )["message"]
@@ -212,7 +278,7 @@ class AgentActorRuntimeTest(unittest.TestCase):
                 "source_call_id": "call-character-Ada-1",
                 "payload": {
                     "actor_id": "character:Ada",
-                    "packet": {"actor_id": "character:Ada", "visible_context": {"scene": "hall"}},
+                    "natural_message": "Listen at the door.",
                 },
             },
         )["message"]

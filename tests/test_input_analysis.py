@@ -82,7 +82,6 @@ class InputAnalysisTest(unittest.TestCase):
                 "rewrite_previous_output": False,
                 "expand_synopsis_before_continue": False,
                 "continue_after_player_action": True,
-                "must_stop_for_player_decision": False,
             },
             "routing": {
                 "role_channel": self.role,
@@ -652,7 +651,6 @@ class InputAnalysisTest(unittest.TestCase):
             "rewrite_previous_output",
             "expand_synopsis_before_continue",
             "continue_after_player_action",
-            "must_stop_for_player_decision",
         )
 
         for key in required_keys:
@@ -959,7 +957,6 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 "rewrite_previous_output": False,
                 "expand_synopsis_before_continue": False,
                 "continue_after_player_action": True,
-                "must_stop_for_player_decision": False,
             },
             "routing": {
                 "role_channel": "analysis rewrite must not override explicit role",

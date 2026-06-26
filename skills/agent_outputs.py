@@ -26,19 +26,7 @@ MAX_CRITIC_RETRIES = 2
 ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
 FORBIDDEN_ACTOR_MARKERS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
-DIALOGUE_TRANSFER_TRACE_FIELDS = {
-    "speaker",
-    "target",
-    "exact_visible_words",
-    "delivery_channel",
-    "visible_tone_or_action",
-    "source_call_id",
-}
-STORY_PROMPT_ACTOR_EVENT_TYPES = {
-    "dialogue",
-    "custom_action",
-    "stop_for_player_decision",
-}
+STORY_PROMPT_ACTOR_EVENT_TYPES = {"reply"}
 STORY_GUARD_CJK_TERM_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 STORY_GUARD_YEAR_TERM_RE = re.compile(r"([0-9零〇一二两三四五六七八九十百千万]+年)(?:前|后)?")
 STORY_GUARD_CJK_MIN_CHARS = 3
@@ -119,14 +107,6 @@ def _validate_gm_output_visibility(
     scene_beat_fields = ("content", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     event_fields = ("content", "target", "source_call_id", "metadata", *agent_visibility.VISIBILITY_FIELDS)
     actor_call_fields = ("source_call_id", "prompt", "reason", "metadata", *agent_visibility.VISIBILITY_FIELDS)
-    perception_response_fields = (
-        "request_id",
-        "source_call_id",
-        "channel",
-        "content",
-        "reason",
-        *agent_visibility.VISIBILITY_FIELDS,
-    )
     for gm_index, gm_output in enumerate(gm_outputs):
         output_context = f"{gm_path}.outputs[{gm_index}]"
         for beat_index, beat in enumerate(gm_output.get("scene_beats", [])):
@@ -144,11 +124,6 @@ def _validate_gm_output_visibility(
             for field in actor_call_fields:
                 if field in call:
                     _reject_actor_facing_gm_value(call[field], f"{context}.{field}", hidden_phrases)
-        for response_index, response in enumerate(gm_output.get("perception_responses", [])):
-            context = f"{output_context}.perception_responses[{response_index}]"
-            for field in perception_response_fields:
-                if field in response:
-                    _reject_actor_facing_gm_value(response[field], f"{context}.{field}", hidden_phrases)
         if gm_output.get("decision_point") is not None:
             _reject_actor_facing_gm_value(
                 gm_output["decision_point"],
@@ -479,12 +454,6 @@ def _compact_story_prompt_gm_output(
             allowed_fields=("type", "target", "source_call_id", "content", "metadata", *agent_visibility.VISIBILITY_FIELDS),
         ),
         "actor_calls": [],
-        "perception_responses": _compact_story_prompt_items(
-            output.get("perception_responses"),
-            hidden_phrases,
-            protected_terms,
-            allowed_fields=("request_id", "actor_id", "source_call_id", "status", "channel", "content", *agent_visibility.VISIBILITY_FIELDS),
-        ),
         "world_state_delta": _compact_story_prompt_items(
             output.get("world_state_delta"),
             hidden_phrases,
@@ -566,7 +535,7 @@ def _compact_story_prompt_trace(
         visible_events,
         hidden_phrases,
         protected_terms,
-        allowed_fields=("id", "index", "actor", "type", "target", "content", "source_call_id", "dialogue_transfer"),
+        allowed_fields=("id", "index", "actor", "type", "target", "content", "source_call_id"),
     )
     compact["visible_events"] = visible
     for field in ("decision_point", "stop_reason"):
@@ -660,31 +629,6 @@ def story_prompt_context(story_input: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(context, dict):
         return context
     return story_input
-
-
-def _validate_dialogue_transfer_trace_metadata(
-    raw_trace: Dict[str, Any],
-    hidden_phrases: list[str],
-    context: str,
-) -> None:
-    events = raw_trace.get("events", [])
-    if not isinstance(events, list):
-        return
-    for event_index, event in enumerate(events):
-        if not isinstance(event, dict) or event.get("type") != "dialogue_transfer":
-            continue
-        metadata = event.get("dialogue_transfer")
-        if metadata is None:
-            continue
-        metadata_context = f"{context}.events[{event_index}].dialogue_transfer"
-        if not isinstance(metadata, dict):
-            raise AgentOutputError(f"{metadata_context}: must be an object")
-        for key, value in metadata.items():
-            field = str(key)
-            field_context = f"{metadata_context}.{field}"
-            if field not in DIALOGUE_TRANSFER_TRACE_FIELDS:
-                raise AgentOutputError(f"{field_context}: unsupported dialogue_transfer metadata field")
-            _reject_actor_facing_gm_value(value, field_context, hidden_phrases)
 
 
 def _validate_subgm_output_visibility(
@@ -1177,11 +1121,6 @@ def _load_side_thread_outputs(root: Path, input_payload: dict) -> dict:
         _validate_actor_output_visibility(side_dir / "actor.outputs.json", actor_outputs, hidden_phrases)
 
         raw_trace, trace_summary = _validate_trace_artifacts(side_dir)
-        _validate_dialogue_transfer_trace_metadata(
-            raw_trace,
-            hidden_phrases,
-            f"{side_dir / 'interaction.trace.json'}",
-        )
         trace_summary = _sanitize_trace_summary_for_story_input(
             trace_summary,
             hidden_phrases,
@@ -1515,11 +1454,6 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         _story_public_text_key(input_payload),
     )
     raw_trace, trace_summary = _validate_trace_artifacts(root)
-    _validate_dialogue_transfer_trace_metadata(
-        raw_trace,
-        hidden_phrases,
-        f"{root / 'interaction.trace.json'}",
-    )
     trace_summary = _sanitize_trace_summary_for_story_input(
         trace_summary,
         hidden_phrases,
@@ -1592,43 +1526,42 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
 
 def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]:
-    """Extract structured high/critical player custom actions from story input."""
+    """Extract GM-declared player decision evidence from story input."""
     if not isinstance(story_input, dict):
         return []
-    interaction_trace = story_input.get("interaction_trace")
-    if not isinstance(interaction_trace, dict):
-        return []
-    visible_events = interaction_trace.get("visible_events")
-    if not isinstance(visible_events, list):
-        return []
-
     evidence = []
-    for index, event in enumerate(visible_events):
-        if not isinstance(event, dict):
+    gm_outputs = story_input.get("gm")
+    if not isinstance(gm_outputs, list):
+        loop_outputs = story_input.get("loop_outputs")
+        if isinstance(loop_outputs, dict):
+            gm_branch = loop_outputs.get("gm")
+            if isinstance(gm_branch, dict):
+                gm_outputs = gm_branch.get("outputs")
+    if not isinstance(gm_outputs, list):
+        return evidence
+    for index, output in enumerate(gm_outputs):
+        if not isinstance(output, dict):
             continue
-        custom_action = event.get("custom_action")
-        if not isinstance(custom_action, dict):
+        if str(output.get("stop_reason") or "").strip() != "player_decision":
             continue
-
-        actor = str(event.get("actor") or "").strip()
-        custom_actor = str(custom_action.get("actor_id") or "").strip()
-        if actor != "player" and custom_actor != "player":
+        decision_point = output.get("decision_point")
+        if not isinstance(decision_point, dict):
             continue
-
-        risk_level = str(custom_action.get("risk_level") or "").strip().lower()
-        if risk_level not in {"high", "critical"}:
-            continue
-
-        label = str(custom_action.get("visible_content") or event.get("content") or "").strip()
+        label = str(
+            decision_point.get("required_label")
+            or decision_point.get("content")
+            or decision_point.get("summary")
+            or decision_point.get("reason")
+            or ""
+        ).strip()
         if not label:
             continue
-
-        evidence_id = str(event.get("id") or "").strip() or f"critical-action-{index + 1}"
+        evidence_id = str(decision_point.get("id") or "").strip() or f"player-decision-{index + 1}"
         evidence.append(
             {
                 "id": evidence_id,
                 "required_label": label,
-                "risk_level": risk_level,
+                "risk_level": "gm_decision",
             }
         )
     return evidence

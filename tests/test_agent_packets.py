@@ -825,7 +825,10 @@ class AgentPacketTest(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
 
         (player_dir / "long_term.md").write_text("# Player Long-Term\n\nI remember the archive code.", encoding="utf-8")
-        (player_dir / "key_memories.md").write_text("# Player Key\n\nI found the sealed index.", encoding="utf-8")
+        (player_dir / "key_memories.md").write_text(
+            "# Player Key\n\nI found the sealed index beneath Ada's lamp after the rain stopped.",
+            encoding="utf-8",
+        )
         (player_dir / "short_term.md").write_text("# Player Short\n\nI am holding the door open.", encoding="utf-8")
         (player_dir / "recent.md").write_text("# Player Agent Memory\n\n- recent player delta", encoding="utf-8")
         (player_dir / "summary.md").write_text("stale player summary should not be loaded", encoding="utf-8")
@@ -835,7 +838,10 @@ class AgentPacketTest(unittest.TestCase):
         )
 
         (ada_dir / "long_term.md").write_text("# Ada Long-Term\n\nI remember lending my lamp.", encoding="utf-8")
-        (ada_dir / "key_memories.md").write_text("# Ada Key\n\nI saw the player at the threshold.", encoding="utf-8")
+        (ada_dir / "key_memories.md").write_text(
+            "# Ada Key\n\nI saw the player hide the archive note under the third shelf.",
+            encoding="utf-8",
+        )
         (ada_dir / "short_term.md").write_text("# Ada Short\n\nI am beside the player.", encoding="utf-8")
         (ada_dir / "recent.md").write_text("# Character Recent Memory\n\n- recent Ada delta", encoding="utf-8")
         (ada_dir / "summary.md").write_text("stale Ada summary should not be loaded", encoding="utf-8")
@@ -862,12 +868,14 @@ class AgentPacketTest(unittest.TestCase):
         self.assertEqual(sorted(player_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertEqual(sorted(character_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
         self.assertIn("I remember the archive code.", player_memory)
-        self.assertIn("I found the sealed index.", player_memory)
+        self.assertIn("我想回忆：", player_memory)
+        self.assertNotIn("beneath Ada's lamp", player_memory)
         self.assertIn("I am holding the door open.", player_memory)
         self.assertIn("recent player delta", player_memory)
         self.assertIn("Read the sealed index.", player_memory)
         self.assertIn("I remember lending my lamp.", character_memory)
-        self.assertIn("I saw the player at the threshold.", character_memory)
+        self.assertIn("我想回忆：", character_memory)
+        self.assertNotIn("under the third shelf", character_memory)
         self.assertIn("recent Ada delta", character_memory)
         self.assertIn("Keep the player close.", character_memory)
         self.assertNotIn("stale player summary", player_memory)
@@ -1012,8 +1020,10 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotEqual(display_name, safe_name)
         self.assertEqual(character_packet["actor_id"], f"character:{safe_name}")
         self.assertEqual(character_packet["self_knowledge"]["name"], display_name)
-        self.assertIn(f'"agent_id": "character:{safe_name}"', char_prompt)
-        self.assertIn(f'"character_name": "{display_name}"', char_prompt)
+        self.assertIn(f"# 我的行动提示：{display_name}", char_prompt)
+        self.assertIn(f"我是 {display_name}", char_prompt)
+        self.assertNotIn('"agent_id"', char_prompt)
+        self.assertNotIn('"character_name"', char_prompt)
         self.assertNotIn(f'"agent_id": "character:{display_name}"', char_prompt)
 
     def test_prepare_agent_run_materializes_all_registered_major_character_contexts(self):
@@ -1189,17 +1199,35 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
         self.assertIn("gm.output.json", gm_prompt)
         self.assertIn("dream echo", gm_prompt)
-        self.assertIn(".claude/skills/rp-player-agent.md", player_prompt)
-        self.assertIn("actor.outputs.json", player_prompt)
-        self.assertIn("runtime loop", player_prompt)
+        self.assertIn("我只用自然语言回复", player_prompt)
+        self.assertIn("我能感知到的内容", player_prompt)
+        self.assertNotIn(".claude/skills/rp-player-agent.md", player_prompt)
+        self.assertNotIn("actor.outputs.json", player_prompt)
+        self.assertNotIn('"events"', player_prompt)
+        self.assertNotIn("custom_action", player_prompt)
+        self.assertNotIn("perceive_request", player_prompt)
+        self.assertNotIn("visible_content", player_prompt)
+        self.assertNotIn("stop_for_player_decision", player_prompt)
+        self.assertNotIn("runtime loop", player_prompt)
+        self.assertNotIn("Claude Code", player_prompt)
+        self.assertNotIn("file mailbox", player_prompt)
+        self.assertNotIn("GM resolution", player_prompt)
         self.assertNotIn("player.output.json", player_prompt)
         self.assertNotIn("dream echo", player_prompt)
-        self.assertIn(".claude/skills/rp-character-agent.md", char_prompt)
-        self.assertIn("actor.outputs.json", char_prompt)
-        self.assertIn("runtime loop", char_prompt)
+        self.assertIn("我只用自然语言回复", char_prompt)
+        self.assertIn("我能感知到的内容", char_prompt)
+        self.assertNotIn(".claude/skills/rp-character-agent.md", char_prompt)
+        self.assertNotIn("actor.outputs.json", char_prompt)
+        self.assertNotIn('"events"', char_prompt)
+        self.assertNotIn("custom_action", char_prompt)
+        self.assertNotIn("perceive_request", char_prompt)
+        self.assertNotIn("visible_content", char_prompt)
+        self.assertNotIn("stop_for_player_decision", char_prompt)
+        self.assertNotIn("runtime loop", char_prompt)
+        self.assertNotIn("Claude Code", char_prompt)
+        self.assertNotIn("file mailbox", char_prompt)
+        self.assertNotIn("GM resolution", char_prompt)
         self.assertNotIn(f"characters/{safe_name}.output.json", char_prompt.replace("\\", "/"))
-        self.assertIn('"agent_id": "character:Ada"', char_prompt)
-        self.assertNotIn('"agent_id": "character:<safe_name>"', char_prompt)
         self.assertNotIn("dream echo", char_prompt)
         self.assertIn("Runtime Input `story_input.interaction_trace`", story_prompt)
         self.assertIn("story.input.json.interaction_trace", critic_prompt)
@@ -1217,14 +1245,6 @@ class AgentPacketTest(unittest.TestCase):
                 "world_state_delta",
                 "character_promotions",
                 "decision_point",
-                "stop_reason",
-            ),
-            "player": ("agent", "agent_id", "events", "stop_reason"),
-            "character": (
-                "agent",
-                "agent_id",
-                "character_name",
-                "events",
                 "stop_reason",
             ),
             "story": ("content", "character_dialogues", "metadata"),
@@ -1262,8 +1282,6 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("Runtime creative guidance", gm_prompt)
         self.assertIn("NSFW tone option: 舒缓", gm_prompt)
         self.assertIn("soft word-count target: 1200", gm_prompt)
-        self.assertIn('"stop_reason": "continue"', player_prompt)
-        self.assertIn('"stop_reason": "continue"', char_prompt)
         self.assertIn("轻快节奏", story_prompt)
         self.assertIn("用明亮、轻快的句子推进场景。", story_prompt)
         self.assertIn("story output target: 1200", story_prompt)

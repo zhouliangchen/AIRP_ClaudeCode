@@ -50,8 +50,8 @@ class GmSkillContractsTest(unittest.TestCase):
             self.read(".claude/skills/rp-player-agent.md"),
             self.read(".claude/skills/rp-character-agent.md"),
         ])
-        self.assertIn("may update memory and goals", combined)
-        self.assertIn("must not modify profile, background, personality, body facts, or authoritative settings", combined)
+        self.assertIn("我可以自然地说出自己想记住的事或当前目标", combined)
+        self.assertIn("不修改人设、背景、人格、身体事实或权威设定", combined)
 
     def test_actor_routing_skill_defines_executable_parallel_groups(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
@@ -66,46 +66,51 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("visibility_basis", text)
         self.assertIn("per call", text)
 
-    def test_gm_routing_requires_perception_response_closure(self):
+    def test_gm_routing_uses_natural_language_perception_continuation(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
-        self.assertIn("pending_perception_requests[]", text)
-        self.assertIn("perception_responses[]", text)
-        self.assertIn('status: "answered"', text)
-        self.assertIn('status: "closed"', text)
+        self.assertIn("natural-language `actor_calls[].prompt`", text)
+        self.assertIn("visible sensory feedback only", text)
+        self.assertIn("Do not use `perceive_request`", text)
+        self.assertIn("pending perception fields", text)
 
-    def test_gm_routing_documents_structured_dialogue_transfer_fields(self):
+    def test_gm_routing_documents_natural_language_dialogue_transfer(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")
-        self.assertIn("exact_visible_words", text)
-        self.assertIn("delivery_channel", text)
-        self.assertIn("visible_tone_or_action", text)
+        self.assertIn("next `actor_calls[].prompt` as natural language", text)
+        self.assertIn("Do not use dialogue-transfer metadata fields", text)
+        self.assertIn("quote the visible spoken words", text)
         self.assertIn("Never transfer private intent", text)
 
     def test_visibility_policy_documents_perception_feedback_boundary(self):
         text = self.read(".claude/skills/rp-gm-visibility-policy.md")
         self.assertIn("Perception Feedback", text)
-        self.assertIn("perception_responses[].content", text)
-        self.assertIn("visibility_basis", text)
+        self.assertIn("natural-language `actor_calls[].prompt`", text)
+        self.assertIn("do not use `perceive_request`", text)
         self.assertIn("must not reveal hidden causality", text)
 
     def test_story_skill_forbids_invented_important_character_replies(self):
         text = self.read(".claude/skills/rp-story-agent.md")
-        self.assertIn("dialogue_transfer", text)
+        self.assertIn("actor-authored natural-language dialogue", text)
         self.assertIn("must not invent", text)
         self.assertTrue(
             "important character" in text or "core character" in text,
             "story skill must name important/core character reply constraints",
         )
 
-    def test_actor_skills_define_bounded_custom_action(self):
+    def test_actor_skills_require_natural_language_reply(self):
         combined = "\n".join([
             self.read(".claude/skills/rp-player-agent.md"),
             self.read(".claude/skills/rp-character-agent.md"),
         ])
-        self.assertIn("custom_action", combined)
-        self.assertIn('top-level `target`', combined)
-        self.assertIn("metadata.visible_content", combined)
-        self.assertIn("risk_level", combined)
-        self.assertIn("high or critical", combined)
+        self.assertIn("我直接用自然语言", combined)
+        self.assertIn("不写 JSON", combined)
+        for forbidden in (
+            "custom_action",
+            "perceive_request",
+            "visible_content",
+            "stop_for_player_decision",
+            "role_channel",
+        ):
+            self.assertNotIn(forbidden, combined)
 
     def test_context_projector_preserves_false_beliefs_as_immersive_memory(self):
         text = self.read(".claude/skills/rp-context-projector.md")
@@ -154,8 +159,8 @@ class GmSkillContractsTest(unittest.TestCase):
         ])
 
         self.assertNotIn("misconceptions", combined)
-        self.assertIn("rendered immersive context", combined)
-        self.assertIn("own memory/beliefs", combined)
+        self.assertIn("沉浸上下文", combined)
+        self.assertIn("我自己的记忆、信念", combined)
 
     def test_delivery_skill_documents_post_round_memory_jobs(self):
         text = self.read(".claude/skills/rp-delivery.md")

@@ -169,7 +169,8 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertIn("You stand near your desk", packet["gm_prompt"])
         self.assertEqual(packet["role_channel_anchor"], "I hide the pendant under my sleeve.")
         self.assertIn("I woke up on the road.", serialized)
-        self.assertIn("I first noticed the pendant", serialized)
+        self.assertIn("我想回忆：", serialized)
+        self.assertNotIn("near the school road", serialized)
         self.assertIn("I reached the classroom.", serialized)
         self.assertIn("The classroom is noisy.", serialized)
         self.assertNotIn("user_instruction_channel", packet)
@@ -362,11 +363,12 @@ class AgentProjectionTest(unittest.TestCase):
         self.assertEqual(packet["visibility"], "first_person_character")
         self.assertEqual(packet["role_channel_anchor"], "")
         self.assertIn("old rituals", serialized)
-        self.assertIn("ritual note", serialized)
+        self.assertIn("我想回忆：", serialized)
+        self.assertNotIn("in my desk", serialized)
         self.assertIn("Avoid attention", serialized)
         self.assertIn("He closes his hand", serialized)
         self.assertIn("chair beside you", serialized)
-        self.assertIn("You are SuLi.", packet["immersive_context"])
+        self.assertIn("我是 SuLi。", packet["immersive_context"])
         self.assertNotIn("misconceptions", serialized)
         self.assertNotIn("former magical girl", serialized)
         self.assertNotIn("I am scared", serialized)
@@ -439,7 +441,7 @@ class AgentProjectionTest(unittest.TestCase):
                 "gm_prompt": "",
                 "gm_visibility_basis": {},
                 "address_mode": "second_person_gm_narration",
-                "immersive_context": "You are Missing.",
+                "immersive_context": "我是 Missing。",
                 "self_knowledge": {
                     "name": "",
                     "identity": "",
@@ -536,6 +538,7 @@ class AgentProjectionTest(unittest.TestCase):
 
         self.assertEqual(packet["gm_prompt"], "You see the market gate open.")
         self.assertIn("I distrust the old crown.", packet["immersive_context"])
+        self.assertIn("我记得：", packet["immersive_context"])
         self.assertNotIn("projection_control", serialized)
         self.assertNotIn("projection control", serialized)
         self.assertNotIn("control_note", serialized)

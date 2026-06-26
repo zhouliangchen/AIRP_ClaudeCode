@@ -180,7 +180,6 @@ def _build_input_analysis_fixture(run_dir: Path, input_payload: Dict[str, Any], 
             "rewrite_previous_output": False,
             "expand_synopsis_before_continue": False,
             "continue_after_player_action": True,
-            "must_stop_for_player_decision": True,
         },
         "routing": {
             "role_channel": role_text,
@@ -344,51 +343,24 @@ def _continuation_gm_output_fixture() -> Dict[str, Any]:
         "actor_calls": [],
         "parallel_groups": [],
         "world_state_delta": [{"scope": "pendant", "fact": "Ada's visible warning has been acknowledged."}],
-        "perception_responses": [],
         "decision_point": None,
         "stop_reason": "complete",
     }
 
 
 def _actor_output_fixture() -> Dict[str, Any]:
+    reply = "That pendant is older than this school. I angle it toward the classroom light and wait."
     return {
         "agent": "character",
         "agent_id": "character:Ada",
         "character_name": "Ada",
-        "events": [
-            {
-                "type": "dialogue",
-                "target": "",
-                "content": "That pendant is older than this school.",
-            },
-            {
-                "type": "custom_action",
-                "target": "pendant",
-                "content": "I angle the pendant toward the classroom light.",
-                "metadata": {
-                    "category": "physical",
-                    "visible_content": "I angle the pendant toward the classroom light.",
-                    "requires_gm_resolution": True,
-                    "risk_level": "medium",
-                },
-            },
-            {
-                "type": "memory_delta",
-                "target": "self",
-                "content": "I noticed the player carrying a pendant tied to old rites.",
-            },
-            {
-                "type": "goal_update",
-                "target": "self",
-                "content": "Find out why the pendant reacted near the archive.",
-            },
-            {
-                "type": "wait_for_gm",
-                "target": "",
-                "content": "I wait for the GM to confirm what my senses can safely know.",
-            },
-        ],
-        "stop_reason": "continue",
+        "natural_reply": reply,
+        "events": [{
+            "type": "reply",
+            "target": "gm",
+            "content": reply,
+            "metadata": {},
+        }],
     }
 
 
@@ -1081,13 +1053,6 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         )
         gm_output = _read_json(run_dir / "gm.output.json")
         postprocess_output = _read_json(run_dir / "artifacts" / "postprocess.output.json")
-        perception_responses = [
-            response
-            for output in gm_output.get("outputs", [])
-            if isinstance(output, dict)
-            for response in output.get("perception_responses", [])
-            if isinstance(response, dict)
-        ]
         post_round_manifest = manifest.get("post_round_memory_jobs", {})
         if not isinstance(post_round_manifest, dict):
             post_round_manifest = {}
@@ -1159,17 +1124,6 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             "agent_lifecycle_cleanup": cleanup_evidence,
             "trace": trace,
             "loop": captured_loop.get("loop_result", {}),
-            "perception_closure": {
-                "answered_count": sum(
-                    1
-                    for response in perception_responses
-                    if response.get("status") == "answered"
-                ),
-                "continuation_called": captured_loop.get("loop_result", {})
-                .get("called_actors", [])
-                .count("character:Ada")
-                > 1,
-            },
             "memory_delta": {
                 "ok": bool(memory_delta.get("ok")),
                 "round_id": memory_delta.get("round_id"),

@@ -36,8 +36,7 @@ def _write_progress_safe(stage, label, percent=None, detail=None):
 MAX_SUBGM_STEPS = 4
 RUNNABLE_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 STOP_STATUSES = {"completed", "paused", "blocked", "needs_gm"}
-WORLD_VISIBLE_ACTOR_EVENTS = {"dialogue", "action"}
-NON_WORLD_VISIBLE_ACTOR_EVENTS = {"perception", "perceive_request", "memory_delta", "goal_update"}
+WORLD_VISIBLE_ACTOR_EVENTS = {"reply"}
 TRACE_SAFE_CHARACTER_CALL_ID_RE = re.compile(r"^call-character-[A-Za-z][A-Za-z0-9_]*-[0-9]+$")
 MAX_STEPS_NOTICE = "subGM side thread reached max_steps without terminal status"
 SIDE_THREAD_IO_LOCK = threading.RLock()
@@ -190,6 +189,15 @@ def _validate_subgm_output(thread_id: str, payload: Any) -> dict:
 
 
 def _validate_actor_output(actor_id: str, payload: Any) -> dict:
+    if isinstance(payload, str):
+        try:
+            return agent_schemas.natural_actor_output(
+                actor_id,
+                payload,
+                actor_id.split(":", 1)[-1] if actor_id.startswith("character:") else "",
+            )
+        except agent_schemas.ValidationError as exc:
+            raise SubgmTurnLoopError(f"invalid actor output for {actor_id}: {exc}") from exc
     try:
         output = agent_schemas.validate_actor_output(payload)
     except agent_schemas.ValidationError as exc:
@@ -254,12 +262,7 @@ def _record_subgm_output(
 
 def _record_actor_event(side_dir: Path, actor_id: str, event: dict, source_call_id: str) -> None:
     event_type = str(event.get("type") or "")
-    if event_type in WORLD_VISIBLE_ACTOR_EVENTS:
-        visibility = "world_visible"
-    elif event_type in NON_WORLD_VISIBLE_ACTOR_EVENTS:
-        visibility = "actor_visible" if event_type != "perceive_request" else "gm_visible"
-    else:
-        visibility = "actor_visible"
+    visibility = "world_visible" if event_type in WORLD_VISIBLE_ACTOR_EVENTS else "actor_visible"
     agent_interactions.append_event(
         side_dir,
         actor=actor_id,

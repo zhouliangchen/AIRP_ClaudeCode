@@ -67,7 +67,7 @@ class AgentInteractionTraceTest(unittest.TestCase):
             self.run_dir,
             actor="character:SuLi",
             visibility="world_visible",
-            event_type="dialogue_transfer",
+            event_type="dialogue",
             content="I will take it from here.",
             target="character:SuLi",
             source_call_id="call-player-1",
@@ -95,14 +95,14 @@ class AgentInteractionTraceTest(unittest.TestCase):
         self.assertEqual(summary["parallel_groups"], trace["parallel_groups"])
         self.assertEqual(summary["visible_events"][0], {
             "actor": "character:SuLi",
-            "type": "dialogue_transfer",
+            "type": "dialogue",
             "content": "I will take it from here.",
             "target": "character:SuLi",
             "source_call_id": "call-player-1",
             "causal_links": ["event-0"],
         })
 
-    def test_summary_preserves_structured_dialogue_transfer_metadata(self):
+    def test_summary_keeps_visible_dialogue_natural_language_only(self):
         self.agent_interactions.init_trace(
             self.run_dir,
             participants=["gm", "character:Ada", "character:SuLi"],
@@ -111,35 +111,20 @@ class AgentInteractionTraceTest(unittest.TestCase):
             self.run_dir,
             actor="gm",
             visibility="world_visible",
-            event_type="dialogue_transfer",
+            event_type="dialogue",
             content="Did you hear that?",
             target="character:SuLi",
             source_call_id="call-character-Ada-1",
-            public_metadata={
-                "speaker": "character:Ada",
-                "target": "character:SuLi",
-                "exact_visible_words": "Did you hear that?",
-                "delivery_channel": "whisper",
-                "visible_tone_or_action": "Ada leans toward SuLi.",
-                "source_call_id": "call-character-Ada-1",
-            },
         )
 
         summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
 
-        self.assertEqual(
-            summary["visible_events"][0]["dialogue_transfer"],
-            {
-                "speaker": "character:Ada",
-                "target": "character:SuLi",
-                "exact_visible_words": "Did you hear that?",
-                "delivery_channel": "whisper",
-                "visible_tone_or_action": "Ada leans toward SuLi.",
-                "source_call_id": "call-character-Ada-1",
-            },
-        )
+        visible_event = summary["visible_events"][0]
+        self.assertEqual(visible_event["type"], "dialogue")
+        self.assertEqual(visible_event["content"], "Did you hear that?")
+        self.assertNotIn("dialogue_transfer", visible_event)
 
-    def test_summary_preserves_custom_action_metadata(self):
+    def test_summary_keeps_visible_action_natural_language_only(self):
         self.agent_interactions.init_trace(
             self.run_dir,
             participants=["gm", "character:Ada"],
@@ -148,26 +133,18 @@ class AgentInteractionTraceTest(unittest.TestCase):
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="custom_action",
+            event_type="action",
             content="I wedge the chair under the archive door handle.",
             target="archive door",
             source_call_id="call-character-Ada-1",
-            public_metadata={
-                "actor_id": "character:Ada",
-                "category": "physical",
-                "visible_content": "I wedge the chair under the archive door handle.",
-                "requires_gm_resolution": True,
-                "risk_level": "medium",
-                "target": "archive door",
-            },
         )
 
         summary = self.agent_interactions.summarize_for_story_input(self.run_dir)
 
         visible_event = summary["visible_events"][0]
-        self.assertEqual(visible_event["type"], "custom_action")
-        self.assertEqual(visible_event["custom_action"]["category"], "physical")
-        self.assertIs(visible_event["custom_action"]["requires_gm_resolution"], True)
+        self.assertEqual(visible_event["type"], "action")
+        self.assertEqual(visible_event["content"], "I wedge the chair under the archive door handle.")
+        self.assertNotIn("custom_action", visible_event)
 
     def test_summary_preserves_visibility_metadata_for_world_visible_events(self):
         self.agent_interactions.init_trace(
@@ -491,7 +468,7 @@ class AgentInteractionTraceTest(unittest.TestCase):
             self.run_dir,
             actor="character:SuLi",
             visibility="world_visible",
-            event_type="dialogue_transfer",
+            event_type="dialogue",
             content="I will take it from here.",
             target="character:SuLi",
             source_call_id="call-character-SuLi-2",
@@ -661,7 +638,7 @@ class AgentInteractionTraceTest(unittest.TestCase):
                 {
                     "actor": "character:SuLi",
                     "visibility": "world_visible",
-                    "type": "dialogue_transfer",
+                    "type": "dialogue",
                     "content": "I will take it from here.",
                     "target": "character:SuLi",
                     "source_call_id": "GM only: moon base.",

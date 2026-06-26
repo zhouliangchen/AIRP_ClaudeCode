@@ -75,18 +75,36 @@ def _json_block(data: Any) -> str:
 
 
 def _strip_embedded_output_schema(text: str) -> str:
-    marker = "\n## Output Schema"
-    if marker not in text:
+    marker = ""
+    start = -1
+    for candidate in ("\n## Output Schema", "\n## 输出契约"):
+        start = text.find(candidate)
+        if start != -1:
+            marker = candidate
+            break
+    if start == -1:
         return text
-    before, after = text.split(marker, 1)
+    before = text[:start]
+    after = text[start + len(marker):]
     next_heading = after.find("\n## ", 1)
     tail = after[next_heading:] if next_heading != -1 else ""
     return (
         before.rstrip()
-        + "\n\n## Output Schema\n\n"
-        + "Use the generated `Required Output Contract` above as the only JSON schema for this run.\n"
+        + "\n\n"
+        + marker.lstrip()
+        + "\n\n"
+        + "只按本次生成的 JSON 输出契约返回结果，不写额外解释。\n"
         + tail
     )
+
+
+def _strip_frontmatter(text: str) -> str:
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    return text[end + len("\n---"):].lstrip()
 
 
 def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
@@ -95,6 +113,8 @@ def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
     if not path.exists():
         return f"(missing skill file: {relative})"
     text = path.read_text(encoding="utf-8")
+    if skill_key in {"player", "character"}:
+        text = _strip_frontmatter(text)
     if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
         text = _strip_embedded_output_schema(text)
     return text[:limit]
@@ -242,6 +262,57 @@ Do not write final prose unless this is the story agent.
 """
 
 
+def _actor_base_prompt(
+    title: str,
+    skill_key: str,
+    context: Dict[str, Any],
+    actor_name: str = "",
+) -> str:
+    context = context if isinstance(context, dict) else {}
+    gm_prompt = str(context.get("gm_prompt") or "").strip()
+    immersive_context = str(context.get("immersive_context") or "").strip()
+    role_anchor = str(context.get("role_channel_anchor") or "").strip()
+    context_parts = []
+    if gm_prompt:
+        context_parts.append("刚刚对我说的话：\n" + gm_prompt)
+    if immersive_context:
+        context_parts.append("我能感知到的内容：\n" + immersive_context)
+    if role_anchor:
+        context_parts.append("我此刻延续的第一人称意图：\n" + role_anchor)
+    natural_context = "\n\n".join(context_parts).strip() or "我暂时没有额外可感知内容，只能依据刚刚对我说的话回应。"
+    name_line = f"我是 {actor_name}。" if actor_name else ""
+    return f"""
+# {title}
+
+{name_line}#身份声明
+
+#基本设定注入点
+
+我记得：
+#长期记忆注入点
+
+有些事情很重要，虽然现在只有个大概的印象，在下面列出；不过我清晰地记在了记忆的深层。如果现在需要回忆起来，需要输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。
+#重点记忆注入点（包括手动读取后完整的重点记忆）
+
+最近的事情：
+#短期记忆注入点
+
+现在：
+#GM当前消息注入点
+
+现在，如果没有其他重点记忆需要回忆，那就好好想想接下来干怎么办吧。
+我不用“配合剧情”，我不相信世界有剧本。越自然越好，也许现实会奖励真实活着的每一个人。
+我只是{actor_name}，不是别人，我不用扮演任何人。我只能写自己想了什么，做了什么，说了什么，但不能操作其他人，也不能妄想环境按我的意愿回应。比如，当我尝试获得更多感官信息时，也只需要输出：“我想看向...”，你就能看清那个方向的东西。
+
+
+{natural_context}
+
+```markdown
+{_skill_excerpt(skill_key)}
+```
+"""
+
+
 def _input_analyst_prompt(context: Dict[str, Any]) -> str:
     context = context if isinstance(context, dict) else {}
     source_integrity = context.get("source_integrity", {})
@@ -267,7 +338,6 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
             "rewrite_previous_output": False,
             "expand_synopsis_before_continue": False,
             "continue_after_player_action": True,
-            "must_stop_for_player_decision": False,
         },
         "routing": {
             "role_channel": "",
@@ -401,77 +471,16 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
 
 
 def _player_prompt(context: Dict[str, Any]) -> str:
-    contract = _json_block({
-        "agent": "player",
-        "agent_id": "player",
-        "events": [
-            {
-                "type": "wait_for_gm",
-                "target": "",
-                "content": "first-person event content",
-                "metadata": {},
-            }
-        ],
-        "stop_reason": "continue",
-    })
-    return _base_prompt(
-        "Player Agent Prompt",
-        "player",
-        "actor.outputs.json",
-        contract,
-        context,
-        "Use only the allowed context below and return exactly one JSON player actor output object. "
-        "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
-    ) + (
-        "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
-        "Allowed event types: `perceive_request`, `dialogue`, `action`, `custom_action`, "
-        "`memory_delta`, `goal_update`, `wait_for_gm`, `stop_for_player_decision`. "
-        "Do not emit `perceive`, `thought`, `observation`, or `narration`; use `action` for ordinary visible reaction/observation. "
-        "Dialogue metadata keys are only `exact_visible_words`, `delivery_channel`, and `visible_tone_or_action`; "
-        "do not use `tone` or `dialogue_style` keys.\n"
-        "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
-        "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
-    )
+    return _actor_base_prompt("我是", "player", context)
 
 
 def _character_prompt(context: Dict[str, Any]) -> str:
     self_knowledge = context.get("self_knowledge", {}) if isinstance(context, dict) else {}
     if not isinstance(self_knowledge, dict):
         self_knowledge = {}
-    actor_id = context.get("actor_id") or "character:unknown"
-    character_name = context.get("character_name") or self_knowledge.get("name", "")
-    contract = _json_block({
-        "agent": "character",
-        "agent_id": actor_id,
-        "character_name": character_name,
-        "events": [
-            {
-                "type": "wait_for_gm",
-                "target": "",
-                "content": "first-person event content",
-                "metadata": {},
-            }
-        ],
-        "stop_reason": "continue",
-    })
-    return _base_prompt(
-        f"Character Agent Prompt: {character_name}",
-        "character",
-        "actor.outputs.json",
-        contract,
-        context,
-        "Use only the allowed context below and return exactly one JSON character actor output object. "
-        "The runtime loop validates actor responses and aggregates them into `actor.outputs.json`.",
-    ) + (
-        "\n\nAllowed `stop_reason` values: `continue`, `stop_for_player_decision`.\n"
-        "Allowed event types: `perceive_request`, `dialogue`, `action`, `custom_action`, "
-        "`memory_delta`, `goal_update`, `wait_for_gm`, `stop_for_player_decision`. "
-        "Do not emit `perceive`, `thought`, `observation`, or `narration`; use `action` for ordinary visible reaction/observation. "
-        "Dialogue metadata keys are only `exact_visible_words`, `delivery_channel`, and `visible_tone_or_action`; "
-        "do not use `tone` or `dialogue_style` keys.\n"
-        "\nActor authority: you may emit memory_delta or goal_update events only for memory/goals. "
-        "Do not edit profile, background, personality, body_facts, authoritative_setting, or character_sheet data.\n"
-    )
+    character_name = str(context.get("character_name") or self_knowledge.get("name", "")).strip()
+    title = f"我的行动提示：{character_name}" if character_name else "我的行动提示"
+    return _actor_base_prompt(title, "character", context, actor_name=character_name)
 
 
 def character_prompt_text(context: Dict[str, Any]) -> str:
@@ -495,13 +504,16 @@ def projection_prompt_text(context: Dict[str, Any]) -> str:
         "artifacts/projections/<intent_id>.json",
         contract,
         context,
-        "Review the requested actor message and return exactly one JSON projection result object. "
-        "Use `pass` when no change is needed, `edited` for small safe edits, "
-        "`needs_rewrite` when GM/subGM must rewrite, and `blocked` for invalid requests.",
+        "Review the requested actor message using the natural-language actor context, "
+        "memory, settings, and review reference in this prompt. Return exactly one JSON "
+        "projection result object. Use `pass` when no change is needed, `edited` for "
+        "small safe local edits, `needs_rewrite` when GM/subGM must rewrite or negotiate "
+        "the wording again, and `blocked` for invalid requests.",
         contract_notes=(
             "Do not reveal objective truth to the target actor. "
             "Do not tell the actor that a belief is false. "
-            "Only `final_actor_message` can be delivered to the actor."
+            "Only the natural-language `final_actor_message` can be delivered to the actor; "
+            "never deliver context packets, visibility proofs, memory objects, or other structured data."
         ),
     )
 

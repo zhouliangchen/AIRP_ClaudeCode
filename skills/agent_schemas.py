@@ -26,48 +26,12 @@ FORBIDDEN_ACTOR_KEYS = {
 }
 FORBIDDEN_ACTOR_MARKERS = set(FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
 
-LEGACY_ACTOR_KEYS = {
-    "action",
-    "dialogue",
-    "perception",
-    "memory_delta",
-}
-
-ACTOR_EVENT_TYPES = {
-    "perceive_request",
-    "dialogue",
-    "action",
-    "custom_action",
-    "memory_delta",
-    "goal_update",
-    "wait_for_gm",
-    "stop_for_player_decision",
-}
-ACTOR_EVENT_TYPE_ALIASES = {
-    "perceive": "action",
-}
-
+LEGACY_ACTOR_KEYS = {"action", "dialogue", "perception", "memory_delta"}
+ACTOR_OUTPUT_KEYS = {"agent", "agent_id", "character_name", "context_version", "events", "natural_reply"}
+ACTOR_EVENT_TYPES = {"reply"}
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
-DIALOGUE_METADATA_KEYS = {"exact_visible_words", "delivery_channel", "visible_tone_or_action"}
-DIALOGUE_METADATA_ALIASES = {
-    "tone": "visible_tone_or_action",
-    "dialogue_style": "visible_tone_or_action",
-}
-CUSTOM_ACTION_RISK_LEVELS = {"low", "medium", "high", "critical"}
-CUSTOM_ACTION_METADATA_KEYS = {"category", "visible_content", "requires_gm_resolution", "risk_level"}
 
 GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
-PERCEPTION_RESPONSE_STATUSES = {"answered", "closed"}
-PERCEPTION_RESPONSE_KEYS = {
-    "request_id",
-    "actor_id",
-    "source_call_id",
-    "status",
-    "channel",
-    "content",
-    "reason",
-    "visibility_basis",
-}
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 CRITIC_QUALITY_STATUSES = {"pass", "revise", "block", "not_checked"}
 CRITIC_LENGTH_STATUSES = CRITIC_QUALITY_STATUSES | {"exempt"}
@@ -241,92 +205,19 @@ def _reject_legacy_actor_keys(payload: Dict[str, Any], path: str) -> None:
             raise ValidationError(f"{_path(path, key)} is a legacy actor output key")
 
 
-def _normalize_dialogue_metadata(metadata: Dict[str, Any], path: str) -> Dict[str, Any]:
-    _reject_forbidden_keys(metadata, path)
-    for key in sorted(metadata):
-        if key not in DIALOGUE_METADATA_KEYS and key not in DIALOGUE_METADATA_ALIASES:
-            raise ValidationError(f"{_path(path, str(key))} is not an allowed dialogue metadata field")
-
-    normalized: Dict[str, Any] = {}
-    if "exact_visible_words" in metadata:
-        value = metadata["exact_visible_words"]
-        if not isinstance(value, str):
-            raise ValidationError(f"{_path(path, 'exact_visible_words')} must be a string")
-        exact_visible_words = value.strip()
-        if exact_visible_words:
-            normalized["exact_visible_words"] = exact_visible_words
-
-    delivery_channel = metadata.get("delivery_channel", "spoken")
-    if not isinstance(delivery_channel, str):
-        raise ValidationError(f"{_path(path, 'delivery_channel')} must be a string")
-    normalized["delivery_channel"] = delivery_channel.strip() or "spoken"
-
-    tone_parts: list[str] = []
-    for key in ("visible_tone_or_action", "tone", "dialogue_style"):
-        if key not in metadata:
-            continue
-        value = metadata[key]
-        if not isinstance(value, str):
-            raise ValidationError(f"{_path(path, key)} must be a string")
-        value = value.strip()
-        if value and value not in tone_parts:
-            tone_parts.append(value)
-    if tone_parts:
-        normalized["visible_tone_or_action"] = "; ".join(tone_parts)
-
-    return normalized
-
-
-def _normalize_custom_action_metadata(metadata: Dict[str, Any], content: str, path: str) -> Dict[str, Any]:
-    for key in sorted(metadata):
-        if key not in CUSTOM_ACTION_METADATA_KEYS:
-            raise ValidationError(f"{_path(path, str(key))} is not an allowed custom_action metadata field")
-
-    category = _require_nonempty_str(metadata, "category", path)
-    visible_content = _require_nonempty_str(metadata, "visible_content", path)
-    if visible_content != str(content or "").strip():
-        raise ValidationError(f"{_path(path, 'visible_content')} must exactly match event content")
-
-    if "requires_gm_resolution" not in metadata:
-        raise ValidationError(f"{_path(path, 'requires_gm_resolution')} is required")
-    requires_gm_resolution = metadata["requires_gm_resolution"]
-    if not isinstance(requires_gm_resolution, bool):
-        raise ValidationError(f"{_path(path, 'requires_gm_resolution')} must be a boolean")
-
-    risk_level = _require_nonempty_str(metadata, "risk_level", path)
-    if risk_level not in CUSTOM_ACTION_RISK_LEVELS:
-        raise ValidationError(f"{_path(path, 'risk_level')} must be one of low, medium, high, critical")
-
-    normalized: Dict[str, Any] = {
-        "category": category,
-        "visible_content": visible_content,
-        "requires_gm_resolution": requires_gm_resolution,
-        "risk_level": risk_level,
-    }
-    _reject_forbidden_keys(normalized, path)
-    return normalized
-
-
 def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     data = _require_dict(item, path)
     for key in sorted(data):
         if key not in ACTOR_EVENT_KEYS:
             raise ValidationError(f"{_path(path, str(key))} is not an allowed actor event field")
     event_type = _require_str(data, "type", path)
-    event_type = ACTOR_EVENT_TYPE_ALIASES.get(event_type, event_type)
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
     metadata = _optional_dict(data, "metadata", path)
+    if metadata:
+        raise ValidationError(f"{_path(path, 'metadata')} must be empty for actor natural replies")
     content = _require_str(data, "content", path)
-    if event_type == "dialogue":
-        metadata = _normalize_dialogue_metadata(metadata, _path(path, "metadata"))
-    elif event_type == "custom_action":
-        metadata = _normalize_custom_action_metadata(metadata, content, _path(path, "metadata"))
     target = _optional_str(data, "target", "", path)
-    if event_type == "custom_action":
-        target = target.strip()
-        if not target:
-            raise ValidationError(f"custom_action {_path(path, 'target')} is required")
     normalized = {
         "type": event_type,
         "target": target,
@@ -341,6 +232,40 @@ def _normalize_actor_events(items: list[Any], path: str) -> list[Dict[str, Any]]
     if not items:
         raise ValidationError(f"{path} must not be empty")
     return [_normalize_actor_event(item, f"{path}[{index}]") for index, item in enumerate(items)]
+
+
+def natural_actor_output(actor_id: str, reply: Any, character_name: str = "") -> Dict[str, Any]:
+    """Wrap one actor natural-language reply in the internal actor artifact shape."""
+
+    actor_key = _validate_actor_agent_id(
+        "player" if actor_id == "player" else "character",
+        str(actor_id or "").strip(),
+        "actor_output.agent_id",
+    )
+    content = str(reply or "").strip()
+    if not content:
+        raise ValidationError("actor natural reply must not be blank")
+    _reject_forbidden_keys({"natural_reply": content}, "actor_output")
+
+    agent = "player" if actor_key == "player" else "character"
+    output: Dict[str, Any] = {
+        "agent": agent,
+        "agent_id": actor_key,
+        "natural_reply": content,
+        "events": [
+            {
+                "type": "reply",
+                "target": "gm",
+                "content": content,
+                "metadata": {},
+            }
+        ],
+    }
+    if agent == "character":
+        name = str(character_name or actor_key.split(":", 1)[-1]).strip()
+        if name:
+            output["character_name"] = name
+    return output
 
 
 def _normalize_gm_scene_beat(item: Any, path: str) -> Dict[str, Any]:
@@ -380,53 +305,6 @@ def _normalize_gm_actor_call(item: Any, path: str) -> Dict[str, Any]:
     if "metadata" in data:
         normalized["metadata"] = _optional_dict(data, "metadata", path)
     normalized.update(_normalize_visibility_fields(data, path, require_basis=True))
-    return normalized
-
-
-def _normalize_perception_response(item: Any, path: str) -> Dict[str, Any]:
-    data = _require_dict(item, path)
-    for key in sorted(data):
-        if key not in PERCEPTION_RESPONSE_KEYS:
-            raise ValidationError(f"{_path(path, str(key))} is not an allowed perception response field")
-    _reject_forbidden_keys(data, path)
-
-    status = _require_nonempty_str(data, "status", path)
-    if status not in PERCEPTION_RESPONSE_STATUSES:
-        allowed = ", ".join(sorted(PERCEPTION_RESPONSE_STATUSES))
-        raise ValidationError(f"{_path(path, 'status')} must be one of: {allowed}")
-    if status == "closed":
-        for field in ("channel", "content", "visibility_basis"):
-            if field in data:
-                raise ValidationError(f"{_path(path, field)} is not allowed for closed perception responses")
-
-    normalized = {
-        "request_id": _require_nonempty_str(data, "request_id", path),
-        "actor_id": _validate_actor_id_marker(_require_nonempty_str(data, "actor_id", path), _path(path, "actor_id")),
-        "source_call_id": _require_nonempty_str(data, "source_call_id", path),
-        "status": status,
-    }
-
-    if "channel" in data:
-        normalized["channel"] = _require_nonempty_str(data, "channel", path)
-    if "content" in data:
-        normalized["content"] = _require_nonempty_str(data, "content", path)
-    if "reason" in data:
-        normalized["reason"] = _require_nonempty_str(data, "reason", path)
-    if "visibility_basis" in data:
-        basis_fields = _normalize_visibility_fields(
-            {"visibility_basis": data["visibility_basis"]},
-            path,
-            require_basis=True,
-        )
-        normalized["visibility_basis"] = basis_fields["visibility_basis"]
-
-    if status == "answered":
-        for required_key in ("channel", "content", "visibility_basis"):
-            if required_key not in normalized:
-                raise ValidationError(f"{_path(path, required_key)} is required")
-    if status == "closed" and "reason" not in normalized:
-        raise ValidationError(f"{_path(path, 'reason')} is required")
-
     return normalized
 
 
@@ -607,6 +485,11 @@ def _normalize_subgm_command(item: Any, path: str) -> Dict[str, Any]:
 def validate_gm_output(payload: Any) -> Dict[str, Any]:
     """Validate and normalize `gm.output.json`."""
     data = _require_dict(payload, "gm_output")
+    if "perception_responses" in data:
+        raise ValidationError(
+            "gm_output.perception_responses is a legacy actor-facing protocol; "
+            "send sensory feedback through natural-language actor_calls[].prompt"
+        )
     return {
         "agent": _require_agent(data, "gm", "gm_output"),
         "scene_beats": _normalize_list_items(
@@ -626,11 +509,6 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         ),
         "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
-        "perception_responses": _normalize_list_items(
-            _optional_list(data, "perception_responses", "gm_output"),
-            "gm_output.perception_responses",
-            _normalize_perception_response,
-        ),
         "character_promotions": _normalize_list_items(
             _optional_list(data, "character_promotions", "gm_output"),
             "gm_output.character_promotions",
@@ -714,8 +592,11 @@ def validate_subgm_output(payload: Any) -> Dict[str, Any]:
 
 
 def validate_actor_output(payload: Any) -> Dict[str, Any]:
-    """Validate and normalize player/character first-person output."""
+    """Validate the internal wrapper for one actor natural-language reply."""
     data = _require_dict(payload, "actor_output")
+    for key in sorted(data):
+        if key not in ACTOR_OUTPUT_KEYS:
+            raise ValidationError(f"actor_output.{key} is not an allowed actor output field")
     envelope = dict(data)
     envelope.pop("events", None)
     _reject_forbidden_keys(envelope, "actor_output")
@@ -733,9 +614,14 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
     normalized = {
         "agent": agent,
         "agent_id": agent_id,
+        "natural_reply": _require_nonempty_str(data, "natural_reply", "actor_output"),
         "events": _normalize_actor_events(_require_list(data, "events", "actor_output"), "actor_output.events"),
-        "stop_reason": _optional_str(data, "stop_reason", "continue", "actor_output"),
     }
+    if len(normalized["events"]) != 1:
+        raise ValidationError("actor_output.events must contain exactly one natural reply event")
+    reply_event = normalized["events"][0]
+    if reply_event["content"].strip() != normalized["natural_reply"]:
+        raise ValidationError("actor_output.events[0].content must match actor_output.natural_reply")
     if agent == "character":
         normalized["character_name"] = _optional_str(data, "character_name", path="actor_output")
     return normalized

@@ -185,14 +185,12 @@ class ProjectionAgentTest(unittest.TestCase):
                         source_call_id="call-bob-1",
                     )
 
-    def test_build_review_packet_keeps_contexts_separate_and_deep_copies_inputs(self):
+    def test_build_review_packet_uses_natural_language_review_context(self):
         actor_packet = {
             "immersive_context": "You remember: I was taught that cursed heroes endanger civilians.",
             "visible_events": [{"content": "A traveler enters the market."}],
         }
         objective_context = {"facts": [{"fact": "The old hero was framed by the king."}]}
-        original_actor_packet = copy.deepcopy(actor_packet)
-        original_objective_context = copy.deepcopy(objective_context)
 
         packet = self.projection.build_review_packet(
             actor_id="character:CurrentPaladin",
@@ -203,18 +201,16 @@ class ProjectionAgentTest(unittest.TestCase):
             objective_context=objective_context,
         )
 
-        packet["actor_visible_events"][0]["content"] = "mutated event"
-        packet["objective_context"]["facts"][0]["fact"] = "mutated truth"
-
-        self.assertEqual(actor_packet, original_actor_packet)
-        self.assertEqual(objective_context, original_objective_context)
         self.assertEqual(packet["target_actor_id"], "character:CurrentPaladin")
         self.assertEqual(packet["source_call_id"], "call-paladin-1")
         self.assertEqual(packet["source_message_id"], "msg-paladin-1")
         self.assertEqual(packet["requested_actor_message"], "You discover the cursed hero in the market.")
         self.assertIn("cursed heroes", packet["actor_context"])
-        self.assertIn("traveler enters", original_actor_packet["visible_events"][0]["content"])
-        self.assertIn("framed by the king", original_objective_context["facts"][0]["fact"])
+        self.assertIn("traveler enters", packet["actor_context"])
+        self.assertIn("framed by the king", packet["review_reference"])
+        self.assertNotIn("actor_visible_events", packet)
+        self.assertIsInstance(packet["actor_context"], str)
+        self.assertIsInstance(packet["review_reference"], str)
         self.assertIn("pass", packet["instruction"])
         self.assertIn("edited", packet["instruction"])
         self.assertIn("needs_rewrite", packet["instruction"])
@@ -237,7 +233,7 @@ class ProjectionAgentTest(unittest.TestCase):
         )
 
         self.assertIn("You believe the old hero still carries the curse.", packet["actor_context"])
-        self.assertIn("not cursed", packet["objective_context"]["facts"][0])
+        self.assertIn("not cursed", packet["review_reference"])
         self.assertNotIn("misconception", packet["actor_context"].lower())
         self.assertNotIn("false", packet["actor_context"].lower())
         self.assertNotIn("framed by the king", packet["actor_context"].lower())

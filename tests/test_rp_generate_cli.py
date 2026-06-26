@@ -109,7 +109,6 @@ def _gm_output(
         "actor_calls": actor_calls,
         "parallel_groups": [],
         "world_state_delta": world_state_delta if world_state_delta is not None else [],
-        "perception_responses": [],
         "decision_point": decision_point,
         "stop_reason": stop_reason,
     }
@@ -458,8 +457,26 @@ class RpGenerateCliTest(unittest.TestCase):
             }
         }
 
-        with self.assertRaisesRegex(self.module.AgentExecutionError, "legacy actor output key"):
+        with self.assertRaisesRegex(self.module.AgentExecutionError, "action is not an allowed actor output field"):
             self.module._validate("player", payload)
+
+    def test_dispatch_actor_accepts_natural_language_reply_without_json(self):
+        reply = "我把手从门把上收回来，低声说：先别进去。"
+        packet = {"actor_id": "player", "character_name": "雨蒙"}
+
+        result = self.module._dispatch_agent_payload(
+            "player",
+            "# player\n",
+            self.root,
+            lambda _agent_key, _prompt, _cwd: _agent_stream(reply),
+            extra_context={"loop_packet": packet},
+        )
+
+        self.assertEqual(result["agent"], "player")
+        self.assertEqual(result["agent_id"], "player")
+        self.assertEqual(result["natural_reply"], reply)
+        self.assertEqual(result["events"], [{"type": "reply", "target": "gm", "content": reply, "metadata": {}}])
+        self.assertNotIn("stop_reason", result)
 
     def test_stdout_json_is_ascii_safe_for_windows_console(self):
         text = self.module._stdout_json({"ok": True, "text": "中文\ufffd"})
@@ -658,7 +675,6 @@ class RpGenerateCliTest(unittest.TestCase):
                 "rewrite_previous_output": False,
                 "expand_synopsis_before_continue": False,
                 "continue_after_player_action": True,
-                "must_stop_for_player_decision": False,
             },
             "routing": {"gm": True, "player": True, "characters": []},
             "routing_requests": [],
@@ -944,15 +960,9 @@ class RpGenerateCliTest(unittest.TestCase):
                             "character_name": "\u82cf\u9ece",
                             "events": [
                                 {
-                                    "type": "dialogue",
+                                    "type": "reply",
                                     "target": "player",
                                     "content": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
-                                    "metadata": {},
-                                },
-                                {
-                                    "type": "perceive_request",
-                                    "target": "hallway",
-                                    "content": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
                                     "metadata": {},
                                 },
                                 {
@@ -976,7 +986,6 @@ class RpGenerateCliTest(unittest.TestCase):
                 "name": "\u82cf\u9ece",
                 "source": "subagent",
                 "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
-                "aside": "\u5148\u786e\u8ba4\u5468\u56f4\u662f\u5426\u5b89\u5168\u3002",
             }
         ])
         self.assertIn(
@@ -1001,7 +1010,7 @@ class RpGenerateCliTest(unittest.TestCase):
                             "character_name": "SuLi",
                             "events": [
                                 {
-                                    "type": "dialogue",
+                                    "type": "reply",
                                     "target": "player",
                                     "content": "Where did you get that?",
                                     "metadata": {},

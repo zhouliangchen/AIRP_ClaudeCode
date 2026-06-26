@@ -202,16 +202,15 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("完整剧情", gm)
         self.assertIn("gm.output.json", gm)
 
-        self.assertIn("不知道玩家", player)
-        self.assertIn("不知道 GM", player)
-        self.assertIn("关键决策点", player)
-        self.assertIn("actor.outputs.json", player)
+        self.assertIn("我不把不可感知的设定、幕后原因或外部指令当成自己知道的事", player)
+        self.assertIn("我直接用自然语言", player)
+        self.assertIn("不写 JSON", player)
         self.assertNotIn("player.output.json", player)
 
-        self.assertIn("真正活在作品世界", character)
-        self.assertIn("角色独立的人格", character)
+        self.assertIn("真正活在当前处境", character)
+        self.assertIn("我像自己一样反应", character)
         self.assertIn("感官", character)
-        self.assertIn("memory_delta", character)
+        self.assertIn("不写字段名", character)
 
         self.assertIn("尽可能保留各 subagent", story)
         self.assertIn("<character_dialogues>", story)

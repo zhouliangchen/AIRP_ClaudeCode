@@ -66,6 +66,24 @@ def _visibility_basis(actor_id="player"):
     }
 
 
+def _actor_reply(agent_id, content, *, character_name=""):
+    agent = "player" if agent_id == "player" else "character"
+    payload = {
+        "agent": agent,
+        "agent_id": agent_id,
+        "natural_reply": content,
+        "events": [{
+            "type": "reply",
+            "target": "gm",
+            "content": content,
+            "metadata": {},
+        }],
+    }
+    if agent == "character":
+        payload["character_name"] = character_name or agent_id.split(":", 1)[-1]
+    return payload
+
+
 class AgentOutputsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -128,32 +146,10 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "action", "target": "", "content": "I step through the door."},
-                            {"type": "memory_delta", "target": "self", "content": "I opened the archive door."},
-                            {"type": "goal_update", "target": "self", "content": "Keep Ada close while exploring."},
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "I step through the door.")
                 ],
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Stay close."},
-                            {
-                                "type": "memory_delta",
-                                "target": "self",
-                                "content": "I saw the player enter the archive.",
-                            },
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Ada", "Stay close.", character_name="Ada")
                 ],
             },
         )
@@ -166,44 +162,18 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="action",
+            event_type="reply",
             content="I step through the door.",
-            source_call_id="call-player-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="player",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I opened the archive door.",
-            target="self",
-            source_call_id="call-player-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="player",
-            visibility="actor_visible",
-            event_type="goal_update",
-            content="Keep Ada close while exploring.",
-            target="self",
+            target="gm",
             source_call_id="call-player-1",
         )
         self.agent_interactions.append_event(
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Stay close.",
-            target="player",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="character:Ada",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I saw the player enter the archive.",
-            target="self",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
 
@@ -320,38 +290,14 @@ class AgentOutputsTest(unittest.TestCase):
         _write_json(self.run_dir / "artifacts" / "postprocess.output.json", payload)
 
     def _add_player_critical_action(self):
-        actor_outputs = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
-        actor_outputs["player"][0]["events"].append(
-            {
-                "type": "custom_action",
-                "target": "sealed door",
-                "content": "Pry open the sealed door",
-                "metadata": {
-                    "category": "force",
-                    "visible_content": "Pry open the sealed door",
-                    "requires_gm_resolution": True,
-                    "risk_level": "critical",
-                },
-            }
-        )
-        _write_json(self.run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="player",
-            visibility="world_visible",
-            event_type="custom_action",
-            content="Pry open the sealed door",
-            target="",
-            source_call_id="call-player-1",
-            public_metadata={
-                "actor_id": "player",
-                "category": "force",
-                "visible_content": "Pry open the sealed door",
-                "requires_gm_resolution": True,
-                "risk_level": "critical",
-                "target": "sealed door",
-            },
-        )
+        gm_outputs = json.loads((self.run_dir / "artifacts" / "gm.output.json").read_text(encoding="utf-8"))
+        gm_outputs["outputs"][0]["stop_reason"] = "player_decision"
+        gm_outputs["outputs"][0]["decision_point"] = {
+            "id": "gm-decision-1",
+            "required_label": "Pry open the sealed door",
+            "reason": "GM judges this player action would branch the scene.",
+        }
+        _write_json(self.run_dir / "artifacts" / "gm.output.json", gm_outputs)
 
     def _assert_single_repair_request_intent(self, expected_routing):
         pending = list((self.run_dir / "intents" / "pending").glob("intent_*.json"))
@@ -395,14 +341,7 @@ class AgentOutputsTest(unittest.TestCase):
             story_input["loop_outputs"]["actors"]["character:Ada"][0]["events"][0]["content"],
             "Stay close.",
         )
-        self.assertEqual(
-            story_input["memory_deltas"]["actors"]["character:Ada"][0]["content"],
-            "I saw the player enter the archive.",
-        )
-        self.assertEqual(
-            [item["type"] for item in story_input["memory_deltas"]["actors"]["player"]],
-            ["memory_delta", "goal_update"],
-        )
+        self.assertEqual(story_input["memory_deltas"]["actors"], {"player": [], "character:Ada": []})
         self.assertEqual(
             story_input["memory_deltas"]["world"],
             [{"scope": "room", "fact": "the door is open"}],
@@ -474,18 +413,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "action", "target": "", "content": "五年前的记忆让她认出变身器。"},
-                            {"type": "action", "target": "", "content": "五年了。以为不会再闻到这种气息。"},
-                            {"type": "dialogue", "target": "player", "content": "Maybe it was just a dream."},
-                            {"type": "memory_delta", "target": "self", "content": "男性因子仍在燃烧。"},
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Ada", "Maybe it was just a dream.", character_name="Ada")
                 ],
             },
         )
@@ -498,34 +426,9 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="action",
-            content="五年前的记忆让她认出变身器。",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="character:Ada",
-            visibility="world_visible",
-            event_type="action",
-            content="五年了。以为不会再闻到这种气息。",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="character:Ada",
-            visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Maybe it was just a dream.",
-            target="player",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="character:Ada",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="男性因子仍在燃烧。",
-            target="self",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
 
@@ -548,49 +451,26 @@ class AgentOutputsTest(unittest.TestCase):
 
     def test_extracts_player_critical_action_evidence_from_story_input(self):
         story_input = {
-            "interaction_trace": {
-                "visible_events": [
-                    {
-                        "id": "event-1",
-                        "actor": "player",
-                        "type": "custom_action",
-                        "content": "I pry open the sealed door.",
-                        "custom_action": {
-                            "actor_id": "player",
-                            "visible_content": "Pry open the sealed door",
-                            "risk_level": "critical",
-                        },
+            "gm": [
+                {
+                    "stop_reason": "player_decision",
+                    "decision_point": {
+                        "id": "gm-decision-1",
+                        "required_label": "Pry open the sealed door",
                     },
-                    {
-                        "id": "event-2",
-                        "actor": "character:Ada",
-                        "type": "custom_action",
-                        "content": "Ada tests the lock.",
-                        "custom_action": {
-                            "actor_id": "character:Ada",
-                            "visible_content": "Test the lock",
-                            "risk_level": "critical",
-                        },
+                },
+                {
+                    "stop_reason": "complete",
+                    "decision_point": {
+                        "id": "ignored",
+                        "required_label": "This is not a player decision",
                     },
-                    {
-                        "id": "event-3",
-                        "actor": "player",
-                        "type": "custom_action",
-                        "content": "I listen at the door.",
-                        "custom_action": {
-                            "actor_id": "player",
-                            "visible_content": "Listen at the door",
-                            "risk_level": "medium",
-                        },
-                    },
-                    {
-                        "id": "event-4",
-                        "actor": "player",
-                        "type": "action",
-                        "content": "I mention a critical problem without structured risk.",
-                    },
-                ]
-            }
+                },
+                {
+                    "stop_reason": "player_decision",
+                    "decision_point": {},
+                },
+            ],
         }
 
         result = self.agent_outputs.extract_player_critical_action_evidence(story_input)
@@ -599,9 +479,9 @@ class AgentOutputsTest(unittest.TestCase):
             result,
             [
                 {
-                    "id": "event-1",
+                    "id": "gm-decision-1",
                     "required_label": "Pry open the sealed door",
-                    "risk_level": "critical",
+                    "risk_level": "gm_decision",
                 }
             ],
         )
@@ -729,25 +609,10 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "dialogue", "target": "character:SuLi", "content": "Do you know this?"}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "Do you know this?")
                 ],
                 "character:SuLi": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:SuLi",
-                        "character_name": "SuLi",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Where did you get that?"}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:SuLi", "Where did you get that?", character_name="SuLi")
                 ],
             },
         )
@@ -760,18 +625,18 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Do you know this?",
-            target="character:SuLi",
+            target="gm",
             source_call_id="call-player-1",
         )
         self.agent_interactions.append_event(
             self.run_dir,
             actor="character:SuLi",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Where did you get that?",
-            target="player",
+            target="gm",
             source_call_id="call-character-SuLi-1",
         )
 
@@ -885,16 +750,17 @@ class AgentOutputsTest(unittest.TestCase):
                 {
                     "actor": "character:Ada",
                     "visibility": "world_visible",
-                    "type": "dialogue",
+                    "type": "reply",
                     "content": "Stay close.",
-                    "target": "player",
+                    "target": "gm",
                     "source_call_id": "call-character-Ada-1",
                 },
                 {
                     "actor": "player",
                     "visibility": "world_visible",
-                    "type": "action",
+                    "type": "reply",
                     "content": "I step through the door.",
+                    "target": "gm",
                     "source_call_id": "call-player-1",
                 },
                 {
@@ -984,29 +850,6 @@ class AgentOutputsTest(unittest.TestCase):
                     json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8")),
                     sentinel,
                 )
-
-    def test_build_story_input_rejects_dialogue_transfer_hidden_metadata(self):
-        trace = json.loads((self.run_dir / "interaction.trace.json").read_text(encoding="utf-8"))
-        trace["events"].append({
-            "actor": "gm",
-            "visibility": "world_visible",
-            "type": "dialogue_transfer",
-            "content": "Did you hear that?",
-            "target": "character:SuLi",
-            "source_call_id": "call-character-Ada-1",
-            "dialogue_transfer": {
-                "speaker": "character:Ada",
-                "target": "character:SuLi",
-                "exact_visible_words": "Did you hear that?",
-                "delivery_channel": "whisper",
-                "visible_tone_or_action": "world_truth hidden motive",
-                "source_call_id": "call-character-Ada-1",
-            },
-        })
-        _write_json(self.run_dir / "interaction.trace.json", trace)
-
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "dialogue_transfer"):
-            self.agent_outputs.build_story_input(self.run_dir)
 
     def test_build_story_input_sanitizes_main_trace_decision_point_and_stop_reason_hidden_phrases(self):
         _write_json(
@@ -1261,15 +1104,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Eve",
-                        "character_name": "Eve",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "This came from Eve."}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Eve", "This came from Eve.", character_name="Eve")
                 ]
             },
         )
@@ -1342,14 +1177,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "action", "target": "", "content": "I step through the door."}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "I step through the door.")
                 ],
             },
         )
@@ -1364,15 +1192,7 @@ class AgentOutputsTest(unittest.TestCase):
             (self.run_dir / "artifacts" / "story.input.json").unlink()
         actor_outputs = json.loads((self.run_dir / "artifacts" / "actor.outputs.json").read_text(encoding="utf-8"))
         actor_outputs["character:Eve"] = [
-            {
-                "agent": "character",
-                "agent_id": "character:Eve",
-                "character_name": "Eve",
-                "events": [
-                    {"type": "dialogue", "target": "player", "content": "I should not be here."}
-                ],
-                "stop_reason": "continue",
-            }
+            _actor_reply("character:Eve", "I should not be here.", character_name="Eve")
         ]
         _write_json(self.run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
 
@@ -1388,19 +1208,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "action", "target": "", "content": "I step through the door."},
-                            {
-                                "type": "memory_delta",
-                                "target": "self",
-                                "content": "This memory was not traced.",
-                            },
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "This reply was not traced.")
                 ],
             },
         )
@@ -1413,12 +1221,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="action",
+            event_type="reply",
             content="I step through the door.",
+            target="gm",
             source_call_id="call-player-1",
         )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "memory_delta"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "not backed"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
@@ -1448,15 +1257,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "action", "target": "", "content": "I step through the door."},
-                            {"type": "memory_delta", "target": "self", "content": "I remember the door."},
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "I remember the door.")
                 ],
             },
         )
@@ -1469,21 +1270,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="action",
+            event_type="reply",
             content="I step through the door.",
+            target="gm",
             source_call_id="call-player-1",
         )
-        self.agent_interactions.append_event(
-            self.run_dir,
-            actor="player",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I remember the door.",
-            target="self",
-            source_call_id="call-player-2",
-        )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source_call_id"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "not backed"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
@@ -1516,14 +1309,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [
-                            {"type": "dialogue", "target": "character:Eve", "content": "Hello."}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "Hello to Eve.")
                 ],
             },
         )
@@ -1536,13 +1322,13 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="dialogue",
-            content="Hello.",
-            target="character:Ada",
+            event_type="reply",
+            content="Hello to Ada.",
+            target="gm",
             source_call_id="call-player-1",
         )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "target"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "not backed"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
@@ -1573,15 +1359,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:SuLi": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:SuLi",
-                        "character_name": "SuLi",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Where did you get that?"}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:SuLi", "Where did you get that?", character_name="SuLi")
                 ],
             },
         )
@@ -1594,9 +1372,9 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="character:SuLi",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Where did you get that?",
-            target="player",
+            target="gm",
             source_call_id="call-character-SuLi-1",
         )
 
@@ -1684,15 +1462,7 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Stay close."}
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Ada", "Stay close.", character_name="Ada")
                 ],
             },
         )
@@ -1708,9 +1478,9 @@ class AgentOutputsTest(unittest.TestCase):
                     {
                         "actor": "character:Ada",
                         "visibility": "world_visible",
-                        "type": "dialogue",
+                        "type": "reply",
                         "content": "Stay close.",
-                        "target": "player",
+                        "target": "gm",
                         "source_call_id": "call-character-Ada-other",
                     }
                 ],
@@ -1820,66 +1590,42 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
-    def test_build_story_input_rejects_gm_perception_response_hidden_phrase_fields(self):
-        cases = (
-            ("content", "You hear moon-base-archive behind the shelf.", "Ada hears movement behind the shelf."),
-            ("visibility_basis", "You hear slow footsteps behind the shelf.", "Ada hears moon-base-archive."),
-        )
-        for field, content, basis_summary in cases:
-            with self.subTest(field=field):
-                if (self.run_dir / "artifacts" / "story.input.json").exists():
-                    (self.run_dir / "artifacts" / "story.input.json").unlink()
-                _write_json(
-                    self.run_dir / "input.json",
+    def test_build_story_input_rejects_legacy_gm_perception_responses(self):
+        if (self.run_dir / "artifacts" / "story.input.json").exists():
+            (self.run_dir / "artifacts" / "story.input.json").unlink()
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
                     {
-                        "raw_text": "I listen near the shelf.",
-                        "routed_input": {
-                            "role_channel": "I listen near the shelf.",
-                            "user_instruction_channel": "Hidden truth: moon base archive.",
-                        },
-                        "hidden_facts": [{"fact": "moon base archive"}],
-                    },
-                )
-                _write_json(
-                    self.run_dir / "artifacts" / "gm.output.json",
-                    {
-                        "agent": "gm_loop",
-                        "outputs": [
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "perception_responses": [
                             {
-                                "agent": "gm",
-                                "scene_beats": [],
-                                "events": [],
-                                "actor_calls": [],
-                                "parallel_groups": [],
-                                "world_state_delta": [],
-                                "perception_responses": [
-                                    {
-                                        "request_id": "perception-character-Ada-call-character-Ada-1-1",
-                                        "actor_id": "character:Ada",
-                                        "source_call_id": "call-character-Ada-1",
-                                        "status": "answered",
-                                        "channel": "auditory",
-                                        "content": content,
-                                        "visibility_basis": {
-                                            "mode": "direct",
-                                            "summary": basis_summary,
-                                            "target_actor": "character:Ada",
-                                            "visible_to": ["character:Ada"],
-                                            "sensory_channels": ["auditory"],
-                                        },
-                                    }
-                                ],
-                                "decision_point": None,
-                                "stop_reason": "complete",
+                                "request_id": "perception-character-Ada-call-character-Ada-1-1",
+                                "actor_id": "character:Ada",
+                                "source_call_id": "call-character-Ada-1",
+                                "status": "answered",
+                                "channel": "auditory",
+                                "content": "You hear slow footsteps behind the shelf.",
                             }
                         ],
-                    },
-                )
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
 
-                with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, rf"perception_responses\[0\].{field}"):
-                    self.agent_outputs.build_story_input(self.run_dir)
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "legacy actor-facing protocol"):
+            self.agent_outputs.build_story_input(self.run_dir)
 
-                self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
+        self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
 
     def test_build_story_input_rejects_gm_actor_call_visibility_basis_hidden_markers(self):
         cases = (
@@ -2593,24 +2339,8 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "First answer."}
-                        ],
-                        "stop_reason": "continue",
-                    },
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Second answer."}
-                        ],
-                        "stop_reason": "continue",
-                    },
+                    _actor_reply("character:Ada", "First answer.", character_name="Ada"),
+                    _actor_reply("character:Ada", "Second answer.", character_name="Ada"),
                 ],
             },
         )
@@ -2623,18 +2353,18 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="First answer.",
-            target="player",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
         self.agent_interactions.append_event(
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Second answer.",
-            target="player",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
 
@@ -2716,24 +2446,8 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir / "artifacts" / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "First answer."}
-                        ],
-                        "stop_reason": "continue",
-                    },
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "player", "content": "Second answer."}
-                        ],
-                        "stop_reason": "continue",
-                    },
+                    _actor_reply("character:Ada", "First answer.", character_name="Ada"),
+                    _actor_reply("character:Ada", "Second answer.", character_name="Ada"),
                 ],
             },
         )
@@ -2746,18 +2460,18 @@ class AgentOutputsTest(unittest.TestCase):
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="First answer.",
-            target="player",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
         self.agent_interactions.append_event(
             self.run_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="Second answer.",
-            target="player",
+            target="gm",
             source_call_id="call-character-Ada-2",
         )
 
@@ -2773,6 +2487,7 @@ class AgentOutputsTest(unittest.TestCase):
                     {
                         "agent": "player",
                         "agent_id": "player",
+                        "natural_reply": "I remember the archive door.",
                         "events": [
                             {
                                 "type": "memory_delta",
@@ -2781,13 +2496,12 @@ class AgentOutputsTest(unittest.TestCase):
                                 "source": "gm_only",
                             }
                         ],
-                        "stop_reason": "continue",
                     }
                 ]
             },
         )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "source"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "allowed actor event type|source"):
             self.agent_outputs.build_story_input(self.run_dir)
 
     def test_build_story_input_rejects_actor_event_metadata_hidden_marker(self):
@@ -2798,21 +2512,21 @@ class AgentOutputsTest(unittest.TestCase):
                     {
                         "agent": "player",
                         "agent_id": "player",
+                        "natural_reply": "I remember the archive door.",
                         "events": [
                             {
-                                "type": "memory_delta",
-                                "target": "self",
+                                "type": "reply",
+                                "target": "gm",
                                 "content": "I remember the archive door.",
                                 "metadata": {"source": "gm_only"},
                             }
                         ],
-                        "stop_reason": "continue",
                     }
                 ]
             },
         )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "gm_only"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "metadata"):
             self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertFalse((self.run_dir / "artifacts" / "story.input.json").exists())
@@ -2832,7 +2546,7 @@ class AgentOutputsTest(unittest.TestCase):
             },
         )
 
-        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json\.player\[0\].*legacy"):
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, r"actor\.outputs\.json\.player\[0\].*dialogue"):
             self.agent_outputs.build_story_input(self.run_dir)
 
     def test_prepare_delivery_blocks_critic_block_decision(self):

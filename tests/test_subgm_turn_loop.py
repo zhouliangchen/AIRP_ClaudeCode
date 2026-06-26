@@ -78,26 +78,7 @@ def subgm_output(thread_id="side_suli_rooftop", **overrides):
 
 
 def character_output(actor_id="character:SuLi"):
-    return {
-        "agent": "character",
-        "agent_id": actor_id,
-        "character_name": actor_id.split(":", 1)[1],
-        "events": [
-            {
-                "type": "dialogue",
-                "target": "",
-                "content": "I found chalk dust by the vent.",
-                "metadata": {},
-            },
-            {
-                "type": "memory_delta",
-                "target": "",
-                "content": "I found a rooftop clue.",
-                "metadata": {},
-            },
-        ],
-        "stop_reason": "continue",
-    }
+    return "I found chalk dust by the vent."
 
 
 class SubgmTurnLoopTest(unittest.TestCase):
@@ -185,6 +166,36 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertNotIn("user_instruction_channel", actor_packet_text)
         self.assertNotIn("Secret hidden phrase", actor_packet_text)
         self.assertNotIn("rooftop sigil is a trap", actor_packet_text)
+
+    def test_run_side_thread_wraps_character_natural_language_reply(self):
+        reply = "我蹲下身，用指尖抹过粉尘：这里刚有人来过。"
+
+        def dispatch(agent_key, packet):
+            if agent_key == "subGM:side_suli_rooftop":
+                return subgm_output(
+                    actor_calls=[
+                        {
+                            "call_id": "call-character-SuLi-1",
+                            "actor_id": "character:SuLi",
+                            "prompt": "你注意到通风口旁有粉尘。",
+                            "reason": "SuLi is physically present in the side thread.",
+                        }
+                    ]
+                )
+            if agent_key == "character:SuLi":
+                return reply
+            raise AssertionError(agent_key)
+
+        self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
+
+        side = self.run_dir / "side_threads" / "side_suli_rooftop"
+        output = read_json(side / "actor.outputs.json")["character:SuLi"][0]
+        self.assertEqual(output["natural_reply"], reply)
+        self.assertEqual(output["events"], [{"type": "reply", "target": "gm", "content": reply, "metadata": {}}])
+        trace = read_json(side / "interaction.trace.json")
+        actor_events = [event for event in trace["events"] if event.get("actor") == "character:SuLi"]
+        self.assertEqual(actor_events[0]["type"], "reply")
+        self.assertEqual(actor_events[0]["content"], reply)
 
     def test_run_side_thread_reports_subgm_and_actor_progress(self):
         progress_calls = []

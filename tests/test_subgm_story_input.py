@@ -32,6 +32,23 @@ def _visibility_basis(actor_id):
     }
 
 
+def _actor_reply(agent_id, content, *, character_name=""):
+    payload = {
+        "agent": "character" if agent_id.startswith("character:") else "player",
+        "agent_id": agent_id,
+        "natural_reply": content,
+        "events": [{
+            "type": "reply",
+            "target": "gm",
+            "content": content,
+            "metadata": {},
+        }],
+    }
+    if agent_id.startswith("character:"):
+        payload["character_name"] = character_name or agent_id.split(":", 1)[1]
+    return payload
+
+
 class SubgmStoryInputTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -140,21 +157,7 @@ class SubgmStoryInputTest(unittest.TestCase):
             side_dir / "actor.outputs.json",
             {
                 "character:Ada": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Ada",
-                        "character_name": "Ada",
-                        "events": [
-                            {"type": "dialogue", "target": "", "content": "I found a signal."},
-                            {
-                                "type": "memory_delta",
-                                "target": "self",
-                                "content": "I found a green rooftop signal.",
-                            },
-                            {"type": "goal_update", "target": "self", "content": "Tell the player about the signal."},
-                        ],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Ada", "I found a signal.", character_name="Ada")
                 ],
             },
         )
@@ -167,26 +170,9 @@ class SubgmStoryInputTest(unittest.TestCase):
             side_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="I found a signal.",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            side_dir,
-            actor="character:Ada",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I found a green rooftop signal.",
-            target="self",
-            source_call_id="call-character-Ada-1",
-        )
-        self.agent_interactions.append_event(
-            side_dir,
-            actor="character:Ada",
-            visibility="actor_visible",
-            event_type="goal_update",
-            content="Tell the player about the signal.",
-            target="self",
+            target="gm",
             source_call_id="call-character-Ada-1",
         )
 
@@ -212,7 +198,7 @@ class SubgmStoryInputTest(unittest.TestCase):
         trace["events"] = [
             event
             for event in trace["events"]
-            if event.get("type") != "dialogue"
+            if event.get("type") != "reply"
         ]
         _write_json(self.side_dir / "interaction.trace.json", trace)
 
@@ -224,12 +210,7 @@ class SubgmStoryInputTest(unittest.TestCase):
             self.side_dir / "actor.outputs.json",
             {
                 "player": [
-                    {
-                        "agent": "player",
-                        "agent_id": "player",
-                        "events": [{"type": "action", "target": "", "content": "I should not be here."}],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("player", "I should not be here.")
                 ],
             },
         )
@@ -297,13 +278,7 @@ class SubgmStoryInputTest(unittest.TestCase):
             self.side_dir / "actor.outputs.json",
             {
                 "character:Bob": [
-                    {
-                        "agent": "character",
-                        "agent_id": "character:Bob",
-                        "character_name": "Bob",
-                        "events": [{"type": "dialogue", "target": "", "content": "I should not be in this side scene."}],
-                        "stop_reason": "continue",
-                    }
+                    _actor_reply("character:Bob", "I should not be in this side scene.", character_name="Bob")
                 ],
             },
         )
@@ -311,8 +286,9 @@ class SubgmStoryInputTest(unittest.TestCase):
             self.side_dir,
             actor="character:Bob",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="I should not be in this side scene.",
+            target="gm",
             source_call_id="call-character-Bob-1",
         )
 
@@ -324,21 +300,16 @@ class SubgmStoryInputTest(unittest.TestCase):
     def test_side_actor_extra_source_call_id_is_rejected_without_writing_story_input(self):
         actor_outputs = json.loads((self.side_dir / "actor.outputs.json").read_text(encoding="utf-8"))
         actor_outputs["character:Ada"].append(
-            {
-                "agent": "character",
-                "agent_id": "character:Ada",
-                "character_name": "Ada",
-                "events": [{"type": "dialogue", "target": "", "content": "I found another signal."}],
-                "stop_reason": "continue",
-            }
+            _actor_reply("character:Ada", "I found another signal.", character_name="Ada")
         )
         _write_json(self.side_dir / "actor.outputs.json", actor_outputs)
         self.agent_interactions.append_event(
             self.side_dir,
             actor="character:Ada",
             visibility="world_visible",
-            event_type="dialogue",
+            event_type="reply",
             content="I found another signal.",
+            target="gm",
             source_call_id="call-character-Ada-2",
         )
 
@@ -400,12 +371,12 @@ class SubgmStoryInputTest(unittest.TestCase):
             story_input["memory_deltas"]["world"],
         )
 
-    def test_side_actor_memory_delta_and_goal_update_merge_into_actor_memory(self):
+    def test_side_actor_reply_does_not_create_memory_delta_events(self):
         story_input = self.agent_outputs.build_story_input(self.run_dir)
 
         self.assertEqual(
-            [item["type"] for item in story_input["memory_deltas"]["actors"]["character:Ada"]],
-            ["memory_delta", "goal_update"],
+            story_input["memory_deltas"]["actors"]["character:Ada"],
+            [],
         )
 
 

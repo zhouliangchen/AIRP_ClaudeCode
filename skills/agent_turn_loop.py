@@ -37,7 +37,6 @@ def _write_progress_safe(stage, label, percent=None, detail=None):
 
 
 MAX_LOOP_STEPS = 8
-GENERATED_TRANSFERS_PER_STEP = 4
 STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 RESERVATION_ACTIVATING_SUBGM_ACTIONS = {"start", "resume", "merge"}
@@ -183,7 +182,6 @@ def _initial_world_state(input_payload: dict) -> dict:
     world_state.setdefault("recent_chat", input_payload.get("recent_chat", []))
     world_state.setdefault("gm_only_hidden_settings", input_payload.get("gm_only_hidden_settings", []))
     world_state.setdefault("visible_events", [])
-    world_state.setdefault("pending_perception_requests", [])
     if not isinstance(world_state.get("world_state_delta"), list):
         world_state["world_state_delta"] = []
     return world_state
@@ -202,6 +200,15 @@ def _validate_gm(payload: Any) -> dict:
 
 
 def _validate_actor(actor_id: str, payload: Any) -> dict:
+    if isinstance(payload, str):
+        try:
+            return agent_schemas.natural_actor_output(
+                actor_id,
+                payload,
+                actor_id.split(":", 1)[-1] if actor_id.startswith("character:") else "",
+            )
+        except agent_schemas.ValidationError as exc:
+            raise AgentTurnLoopError(f"invalid actor output for {actor_id}: {exc}") from exc
     try:
         output = agent_schemas.validate_actor_output(payload)
     except agent_schemas.ValidationError as exc:
@@ -274,73 +281,6 @@ def _contains_dynamic_hidden_phrase(text: str, hidden_phrases: Iterable[str]) ->
     return agent_visibility_guard.redact_text(original, hidden_phrases) != original
 
 
-def _dynamic_hidden_phrase_path(value: Any, hidden_phrases: Iterable[str], path: str) -> str:
-    if isinstance(value, dict):
-        for key in sorted(value):
-            child_path = f"{path}.{key}" if path else str(key)
-            found = _dynamic_hidden_phrase_path(value[key], hidden_phrases, child_path)
-            if found:
-                return found
-        return ""
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            found = _dynamic_hidden_phrase_path(item, hidden_phrases, f"{path}[{index}]")
-            if found:
-                return found
-        return ""
-    if value is None or isinstance(value, bool):
-        return ""
-    if _contains_dynamic_hidden_phrase(str(value), hidden_phrases):
-        return path
-    return ""
-
-
-def _custom_action_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]) -> str:
-    metadata = _dict(event.get("metadata"))
-    public_fields = [
-        ("metadata.visible_content", metadata.get("visible_content")),
-        ("content", _event_content(event)),
-        ("target", event.get("target")),
-    ]
-    for key in sorted(metadata):
-        if key == "visible_content":
-            continue
-        value = metadata[key]
-        if isinstance(value, bool):
-            continue
-        public_fields.append((f"metadata.{key}", value))
-    for path, value in public_fields:
-        if _contains_dynamic_hidden_phrase(str(value or ""), hidden_phrases):
-            return path
-    return ""
-
-
-def _perception_response_hidden_phrase_path(response: dict, hidden_phrases: Iterable[str]) -> str:
-    public_fields = {
-        "request_id": response.get("request_id"),
-        "actor_id": response.get("actor_id"),
-        "source_call_id": response.get("source_call_id"),
-        "channel": response.get("channel"),
-        "content": response.get("content"),
-        "visibility_basis": response.get("visibility_basis"),
-    }
-    return _dynamic_hidden_phrase_path(public_fields, hidden_phrases, "")
-
-
-def _dialogue_transfer_hidden_phrase_path(event: dict, hidden_phrases: Iterable[str]) -> str:
-    metadata = _dict(event.get("metadata"))
-    public_fields = {
-        "content": _event_content(event),
-        "target": event.get("target"),
-        "metadata": {
-            "exact_visible_words": metadata.get("exact_visible_words"),
-            "delivery_channel": metadata.get("delivery_channel"),
-            "visible_tone_or_action": metadata.get("visible_tone_or_action"),
-        },
-    }
-    return _dynamic_hidden_phrase_path(public_fields, hidden_phrases, "")
-
-
 def _safe_actor_call_id(actor_id: str, counts: dict[str, int]) -> str:
     counts[actor_id] = counts.get(actor_id, 0) + 1
     if actor_id == "player":
@@ -389,269 +329,16 @@ def _ascii_actor_slug(actor_id: str) -> str:
     return slug
 
 
-def _perception_request_id(actor_id: str, source_call_id: str, index: int) -> str:
-    safe_actor = _ascii_actor_slug(actor_id)
-    safe_source = re.sub(r"[^A-Za-z0-9_:-]+", "_", str(source_call_id or "")).strip("_")
-    if not safe_source:
-        safe_source = "call"
-    return f"perception-{safe_actor}-{safe_source}-{index}"
-
-
-def _dialogue_transfer_call(
-    actor_id: str,
-    target: str,
-    event: dict,
-    call_id: str,
-    generated_call_counts: dict[str, int],
-    used_call_ids: set[str],
-) -> dict:
-    transfer = _dialogue_transfer_metadata(actor_id, target, event, call_id)
-    prompt = (
-        f'{actor_id} says to you by {transfer["delivery_channel"]}: '
-        f'"{transfer["exact_visible_words"]}".'
-    )
-    if transfer.get("visible_tone_or_action"):
-        prompt = f"{prompt} Visible action: {transfer['visible_tone_or_action']}"
-    visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
-    return {
-        "call_id": _next_unique_actor_call_id(target, generated_call_counts, used_call_ids),
-        "actor_id": target,
-        "prompt": prompt,
-        "reason": "Visible dialogue transfer.",
-        "source_call_id": call_id,
-        "visibility_basis": visibility_basis,
-        "metadata": {"dialogue_transfer": transfer},
-    }
-
-
-def _perception_feedback_call(
-    response: dict,
-    generated_call_counts: dict[str, int],
-    used_call_ids: set[str],
-) -> dict:
-    actor_id = str(response.get("actor_id") or "")
-    channel = str(response.get("channel") or "general")
-    content = _event_content(response)
-    request_id = str(response.get("request_id") or "")
-    return {
-        "call_id": _next_unique_actor_call_id(actor_id, generated_call_counts, used_call_ids),
-        "actor_id": actor_id,
-        "prompt": f"GM answers your {channel} perception request: {content}",
-        "reason": "Visible sensory feedback continuation.",
-        "source_call_id": str(response.get("source_call_id") or ""),
-        "visibility_basis": agent_visibility.actor_call_basis(response),
-        "metadata": {
-            "perception_request_id": request_id,
-            "perception_channel": channel,
-        },
-    }
-
-
-def _dialogue_transfer_visibility_basis(actor_id: str, target: str) -> dict:
-    return {
-        "mode": "private_dialogue",
-        "summary": f"{target} receives direct dialogue from {actor_id}.",
-        "source_actor": actor_id,
-        "target_actor": target,
-        "visible_to": [actor_id, target],
-        "sensory_channels": ["auditory"],
-    }
-
-
-def _dialogue_transfer_metadata(actor_id: str, target: str, event: dict, source_call_id: str) -> dict:
-    metadata = _dict(event.get("metadata"))
-    exact_visible_words = str(metadata.get("exact_visible_words") or _event_content(event)).strip()
-    delivery_channel = str(metadata.get("delivery_channel") or "spoken").strip() or "spoken"
-    transfer = {
-        "speaker": actor_id,
-        "target": target,
-        "exact_visible_words": exact_visible_words,
-        "delivery_channel": delivery_channel,
-        "source_call_id": source_call_id,
-    }
-    visible_tone_or_action = str(metadata.get("visible_tone_or_action") or "").strip()
-    if visible_tone_or_action:
-        transfer["visible_tone_or_action"] = visible_tone_or_action
-    return transfer
-
-
-def _record_dialogue_transfer(
-    run_dir: Path,
-    actor_id: str,
-    target: str,
-    event: dict,
-    source_call_id: str,
-) -> None:
-    transfer = _dialogue_transfer_metadata(actor_id, target, event, source_call_id)
-    visibility_basis = _dialogue_transfer_visibility_basis(actor_id, target)
-    agent_interactions.append_event(
-        run_dir,
-        actor="gm",
-        visibility="world_visible",
-        event_type="dialogue_transfer",
-        content=transfer["exact_visible_words"],
-        target=target,
-        source_call_id=source_call_id,
-        visibility_metadata={
-            "source_actor": actor_id,
-            "target_actor": target,
-            "visible_to": [actor_id, target],
-            "sensory_channels": ["auditory"],
-            "visibility_basis": visibility_basis,
-        },
-        public_metadata=transfer,
-    )
-
-
-def _record_perception_continuation(
-    run_dir: Path,
-    actor_id: str,
-    event: dict,
-    source_call_id: str,
-    world_state: dict,
-) -> None:
-    pending_requests = world_state.setdefault("pending_perception_requests", [])
-    metadata = _dict(event.get("metadata"))
-    channel = str(metadata.get("channel") or event.get("target") or "general").strip()
-    if not channel:
-        channel = "general"
-    request = {
-        "request_id": _perception_request_id(actor_id, source_call_id, len(pending_requests) + 1),
-        "actor_id": actor_id,
-        "target": str(event.get("target") or ""),
-        "channel": channel,
-        "content": _event_content(event),
-        "source_call_id": source_call_id,
-    }
-    pending_requests.append(request)
-    agent_interactions.append_event(
-        run_dir,
-        actor="gm",
-        visibility="gm_visible",
-        event_type="perception_continuation",
-        content=f"GM should answer {actor_id}'s perception request: {request['content']}",
-        target=actor_id,
-        source_call_id=source_call_id,
-    )
-
-
 def _update_visible_events(run_dir: Path, world_state: dict) -> None:
     world_state["visible_events"] = agent_interactions.summarize_for_story_input(run_dir)["visible_events"]
 
 
 def _gm_packet(run_dir: Path, world_state: dict, step_index: int) -> dict:
-    pending_perception_requests = list(world_state.get("pending_perception_requests") or [])
-    packet_world_state = dict(world_state)
-    packet_world_state["pending_perception_requests"] = pending_perception_requests
     return {
         "step": step_index,
-        "world_state": packet_world_state,
+        "world_state": dict(world_state),
         "trace_summary": agent_interactions.summarize_for_story_input(run_dir),
-        "pending_perception_requests": pending_perception_requests,
     }
-
-
-def _resolve_perception_responses(
-    run_dir: Path,
-    gm_output: dict,
-    world_state: dict,
-    generated_call_counts: dict[str, int],
-    used_call_ids: set[str],
-    hidden_phrases: Iterable[str],
-) -> list[dict]:
-    pending = [
-        request
-        for request in world_state.get("pending_perception_requests") or []
-        if isinstance(request, dict)
-    ]
-    if not pending:
-        return []
-
-    responses = _list(gm_output.get("perception_responses"))
-    if not responses:
-        raise AgentTurnLoopError(
-            "pending perception requests must be answered or closed by the next GM output"
-        )
-
-    pending_by_id = {str(request.get("request_id") or ""): request for request in pending}
-    handled: set[str] = set()
-    feedback_calls: list[dict] = []
-
-    for response_index, response in enumerate(responses):
-        request_id = str(response.get("request_id") or "")
-        request = pending_by_id.get(request_id)
-        if request is None:
-            raise AgentTurnLoopError(f"unknown perception request response: {request_id}")
-        if request_id in handled:
-            raise AgentTurnLoopError(f"duplicate perception response for request: {request_id}")
-
-        actor_id = str(response.get("actor_id") or "")
-        expected_actor_id = str(request.get("actor_id") or "")
-        if actor_id != expected_actor_id:
-            raise AgentTurnLoopError(
-                f"perception response actor_id mismatch for {request_id}: "
-                f"expected {expected_actor_id}, got {actor_id}"
-            )
-
-        source_call_id = str(response.get("source_call_id") or "")
-        expected_source_call_id = str(request.get("source_call_id") or "")
-        if source_call_id != expected_source_call_id:
-            raise AgentTurnLoopError(
-                f"perception response source_call_id mismatch for {request_id}: "
-                f"expected {expected_source_call_id}, got {source_call_id}"
-            )
-
-        handled.add(request_id)
-        status = str(response.get("status") or "")
-        if status == "answered":
-            leak_path = _perception_response_hidden_phrase_path(response, hidden_phrases)
-            if leak_path:
-                raise AgentTurnLoopError(
-                    f"perception_responses[{response_index}].{leak_path} contains hidden source phrase"
-                )
-            agent_interactions.append_event(
-                run_dir,
-                actor="gm",
-                visibility="world_visible",
-                event_type="perception_feedback",
-                content=_event_content(response),
-                target=actor_id,
-                source_call_id=source_call_id,
-                visibility_metadata=agent_visibility.visibility_fields_from_event(response),
-            )
-            feedback_calls.append(
-                _perception_feedback_call(
-                    response,
-                    generated_call_counts,
-                    used_call_ids,
-                )
-            )
-        elif status == "closed":
-            agent_interactions.append_event(
-                run_dir,
-                actor="gm",
-                visibility="gm_visible",
-                event_type="perception_closed",
-                content=str(response.get("reason") or ""),
-                target=actor_id,
-                source_call_id=source_call_id,
-            )
-        else:
-            raise AgentTurnLoopError(f"invalid perception response status for {request_id}: {status}")
-
-    missing = [
-        str(request.get("request_id") or "")
-        for request in pending
-        if str(request.get("request_id") or "") not in handled
-    ]
-    if missing:
-        raise AgentTurnLoopError(
-            "pending perception requests were not answered or closed: "
-            + ", ".join(missing)
-        )
-
-    world_state["pending_perception_requests"] = []
-    return feedback_calls
 
 
 def _actor_packet(
@@ -778,82 +465,6 @@ def _record_actor_response_message(run_dir: Path, actor_id: str, call: dict, act
         raise _runtime_write_error("record actor_response message", exc) from exc
 
 
-def _text_items(value: Any) -> list[str]:
-    if isinstance(value, (str, bytes, dict)):
-        return []
-    if isinstance(value, list):
-        raw_items = value
-    else:
-        try:
-            raw_items = list(value)
-        except TypeError:
-            return []
-    return [text for text in (str(item or "").strip() for item in raw_items) if text]
-
-
-def _pending_group_id(group: Any, fallback: str) -> str:
-    if isinstance(group, dict):
-        return str(group.get("group_id") or "").strip() or fallback
-    return fallback
-
-
-def _pending_group_actor_ids(group: Any) -> list[str]:
-    if isinstance(group, dict):
-        return _text_items(group.get("actors") or group.get("actor_ids") or [])
-    return _text_items(group)
-
-
-def _pending_group_call_ids(group: Any) -> list[str]:
-    if not isinstance(group, dict):
-        return []
-    return _text_items(group.get("call_ids") or [])
-
-
-def _preserve_remaining_parallel_groups(
-    groups: list[Any],
-    remaining_calls: list[dict],
-    warnings: list[dict],
-) -> list[Any]:
-    warned_group_ids = {
-        str(warning.get("group_id") or "").strip()
-        for warning in warnings
-        if isinstance(warning, dict)
-    }
-    remaining_call_ids = {str(call.get("call_id") or "") for call in remaining_calls}
-    preserved: list[Any] = []
-
-    for index, group in enumerate(_list(groups), start=1):
-        group_id = _pending_group_id(group, f"group-1-{index}")
-        if group_id in warned_group_ids:
-            continue
-        call_ids = [
-            call_id
-            for call_id in _pending_group_call_ids(group)
-            if call_id in remaining_call_ids
-        ]
-        if len(set(call_ids)) >= 2:
-            preserved.append({"group_id": group_id, "call_ids": call_ids})
-            continue
-        actors = _pending_group_actor_ids(group)
-        if len(set(actors)) != len(actors):
-            continue
-        actor_call_ids = []
-        for actor_id in actors:
-            matches = [
-                str(call.get("call_id") or "")
-                for call in remaining_calls
-                if str(call.get("actor_id") or "") == actor_id
-            ]
-            matches = [call_id for call_id in matches if call_id]
-            if len(matches) != 1:
-                actor_call_ids = []
-                break
-            actor_call_ids.append(matches[0])
-        if len(set(actor_call_ids)) >= 2:
-            preserved.append({"group_id": group_id, "call_ids": actor_call_ids})
-    return preserved
-
-
 def _dispatch_actor_call(
     *,
     run_dir: Path,
@@ -884,7 +495,7 @@ def _dispatch_actor_call(
     _record_projected_actor_message(root, actor_id, call, packet, intent_id)
     _write_progress_safe(
         "gm_loop.actor_dispatch",
-        "角色行动中",
+        "actor dispatch",
         percent=48,
         detail={
             "actor": actor_id,
@@ -913,84 +524,9 @@ def _process_actor_output(
     actor_id: str,
     actor_output: dict,
     call_id: str,
-    registered_actor_targets: set[str],
-    seen_transfers: set[tuple[str, str, str, str]],
-    generated_transfer_limit: int,
-    generated_transfers_used: int,
-    generated_call_counts: dict[str, int],
-    used_actor_call_ids: set[str],
-    world_state: dict,
-    hidden_phrases: Iterable[str],
-) -> dict:
-    transfer_calls = []
-    actor_requested_decision = False
-    decision_reason = ""
-    stop_reason = ""
+) -> None:
     for event in actor_output.get("events", []):
-        event_type = str(event.get("type") or "")
-        target = str(event.get("target") or "")
-        content = _event_content(event)
-        if event_type == "custom_action":
-            leak_path = _custom_action_hidden_phrase_path(event, hidden_phrases)
-            if leak_path:
-                raise AgentTurnLoopError(f"custom_action {leak_path} contains hidden source phrase")
-        if (
-            event_type == "dialogue"
-            and target in registered_actor_targets
-            and target != actor_id
-        ):
-            leak_path = _dialogue_transfer_hidden_phrase_path(event, hidden_phrases)
-            if leak_path:
-                raise AgentTurnLoopError(f"dialogue_transfer {leak_path} contains hidden source phrase")
-
         _record_actor_event(run_dir, actor_id, event, call_id)
-
-        if (
-            event_type == "dialogue"
-            and target in registered_actor_targets
-            and target != actor_id
-        ):
-            transfer = _dialogue_transfer_metadata(actor_id, target, event, call_id)
-            _record_dialogue_transfer(run_dir, actor_id, target, event, call_id)
-            transfer_key = (
-                transfer["speaker"],
-                transfer["target"],
-                transfer["exact_visible_words"],
-                transfer["delivery_channel"],
-            )
-            if transfer_key not in seen_transfers:
-                seen_transfers.add(transfer_key)
-                if generated_transfers_used < generated_transfer_limit:
-                    generated_transfers_used += 1
-                    transfer_calls.append(
-                        _dialogue_transfer_call(
-                            actor_id,
-                            target,
-                            event,
-                            call_id,
-                            generated_call_counts,
-                            used_actor_call_ids,
-                        )
-                    )
-                else:
-                    stop_reason = "max_steps"
-        elif event_type == "perceive_request":
-            _record_perception_continuation(run_dir, actor_id, event, call_id, world_state)
-        elif event_type == "stop_for_player_decision":
-            actor_requested_decision = True
-        elif event_type == "custom_action":
-            metadata = _dict(event.get("metadata"))
-            if actor_id == "player" and str(metadata.get("risk_level") or "") in {"high", "critical"}:
-                actor_requested_decision = True
-                decision_reason = "Player-agent high-risk custom action requires a real player decision."
-
-    return {
-        "transfer_calls": transfer_calls,
-        "actor_requested_decision": actor_requested_decision,
-        "decision_reason": decision_reason,
-        "generated_transfers_used": generated_transfers_used,
-        "stop_reason": stop_reason,
-    }
 
 
 def _write_outputs(run_dir: Path, gm_outputs: list[dict], actor_outputs: dict[str, list[dict]]) -> None:
@@ -1100,15 +636,6 @@ def run_gm_only_step(
     _update_visible_events(root, world_state)
 
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
-    perception_feedback_calls = _resolve_perception_responses(
-        root,
-        gm_output,
-        world_state,
-        generated_call_counts,
-        used_actor_call_ids,
-        hidden_phrases,
-    )
-    _update_visible_events(root, world_state)
     all_gm_outputs = _append_gm_output(root, gm_output)
 
     gm_stop = str(gm_output.get("stop_reason") or "continue")
@@ -1128,7 +655,6 @@ def run_gm_only_step(
         )
 
     actor_calls = []
-    actor_calls.extend(perception_feedback_calls)
     actor_calls.extend([call for call in gm_output.get("actor_calls", []) or [] if isinstance(call, dict)])
     actor_work = []
     for call in actor_calls:
@@ -1426,7 +952,6 @@ def run_interactive_loop(
     _ensure_trace(root, input_payload)
 
     step_limit = max(1, int(max_steps or 0))
-    generated_transfer_limit = step_limit * GENERATED_TRANSFERS_PER_STEP
     world_state = _initial_world_state(input_payload)
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     registered_actor_targets = _registered_actor_targets(input_payload)
@@ -1435,10 +960,8 @@ def run_interactive_loop(
     called_actors: list[str] = []
     generated_call_counts: dict[str, int] = {}
     used_actor_call_ids: set[str] = set()
-    seen_transfers: set[tuple[str, str, str, str]] = set()
     stop_reason = "continue"
     decision_point: Any = None
-    generated_transfers_used = 0
     side_thread_results: list[dict] = []
 
     for step_index in range(step_limit):
@@ -1471,27 +994,15 @@ def run_interactive_loop(
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
         _update_visible_events(root, world_state)
-        perception_feedback_calls = _resolve_perception_responses(
-            root,
-            gm_output,
-            world_state,
-            generated_call_counts,
-            used_actor_call_ids,
-            hidden_phrases,
-        )
-        _update_visible_events(root, world_state)
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
         gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
         gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS else ""
-        actor_decision_pending = False
-        actor_decision_reason = ""
 
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
         pending_parallel_groups = gm_output.get("parallel_groups") or []
         batch_trace_index = 0
-        actor_queue: Deque[dict] = deque(perception_feedback_calls)
-        actor_queue.extend(gm_output.get("actor_calls") or [])
+        actor_queue: Deque[dict] = deque(gm_output.get("actor_calls") or [])
         while actor_queue:
             queued_calls: list[dict] = []
             while actor_queue:
@@ -1521,7 +1032,7 @@ def run_interactive_loop(
                 batch_trace_index += 1
                 _write_progress_safe(
                     "gm_loop.actor_batch",
-                    "角色行动批次中",
+                    "actor batch",
                     percent=48,
                     detail={
                         "run_id": root.name,
@@ -1572,9 +1083,6 @@ def run_interactive_loop(
                             warning,
                         ))
 
-                transfer_calls = []
-                actor_requested_decision = False
-                batch_actor_decision_reason = ""
                 for _call, _actor_id, _actor_output, warning in results:
                     if warning:
                         agent_lifecycle.record_stale_actor_context_warning(
@@ -1587,68 +1095,18 @@ def run_interactive_loop(
                     call_id = str(call.get("call_id") or "")
                     called_actors.append(actor_id)
                     actor_outputs.setdefault(actor_id, []).append(actor_output)
-                    processed = _process_actor_output(
+                    _process_actor_output(
                         run_dir=root,
                         actor_id=actor_id,
                         actor_output=actor_output,
                         call_id=call_id,
-                        registered_actor_targets=registered_actor_targets,
-                        seen_transfers=seen_transfers,
-                        generated_transfer_limit=generated_transfer_limit,
-                        generated_transfers_used=generated_transfers_used,
-                        generated_call_counts=generated_call_counts,
-                        used_actor_call_ids=used_actor_call_ids,
-                        world_state=world_state,
-                        hidden_phrases=hidden_phrases,
                     )
-                    generated_transfers_used = int(processed["generated_transfers_used"])
-                    transfer_calls.extend(processed["transfer_calls"])
-                    if processed["stop_reason"] in STOP_REASONS:
-                        stop_reason = str(processed["stop_reason"])
-                    actor_stop_reason = str(actor_output.get("stop_reason") or "")
-                    if actor_stop_reason == "stop_for_player_decision" or processed["actor_requested_decision"]:
-                        actor_requested_decision = True
-                    if processed.get("decision_reason"):
-                        batch_actor_decision_reason = str(processed.get("decision_reason") or "")
 
                 _update_visible_events(root, world_state)
-                if actor_requested_decision:
-                    actor_decision_pending = True
-                    if batch_actor_decision_reason and not actor_decision_reason:
-                        actor_decision_reason = batch_actor_decision_reason
                 if stop_reason in STOP_REASONS:
                     actor_queue.clear()
                     break
-                if transfer_calls and not actor_decision_pending:
-                    remaining_calls = [
-                        later_call
-                        for later_batch in batches[batch_index + 1:]
-                        for later_call in later_batch.get("calls", [])
-                        if isinstance(later_call, dict)
-                    ]
-                    actor_queue.extend(transfer_calls)
-                    actor_queue.extend(remaining_calls)
-                    pending_parallel_groups = _preserve_remaining_parallel_groups(
-                        active_parallel_groups,
-                        remaining_calls,
-                        routing_warnings,
-                    )
-                    break
 
-        if actor_decision_pending:
-            decision_point = _mark_decision(
-                root,
-                None,
-                actor_decision_reason or "Actor requested a real player decision.",
-            )
-            _write_progress_safe(
-                "gm_loop.waiting_player_decision",
-                "等待玩家决策",
-                percent=60,
-                detail={"reason": "actor_requested_decision"},
-            )
-            stop_reason = "player_decision"
-            break
         if stop_reason in STOP_REASONS:
             break
         if gm_has_decision:

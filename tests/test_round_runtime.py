@@ -47,7 +47,6 @@ def _fake_run_claude(agent_key, prompt, cwd):
             "actor_calls": [],
             "parallel_groups": [],
             "world_state_delta": [],
-            "perception_responses": [],
             "character_promotions": [],
             "subgm_commands": [],
             "decision_point": None,

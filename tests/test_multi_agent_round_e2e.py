@@ -37,6 +37,24 @@ def _visibility_basis(actor_id):
     }
 
 
+def _actor_reply(agent_id, content, *, character_name=""):
+    agent = "player" if agent_id == "player" else "character"
+    payload = {
+        "agent": agent,
+        "agent_id": agent_id,
+        "natural_reply": content,
+        "events": [{
+            "type": "reply",
+            "target": "gm",
+            "content": content,
+            "metadata": {},
+        }],
+    }
+    if agent == "character":
+        payload["character_name"] = character_name or agent_id.split(":", 1)[1]
+    return payload
+
+
 def _structured_memory_summary_payload(agent_id, *, character_name="", key_memory="", active_goal=""):
     if agent_id == "player":
         self_understanding = "I remember opening the archive door and hearing machinery."
@@ -80,20 +98,29 @@ def _structured_memory_summary_payload(agent_id, *, character_name="", key_memor
     return payload
 
 
-def _write_valid_postprocess_artifact(run_dir, *, round_id):
+def _write_valid_postprocess_artifact(run_dir, *, round_id, include_player_decision_option=False):
+    options = [
+        {
+            "label": "Pause at the archive threshold.",
+            "source": "postprocess",
+            "requires_confirmation": False,
+        }
+    ]
+    if include_player_decision_option:
+        options.append(
+            {
+                "label": "Confirm action: whether to enter the airlock",
+                "source": "player_agent_critical_action",
+                "requires_confirmation": True,
+            }
+        )
     _write_json(
         run_dir / "artifacts" / "postprocess.output.json",
         {
             "schema_version": 1,
             "core": {
                 "summary": f"Postprocess summary for {round_id}.",
-                "options": [
-                    {
-                        "label": "Pause at the archive threshold.",
-                        "source": "postprocess",
-                        "requires_confirmation": False,
-                    }
-                ],
+                "options": options,
                 "current_goal": "Decide whether to enter the archive.",
                 "state_patch": {
                     "quest": "Explore the archive threshold",
@@ -157,34 +184,13 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
 
         actor_outputs = {
             "player": [
-                {
-                    "agent": "player",
-                    "agent_id": "player",
-                    "events": [
-                        {"type": "action", "target": "", "content": "I keep one hand on the doorframe and look inside."},
-                        {"type": "memory_delta", "target": "self", "content": "I heard machinery behind the archive door."},
-                    ],
-                    "stop_reason": "continue",
-                }
+                _actor_reply("player", "I keep one hand on the doorframe and look inside.")
             ],
         }
         for name in scenario["characters"]:
             actor_id = f"character:{name}"
             actor_outputs[actor_id] = [
-                {
-                    "agent": "character",
-                    "agent_id": actor_id,
-                    "character_name": name,
-                    "events": [
-                        {"type": "dialogue", "target": "player", "content": scenario["dialogue"][name]},
-                        {
-                            "type": "memory_delta",
-                            "target": "self",
-                            "content": f"I saw the player hesitate at the archive door as {name}.",
-                        },
-                    ],
-                    "stop_reason": "continue",
-                }
+                _actor_reply(actor_id, scenario["dialogue"][name], character_name=name)
             ]
 
         for name in scenario["characters"]:
@@ -194,35 +200,18 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
                 run_dir,
                 actor=actor_id,
                 visibility="world_visible",
-                event_type="dialogue",
+                event_type="reply",
                 content=scenario["dialogue"][name],
-                target="player",
-                source_call_id=call_id,
-            )
-            self.agent_interactions.append_event(
-                run_dir,
-                actor=actor_id,
-                visibility="actor_visible",
-                event_type="memory_delta",
-                content=f"I saw the player hesitate at the archive door as {name}.",
-                target="self",
+                target="gm",
                 source_call_id=call_id,
             )
         self.agent_interactions.append_event(
             run_dir,
             actor="player",
             visibility="world_visible",
-            event_type="action",
+            event_type="reply",
             content="I keep one hand on the doorframe and look inside.",
-            source_call_id=_actor_call_id("player"),
-        )
-        self.agent_interactions.append_event(
-            run_dir,
-            actor="player",
-            visibility="actor_visible",
-            event_type="memory_delta",
-            content="I heard machinery behind the archive door.",
-            target="self",
+            target="gm",
             source_call_id=_actor_call_id("player"),
         )
         if include_private_note:
@@ -294,7 +283,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertNotIn("user_instruction_channel", story_input["player_inputs"]["routed_input"])
         self.assertNotIn("moon base", json.dumps(story_input["player_inputs"], ensure_ascii=False))
         self.assertNotIn("moon base", json.dumps(story_input["loop_outputs"]["actors"]["player"], ensure_ascii=False))
-        self.assertIn("I heard machinery behind the archive door.", story_input["memory_deltas"]["actors"]["player"][0]["content"])
+        self.assertEqual(story_input["memory_deltas"]["actors"]["player"], [])
         self.assertEqual(len(delivery["story_output"]["character_dialogues"]), 2)
         self.assertIn("the archive is a disguised moon base", (self.card / "memory" / "world_delta.md").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
@@ -403,7 +392,7 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             run_dir / "artifacts" / "critic.report.json",
             {"decision": "pass", "hard_failures": [], "soft_issues": [], "repair_instruction": "", "system_iteration_suggestion": ""},
         )
-        _write_valid_postprocess_artifact(run_dir, round_id="round-000006")
+        _write_valid_postprocess_artifact(run_dir, round_id="round-000006", include_player_decision_option=True)
         delivery = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
         for agent_id, path in manifest["expected_outputs"]["memory_summaries"].items():
@@ -442,12 +431,9 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         self.assertNotIn("moon base", json.dumps(story_input["player_inputs"], ensure_ascii=False))
         self.assertNotIn("moon base", json.dumps(story_input["loop_outputs"]["actors"]["player"], ensure_ascii=False))
         self.assertNotIn("moon base", json.dumps(story_input["loop_outputs"]["actors"]["character:Ada"], ensure_ascii=False))
-        self.assertEqual(
-            story_input["memory_deltas"]["actors"]["character:Ada"][0]["content"],
-            "I saw the player hesitate at the archive door as Ada.",
-        )
+        self.assertEqual(story_input["memory_deltas"]["actors"]["character:Ada"], [])
         self.assertEqual(story_input["interaction_trace"]["visible_events"][0]["content"], scenario["dialogue"]["Ada"])
-        self.assertEqual(story_input["interaction_trace"]["private_event_count"], 4)
+        self.assertEqual(story_input["interaction_trace"]["private_event_count"], 1)
         self.assertEqual(story_input["interaction_trace"]["decision_point"]["options"], ["enter", "wait"])
         self.assertEqual(repair_history[0]["attempt"], 1)
         self.assertEqual(repair_history[0]["decision"], "revise")

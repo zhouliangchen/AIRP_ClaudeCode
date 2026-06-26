@@ -20,24 +20,6 @@ SAFE_ID_PATTERNS = (
     re.compile(r"^group-[a-z0-9]+(?:-[a-z0-9]+)*$"),
     re.compile(r"^batch-[a-z0-9]+(?:-[a-z0-9]+)*$"),
 )
-DIALOGUE_TRANSFER_METADATA_KEYS = {
-    "speaker",
-    "target",
-    "exact_visible_words",
-    "delivery_channel",
-    "visible_tone_or_action",
-    "source_call_id",
-}
-CUSTOM_ACTION_METADATA_KEYS = {
-    "actor_id",
-    "category",
-    "visible_content",
-    "requires_gm_resolution",
-    "risk_level",
-    "target",
-}
-
-
 def _now() -> str:
     return datetime.now(CST).isoformat(timespec="seconds")
 
@@ -162,23 +144,6 @@ def _safe_public_options(value: Any) -> list[str]:
     return options
 
 
-def _safe_public_metadata(value: Any, allowed_keys: set[str]) -> Dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    metadata: Dict[str, Any] = {}
-    for key, child in value.items():
-        safe_key = str(key)
-        if safe_key not in allowed_keys:
-            continue
-        if isinstance(child, bool):
-            metadata[safe_key] = child
-            continue
-        safe_value = _safe_public_text(child)
-        if safe_value:
-            metadata[safe_key] = safe_value
-    return metadata
-
-
 def _actor_batches(trace: Dict[str, Any]) -> list[Dict[str, Any]]:
     batches = trace.get("actor_batches", [])
     if not isinstance(batches, list):
@@ -258,7 +223,6 @@ def append_event(
     source_call_id: str = "",
     causal_links: Iterable[str] | None = None,
     visibility_metadata: Dict[str, Any] | None = None,
-    public_metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     trace = _read(run_dir) or init_trace(run_dir)
     trace["schema_version"] = 2
@@ -286,20 +250,6 @@ def append_event(
     }
     metadata = agent_visibility.visibility_fields_from_event(visibility_metadata or {})
     event.update(metadata)
-    if event_type_text == "dialogue_transfer":
-        dialogue_transfer = _safe_public_metadata(
-            public_metadata or {},
-            DIALOGUE_TRANSFER_METADATA_KEYS,
-        )
-        if dialogue_transfer:
-            event["dialogue_transfer"] = dialogue_transfer
-    elif event_type_text == "custom_action":
-        custom_action = _safe_public_metadata(
-            public_metadata or {},
-            CUSTOM_ACTION_METADATA_KEYS,
-        )
-        if custom_action:
-            event["custom_action"] = custom_action
     events.append(event)
     trace["updated_at"] = _now()
     return _write(run_dir, trace)
@@ -465,20 +415,6 @@ def summarize_for_story_input(run_dir: str | Path) -> Dict[str, Any]:
         for field in agent_visibility.VISIBILITY_FIELDS:
             if field in visibility_metadata:
                 visible_item[field] = visibility_metadata[field]
-        if visible_item["type"] == "dialogue_transfer":
-            dialogue_transfer = _safe_public_metadata(
-                item.get("dialogue_transfer"),
-                DIALOGUE_TRANSFER_METADATA_KEYS,
-            )
-            if dialogue_transfer:
-                visible_item["dialogue_transfer"] = dialogue_transfer
-        elif visible_item["type"] == "custom_action":
-            custom_action = _safe_public_metadata(
-                item.get("custom_action"),
-                CUSTOM_ACTION_METADATA_KEYS,
-            )
-            if custom_action:
-                visible_item["custom_action"] = custom_action
         visible.append(visible_item)
     private_count = len([
         item for item in events

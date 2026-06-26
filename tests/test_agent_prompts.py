@@ -174,7 +174,8 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("avoid the sun", prompt)
         self.assertIn("Do not reveal objective truth to the target actor", prompt)
         self.assertIn("Do not tell the actor that a belief is false", prompt)
-        self.assertIn("Only `final_actor_message` can be delivered to the actor", prompt)
+        self.assertIn("Only the natural-language `final_actor_message` can be delivered to the actor", prompt)
+        self.assertIn("never deliver context packets", prompt)
         self.assertNotIn("false_belief", prompt)
 
     def test_projection_prompt_includes_existing_skill_body(self):
@@ -205,6 +206,57 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertIn("assets.generate_image -> assets-ui", prompt)
         self.assertIn("card.patch_data -> card-data", prompt)
         self.assertNotIn("Allowed `routing_requests[].type` values", prompt)
+
+    def test_actor_prompts_keep_role_guidance_immersive_and_first_person(self):
+        player_prompt = self.agent_prompts._player_prompt(
+            {
+                "actor_id": "player",
+                "immersive_context": "我是当前扮演的角色。\n我记得：雨声越来越近。",
+            }
+        )
+        character_prompt = self.agent_prompts._character_prompt(
+            {
+                "actor_id": "character:Ada",
+                "character_name": "Ada",
+                "immersive_context": "我是 Ada。\n我现在想要：守住门。",
+            }
+        )
+
+        for prompt in (player_prompt, character_prompt):
+            self.assertIn("我是", prompt)
+            self.assertIn("我只用自然语言回复", prompt)
+            self.assertIn("我的行动准则", prompt)
+            for forbidden in (
+                '"events"',
+                "custom_action",
+                "perceive_request",
+                "visible_content",
+                "stop_for_player_decision",
+                "Required Output Contract",
+                "JSON 输出契约",
+            ):
+                self.assertNotIn(forbidden, prompt)
+            self.assertNotIn("Skill reference", prompt)
+            self.assertNotIn(".claude/skills/", prompt)
+            self.assertNotIn("actor.outputs.json", prompt)
+            self.assertNotIn("Claude Code", prompt)
+            self.assertNotIn("file mailbox", prompt)
+            self.assertNotIn("runtime loop", prompt)
+            self.assertNotIn("GM resolution", prompt)
+            self.assertNotIn("prompts, files", prompt)
+
+    def test_character_prompt_uses_self_knowledge_display_name(self):
+        prompt = self.agent_prompts._character_prompt(
+            {
+                "actor_id": "character:Ada_Zero_",
+                "self_knowledge": {"name": "Ada/Zero?"},
+                "immersive_context": "我是 Ada/Zero?。\n我正在听门后的动静。",
+            }
+        )
+
+        self.assertIn("# 我的行动提示：Ada/Zero?", prompt)
+        self.assertIn("我是 Ada/Zero?。", prompt)
+        self.assertNotIn("character:Ada_Zero_", prompt)
 
 
 if __name__ == "__main__":

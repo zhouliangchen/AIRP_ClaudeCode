@@ -660,6 +660,124 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(job_payload["actor_outputs"], actor_outputs["character:Ada"])
         self.assertNotIn("user_instruction_channel", json.dumps(job_payload, ensure_ascii=False))
 
+    def test_schedule_post_round_memory_jobs_includes_only_round_dialogue_for_short_term(self):
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": self.run_dir.name,
+                "stage": "delivered",
+                "expected_outputs": {},
+            },
+        )
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": self.run_dir.name,
+                "loop_outputs": {
+                    "gm": {
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "actor_calls": [
+                                    {
+                                        "call_id": "call-ada-main",
+                                        "actor_id": "character:Ada",
+                                        "prompt": "你听见门外有人轻声叫你的名字。",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    "actors": {
+                        "character:Ada": [
+                            {
+                                "agent": "character",
+                                "agent_id": "character:Ada",
+                                "character_name": "Ada",
+                                "events": [
+                                    {
+                                        "type": "dialogue",
+                                        "content": "我把灯压低，轻声回应。",
+                                        "source_call_id": "call-ada-main",
+                                    }
+                                ],
+                                "stop_reason": "continue",
+                            }
+                        ]
+                    },
+                },
+                "side_threads": {
+                    "threads": [
+                        {
+                            "thread_id": "side-door",
+                            "subgm_output": {
+                                "agent": "subGM",
+                                "actor_calls": [
+                                    {
+                                        "call_id": "call-ada-side",
+                                        "actor_id": "character:Ada",
+                                        "prompt": "你看到侧门的影子动了一下。",
+                                    }
+                                ],
+                            },
+                            "actor_outputs": {
+                                "character:Ada": [
+                                    {
+                                        "agent": "character",
+                                        "agent_id": "character:Ada",
+                                        "character_name": "Ada",
+                                        "events": [
+                                            {
+                                                "type": "action",
+                                                "content": "我把手按在门闩上。",
+                                                "source_call_id": "call-ada-side",
+                                            }
+                                        ],
+                                        "stop_reason": "continue",
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                "memory_deltas": {"actors": {}, "world": []},
+                "interaction_trace": {
+                    "visible_events": [
+                        {
+                            "id": "public-rain",
+                            "type": "scene",
+                            "content": "雨点敲着走廊窗户。",
+                            "visible_to": ["all"],
+                        }
+                    ]
+                },
+            },
+        )
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        job_payload = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        round_dialogue = json.dumps(job_payload["round_dialogue"], ensure_ascii=False)
+        prompt_text = (
+            self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("你听见门外有人轻声叫你的名字。", round_dialogue)
+        self.assertIn("我把灯压低，轻声回应。", round_dialogue)
+        self.assertIn("你看到侧门的影子动了一下。", round_dialogue)
+        self.assertIn("我把手按在门闩上。", round_dialogue)
+        self.assertNotIn("雨点敲着走廊窗户", round_dialogue)
+        self.assertIn("现在我需要整理一下我的记忆", prompt_text)
+        self.assertIn("本轮我和对我说话者的对话", prompt_text)
+        self.assertIn("1. 对我说的话：你听见门外有人轻声叫你的名字。", prompt_text)
+        self.assertNotIn("Actor-Safe Job Input", prompt_text)
+        self.assertNotIn('"round_dialogue"', prompt_text)
+        self.assertNotIn('"visible_events"', prompt_text)
+
     def test_ingest_post_round_memory_jobs_marks_absent_jobs_not_required(self):
         result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
 
@@ -871,16 +989,16 @@ class AgentMemoryTest(unittest.TestCase):
                 "content": "Ada hears a click.",
             },
             {
-                "id": "dialogue-transfer-ada",
-                "type": "dialogue_transfer",
-                "speaker": "character:Ada",
+                "id": "dialogue-ada",
+                "type": "dialogue",
+                "actor": "character:Ada",
                 "target": "player",
                 "content": "Stay close.",
             },
             {
-                "id": "custom-action-ada",
-                "type": "custom_action",
-                "actor_id": "character:Ada",
+                "id": "action-ada",
+                "type": "action",
+                "actor": "character:Ada",
                 "target": "player",
                 "content": "Ada blocks the threshold.",
             },
@@ -934,8 +1052,8 @@ class AgentMemoryTest(unittest.TestCase):
                 "target-ada",
                 "visible-to-ada",
                 "metadata-visible-to-ada",
-                "dialogue-transfer-ada",
-                "custom-action-ada",
+                "dialogue-ada",
+                "action-ada",
                 "public-top-level-all",
                 "public-basis-all",
                 "public-metadata-all",
@@ -952,8 +1070,8 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(
             player_event_ids,
             [
-                "dialogue-transfer-ada",
-                "custom-action-ada",
+                "dialogue-ada",
+                "action-ada",
                 "public-top-level-all",
                 "public-basis-all",
                 "public-metadata-all",

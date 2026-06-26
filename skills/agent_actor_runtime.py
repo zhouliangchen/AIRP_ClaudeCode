@@ -278,23 +278,13 @@ def record_projected_actor_message(
     """Record an actor-facing projected message and complete its projection intent."""
 
     try:
-        projected_message = _require_message_result(
-            "append projected_message",
-            agent_messages.append_message(
-                run_dir,
-                {
-                    "from": "projection",
-                    "to": [actor_id],
-                    "type": "projected_message",
-                    "visibility": "actor_facing",
-                    "source_call_id": str(call.get("call_id") or ""),
-                    "payload": {
-                        "actor_id": actor_id,
-                        "packet": packet,
-                        "gm_prompt": str(call.get("prompt") or ""),
-                    },
-                },
-            ),
+        projected_message = _append_projected_message(
+            run_dir,
+            actor_id,
+            call,
+            packet,
+            str(call.get("call_id") or ""),
+            "",
         )
         _require_intent_result(
             "complete request_projection intent",
@@ -425,12 +415,18 @@ def read_projected_actor_packet(
             },
         )
 
-    packet = payload.get("packet")
-    if not isinstance(packet, dict):
+    natural_message = str(payload.get("natural_message") or "").strip()
+    if not natural_message:
         raise AgentActorDispatchError(
             "actor_dispatch_failed",
-            {"projected_message_id": projected_message_id, "error": "projected_packet_missing"},
+            {"projected_message_id": projected_message_id, "error": "projected_natural_message_missing"},
         )
+    packet = load_actor_context_packet(run_dir, actor_id)
+    if packet is None:
+        packet = {"actor_id": actor_id}
+    packet = copy.deepcopy(packet)
+    packet["actor_id"] = actor_id
+    packet["gm_prompt"] = natural_message
     packet_actor_id = str(packet.get("actor_id") or actor_id)
     if packet_actor_id != actor_id:
         raise AgentActorDispatchError(
@@ -442,13 +438,12 @@ def read_projected_actor_packet(
             },
         )
 
-    call = packet.get("call")
-    if not isinstance(call, dict):
-        call = {
-            "call_id": projected_source_call_id,
-            "actor_id": actor_id,
-            "prompt": str(payload.get("gm_prompt") or ""),
-        }
+    call = {
+        "call_id": projected_source_call_id,
+        "actor_id": actor_id,
+        "prompt": natural_message,
+    }
+    packet["call"] = dict(call)
     return {
         "message": message,
         "packet": packet,
@@ -497,23 +492,7 @@ def record_actor_event(run_dir: Path, actor_id: str, event: dict, source_call_id
     """Record one actor output event in the authoritative interaction trace."""
 
     event_type = str(event.get("type") or "")
-    if event_type in {"dialogue", "action", "custom_action"}:
-        visibility = "world_visible"
-    elif event_type == "perceive_request":
-        visibility = "gm_visible"
-    else:
-        visibility = "actor_visible"
-    public_metadata = None
-    if event_type == "custom_action":
-        metadata = _dict(event.get("metadata"))
-        public_metadata = {
-            "actor_id": actor_id,
-            "category": str(metadata.get("category") or ""),
-            "visible_content": str(metadata.get("visible_content") or ""),
-            "requires_gm_resolution": bool(metadata.get("requires_gm_resolution")),
-            "risk_level": str(metadata.get("risk_level") or ""),
-            "target": str(event.get("target") or ""),
-        }
+    visibility = "world_visible" if event_type == "reply" else "actor_visible"
     agent_interactions.append_event(
         run_dir,
         actor=actor_id,
@@ -522,7 +501,6 @@ def record_actor_event(run_dir: Path, actor_id: str, event: dict, source_call_id
         content=_event_content(event),
         target=str(event.get("target") or ""),
         source_call_id=source_call_id,
-        public_metadata=public_metadata,
     )
 
 
@@ -676,12 +654,10 @@ def _append_projected_message(
     final_actor_message = _projection_final_actor_message(call, projection_result)
     payload = {
         "actor_id": actor_id,
-        "source_message_id": source_message_id,
-        "packet": packet,
-        "gm_prompt": final_actor_message,
+        "natural_message": final_actor_message,
     }
-    if isinstance(projection_result, dict):
-        payload["projection"] = dict(projection_result)
+    if source_message_id:
+        payload["source_message_id"] = source_message_id
     result = agent_messages.append_message(
         run_dir,
         {

@@ -324,6 +324,9 @@ def _recover_story_payload_from_malformed_json(text: str, error: AgentExecutionE
 
 
 def _outer_prompt(agent_key: str, subagent_prompt: str, extra_context: Dict[str, Any] | None = None) -> str:
+    if _is_actor_agent_key(agent_key):
+        return f"{subagent_prompt}"
+
     extra = ""
     if extra_context:
         extra = "\n\n## Runtime Input\n\n```json\n" + json.dumps(extra_context, ensure_ascii=False, indent=2) + "\n```\n"
@@ -509,11 +512,15 @@ def _read_prompt(run_dir: Path, manifest: Dict[str, Any], key: str) -> str:
         raise AgentExecutionError(f"{prompt_path}: prompt is missing.") from exc
 
 
+def _is_actor_agent_key(agent_key: str) -> bool:
+    return agent_key == "player" or agent_key.startswith("character:")
+
+
 def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     wrapper = ""
     if agent_key == "gm":
         wrapper = "gm_output"
-    elif agent_key in {"player"} or agent_key.startswith("character:"):
+    elif _is_actor_agent_key(agent_key):
         wrapper = "actor_output"
     elif agent_key.startswith("subGM:"):
         wrapper = "subgm_output"
@@ -562,16 +569,28 @@ def _projection_validation_identity(validation_context: Dict[str, Any] | None) -
 
 def _validate(
     agent_key: str,
-    payload: Dict[str, Any],
+    payload: Any,
     validation_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    if _is_actor_agent_key(agent_key) and isinstance(payload, str):
+        context = validation_context if isinstance(validation_context, dict) else {}
+        packet = context.get("loop_packet")
+        packet = packet if isinstance(packet, dict) else {}
+        character_name = str(packet.get("character_name") or "").strip()
+        if not character_name and agent_key.startswith("character:"):
+            character_name = agent_key.split(":", 1)[1]
+        try:
+            return agent_schemas.natural_actor_output(agent_key, payload, character_name)
+        except agent_schemas.ValidationError as exc:
+            raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
+
     payload = _unwrap_payload(agent_key, payload)
     try:
         if agent_key == "gm":
             normalized = agent_schemas.validate_gm_output(payload)
             normalized["world_state_delta"] = _normalize_world_state_delta(normalized.get("world_state_delta", []))
             return normalized
-        if agent_key in {"player"} or agent_key.startswith("character:"):
+        if _is_actor_agent_key(agent_key):
             normalized = agent_schemas.validate_actor_output(payload)
             if agent_key == "player" and normalized.get("agent_id") != "player":
                 raise AgentExecutionError(f"{agent_key} returned wrong agent_id: {normalized.get('agent_id')!r}")
@@ -646,6 +665,8 @@ def _dispatch_agent_payload(
             try:
                 payload = _extract_json_object(text)
             except AgentExecutionError as exc:
+                if _is_actor_agent_key(agent_key):
+                    return _validate(agent_key, text, extra_context)
                 if agent_key != "story":
                     raise
                 payload = _recover_story_payload_from_malformed_json(text, exc)
@@ -857,7 +878,6 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
             continue
         name = actor_key.split(":", 1)[1]
         line = ""
-        aside = ""
         for output in outputs:
             if not isinstance(output, dict):
                 continue
@@ -874,19 +894,13 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
                 content = str(event.get("content") or "").strip()
                 if not content:
                     continue
-                if event_type == "dialogue" and not line:
+                if event_type == "reply" and not line:
                     line = content
-                elif event_type == "perceive_request" and not aside:
-                    aside = content[:500]
-                if line and aside:
-                    break
             if line:
                 break
         if not line:
             continue
         entry = {"name": str(name), "source": "subagent", "line": line[:1000]}
-        if aside:
-            entry["aside"] = aside
         dialogues.append(entry)
         if len(dialogues) >= 6:
             break
