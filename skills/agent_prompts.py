@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-import agent_memory
+import actor_memory_store
+import actor_context_renderer
 import agent_run
 import runtime_settings
 
@@ -17,15 +18,13 @@ SKILL_PATHS = {
     "input_analyst": ".claude/skills/rp-input-analyst.md",
     "gm": ".claude/skills/rp-gm-agent.md",
     "subgm": ".claude/skills/rp-subgm-agent.md",
-    "player": ".claude/skills/rp-player-agent.md",
-    "character": ".claude/skills/rp-character-agent.md",
     "projection": ".claude/skills/rp-projection-agent.md",
     "story": ".claude/skills/rp-story-agent.md",
     "critic": ".claude/skills/rp-critic-agent.md",
     "postprocess": ".claude/skills/rp-postprocess-agent.md",
 }
 
-AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "player", "character", "subgm"}
+AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "subgm"}
 
 _GM_PROMPT_TOP_LEVEL_DUPLICATE_KEYS = {"components"}
 _GM_PROMPT_WORLD_DUPLICATE_KEYS = {
@@ -74,6 +73,43 @@ def _json_block(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+def _section_text(lines: list[str], fallback: str = "暂无。") -> str:
+    cleaned = [line for line in (str(item).strip() for item in lines) if line]
+    return "\n".join(cleaned) if cleaned else fallback
+
+
+def _actor_id_for_memory(context: Dict[str, Any], actor_name: str) -> str:
+    actor_id = str(context.get("actor_id") or "").strip()
+    if actor_id:
+        return actor_id
+    name = str(actor_name or "").strip()
+    return f"character:{name}" if name else "player"
+
+
+def _file_backed_actor_context(
+    context: Dict[str, Any],
+    actor_name: str,
+) -> dict[str, Any] | None:
+    card_folder = str(context.get("card_folder") or "").strip()
+    if not card_folder:
+        return None
+    actor_id = _actor_id_for_memory(context, actor_name)
+    stored = actor_memory_store.read_actor_memory(card_folder, actor_id)
+    memory = actor_context_renderer.project_actor_memory(
+        {
+            "long_term": [stored.get("long_term")],
+            "key_memories": stored.get("key_memories"),
+            "short_term": [stored.get("short_term")],
+            "goals": [],
+        }
+    )
+    return {
+        "display_name": str(stored.get("name") or "").strip(),
+        "profile_text": str(stored.get("profile") or "").strip(),
+        "memory": memory,
+    }
+
+
 def _strip_embedded_output_schema(text: str) -> str:
     marker = ""
     start = -1
@@ -98,23 +134,12 @@ def _strip_embedded_output_schema(text: str) -> str:
     )
 
 
-def _strip_frontmatter(text: str) -> str:
-    if not text.startswith("---"):
-        return text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return text
-    return text[end + len("\n---"):].lstrip()
-
-
 def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
     relative = SKILL_PATHS[skill_key]
     path = REPO_ROOT / relative
     if not path.exists():
         return f"(missing skill file: {relative})"
     text = path.read_text(encoding="utf-8")
-    if skill_key in {"player", "character"}:
-        text = _strip_frontmatter(text)
     if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
         text = _strip_embedded_output_schema(text)
     return text[:limit]
@@ -168,6 +193,13 @@ def _compact_gm_prompt_context(context: Any) -> Any:
 
 def _write_prompt(path: Path, body: str) -> None:
     agent_run.write_text(path, body.strip() + "\n")
+
+
+def _actor_prompt_context(context: Dict[str, Any], card_folder: str | Path | None) -> Dict[str, Any]:
+    result = dict(context) if isinstance(context, dict) else {}
+    if card_folder is not None:
+        result["card_folder"] = str(card_folder)
+    return result
 
 
 def _runtime_payload(context: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -264,52 +296,59 @@ Do not write final prose unless this is the story agent.
 
 def _actor_base_prompt(
     title: str,
-    skill_key: str,
     context: Dict[str, Any],
     actor_name: str = "",
 ) -> str:
     context = context if isinstance(context, dict) else {}
     gm_prompt = str(context.get("gm_prompt") or "").strip()
-    immersive_context = str(context.get("immersive_context") or "").strip()
-    role_anchor = str(context.get("role_channel_anchor") or "").strip()
-    context_parts = []
-    if gm_prompt:
-        context_parts.append("刚刚对我说的话：\n" + gm_prompt)
-    if immersive_context:
-        context_parts.append("我能感知到的内容：\n" + immersive_context)
-    if role_anchor:
-        context_parts.append("我此刻延续的第一人称意图：\n" + role_anchor)
-    natural_context = "\n\n".join(context_parts).strip() or "我暂时没有额外可感知内容，只能依据刚刚对我说的话回应。"
-    name_line = f"我是 {actor_name}。" if actor_name else ""
+    file_context = _file_backed_actor_context(context, actor_name)
+    display_name = (
+        file_context.get("display_name", "") if file_context else actor_name.strip()
+    ) if isinstance(actor_name, str) else ""
+    name_line = f"我是 {display_name}。" if display_name else "我是当前正在行动的这个人。"
+    memory = file_context["memory"] if file_context else {
+        "long_term": [],
+        "key_memories": [],
+        "short_term": [],
+    }
+    basic_context = (
+        str(file_context.get("profile_text") or "").strip()
+        if file_context
+        else ""
+    )
+    if not basic_context:
+        basic_context = "暂无额外基本设定。"
+    long_term_memory = _section_text(memory["long_term"], "暂无长期记忆。")
+    key_memory_cues = _section_text(memory["key_memories"], "暂无需要主动回忆的重点记忆。")
+    short_term_memory = _section_text(memory["short_term"], "暂无短期记忆。")
+    current_context = gm_prompt or "暂时没有新的外部话语。"
     return f"""
 # {title}
 
-{name_line}#身份声明
+{name_line}
 
-#基本设定注入点
+{basic_context}
 
 我记得：
-#长期记忆注入点
+{long_term_memory}
 
 有些事情很重要，虽然现在只有个大概的印象，在下面列出；不过我清晰地记在了记忆的深层。如果现在需要回忆起来，需要输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。
-#重点记忆注入点（包括手动读取后完整的重点记忆）
+{key_memory_cues}
 
 最近的事情：
-#短期记忆注入点
+{short_term_memory}
 
 现在：
-#GM当前消息注入点
+{current_context}
 
-现在，如果没有其他重点记忆需要回忆，那就好好想想接下来干怎么办吧。
+
+现在，如果没有其他重点记忆需要回忆，那就好好想想接下来怎么办吧。
 我不用“配合剧情”，我不相信世界有剧本。越自然越好，也许现实会奖励真实活着的每一个人。
-我只是{actor_name}，不是别人，我不用扮演任何人。我只能写自己想了什么，做了什么，说了什么，但不能操作其他人，也不能妄想环境按我的意愿回应。比如，当我尝试获得更多感官信息时，也只需要输出：“我想看向...”，你就能看清那个方向的东西。
+我只是 {display_name or "我自己"}，不是别人；我不用扮演任何人。
+我只能使用自然语言写自己想了什么、做了什么、说了什么，不能操作其他人，也不能替环境按我的意愿作出结果。
+当我尝试获得更多感官信息时，比如当我想看向某个方向，只需要输出：“我想看向...”，我就能看到那个方向有什么。
 
 
-{natural_context}
-
-```markdown
-{_skill_excerpt(skill_key)}
-```
 """
 
 
@@ -471,16 +510,20 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
 
 
 def _player_prompt(context: Dict[str, Any]) -> str:
-    return _actor_base_prompt("我是", "player", context)
+    return _actor_base_prompt("我是", context)
 
 
 def _character_prompt(context: Dict[str, Any]) -> str:
-    self_knowledge = context.get("self_knowledge", {}) if isinstance(context, dict) else {}
-    if not isinstance(self_knowledge, dict):
-        self_knowledge = {}
-    character_name = str(context.get("character_name") or self_knowledge.get("name", "")).strip()
+    context = context if isinstance(context, dict) else {}
+    character_name = str(context.get("character_name") or "").strip()
+    if isinstance(context, dict) and str(context.get("card_folder") or "").strip():
+        stored = actor_memory_store.read_actor_memory(
+            str(context.get("card_folder") or "").strip(),
+            _actor_id_for_memory(context, character_name),
+        )
+        character_name = str(stored.get("name") or "").strip()
     title = f"我的行动提示：{character_name}" if character_name else "我的行动提示"
-    return _actor_base_prompt(title, "character", context, actor_name=character_name)
+    return _actor_base_prompt(title, context, actor_name=character_name)
 
 
 def character_prompt_text(context: Dict[str, Any]) -> str:
@@ -754,11 +797,11 @@ def write_round_prompts(
 
     _write_prompt(input_analyst_prompt, _input_analyst_prompt(input_request))
     _write_prompt(gm_prompt, _gm_prompt(_compact_gm_prompt_context(gm_packet)))
-    _write_prompt(player_prompt, _player_prompt(player_packet))
+    _write_prompt(player_prompt, _player_prompt(_actor_prompt_context(player_packet, card_folder)))
 
     for safe_name, packet in character_packets.items():
         prompt_path = characters_prompt_root / f"{safe_name}.prompt.md"
-        _write_prompt(prompt_path, _character_prompt(packet))
+        _write_prompt(prompt_path, _character_prompt(_actor_prompt_context(packet, card_folder)))
         character_prompts[safe_name] = _rel(prompt_path, root)
 
     story_summary = {

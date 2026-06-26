@@ -70,8 +70,6 @@ class TurnStateTest(unittest.TestCase):
             "rp-input-router.md",
             "rp-context-projector.md",
             "rp-gm-agent.md",
-            "rp-player-agent.md",
-            "rp-character-agent.md",
             "rp-story-agent.md",
             "rp-critic-agent.md",
             "rp-delivery.md",
@@ -169,8 +167,7 @@ class TurnStateTest(unittest.TestCase):
         router = (skills_dir / "rp-input-router.md").read_text(encoding="utf-8")
         projector = (skills_dir / "rp-context-projector.md").read_text(encoding="utf-8")
         gm = (skills_dir / "rp-gm-agent.md").read_text(encoding="utf-8")
-        player = (skills_dir / "rp-player-agent.md").read_text(encoding="utf-8")
-        character = (skills_dir / "rp-character-agent.md").read_text(encoding="utf-8")
+        actor_prompt_source = (ROOT / "skills" / "agent_prompts.py").read_text(encoding="utf-8")
         story = (skills_dir / "rp-story-agent.md").read_text(encoding="utf-8")
         critic = (skills_dir / "rp-critic-agent.md").read_text(encoding="utf-8")
         delivery = (skills_dir / "rp-delivery.md").read_text(encoding="utf-8")
@@ -202,15 +199,19 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("完整剧情", gm)
         self.assertIn("gm.output.json", gm)
 
-        self.assertIn("我不把不可感知的设定、幕后原因或外部指令当成自己知道的事", player)
-        self.assertIn("我直接用自然语言", player)
-        self.assertIn("不写 JSON", player)
-        self.assertNotIn("player.output.json", player)
+        self.assertIn("def _actor_base_prompt", actor_prompt_source)
+        self.assertIn("我不把不可感知的设定、幕后原因或外部指令当成自己知道的事", actor_prompt_source)
+        self.assertIn("我直接用自然语言", actor_prompt_source)
+        self.assertIn("我不写 JSON", actor_prompt_source)
+        self.assertNotIn("player.output.json", actor_prompt_source)
 
-        self.assertIn("真正活在当前处境", character)
-        self.assertIn("我像自己一样反应", character)
-        self.assertIn("感官", character)
-        self.assertIn("不写字段名", character)
+        self.assertIn("_file_backed_actor_context", actor_prompt_source)
+        self.assertIn("actor_memory_store.read_actor_memory", actor_prompt_source)
+        self.assertIn("profile_text", actor_prompt_source)
+        self.assertNotIn("_actor_basic_lines", actor_prompt_source)
+        self.assertNotIn("_projected_memory", actor_prompt_source)
+        self.assertIn("我只写自己的想法、动作、台词和感受", actor_prompt_source)
+        self.assertIn("不写字段名", actor_prompt_source)
 
         self.assertIn("尽可能保留各 subagent", story)
         self.assertIn("<character_dialogues>", story)

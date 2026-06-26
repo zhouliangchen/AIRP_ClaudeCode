@@ -53,7 +53,7 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 
 - Claude Code 直驱原则不变：本项目不改造成普通后端直接调用 LLM API，仍由当前 Claude Code 会话负责工具调用、文件邮箱、subagent 调度和最终质检。
 - `CLAUDE.md` 只保留项目宪法、数据权威、运行入口和交付协议；各阶段 skill 按需导入，避免巨大 prompt 常驻污染上下文。
-- 阶段 skill 名称：`rp-orchestrator`, `rp-input-router`, `rp-context-projector`, `rp-gm-agent`, `rp-player-agent`, `rp-character-agent`, `rp-story-agent`, `rp-critic-agent`, `rp-postprocess-agent`, `rp-delivery`, `rp-assets-ui`。
+- 阶段 skill 名称：`rp-orchestrator`, `rp-input-router`, `rp-context-projector`, `rp-gm-agent`, `rp-story-agent`, `rp-critic-agent`, `rp-postprocess-agent`, `rp-delivery`, `rp-assets-ui`。player/character 不再注入独立 `.claude` skill；两者的角色侧行动提示由 `skills/agent_prompts.py` 的统一 actor 模板生成。
 - 叙事创作和角色扮演任务必须交给 subagent：GM 负责完整世界模拟，player 负责玩家角色第一人称具身，character agents 负责核心角色独立具身，story 负责整理成小说文本，critic 负责严格审稿。
 - 主 agent 只负责编排、脚本运行、代码/系统迭代、artifact 收集、重试循环和最终交付；不得直接撰写常规叙事正文，除非 subagent 不可用并明确标记为 fallback。
 - Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。

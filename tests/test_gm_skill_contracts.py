@@ -1,7 +1,23 @@
+import importlib.util
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_agent_prompts():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location(
+        "agent_prompts",
+        ROOT / "skills" / "agent_prompts.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class GmSkillContractsTest(unittest.TestCase):
@@ -45,10 +61,11 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("Allowed promotion sources: preprocess, gm", text)
         self.assertIn("subGM agents must not create or promote important characters", text)
 
-    def test_actor_skills_forbid_profile_edits(self):
+    def test_actor_prompts_forbid_profile_edits(self):
+        agent_prompts = _load_agent_prompts()
         combined = "\n".join([
-            self.read(".claude/skills/rp-player-agent.md"),
-            self.read(".claude/skills/rp-character-agent.md"),
+            agent_prompts._player_prompt({"immersive_context": "我是当前角色。"}),
+            agent_prompts._character_prompt({"character_name": "Ada", "immersive_context": "我是 Ada。"}),
         ])
         self.assertIn("我可以自然地说出自己想记住的事或当前目标", combined)
         self.assertIn("不修改人设、背景、人格、身体事实或权威设定", combined)
@@ -96,10 +113,11 @@ class GmSkillContractsTest(unittest.TestCase):
             "story skill must name important/core character reply constraints",
         )
 
-    def test_actor_skills_require_natural_language_reply(self):
+    def test_actor_prompts_require_natural_language_reply(self):
+        agent_prompts = _load_agent_prompts()
         combined = "\n".join([
-            self.read(".claude/skills/rp-player-agent.md"),
-            self.read(".claude/skills/rp-character-agent.md"),
+            agent_prompts._player_prompt({"immersive_context": "我是当前角色。"}),
+            agent_prompts._character_prompt({"character_name": "Ada", "immersive_context": "我是 Ada。"}),
         ])
         self.assertIn("我直接用自然语言", combined)
         self.assertIn("不写 JSON", combined)
@@ -152,15 +170,35 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("actor context rendering", readme)
         self.assertIn("projection/rendering", projector)
 
-    def test_actor_skills_do_not_receive_misconceptions_label(self):
-        combined = "\n".join([
-            self.read(".claude/skills/rp-player-agent.md"),
-            self.read(".claude/skills/rp-character-agent.md"),
-        ])
+    def test_actor_prompts_do_not_receive_misconceptions_label(self):
+        agent_prompts = _load_agent_prompts()
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            for actor_name, profile in (
+                ("_self", "我只能相信自己感知到的事。\n"),
+                ("Ada", "我有自己的记忆、信念和感官。\n"),
+            ):
+                actor_dir = card / "characters" / actor_name
+                actor_dir.mkdir(parents=True)
+                (actor_dir / "profile.md").write_text(profile, encoding="utf-8")
+                (actor_dir / "long_term_memories.md").write_text("", encoding="utf-8")
+                (actor_dir / "key_memories.json").write_text('{"memories":[]}', encoding="utf-8")
+                (actor_dir / "short_term_memories.md").write_text("", encoding="utf-8")
+            combined = "\n".join([
+                agent_prompts._player_prompt({"card_folder": str(card), "actor_id": "player"}),
+                agent_prompts._character_prompt(
+                    {
+                        "card_folder": str(card),
+                        "actor_id": "character:Ada",
+                        "character_name": "Ada",
+                    }
+                ),
+            ])
 
         self.assertNotIn("misconceptions", combined)
-        self.assertIn("沉浸上下文", combined)
-        self.assertIn("我自己的记忆、信念", combined)
+        self.assertIn("我只能相信自己感知到的事。", combined)
+        self.assertIn("我有自己的记忆、信念和感官。", combined)
+        self.assertIn("我不把不可感知的设定", combined)
 
     def test_delivery_skill_documents_post_round_memory_jobs(self):
         text = self.read(".claude/skills/rp-delivery.md")

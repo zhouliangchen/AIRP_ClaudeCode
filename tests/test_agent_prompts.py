@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,27 @@ def load_module(name):
 class AgentPromptsTest(unittest.TestCase):
     def setUp(self):
         self.agent_prompts = load_module("agent_prompts")
+
+    def _write_actor_files(
+        self,
+        card: Path,
+        actor_name: str,
+        *,
+        profile: str,
+        long_term: str = "",
+        key_memories: list[dict] | None = None,
+        short_term: str = "",
+    ) -> None:
+        actor_name = "_self" if actor_name == "player" else actor_name
+        actor_dir = card / "characters" / actor_name
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "profile.md").write_text(profile, encoding="utf-8")
+        (actor_dir / "long_term_memories.md").write_text(long_term, encoding="utf-8")
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps({"memories": key_memories or []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (actor_dir / "short_term_memories.md").write_text(short_term, encoding="utf-8")
 
     def test_subgm_prompt_references_skill_and_forbids_gm_authority(self):
         prompt = self.agent_prompts.subgm_prompt_text({"thread_id": "side_a"})
@@ -208,19 +230,16 @@ class AgentPromptsTest(unittest.TestCase):
         self.assertNotIn("Allowed `routing_requests[].type` values", prompt)
 
     def test_actor_prompts_keep_role_guidance_immersive_and_first_person(self):
-        player_prompt = self.agent_prompts._player_prompt(
-            {
-                "actor_id": "player",
-                "immersive_context": "我是当前扮演的角色。\n我记得：雨声越来越近。",
-            }
-        )
-        character_prompt = self.agent_prompts._character_prompt(
-            {
-                "actor_id": "character:Ada",
-                "character_name": "Ada",
-                "immersive_context": "我是 Ada。\n我现在想要：守住门。",
-            }
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            self._write_actor_files(card, "player", profile="我是当前扮演的角色。\n")
+            self._write_actor_files(card, "Ada", profile="我是 Ada。\n")
+            player_prompt = self.agent_prompts._player_prompt(
+                {"card_folder": str(card), "actor_id": "player"}
+            )
+            character_prompt = self.agent_prompts._character_prompt(
+                {"card_folder": str(card), "actor_id": "character:Ada", "character_name": "Ada"}
+            )
 
         for prompt in (player_prompt, character_prompt):
             self.assertIn("我是", prompt)
@@ -248,17 +267,210 @@ class AgentPromptsTest(unittest.TestCase):
             self.assertNotIn("GM resolution", prompt)
             self.assertNotIn("prompts, files", prompt)
 
-    def test_character_prompt_uses_self_knowledge_display_name(self):
-        prompt = self.agent_prompts._character_prompt(
-            {
-                "actor_id": "character:Ada_Zero_",
-                "self_knowledge": {"name": "Ada/Zero?"},
-                "immersive_context": "我是 Ada/Zero?。\n我正在听门后的动静。",
-            }
-        )
+    def test_actor_prompts_are_generated_from_unified_template_not_skill_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            self._write_actor_files(card, "player", profile="我是当前扮演的角色。\n")
+            self._write_actor_files(card, "Ada", profile="我是 Ada。\n")
+            player_prompt = self.agent_prompts._player_prompt(
+                {
+                    "card_folder": str(card),
+                    "actor_id": "player",
+                    "gm_prompt": "你听见走廊外有人停下脚步。",
+                }
+            )
+            character_prompt = self.agent_prompts._character_prompt(
+                {
+                    "card_folder": str(card),
+                    "actor_id": "character:Ada",
+                    "character_name": "Ada",
+                    "gm_prompt": "你看见门缝里透出微光。",
+                }
+            )
 
-        self.assertIn("# 我的行动提示：Ada/Zero?", prompt)
-        self.assertIn("我是 Ada/Zero?。", prompt)
+        for prompt in (player_prompt, character_prompt):
+            self.assertIn("我直接用自然语言对刚刚与我说话的人回应。", prompt)
+            self.assertIn("我想回忆：xxx", prompt)
+            self.assertIn("现在：", prompt)
+            self.assertTrue(
+                "你听见走廊外有人停下脚步。" in prompt
+                or "你看见门缝里透出微光。" in prompt,
+                prompt,
+            )
+            self.assertNotIn("```markdown", prompt)
+            self.assertNotIn("刚刚对我说的话：", prompt)
+            self.assertNotIn("我能感知到的内容：", prompt)
+            self.assertNotIn("我此刻延续的第一人称意图：", prompt)
+            self.assertNotIn("我延续角色通道输入中已经发生或正在发生的第一人称意图", prompt)
+            self.assertNotIn("我是一个独立的重要角色，真正活在当前处境里", prompt)
+
+    def test_actor_prompt_injects_actor_context_sections_without_placeholder_comments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            self._write_actor_files(
+                card,
+                "Ada",
+                profile="我是Ada，是档案室的见证者。\n我说话谨慎，会先确认门外动静。\n",
+                long_term="我长期记得雨夜档案室的钥匙声。\n",
+                key_memories=[
+                    {
+                        "tag": "雨夜档案",
+                        "summary": "我记得档案室门后有潮湿纸味。",
+                        "detail": "完整细节只应在主动回忆后注入。",
+                    }
+                ],
+                short_term="刚才我听见门后有两下敲门声。\n",
+            )
+            prompt = self.agent_prompts._character_prompt(
+                {
+                    "card_folder": str(card),
+                    "actor_id": "character:Ada",
+                    "character_name": "Ada",
+                    "gm_prompt": "你听见门外有人压低声音说：Ada，开门。",
+                }
+            )
+
+        for placeholder in (
+            "# 基本设定注入点",
+            "# 长期记忆注入点",
+            "# 重点记忆注入点",
+            "# 短期记忆注入点",
+            "# GM当前消息注入点",
+        ):
+            self.assertNotIn(placeholder, prompt)
+        self.assertIn("我是Ada，是档案室的见证者。", prompt)
+        self.assertIn("我说话谨慎，会先确认门外动静。", prompt)
+        self.assertIn("我长期记得雨夜档案室的钥匙声。", prompt)
+        self.assertIn("我想回忆：雨夜档案；我记得档案室门后有潮湿纸味", prompt)
+        self.assertNotIn("完整细节只应在主动回忆后注入", prompt)
+        self.assertIn("刚才我听见门后有两下敲门声。", prompt)
+        self.assertIn("你听见门外有人压低声音说：Ada，开门。", prompt)
+        self.assertNotIn("刚刚对我说的话：", prompt)
+        self.assertNotIn("我能感知到的内容：", prompt)
+        self.assertNotIn("我此刻延续的第一人称意图：", prompt)
+
+    def test_actor_prompt_prefers_persisted_character_files_over_packet_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            actor_dir = card / "characters" / "Ada_File"
+            actor_dir.mkdir(parents=True)
+            profile_text = (
+                "我是Ada_File，我用第一人称记住自己的来历。\n\n"
+                "我只相信档案原件，说话时会把门外的动静先听清楚。\n"
+            )
+            (actor_dir / "profile.md").write_text(profile_text, encoding="utf-8")
+            (actor_dir / "long_term_memories.md").write_text("文件长期记忆：我守过旧档案室。\n", encoding="utf-8")
+            (actor_dir / "key_memories.json").write_text(
+                (
+                    '{\n'
+                    '  "memories": [\n'
+                    '    {"tag": "文件重点", "summary": "我记得封条颜色。", '
+                    '"detail": "文件重点详情不应常驻。"}\n'
+                    '  ]\n'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+            (actor_dir / "short_term_memories.md").write_text("文件短期记忆：刚才有人敲门。\n", encoding="utf-8")
+
+            prompt = self.agent_prompts._character_prompt(
+                {
+                    "card_folder": str(card),
+                    "actor_id": "character:Ada_File",
+                    "character_name": "Wrong Name",
+                    "self_knowledge": {"name": "Packet Name", "profile": "packet 基本设定不应注入"},
+                    "memory": {
+                        "long_term": ["packet 长期记忆不应注入"],
+                        "key_memories": [
+                            {
+                                "tag": "packet重点",
+                                "summary": "packet 重点摘要不应注入",
+                                "detail": "packet 重点详情不应注入",
+                            }
+                        ],
+                        "short_term": ["packet 短期记忆不应注入"],
+                        "goals": ["packet 当前目标不应注入"],
+                    },
+                    "immersive_context": "packet 感知内容不应作为基本设定注入。",
+                    "role_channel_anchor": "packet 行动锚点不应注入。",
+                    "gm_prompt": "GM审核后的最近一次消息。",
+                }
+            )
+
+        self.assertIn("# 我的行动提示：Ada_File", prompt)
+        self.assertIn("我是 Ada_File。", prompt)
+        self.assertIn(profile_text.strip(), prompt)
+        self.assertIn("文件长期记忆：我守过旧档案室。", prompt)
+        self.assertIn("我想回忆：文件重点；我记得封条颜色", prompt)
+        self.assertIn("文件短期记忆：刚才有人敲门。", prompt)
+        self.assertIn("GM审核后的最近一次消息。", prompt)
+        for forbidden in (
+            "Wrong Name",
+            "Packet Name",
+            "packet 基本设定不应注入",
+            "packet 长期记忆不应注入",
+            "packet 重点摘要不应注入",
+            "packet 重点详情不应注入",
+            "packet 短期记忆不应注入",
+            "packet 当前目标不应注入",
+            "packet 感知内容不应作为基本设定注入",
+            "packet 行动锚点不应注入",
+            "文件重点详情不应常驻",
+        ):
+            self.assertNotIn(forbidden, prompt)
+
+    def test_write_round_prompts_uses_card_folder_argument_for_actor_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            run_dir = card / ".agent_runs" / "round-000001"
+            card.mkdir(parents=True)
+            self._write_actor_files(card, "player", profile="我是存档里的玩家自述。\n")
+            self._write_actor_files(card, "Ada", profile="我是存档里的Ada。\n")
+
+            self.agent_prompts.write_round_prompts(
+                run_dir,
+                {"agent": "gm"},
+                {"agent": "player", "actor_id": "player"},
+                {"Ada": {"agent": "character", "actor_id": "character:Ada", "character_name": "Ada"}},
+                card_folder=card,
+            )
+
+            player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+            character_prompt = (
+                run_dir / "prompts" / "characters" / "Ada.prompt.md"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("我是存档里的玩家自述。", player_prompt)
+        self.assertIn("我是存档里的Ada。", character_prompt)
+
+    def test_actor_prompt_has_no_legacy_packet_context_fallback_builder(self):
+        source = (ROOT / "skills" / "agent_prompts.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("def _actor_basic_lines", source)
+        self.assertNotIn("def _immersive_context_lines", source)
+        self.assertNotIn("self_knowledge", source)
+        self.assertNotIn("role_channel_anchor", source)
+
+    def test_character_prompt_uses_character_folder_display_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp)
+            self._write_actor_files(card, "Ada_Zero_", profile="我是 Ada Zero。\n")
+            prompt = self.agent_prompts._character_prompt(
+                {
+                    "card_folder": str(card),
+                    "actor_id": "character:Ada_Zero_",
+                    "character_name": "Wrong Name",
+                    "self_knowledge": {"name": "Ada/Zero?"},
+                    "immersive_context": "packet 内容不应注入。",
+                }
+            )
+
+        self.assertIn("# 我的行动提示：Ada_Zero_", prompt)
+        self.assertIn("我是 Ada_Zero_。", prompt)
+        self.assertIn("我是 Ada Zero。", prompt)
+        self.assertNotIn("Wrong Name", prompt)
+        self.assertNotIn("Ada/Zero?", prompt)
+        self.assertNotIn("packet 内容不应注入。", prompt)
         self.assertNotIn("character:Ada_Zero_", prompt)
 
 
