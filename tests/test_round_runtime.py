@@ -171,6 +171,59 @@ class RoundRuntimeTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
 
+    def test_run_round_processes_persistent_assets_requirement_after_critic(self):
+        import assets_ui_runtime
+
+        (self.card / "ui_manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "mode": "autonomous",
+                    "asset_requirements": {
+                        "scene_illustration_each_round": {
+                            "enabled": True,
+                            "source_capability_request_id": "cap-old",
+                            "created_round": "round-000003",
+                            "reason": "每轮插图",
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        calls = []
+        original = assets_ui_runtime.process_persistent_requirements
+
+        def fake_process(card_folder, run_dir, *, phase, run_command=None, planner=None):
+            calls.append((Path(card_folder), Path(run_dir), phase))
+            return {"status": "planned", "jobs": []}
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        assets_ui_runtime.process_persistent_requirements = fake_process
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=_fake_run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            assets_ui_runtime.process_persistent_requirements = original
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[0][2], "after_critic")
+        self.assertIn("persistent_assets", result["runtime_pump"])
+
     def test_run_round_audits_input_analysis_capability_requests(self):
         request = {
             "id": "unknown-capability",

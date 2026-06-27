@@ -15,6 +15,7 @@ import agent_run
 import agent_runtime_pump
 import agent_snapshots
 import agent_turn_loop
+import assets_ui_runtime
 import input_analysis_apply
 import input_routing_requests
 import postprocess_outputs
@@ -131,6 +132,12 @@ def run_round(
             run_dir,
             phase="after_critic",
             runtime_settings=_runtime_settings_from_applied(input_analysis_result),
+            run_command=run_command,
+        )
+        runtime_pump["persistent_assets"] = assets_ui_runtime.process_persistent_requirements(
+            card,
+            run_dir,
+            phase="after_critic",
             run_command=run_command,
         )
 
