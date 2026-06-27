@@ -174,6 +174,8 @@ def _dispatch(
     *,
     extra_context: dict[str, Any] | None = None,
     output_path: Path | None = None,
+    attempts: int = 2,
+    initial_error: rp_generate_cli.AgentExecutionError | None = None,
 ) -> dict[str, Any]:
     payload = rp_generate_cli._dispatch_agent_payload(
         agent_key,
@@ -181,6 +183,8 @@ def _dispatch(
         root,
         run_claude,
         extra_context=extra_context or {},
+        attempts=attempts,
+        initial_error=initial_error,
     )
     if output_path is not None:
         agent_run.write_json(output_path, payload)
@@ -195,17 +199,35 @@ def _ensure_input_analysis(
     run_claude: Callable[[str, str, str | Path], str],
 ) -> dict[str, Any]:
     output_path = run_dir / "input_analysis.output.json"
-    if not output_path.exists():
-        prompt = _prompt_text(run_dir, manifest, "input_analyst", "prompts/input_analyst.prompt.md")
-        _dispatch(
-            run_dir,
-            root,
-            run_claude,
-            "input_analyst",
-            prompt,
-            output_path=output_path,
-        )
-    applied = input_analysis_apply.apply_current_run(card, root)
+    prompt: str | None = None
+    last_error: rp_generate_cli.AgentExecutionError | None = None
+    for attempt in range(2):
+        if not output_path.exists():
+            if prompt is None:
+                prompt = _prompt_text(run_dir, manifest, "input_analyst", "prompts/input_analyst.prompt.md")
+            _dispatch(
+                run_dir,
+                root,
+                run_claude,
+                "input_analyst",
+                prompt,
+                output_path=output_path,
+                attempts=1,
+                initial_error=last_error,
+            )
+        try:
+            applied = input_analysis_apply.apply_current_run(card, root)
+            break
+        except Exception as exc:
+            last_error = rp_generate_cli.AgentExecutionError(f"input analysis apply failed: {exc}")
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
+            if attempt == 1:
+                raise RoundRuntimeError(str(last_error)) from exc
+    else:
+        raise RoundRuntimeError("input analysis apply failed without an error.")
     applied = applied if isinstance(applied, dict) else {}
     capability_requests = applied.get("capability_requests")
     if not isinstance(capability_requests, list):

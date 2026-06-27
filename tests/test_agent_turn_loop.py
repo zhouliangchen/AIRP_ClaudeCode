@@ -1882,7 +1882,50 @@ class AgentTurnLoopTest(unittest.TestCase):
         gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
         self.assertEqual(gm_outputs["outputs"][0]["actor_calls"][0]["call_id"], "call-character-SuLi-1")
 
-    def test_max_steps_bounds_non_stopping_gm_loop(self):
+    def test_default_loop_no_longer_stops_at_old_eight_step_limit(self):
+        payload = self.agent_run.read_json(self.run_dir / "input.json")
+        payload["runtime_settings"] = {"wordCount": 1000}
+        self.agent_run.write_json(self.run_dir / "input.json", payload)
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            self.assertEqual(agent_key, "gm")
+            if len(calls) < 9:
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "Short beat."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "Final beat after the old step limit."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "word_target",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch)
+
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["stop_reason"], "word_target")
+        self.assertEqual(result["gm_steps"], 9)
+        self.assertEqual(len(calls), 9)
+        self.assertEqual(calls[-1][1]["world_state"]["raw_story_progress"]["target"], 1000)
+        self.assertGreater(calls[-1][1]["world_state"]["raw_story_progress"]["current"], 0)
+
+    def test_raw_story_text_over_120_percent_word_count_stops_with_word_target(self):
+        payload = self.agent_run.read_json(self.run_dir / "input.json")
+        payload["runtime_settings"] = {"wordCount": 10}
+        self.agent_run.write_json(self.run_dir / "input.json", payload)
         calls = []
 
         def dispatch(agent_key, packet):
@@ -1890,7 +1933,7 @@ class AgentTurnLoopTest(unittest.TestCase):
             self.assertEqual(agent_key, "gm")
             return {
                 "agent": "gm",
-                "scene_beats": [{"content": "The bell keeps ringing."}],
+                "scene_beats": [{"content": "一二三四五六七八九十十一十二十三"}],
                 "events": [],
                 "actor_calls": [],
                 "parallel_groups": [],
@@ -1899,12 +1942,12 @@ class AgentTurnLoopTest(unittest.TestCase):
                 "stop_reason": "continue",
             }
 
-        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=20)
 
         self.assertEqual(result["ok"], True)
-        self.assertEqual(result["stop_reason"], "max_steps")
-        self.assertEqual(result["gm_steps"], 3)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(result["stop_reason"], "word_target")
+        self.assertEqual(result["gm_steps"], 1)
+        self.assertEqual(len(calls), 1)
 
     def test_max_steps_does_not_truncate_direct_gm_actor_fanout(self):
         calls = []
@@ -2077,10 +2120,24 @@ class AgentTurnLoopTest(unittest.TestCase):
 
     def test_decision_point_is_not_marked_from_same_gm_output_that_calls_player(self):
         calls = []
+        gm_count = 0
 
         def dispatch(agent_key, packet):
+            nonlocal gm_count
             calls.append((agent_key, packet))
             if agent_key == "gm":
+                gm_count += 1
+                if gm_count > 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "SuLi keeps the pendant hidden for now."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "max_steps",
+                    }
                 return {
                     "agent": "gm",
                     "scene_beats": [{"content": "SuLi watches the pendant."}],
@@ -2313,6 +2370,79 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(result["called_actors"], ["player"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertIsNone(result["decision_point"])
+
+    def test_gm_can_call_player_again_after_player_actor_response(self):
+        calls = []
+        gm_count = 0
+
+        def dispatch(agent_key, packet):
+            nonlocal gm_count
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                gm_count += 1
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "You wake up in the classroom."}],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You see your notebook open on the desk.",
+                            "reason": "The player should inspect the immediate scene.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The classroom settles back into silence."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-2",
+                        "actor_id": "player",
+                        "prompt": "Morning study starts in twenty minutes. What do you do?",
+                        "reason": "The player has finished observing and must choose the next action.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{
+                    "type": "reply",
+                    "target": "gm",
+                    "content": "I check whether the notebook has my handwriting.",
+                }],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player", "gm", "player"])
+        self.assertEqual(result["called_actors"], ["player", "player"])
+        gm_outputs = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(
+            [call["call_id"] for output in gm_outputs["outputs"] for call in output["actor_calls"]],
+            ["call-player-1", "call-player-2"],
+        )
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertEqual(len(actor_outputs["player"]), 2)
+        responses = [
+            message
+            for message in self.agent_messages.read_messages(self.run_dir)
+            if message.get("type") == "actor_response"
+        ]
+        self.assertEqual(
+            [message["source_call_id"] for message in responses],
+            ["call-player-1", "call-player-2"],
+        )
 
     def test_role_action_channel_counts_as_prior_player_participation_for_decision(self):
         input_payload = self.agent_run.read_json(self.run_dir / "input.json")

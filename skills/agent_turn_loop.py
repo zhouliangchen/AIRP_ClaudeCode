@@ -39,7 +39,6 @@ def _write_progress_safe(stage, label, percent=None, detail=None):
         return None
 
 
-MAX_LOOP_STEPS = 8
 STOP_REASONS = {"player_decision", "complete", "max_steps", "word_target"}
 ACTIVE_SIDE_THREAD_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 RESERVATION_ACTIVATING_SUBGM_ACTIONS = {"start", "resume", "merge"}
@@ -204,7 +203,11 @@ def _initial_world_state(input_payload: dict) -> dict:
 
 def _ensure_trace(run_dir: Path, input_payload: dict) -> None:
     if not (run_dir / "interaction.trace.json").exists():
-        agent_interactions.init_trace(run_dir, participants=_participants(input_payload), chapter_target_words=0)
+        agent_interactions.init_trace(
+            run_dir,
+            participants=_participants(input_payload),
+            chapter_target_words=_runtime_word_target(input_payload),
+        )
 
 
 def _validate_gm(payload: Any) -> dict:
@@ -239,6 +242,57 @@ def _validate_actor(actor_id: str, payload: Any) -> dict:
 
 def _event_content(event: dict) -> str:
     return str(event.get("content") or "")
+
+
+def _runtime_word_target(input_payload: dict) -> int:
+    settings = _dict(input_payload.get("runtime_settings"))
+    raw = settings.get("wordCount")
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return max(0, raw)
+    if isinstance(raw, float) and raw.is_integer():
+        return max(0, int(raw))
+    text = str(raw or "").strip()
+    if re.fullmatch(r"\d+", text):
+        return max(0, int(text))
+    return 0
+
+
+def _raw_story_word_limit(input_payload: dict) -> int:
+    target = _runtime_word_target(input_payload)
+    if target <= 0:
+        return 0
+    return int(target * 12 // 10)
+
+
+def _count_raw_story_units(text: str) -> int:
+    clean = re.sub(r"<[^>]+>", "", str(text or ""))
+    cjk_count = sum(1 for ch in clean if "\u3400" <= ch <= "\u9fff")
+    latin_words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", clean)
+    return cjk_count + len(latin_words)
+
+
+def _gm_raw_story_units(gm_output: dict) -> int:
+    total = 0
+    for beat in gm_output.get("scene_beats", []) or []:
+        if isinstance(beat, dict):
+            total += _count_raw_story_units(beat.get("content", ""))
+    for event in gm_output.get("events", []) or []:
+        if isinstance(event, dict):
+            total += _count_raw_story_units(event.get("content", ""))
+    return total
+
+
+def _actor_raw_story_units(actor_output: dict) -> int:
+    natural_reply = str(actor_output.get("natural_reply") or "").strip()
+    if natural_reply:
+        return _count_raw_story_units(natural_reply)
+    total = 0
+    for event in actor_output.get("events", []) or []:
+        if isinstance(event, dict):
+            total += _count_raw_story_units(event.get("content", ""))
+    return total
 
 
 def _record_gm_output(run_dir: Path, gm_output: dict, step_index: int) -> None:
@@ -837,21 +891,6 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
     return filtered
 
 
-def _suppress_repeat_player_actor_calls(gm_output: dict, player_already_participated: bool) -> dict:
-    if not player_already_participated:
-        return gm_output
-    calls = [call for call in gm_output.get("actor_calls", []) if isinstance(call, dict)]
-    if not any(str(call.get("actor_id") or "") == "player" for call in calls):
-        return gm_output
-    filtered = dict(gm_output)
-    filtered["actor_calls"] = [
-        call for call in calls if str(call.get("actor_id") or "") != "player"
-    ]
-    if str(filtered.get("stop_reason") or "continue") in {"", "continue", "player_decision"}:
-        filtered["stop_reason"] = "max_steps"
-    return filtered
-
-
 def _input_requests_player_actor(input_payload: dict) -> bool:
     routed = _dict(input_payload.get("routed_input"))
     analysis = _dict(input_payload.get("input_analysis"))
@@ -1169,16 +1208,18 @@ def run_interactive_loop(
     run_dir: str | Path,
     dispatch: DispatchFn,
     *,
-    max_steps: int = MAX_LOOP_STEPS,
+    max_steps: int | None = None,
     card_folder: str | Path | None = None,
 ) -> dict:
-    """Run a bounded deterministic GM/actor control loop through `dispatch`."""
+    """Run the GM/actor control loop through `dispatch` until a hard stop condition."""
     root = Path(run_dir)
     card_for_versions = Path(card_folder) if card_folder is not None else _card_folder_for_run(root)
     input_payload = _read_input(root)
     _ensure_trace(root, input_payload)
 
-    step_limit = max(1, int(max_steps or 0))
+    step_limit = max(1, int(max_steps)) if max_steps is not None else None
+    raw_story_limit = _raw_story_word_limit(input_payload)
+    raw_story_units = 0
     world_state = _initial_world_state(input_payload)
     hidden_phrases = agent_visibility_guard.hidden_phrases(input_payload)
     registered_actor_targets = _registered_actor_targets(input_payload)
@@ -1196,8 +1237,16 @@ def run_interactive_loop(
         input_payload,
     )
 
-    for step_index in range(step_limit):
+    step_index = 0
+    while step_limit is None or step_index < step_limit:
         player_participated_before_gm = initial_player_action_seen or _player_actor_participated(called_actors)
+        world_state["raw_story_progress"] = {
+            "current": raw_story_units,
+            "target": _runtime_word_target(input_payload),
+            "hard_stop_threshold": raw_story_limit,
+            "unit": "words_or_chinese_characters",
+            "hard_stop_rule": "stop when current exceeds hard_stop_threshold unless player_decision applies first",
+        }
         _refresh_side_thread_state(root, world_state)
         _write_progress_safe(
             "gm_loop.gm_dispatch",
@@ -1220,10 +1269,6 @@ def run_interactive_loop(
             input_payload,
             player_participated_before_gm,
         )
-        gm_output = _suppress_repeat_player_actor_calls(
-            gm_output,
-            player_participated_before_gm,
-        )
         _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_subgm_commands(root, gm_output, input_payload)
@@ -1233,6 +1278,7 @@ def run_interactive_loop(
         _refresh_side_thread_state(root, world_state)
         _assert_complete_leaves_no_active_side_threads(root, gm_output)
         gm_outputs.append(gm_output)
+        raw_story_units += _gm_raw_story_units(gm_output)
         _apply_world_state_delta(world_state, gm_output)
         _record_gm_output(root, gm_output, step_index)
         _update_visible_events(root, world_state)
@@ -1340,6 +1386,7 @@ def run_interactive_loop(
                     call_id = str(call.get("call_id") or "")
                     called_actors.append(actor_id)
                     actor_outputs.setdefault(actor_id, []).append(actor_output)
+                    raw_story_units += _actor_raw_story_units(actor_output)
                     _process_actor_output(
                         run_dir=root,
                         actor_id=actor_id,
@@ -1368,11 +1415,15 @@ def run_interactive_loop(
             )
             stop_reason = "player_decision"
             break
+        if raw_story_limit > 0 and raw_story_units > raw_story_limit:
+            stop_reason = "word_target"
+            break
         if gm_terminal_stop:
             stop_reason = gm_terminal_stop
             break
+        step_index += 1
 
-    if stop_reason == "continue":
+    if stop_reason == "continue" and step_limit is not None:
         stop_reason = "max_steps"
 
     _write_outputs(root, gm_outputs, actor_outputs)

@@ -269,6 +269,52 @@ class RoundRuntimeTest(unittest.TestCase):
         completed = agent_intents.list_intents(self.run_dir, "completed")
         self.assertEqual(completed[0]["type"], "assets_task")
 
+    def test_input_analysis_apply_failure_retries_with_rejection_feedback(self):
+        calls = {"apply": 0, "prompts": []}
+
+        def run_claude(agent_key, prompt, cwd):
+            self.assertEqual(agent_key, "input_analyst")
+            calls["prompts"].append(prompt)
+            payload = {"attempt": len(calls["prompts"])}
+            return json.dumps(payload, ensure_ascii=False)
+
+        def apply_current_run(*_args, **_kwargs):
+            calls["apply"] += 1
+            if calls["apply"] == 1:
+                raise self.round_runtime.input_analysis_apply.input_analysis.InputAnalysisError(
+                    "world_updates.important_characters[0].visibility is invalid: player_pov"
+                )
+            return {
+                "ok": True,
+                "capability_requests": [],
+                "manifest": {
+                    "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                    "style_profile": {},
+                },
+            }
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = apply_current_run
+        try:
+            result = self.round_runtime._ensure_input_analysis(
+                self.card,
+                self.root,
+                self.run_dir,
+                json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8")),
+                run_claude,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["apply"], 2)
+        self.assertEqual(len(calls["prompts"]), 2)
+        self.assertNotIn("Previous Attempt Rejection", calls["prompts"][0])
+        self.assertIn("Previous Attempt Rejection", calls["prompts"][1])
+        self.assertIn("player_pov", calls["prompts"][1])
+        written = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["attempt"], 2)
+
     def test_run_round_auto_repairs_story_only_critic_revision(self):
         calls = {"story": 0, "critic": 0, "repair_context_seen": False}
 
@@ -348,6 +394,93 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertTrue(calls["repair_context_seen"])
         story = json.loads((self.run_dir / "artifacts" / "story.output.json").read_text(encoding="utf-8"))
         self.assertIn("修正版剧情", story["content"])
+        history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
+        self.assertIn("story_composition", history)
+
+    def test_run_round_auto_repairs_critic_revision_with_issue_repair_routes(self):
+        calls = {"story": 0, "critic": 0}
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "story":
+                calls["story"] += 1
+                return json.dumps(
+                    {
+                        "content": (
+                            "<content>扩写后的正文，补足场景互动与动作细节。</content>"
+                            if calls["story"] > 1
+                            else "<content>偏短的正文。</content>"
+                        ),
+                        "character_dialogues": [],
+                        "metadata": {},
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "critic":
+                calls["critic"] += 1
+                if calls["critic"] == 1:
+                    return json.dumps(
+                        {
+                            "decision": "revise",
+                            "hard_failures": [],
+                            "soft_issues": [
+                                {
+                                    "dimension": "length",
+                                    "description": "正文低于最低字数。",
+                                    "repair_route": "story_composition",
+                                }
+                            ],
+                            "repair_instruction": "扩写正文到最低字数以上。",
+                            "system_iteration_suggestion": "",
+                            "quality_checks": {
+                                "length": {
+                                    "status": "revise",
+                                    "target": 1200,
+                                    "minimum": 960,
+                                    "current": 812,
+                                    "exempted": False,
+                                    "notes": "偏短。",
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "decision": "pass",
+                        "hard_failures": [],
+                        "soft_issues": [],
+                        "repair_instruction": "",
+                        "system_iteration_suggestion": "",
+                        "quality_checks": {},
+                    },
+                    ensure_ascii=False,
+                )
+            return _fake_run_claude(agent_key, prompt, cwd)
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["story"], 2)
+        self.assertEqual(calls["critic"], 2)
+        critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic["decision"], "pass")
         history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
         self.assertIn("story_composition", history)
 

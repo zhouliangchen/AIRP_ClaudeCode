@@ -1397,7 +1397,35 @@ def _normalize_critic_report_for_story(
         and not _has_actionable_derived_content_edits(story, require_full_ai=True)
     ):
         return _force_retcon_derived_edit_revise(normalized)
+    _infer_story_repair_routing_from_issues(normalized)
     return normalized
+
+
+def _infer_story_repair_routing_from_issues(critic: Dict[str, Any]) -> None:
+    if str(critic.get("decision") or "") == "pass":
+        return
+    if isinstance(critic.get("repair_routing"), dict):
+        return
+    hard_failures = critic.get("hard_failures")
+    if isinstance(hard_failures, list) and hard_failures:
+        return
+    soft_issues = critic.get("soft_issues")
+    if not isinstance(soft_issues, list) or not soft_issues:
+        return
+    if not str(critic.get("repair_instruction") or "").strip():
+        return
+    for issue in soft_issues:
+        if not isinstance(issue, dict):
+            return
+        if str(issue.get("repair_route") or "") != "story_composition":
+            return
+    critic["repair_routing"] = {
+        "stage": "story_composition",
+        "target_agents": ["story"],
+        "rollback": "story_only",
+        "can_auto_repair": True,
+        "risk": "low",
+    }
 
 
 def _story_main_text(story: Dict[str, Any]) -> str:

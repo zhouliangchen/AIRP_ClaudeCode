@@ -218,6 +218,7 @@ def _gm_runtime_guidance(context: Dict[str, Any]) -> str:
         "\n\nRuntime creative guidance:\n"
         f"- NSFW tone option: {settings['nsfw']}\n"
         f"- soft word-count target: {settings['wordCount']}\n"
+        f"- hard GM raw-text stop threshold: continue the GM/actor loop until accumulated raw GM scene text plus actor replies exceed {int(settings['wordCount']) * 12 // 10} words/Chinese-character units, unless a player key action stops the turn first.\n"
         f"- self-repair mode: {settings['selfRepairMode']}; source-code self-repair allowed: {settings['allowSourceCodeSelfRepair']}\n"
     )
 
@@ -509,17 +510,22 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         context,
     ) + _gm_runtime_guidance(context) + (
         "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, "
-        "`word_target`, `complete`, `max_steps`.\n"
+        "`word_target`, `complete`, `max_steps`. For the main live GM loop, use "
+        "`continue`, `player_decision`, or `word_target`; `complete` and `max_steps` "
+        "are compatibility values for bounded helper paths, not normal creative stops.\n"
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
         "subGM agents must not emit applied promotion records.\n"
         "\nEvery `actor_calls[]` item must include valid per-call "
         "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
         "actor-visible, targeted to the same actor, and free of GM-only causes.\n"
-        "\nWithin one user turn, call the player actor only when the player has not yet responded "
-        "in the current loop. After any player actor reply, do not call `actor_id: \"player\"` again; "
-        "use the returned player reply plus GM-visible state to finish the GM step and let story/postprocess "
-        "compose the delivered text. You may still provide sensory consequences to the player in the next user turn.\n"
+        "\nMain-loop hard stop rules: keep advancing through GM narration and actor calls until one of "
+        "these two conditions is met: (1) accumulated raw scene text, including GM scene/event text and "
+        "actor replies, exceeds 120% of the runtime word-count target; then use `stop_reason: \"word_target\"`; "
+        "(2) after reading a real player actor reply or direct role-action input, GM judges that the player's "
+        "behavior is a key action that will greatly change the plot direction; then use `stop_reason: \"player_decision\"`. "
+        "Do not stop merely because the player has replied once. You may call `actor_id: \"player\"` again when the next "
+        "visible situation genuinely requires the player's subjective action or perception.\n"
         "\nsubGM side-thread authority: GM may emit `subgm_commands` with actions "
         "`start`, `message`, `accelerate`, `pause`, `resume`, `merge`, or `close`. "
         "GM remains the only root authority: subGM agents cannot create/promote "
@@ -696,6 +702,13 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
                 "notes": "",
             },
         },
+        "repair_routing": {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": False,
+            "risk": "low",
+        },
     })
     return _base_prompt(
         "Critic Agent Prompt",
@@ -711,6 +724,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- If `quality_metrics.word_count.exempted` is true because of a player decision stop, set the length status to `exempt` or otherwise note the player decision exemption instead of requiring expansion.\n"
         "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
         "- `story.output.json` does not require `<summary>` or `<options>`; hard-failing their absence is incorrect because postprocess owns `core.summary` and `core.options` after critic pass.\n"
+        "- If all failures can be repaired by rewriting only `story.output.json`, set `repair_routing.stage` to `story_composition`, `target_agents` to `[\"story\"]`, `rollback` to `story_only`, and `can_auto_repair` to true.\n"
         "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
     )
 
