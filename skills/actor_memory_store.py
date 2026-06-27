@@ -161,6 +161,152 @@ def write_player_mapping(card_folder: str | Path, name: Any, relative_path: Any 
     return {"name": safe_name, "path": normalized_rel}
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left.absolute() == right.absolute()
+
+
+def _is_default_key_memory_file(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload == {"memories": []}
+
+
+def _has_substantive_character_files(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if not path.is_dir():
+        return True
+    for child in path.rglob("*"):
+        if not child.is_file():
+            continue
+        if child.name == "key_memories.json" and _is_default_key_memory_file(child):
+            continue
+        if _read_text(child).strip():
+            return True
+    return False
+
+
+def _copy_missing_or_empty_files(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for child in source.rglob("*"):
+        if not child.is_file():
+            continue
+        relative = child.relative_to(source)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and _read_text(destination).strip():
+            continue
+        shutil.copy2(child, destination)
+
+
+def _move_or_merge_character_dir(
+    source: Path,
+    target: Path,
+    *,
+    allow_merge_existing: bool,
+) -> bool:
+    if not source.exists():
+        return False
+    if _same_path(source, target):
+        return False
+    if target.exists():
+        if not allow_merge_existing and _has_substantive_character_files(target):
+            raise ActorMemoryStoreError(f"target_character_exists: {target}")
+        _copy_missing_or_empty_files(source, target)
+        shutil.rmtree(source)
+        return True
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
+    return True
+
+
+def _player_mapping_points_to(card: Path, source_name: str, source_actor_dir: Path) -> bool:
+    mapping_path = _player_mapping_path(card)
+    if not mapping_path.exists():
+        return source_name == "player"
+    mapping = _parse_player_mapping(_read_text(mapping_path))
+    mapped_name = _safe_component(mapping.get("name") or "player", "player")
+    raw_path = mapping.get("path") or f"characters/{mapped_name}"
+    rel = Path(raw_path)
+    if rel.is_absolute() or ".." in rel.parts or len(rel.parts) != 2 or rel.parts[0] != "characters":
+        rel = Path("characters") / mapped_name
+    mapped_dir = card / rel
+    return mapped_name == source_name or _same_path(mapped_dir, source_actor_dir)
+
+
+def rename_character_identity(card_folder: str | Path, from_name: Any, to_name: Any) -> dict[str, Any]:
+    card = Path(card_folder)
+    source_name = _safe_component(str(from_name or "").strip(), "player")
+    target_name = _safe_component(str(to_name or "").strip(), source_name)
+    if source_name.casefold() == "_self":
+        source_name = "player"
+    if target_name.casefold() == "_self":
+        target_name = source_name
+    if not target_name:
+        raise ActorMemoryStoreError("target_character_name_required")
+
+    source_actor_dir = card / "characters" / source_name
+    target_actor_dir = card / "characters" / target_name
+    source_objective_dir = card / "memory" / "characters" / source_name
+    target_objective_dir = card / "memory" / "characters" / target_name
+    if _same_path(source_actor_dir, target_actor_dir) and _same_path(source_objective_dir, target_objective_dir):
+        mapping_updated = False
+        if _player_mapping_points_to(card, source_name, source_actor_dir):
+            write_player_mapping(card, target_name, f"characters/{target_name}")
+            mapping_updated = True
+        return {
+            "from_name": source_name,
+            "to_name": target_name,
+            "actor_dir": f"characters/{target_name}",
+            "objective_dir": f"memory/characters/{target_name}",
+            "moved_actor_dir": False,
+            "moved_objective_dir": False,
+            "player_mapping_updated": mapping_updated,
+        }
+
+    allow_merge_existing = source_name == "player"
+    moved_actor = _move_or_merge_character_dir(
+        source_actor_dir,
+        target_actor_dir,
+        allow_merge_existing=allow_merge_existing,
+    )
+    moved_objective = _move_or_merge_character_dir(
+        source_objective_dir,
+        target_objective_dir,
+        allow_merge_existing=allow_merge_existing,
+    )
+    if not moved_actor and not moved_objective:
+        raise ActorMemoryStoreError(f"source_character_missing: {source_name}")
+
+    mapping_updated = False
+    if _player_mapping_points_to(card, source_name, source_actor_dir):
+        write_player_mapping(card, target_name, f"characters/{target_name}")
+        mapping_updated = True
+
+    actor_id = "player" if mapping_updated else f"character:{target_name}"
+    ensure_actor_files(card, actor_id)
+    return {
+        "from_name": source_name,
+        "to_name": target_name,
+        "actor_dir": f"characters/{target_name}",
+        "objective_dir": f"memory/characters/{target_name}",
+        "moved_actor_dir": moved_actor,
+        "moved_objective_dir": moved_objective,
+        "player_mapping_updated": mapping_updated,
+    }
+
+
+def migrate_default_player_memory(card_folder: str | Path, name: Any, relative_path: Any = "") -> dict[str, str]:
+    """Point player.md at the real actor and remove legacy player placeholder dirs."""
+    result = rename_character_identity(card_folder, "player", name)
+    return write_player_mapping(card_folder, result["to_name"], relative_path or result["actor_dir"])
+
+
 def _actor_name(actor_id: Any) -> str:
     text = str(actor_id or "").strip()
     if not text or text == "player":

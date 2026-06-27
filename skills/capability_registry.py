@@ -12,7 +12,7 @@ class CapabilityRegistryError(ValueError):
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 VALID_AUTHORIZATION_GATES = {"none", "manual_confirmation", "allowSourceCodeSelfRepair"}
-VALID_SOURCE_CHANNELS = {"user_instruction", "role_input", "raw_input"}
+VALID_SOURCE_CHANNELS = {"user_instruction", "role_input", "raw_input", "gm_output"}
 
 CAPABILITIES: dict[str, dict[str, Any]] = {
     "assets.generate_image": {
@@ -54,6 +54,14 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "allowed_requesters": ("input_analyst", "gm", "main_agent"),
         "authorization_gate": "manual_confirmation",
         "max_risk": "high",
+    },
+    "character.rename": {
+        "target": "memory",
+        "action": "intent",
+        "intent_type": "character_rename",
+        "allowed_requesters": ("input_analyst", "gm", "main_agent"),
+        "authorization_gate": "none",
+        "max_risk": "medium",
     },
 }
 

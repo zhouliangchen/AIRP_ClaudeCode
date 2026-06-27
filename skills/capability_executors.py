@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import agent_run
+import actor_memory_store
+import character_registry
 import llm_settings
 import postprocess_outputs
 import replay_capabilities
@@ -38,6 +40,8 @@ def execute_intent(
         return execute_replay_plan(run_dir, intent)
     if intent_type == "system_request":
         return execute_system_request(run_dir, intent, runtime_settings=runtime_settings)
+    if intent_type == "character_rename":
+        return execute_character_rename(card_folder, run_dir, intent)
     return {
         "status": "blocked",
         "reason": "executor_not_wired",
@@ -137,6 +141,34 @@ def execute_system_request(
         "payload": payload,
     }
     _write_executor_artifact(run_dir, "system_requests", intent, outputs)
+    return {"status": "completed", "outputs": outputs}
+
+
+def execute_character_rename(
+    card_folder: str | Path,
+    run_dir: str | Path,
+    intent: dict[str, Any],
+) -> dict[str, Any]:
+    card = Path(card_folder)
+    payload = _payload(intent)
+    to_name = _required_text(payload, "to_name")
+    from_name = _text(payload.get("from_name") or payload.get("old_name"))
+    actor_id = _text(payload.get("actor_id"))
+    if not from_name and actor_id:
+        from_name = actor_memory_store.actor_paths(card, actor_id).name
+    if not from_name:
+        raise CapabilityExecutorError("intent payload from_name is required")
+
+    rename_result = actor_memory_store.rename_character_identity(card, from_name, to_name)
+    registry_result = character_registry.rename_registered_character(
+        card,
+        rename_result["from_name"],
+        rename_result["to_name"],
+    )
+    outputs = dict(rename_result)
+    outputs["registry"] = registry_result
+    outputs["reason"] = _text(payload.get("reason"))
+    _write_executor_artifact(run_dir, "character_renames", intent, outputs)
     return {"status": "completed", "outputs": outputs}
 
 

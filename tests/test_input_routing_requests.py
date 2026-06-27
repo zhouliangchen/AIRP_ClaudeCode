@@ -68,6 +68,35 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(artifact["capability"], "assets.generate_image")
         self.assertEqual(artifact["status"], "queued")
 
+    def test_process_character_rename_capability_creates_rename_intent(self):
+        request = {
+            "id": "rename-player",
+            "requested_by": "input_analyst",
+            "target": "memory",
+            "capability": "character.rename",
+            "summary": "Rename player placeholder to 雨蒙.",
+            "reason": "The protagonist name became explicit.",
+            "source_channel": "user_instruction",
+            "risk": "medium",
+            "authorization_gate": "none",
+            "payload": {"from_name": "player", "to_name": "雨蒙", "actor_id": "player"},
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "我的名字叫雨蒙"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={},
+            source_intent_id="input_analysis",
+        )
+
+        self.assertEqual(result["created_intents_count"], 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "character_rename")
+        self.assertEqual(pending[0]["payload"]["from_name"], "player")
+        self.assertEqual(pending[0]["payload"]["to_name"], "雨蒙")
+        self.assertEqual(pending[0]["payload"]["actor_id"], "player")
+
     def test_unknown_capability_writes_audit_and_message_without_intent(self):
         request = {
             "id": "cap-unknown",

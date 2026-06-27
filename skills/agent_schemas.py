@@ -527,6 +527,11 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
         ),
         "parallel_groups": _optional_list(data, "parallel_groups", "gm_output"),
         "world_state_delta": _require_list(data, "world_state_delta", "gm_output"),
+        "capability_requests": _normalize_list_items(
+            _optional_list(data, "capability_requests", "gm_output"),
+            "gm_output.capability_requests",
+            _normalize_dict_item,
+        ),
         "character_promotions": _normalize_list_items(
             _optional_list(data, "character_promotions", "gm_output"),
             "gm_output.character_promotions",

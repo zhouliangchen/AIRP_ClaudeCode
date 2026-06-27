@@ -1328,7 +1328,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("dream echo", gm_prompt)
         self.assertIn("我直接用自然语言对刚刚与我说话的人回应", player_prompt)
         self.assertIn("现在：", player_prompt)
-        self.assertIn("暂时没有新的外部话语。", player_prompt)
+        self.assertIn("暂无GM消息。", player_prompt)
         self.assertNotIn("Use only your projected first-person context for this turn.", player_prompt)
         self.assertNotIn("Current first-person role-channel anchor", player_prompt)
         self.assertNotIn("我能感知到的内容：", player_prompt)

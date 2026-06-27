@@ -1071,17 +1071,17 @@ def ensure_base_memory_files(memory_dir: str, card_name: str, world_name: str, b
         with open(feedback_path, "w", encoding="utf-8") as f:
             f.write("---\nname: 用户偏好\ndescription: 文风/节奏/边界偏好\ntype: feedback\n---\n\n# 用户偏好\n\nNSFW 档位: 舒缓\n")
 
-    story_plan_path = os.path.join(memory_dir, "story_plan.md")
-    if not os.path.exists(story_plan_path):
-        with open(story_plan_path, "w", encoding="utf-8") as f:
-            f.write("---\nname: 剧情规划\ndescription: 待首次规划\ntype: project\nnext_plan_at: 第8轮\n---\n\n# 剧情规划\n\n待触发。\n")
-
     if blank_mode:
         actor_memory_store.ensure_actor_files(
             Path(memory_dir).parent,
             "player",
-            profile="# 自定义角色卡\n\n空白启动中。角色身份、关系、世界观会根据游玩逐轮沉淀。\n",
+            profile="# 自定义角色卡\n\n我还没有明确自己的名字。\n",
         )
+
+    story_plan_path = os.path.join(memory_dir, "story_plan.md")
+    if not os.path.exists(story_plan_path):
+        with open(story_plan_path, "w", encoding="utf-8") as f:
+            f.write("---\nname: 剧情规划\ndescription: 待首次规划\ntype: project\nnext_plan_at: 第8轮\n---\n\n# 剧情规划\n\n待触发。\n")
 
     create_memory_index(memory_dir, card_name, world_name)
 

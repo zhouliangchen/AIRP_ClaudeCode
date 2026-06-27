@@ -103,6 +103,71 @@ class ActorMemoryStoreTest(unittest.TestCase):
         paths.profile.write_text(SELF_PROFILE, encoding="utf-8")
         self.assertEqual(paths.profile.read_text(encoding="utf-8"), SELF_PROFILE)
 
+    def test_rename_player_placeholder_preserves_identity_memory_and_mapping(self):
+        paths = self.store.ensure_actor_files(self.card, "player", profile=SELF_PROFILE)
+        paths.long_term.write_text(LONG_TERM_UPDATE + "\n", encoding="utf-8")
+        paths.short_term.write_text(OLD_SHORT_TERM, encoding="utf-8")
+        paths.key_memories.write_text(
+            json.dumps(
+                {"memories": [{"tag": OLD_ARCHIVE, "summary": KEY_SUMMARY, "detail": KEY_DETAIL}]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.store.rename_character_identity(self.card, "player", "雨蒙")
+
+        self.assertEqual(result["from_name"], "player")
+        self.assertEqual(result["to_name"], "雨蒙")
+        self.assertTrue(result["player_mapping_updated"])
+        self.assertFalse((self.card / "characters" / "player").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "player").exists())
+        self.assertEqual(
+            (self.card / "characters" / "player.md").read_text(encoding="utf-8"),
+            "name: 雨蒙\npath: characters/雨蒙\n",
+        )
+        renamed = self.store.actor_paths(self.card, "player")
+        self.assertEqual(renamed.name, "雨蒙")
+        self.assertEqual(renamed.long_term.read_text(encoding="utf-8"), LONG_TERM_UPDATE + "\n")
+        self.assertEqual(renamed.short_term.read_text(encoding="utf-8"), OLD_SHORT_TERM)
+        self.assertEqual(
+            json.loads(renamed.key_memories.read_text(encoding="utf-8"))["memories"][0]["tag"],
+            OLD_ARCHIVE,
+        )
+
+    def test_rename_non_player_character_does_not_switch_player_mapping(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        self.store.ensure_actor_files(self.card, "player", profile=SELF_PROFILE)
+        suli_paths = self.store.ensure_actor_files(self.card, f"character:{SULI}", profile=SULI_PROFILE)
+        suli_paths.long_term.write_text("苏黎记得自己的旧名。\n", encoding="utf-8")
+
+        result = self.store.rename_character_identity(self.card, SULI, "苏璃")
+
+        self.assertFalse(result["player_mapping_updated"])
+        self.assertEqual(
+            (self.card / "characters" / "player.md").read_text(encoding="utf-8"),
+            "name: 雨蒙\npath: characters/雨蒙\n",
+        )
+        self.assertFalse((self.card / "characters" / SULI).exists())
+        self.assertTrue((self.card / "characters" / "苏璃").is_dir())
+        self.assertEqual(
+            (self.card / "characters" / "苏璃" / "long_term_memories.md").read_text(encoding="utf-8"),
+            "苏黎记得自己的旧名。\n",
+        )
+
+    def test_rename_character_rejects_existing_non_placeholder_target(self):
+        self.store.ensure_actor_files(self.card, "character:Ada")
+        target = self.store.ensure_actor_files(self.card, "character:Bert")
+        target.long_term.write_text("Bert already has memories.\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(self.store.ActorMemoryStoreError, "target_character_exists"):
+            self.store.rename_character_identity(self.card, "Ada", "Bert")
+
     def test_actor_name_mapping_avoids_reserved_empty_and_player_collisions(self):
         self.assertEqual(self.store.actor_paths(self.card, "player").name, "player")
         self.assertEqual(self.store.actor_paths(self.card, "").name, "player")

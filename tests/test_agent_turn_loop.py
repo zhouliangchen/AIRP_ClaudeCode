@@ -257,6 +257,47 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.agent_run.read_json(self.run_dir / "gm.output.json")
         self.agent_run.read_json(self.run_dir / "actor.outputs.json")
 
+    def test_gm_capability_request_creates_pending_character_rename_intent(self):
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "她终于想起自己叫雨蒙。"}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "capability_requests": [
+                    {
+                        "id": "gm-rename-player",
+                        "requested_by": "gm",
+                        "target": "memory",
+                        "capability": "character.rename",
+                        "summary": "Rename player placeholder to 雨蒙.",
+                        "reason": "The plot revealed the protagonist name.",
+                        "source_channel": "gm_output",
+                        "risk": "medium",
+                        "authorization_gate": "none",
+                        "payload": {"from_name": "player", "to_name": "雨蒙", "actor_id": "player"},
+                        "evidence": {"raw_excerpt": "她终于想起自己叫雨蒙。"},
+                    }
+                ],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        pending = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "character_rename")
+        self.assertEqual(pending[0]["payload"]["from_name"], "player")
+        self.assertEqual(pending[0]["payload"]["to_name"], "雨蒙")
+        audit_files = list((self.run_dir / "artifacts" / "capability_requests").glob("gm-rename-player-*.json"))
+        self.assertEqual(len(audit_files), 1)
+        audit = self.agent_run.read_json(audit_files[0])
+        self.assertEqual(audit["status"], "queued")
+
     def test_actor_natural_language_reply_is_wrapped_for_internal_artifacts(self):
         self.register_characters("Ada")
         reply = "我把门轻轻合上，低声说：先听听外面的脚步。"

@@ -221,6 +221,10 @@ def _analysis_declares_player_character(analysis: Dict[str, Any]) -> bool:
     return False
 
 
+def _routing_requests_player(routing: Any) -> bool:
+    return isinstance(routing, dict) and routing.get("player") is True
+
+
 def _maybe_write_initial_player_mapping(
     card_folder: Any,
     card_data: Dict[str, Any],
@@ -229,15 +233,17 @@ def _maybe_write_initial_player_mapping(
 ) -> dict[str, str]:
     if (
         not _card_looks_blank_bootstrap(card_data)
-        or not _analysis_declares_player_character(analysis)
         or not _player_mapping_is_unset_or_default(card_folder)
     ):
+        return {}
+    has_player_declaration = _analysis_declares_player_character(analysis)
+    has_player_routing = _routing_requests_player(analysis.get("routing"))
+    if not has_player_declaration and not has_player_routing:
         return {}
     usable_records = [
         record
         for record in character_records
         if isinstance(record, dict)
-        and not record.get("profile_preserved")
         and str(record.get("name") or "").strip()
     ]
     names = {str(record.get("name") or "").strip() for record in usable_records}
@@ -248,7 +254,8 @@ def _maybe_write_initial_player_mapping(
     safe_name = str(record.get("safe_name") or name).strip()
     if not name or not safe_name:
         return {}
-    return actor_memory_store.write_player_mapping(
+    actor_memory_store.ensure_actor_files(card_folder, "player")
+    return actor_memory_store.migrate_default_player_memory(
         card_folder,
         name,
         f"characters/{safe_name}",

@@ -112,15 +112,16 @@ class ImportPrepareTest(unittest.TestCase):
         self.assertTrue(card_dir.is_dir())
         self.assertTrue((card_dir / ".card_data.json").exists())
         self.assertTrue((card_dir / "memory").is_dir())
-        player_mapping = (card_dir / "characters" / "player.md").read_text(encoding="utf-8")
-        self.assertIn("name: player", player_mapping)
-        self.assertIn("path: characters/player", player_mapping)
+        self.assertEqual(
+            (card_dir / "characters" / "player.md").read_text(encoding="utf-8"),
+            "name: player\npath: characters/player\n",
+        )
+        self.assertTrue((card_dir / "characters" / "player").is_dir())
         self.assertTrue((card_dir / "characters" / "player" / "profile.md").exists())
         self.assertTrue((card_dir / "characters" / "player" / "long_term_memories.md").exists())
         self.assertTrue((card_dir / "characters" / "player" / "key_memories.json").exists())
         self.assertTrue((card_dir / "characters" / "player" / "short_term_memories.md").exists())
-        self.assertTrue((card_dir / "memory" / "characters" / "player" / "profile.md").exists())
-        self.assertTrue((card_dir / "memory" / "characters" / "player" / "background.md").exists())
+        self.assertTrue((card_dir / "memory" / "characters" / "player").is_dir())
         self.assertFalse((card_dir / "characters" / "_self").exists())
         self.assertFalse((card_dir / "memory" / "characters" / "_self").exists())
         self.assertFalse((card_dir / "memory" / "characters" / "player" / "profile.json").exists())

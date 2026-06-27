@@ -176,7 +176,7 @@ class LlmProviderTest(unittest.TestCase):
         self.assertEqual(result["model"], "claude-sonnet")
         self.assertEqual(result["status"], 200)
 
-    def test_cc_switch_uses_large_default_max_tokens_when_not_configured(self):
+    def test_cc_switch_uses_provider_compatible_default_max_tokens_when_not_configured(self):
         capture = CapturingUrlopen(
             {
                 "model": "claude-sonnet",
@@ -196,7 +196,7 @@ class LlmProviderTest(unittest.TestCase):
         )
 
         body = self._request_json(capture)
-        self.assertEqual(body["max_tokens"], 800000)
+        self.assertEqual(body["max_tokens"], 131072)
 
     def test_missing_required_config_raises_provider_error(self):
         with self.assertRaisesRegex(self.mod.LlmProviderError, "openai_compatible.*api_key"):

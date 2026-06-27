@@ -20,6 +20,7 @@ import agent_visibility
 import agent_visibility_guard
 import actor_memory_store
 import character_promotions
+import input_routing_requests
 import player_decision_evidence
 import projection_agent
 import subgm_threads
@@ -158,6 +159,25 @@ def _apply_character_promotions(root: Path, input_payload: dict, gm_output: dict
         if isinstance(context, dict):
             _ensure_character_context(input_payload, context)
     return result
+
+
+def _runtime_settings(input_payload: dict) -> dict:
+    manifest = input_payload.get("manifest")
+    if isinstance(manifest, dict) and isinstance(manifest.get("runtime_settings"), dict):
+        return manifest["runtime_settings"]
+    return {}
+
+
+def _process_gm_capability_requests(root: Path, input_payload: dict, gm_output: dict, source_intent_id: str) -> dict:
+    requests = gm_output.get("capability_requests")
+    if not isinstance(requests, list) or not requests:
+        return {"ok": True, "processed_count": 0}
+    return input_routing_requests.process_capability_requests(
+        root,
+        requests,
+        runtime_settings=_runtime_settings(input_payload),
+        source_intent_id=source_intent_id,
+    )
 
 
 def _participants(input_payload: dict) -> list[str]:
@@ -826,6 +846,7 @@ def run_gm_only_step(
     _prevalidate_subgm_commands(root, gm_output, input_payload)
     _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
     _apply_character_promotions(root, input_payload, gm_output)
+    _process_gm_capability_requests(root, input_payload, gm_output, f"gm_step_{step_index + 1}")
     registered_actor_targets = _registered_actor_targets(input_payload)
     gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
 
@@ -1262,6 +1283,7 @@ def run_interactive_loop(
         _prevalidate_subgm_commands(root, gm_output, input_payload)
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_character_promotions(root, input_payload, gm_output)
+        _process_gm_capability_requests(root, input_payload, gm_output, f"gm_step_{step_index + 1}")
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         gm_output = _ensure_initial_player_actor_call(

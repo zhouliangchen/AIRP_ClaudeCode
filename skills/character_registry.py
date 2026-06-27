@@ -57,6 +57,34 @@ def _write_card_data(card_folder: Any, card_data: Dict[str, Any]) -> None:
     )
 
 
+def rename_registered_character(card_folder: Any, from_name: Any, to_name: Any) -> Dict[str, Any]:
+    data = _load_card_data(card_folder)
+    orchestration = data.get("character_orchestration")
+    if not isinstance(orchestration, dict):
+        return {"updated": False, "major": []}
+    major = orchestration.get("major")
+    if not isinstance(major, list):
+        return {"updated": False, "major": []}
+    old_name = _clean_name(from_name)
+    new_name = _clean_name(to_name)
+    if not old_name or not new_name:
+        return {"updated": False, "major": major}
+
+    changed = False
+    renamed: List[Any] = []
+    for item in major:
+        if isinstance(item, str) and item == old_name:
+            if new_name not in renamed:
+                renamed.append(new_name)
+            changed = True
+        elif item not in renamed:
+            renamed.append(item)
+    if changed:
+        orchestration["major"] = renamed
+        _write_card_data(card_folder, data)
+    return {"updated": changed, "major": renamed if changed else major}
+
+
 def _profile_markdown(
     *,
     name: str,

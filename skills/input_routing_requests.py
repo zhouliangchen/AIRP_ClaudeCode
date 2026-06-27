@@ -209,6 +209,18 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
             "evidence": request.get("evidence") if isinstance(request.get("evidence"), dict) else {},
         }
 
+    if capability == "character.rename":
+        return {
+            "source": CAPABILITY_SOURCE_NAME,
+            "capability_request_id": request["id"],
+            "from_name": str(payload.get("from_name") or payload.get("old_name") or "").strip(),
+            "to_name": str(payload.get("to_name") or payload.get("new_name") or "").strip(),
+            "actor_id": str(payload.get("actor_id") or "").strip(),
+            "summary": request.get("summary"),
+            "reason": request.get("reason"),
+            "evidence": request.get("evidence") if isinstance(request.get("evidence"), dict) else {},
+        }
+
     return {
         "source": CAPABILITY_SOURCE_NAME,
         "capability_request_id": request["id"],

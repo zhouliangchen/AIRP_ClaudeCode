@@ -46,6 +46,29 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertEqual(normalized["intent_type"], "assets_task")
         self.assertEqual(normalized["status"], "recognized")
 
+    def test_character_rename_capability_allows_input_analyst_and_gm(self):
+        base = {
+            "id": "rename-player",
+            "target": "memory",
+            "capability": "character.rename",
+            "summary": "Rename unnamed player placeholder to 雨蒙.",
+            "reason": "The protagonist name became explicit.",
+            "source_channel": "user_instruction",
+            "risk": "medium",
+            "authorization_gate": "none",
+            "payload": {"from_name": "player", "to_name": "雨蒙", "actor_id": "player"},
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "我的名字叫雨蒙"},
+        }
+
+        for requested_by, source_channel in (("input_analyst", "user_instruction"), ("gm", "gm_output")):
+            with self.subTest(requested_by=requested_by):
+                request = dict(base, requested_by=requested_by, source_channel=source_channel)
+                normalized = self.registry.normalize_capability_request(request)
+
+                self.assertEqual(normalized["status"], "recognized")
+                self.assertEqual(normalized["action"], "intent")
+                self.assertEqual(normalized["intent_type"], "character_rename")
+
     def test_maps_legacy_assets_route_to_capability_request(self):
         legacy = {
             "id": "route-001",

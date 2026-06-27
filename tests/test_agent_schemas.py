@@ -114,6 +114,21 @@ class AgentSchemaTest(unittest.TestCase):
             ],
             "parallel_groups": [["character:SuLi", "character:ClassRep"]],
             "world_state_delta": [{"scope": "classroom", "fact": "The door is shut."}],
+            "capability_requests": [
+                {
+                    "id": "rename-player",
+                    "requested_by": "gm",
+                    "target": "memory",
+                    "capability": "character.rename",
+                    "summary": "Rename the unnamed protagonist to 雨蒙.",
+                    "reason": "The plot revealed the protagonist name.",
+                    "source_channel": "gm_output",
+                    "risk": "medium",
+                    "authorization_gate": "none",
+                    "payload": {"from_name": "player", "to_name": "雨蒙", "actor_id": "player"},
+                    "evidence": {"raw_excerpt": "她终于想起自己叫雨蒙。"},
+                }
+            ],
             "character_promotions": [
                 {
                     "name": "ClassRep",
@@ -144,6 +159,7 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["actor_calls"][0]["visibility_basis"], visibility_basis())
         self.assertEqual(normalized["parallel_groups"], payload["parallel_groups"])
         self.assertEqual(normalized["world_state_delta"], payload["world_state_delta"])
+        self.assertEqual(normalized["capability_requests"][0]["capability"], "character.rename")
         self.assertEqual(normalized["character_promotions"][0]["name"], "ClassRep")
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")

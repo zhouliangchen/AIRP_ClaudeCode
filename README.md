@@ -56,7 +56,7 @@ AIRP_ClaudeCode/
 
 玩家输入可以是第一人称行动、第一人称剧情梗概、第三人称上帝视角设定，或三者混合；但生产代码不会通过固定关键词、子串或正则去判断这些语义。单通道玩家原文会先被完整保留给 input analyst 与 GM，语义路由、隐藏事实、重要角色声明和改写意图只能来自显式双通道输入或已校验的 `input_analysis.output.json`。在输入分析应用前，player/character actor-facing packet 不会接收未经分析的原始玩家文本。
 
-空白启动：当前文件夹没有 PNG/JSON/TXT 时，会初始化基础存档文件、`characters/player.md` 和当前玩家角色对应的 `characters/<角色名>/` 记忆目录；`characters/_self/` 已弃用，不再作为玩家角色目录。系统不会自动生成 AI 开场，而是等待你在浏览器输入第一轮设定，之后逐轮沉淀角色卡、变量和记忆。
+空白启动：当前文件夹没有 PNG/JSON/TXT 时，会先初始化基础存档文件，并用 `characters/player/` 与 `characters/player.md` 作为未知主角姓名的临时档案；`characters/_self/` 已弃用，不再作为玩家角色目录。系统不会自动生成 AI 开场，而是等待你在浏览器输入第一轮设定；首轮 input analysis 或后续 GM 剧情推进确认主角真实姓名后，会通过 `character.rename` 更名同一角色身份，把档案目录改为 `characters/<角色名>/` 并更新 `player.md`，这不同于把主角切换到另一个已有角色。
 
 ## 浏览器界面
 
@@ -76,7 +76,7 @@ AIRP_ClaudeCode/
 
 前端侧栏的“API 设置”会统一管理 cc_switch、OpenAI-compatible 文本 API 和图片生成 API，并写入 `skills/styles/llm_settings.frontend.json`。本地兜底配置统一写入 `skills/styles/llm_settings.local.json`。三类配置的字段优先级统一为：前端设置 > 环境变量 > 本地配置文件；代码不会注入 API 默认值，三层均未设置时，前端 API 设置页会显示配置错误。环境变量分组为：`AIRP_CC_SWITCH_ENABLED` / `AIRP_CC_SWITCH_SERVICE_URL`，`AIRP_OPENAI_COMPATIBLE_ENABLED` / `AIRP_OPENAI_COMPATIBLE_BASE_URL` / `AIRP_OPENAI_COMPATIBLE_API_KEY` / `AIRP_OPENAI_COMPATIBLE_MODEL`，以及 `AIRP_IMAGE_GENERATION_BASE_URL` / `AIRP_IMAGE_GENERATION_API_KEY` / `AIRP_IMAGE_GENERATION_MODEL`。
 
-验证 cc_switch 本地反代时，先确认 CC Switch 已启动且 `127.0.0.1:15721` 处于监听状态；AIRP 的 `service_url` 应填写 `http://127.0.0.1:15721`，不要额外追加 `/v1`。Claude Code/CC Switch 负责在 `~/.claude/settings.json` 中维护 `ANTHROPIC_BASE_URL`、`PROXY_MANAGED` 认证占位符、默认模型别名和上游 provider 映射；AIRP 只读取这些信息并向 `service_url + /v1/messages` 发起 Anthropic messages 请求，cc_switch 请求的 HTTP 等待窗口为 300 秒，未显式覆盖时 `max_tokens` 为 800000。若本机设置了 `ANTHROPIC_*` 环境变量，应先确认它们不会覆盖 CC Switch 写入的 Claude 配置。
+验证 cc_switch 本地反代时，先确认 CC Switch 已启动且 `127.0.0.1:15721` 处于监听状态；AIRP 的 `service_url` 应填写 `http://127.0.0.1:15721`，不要额外追加 `/v1`。Claude Code/CC Switch 负责在 `~/.claude/settings.json` 中维护 `ANTHROPIC_BASE_URL`、`PROXY_MANAGED` 认证占位符、默认模型别名和上游 provider 映射；AIRP 只读取这些信息并向 `service_url + /v1/messages` 发起 Anthropic messages 请求，cc_switch 请求的 HTTP 等待窗口为 300 秒，未显式覆盖时 `max_tokens` 为 131072。若本机设置了 `ANTHROPIC_*` 环境变量，应先确认它们不会覆盖 CC Switch 写入的 Claude 配置。
 
 ## 图片与 UI 热更新
 
@@ -166,6 +166,7 @@ critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退
 如果 critic 怀疑是系统代码问题，会使用 `stage: "system_code"` 并写入修复建议。源码自修复必须同时满足 `selfRepairMode: "full"` 和 `allowSourceCodeSelfRepair: true`；普通游玩中不会因为 critic 报告而自动修改关键项目源码。未授权时，本轮会以 `source_code_self_repair_not_authorized` 阻断并保留 repair intent；已授权时，运行时只创建有边界的 `system_request` intent/message，交给主 agent 按显式工作流诊断和修改源码，runtime pump 不会执行任意源码编辑。
 
 与此相对，用户主动在指令通道提出的源码功能实现请求会被记录为 `source.change_request` capability，它不要求 `selfRepairMode: "full"`，但仍要求 `allowSourceCodeSelfRepair: true`。未授权时系统只写入需要授权的审计记录和消息，不创建可执行源码修改 intent。
+角色更名请求会被记录为 `character.rename` capability，可由 input analyst 根据用户指令触发，也可由 GM 根据剧情发展触发；它只移动并重命名同一角色身份的存档目录，当前主角被更名时会同步更新 `characters/player.md`，但不会把主角切换到另一个角色。
 
 ## 模型调用调试日志
 
