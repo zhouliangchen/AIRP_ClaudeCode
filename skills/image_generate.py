@@ -75,6 +75,68 @@ def _next_id(manifest: dict, kind: str) -> str:
     return f"{prefix}-{count:04d}"
 
 
+def _path_is_within(base: Path, target: Path) -> bool:
+    try:
+        target.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_card_relative_path(card: Path, value: str) -> str:
+    rel = Path(str(value).replace("\\", "/"))
+    if not str(value).strip() or rel.is_absolute() or rel.anchor or rel.drive or any(part == ".." for part in rel.parts):
+        raise ValueError(f"path must stay inside card folder: {value}")
+    resolved = (card / rel).resolve()
+    if not _path_is_within(card.resolve(), resolved):
+        raise ValueError(f"path must stay inside card folder: {value}")
+    return rel.as_posix()
+
+
+def _write_job_status(card: Path, job_id: str | None, payload: dict) -> None:
+    if not job_id:
+        return
+    jobs_dir = card / "generated" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    safe_job_id = _safe_slug(job_id)
+    job_path = jobs_dir / f"{safe_job_id}.json"
+    body = dict(payload)
+    body.setdefault("job_id", job_id)
+    _write_json(job_path, body)
+
+
+def _build_manifest_item(
+    *,
+    image_id: str,
+    kind: str,
+    model: str,
+    prompt: str,
+    rel_path: str | Path,
+    target: str,
+    created_at: int,
+    references: list[str] | None = None,
+    job_id: str | None = None,
+    characters: list[str] | None = None,
+) -> dict:
+    item = {
+        "id": image_id,
+        "kind": kind,
+        "model": model,
+        "prompt": prompt,
+        "path": Path(rel_path).as_posix(),
+        "target": target,
+        "created_at": created_at,
+        "status": "completed",
+    }
+    if references:
+        item["references"] = list(references)
+    if job_id:
+        item["source_job_id"] = job_id
+    if characters:
+        item["characters"] = list(characters)
+    return item
+
+
 def _load_config(card: Path | None = None) -> dict:
     """Load image API config from the unified LLM settings provider."""
     settings = llm_settings.read_effective_settings(
@@ -173,6 +235,14 @@ def _spawn_async(args) -> dict:
             cmd.extend(["--" + key.replace("_", "-"), str(val)])
     if args.model:
         cmd.extend(["--model", args.model])
+    for reference in getattr(args, "reference", []) or []:
+        cmd.extend(["--reference", str(reference)])
+    if getattr(args, "output_path", None):
+        cmd.extend(["--output-path", str(args.output_path)])
+    if getattr(args, "job_id", None):
+        cmd.extend(["--job-id", str(args.job_id)])
+    for character in getattr(args, "character", []) or []:
+        cmd.extend(["--character", str(character)])
     if args.dry_run:
         cmd.append("--dry-run")
     card = Path(args.card_folder).resolve()
@@ -218,6 +288,10 @@ def main():
     parser.add_argument("--target", default="scene_illustration")
     parser.add_argument("--model", default=None)
     parser.add_argument("--size", default="1024x1024")
+    parser.add_argument("--reference", action="append", default=[], help="card-local reference image path")
+    parser.add_argument("--output-path", default=None, help="card-local output path override")
+    parser.add_argument("--job-id", default=None, help="job id for generated/jobs/<job-id>.json")
+    parser.add_argument("--character", action="append", default=[], help="character metadata for the asset manifest")
     parser.add_argument("--dry-run", action="store_true", help="write manifest entry without calling the API")
     parser.add_argument("--async", dest="async_job", action="store_true", help="queue detached generation job and return immediately")
     args = parser.parse_args()
@@ -228,6 +302,21 @@ def main():
     card = Path(args.card_folder).resolve()
     if not card.exists():
         _json_out({"ok": False, "error": f"card folder not found: {card}"}, 2)
+
+    try:
+        references = [_safe_card_relative_path(card, value) for value in args.reference]
+        output_path = _safe_card_relative_path(card, args.output_path) if args.output_path else None
+    except ValueError as exc:
+        _write_job_status(
+            card,
+            args.job_id,
+            {
+                "status": "failed",
+                "reason": "invalid_path",
+                "error": str(exc),
+            },
+        )
+        _json_out({"ok": False, "error": str(exc)}, 2)
 
     config = _load_config(card)
     model = args.model or config.get("model", "")
@@ -240,9 +329,27 @@ def main():
         manifest = {"images": []}
     manifest.setdefault("images", [])
 
-    image_id = _next_id(manifest, args.kind)
-    rel_path = Path("generated") / "images" / f"{image_id}.png"
+    image_id = _safe_slug(args.job_id) if output_path and args.job_id else _next_id(manifest, args.kind)
+    rel_path = Path(output_path) if output_path else Path("generated") / "images" / f"{image_id}.png"
     out_path = card / rel_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if references and not args.dry_run:
+        payload = {
+            "status": "deferred",
+            "reason": "reference_image_not_supported",
+            "references": references,
+        }
+        _write_job_status(card, args.job_id, payload)
+        _json_out(
+            {
+                "ok": False,
+                "error": "reference_image_not_supported",
+                "status": "deferred",
+                "references": references,
+            },
+            1,
+        )
 
     try:
         if args.dry_run:
@@ -251,6 +358,15 @@ def main():
             image_bytes = _call_openai_images(args.prompt, model, args.size, config)
             out_path.write_bytes(image_bytes)
     except Exception as e:
+        _write_job_status(
+            card,
+            args.job_id,
+            {
+                "status": "failed",
+                "error": str(e),
+                "path": rel_path.as_posix(),
+            },
+        )
         _json_out({
             "ok": False,
             "error": str(e),
@@ -258,18 +374,30 @@ def main():
             "hint": "Set AIRP_IMAGE_GENERATION_API_KEY or image_generation.api_key in AIRP API settings, or use --dry-run for pipeline testing.",
         }, 1)
 
-    item = {
-        "id": image_id,
-        "kind": args.kind,
-        "model": model,
-        "prompt": args.prompt,
-        "path": rel_path.as_posix(),
-        "target": args.target,
-        "created_at": int(time.time()),
-    }
+    item = _build_manifest_item(
+        image_id=image_id,
+        kind=args.kind,
+        model=model,
+        prompt=args.prompt,
+        rel_path=rel_path,
+        target=args.target,
+        created_at=int(time.time()),
+        references=references,
+        job_id=args.job_id,
+        characters=args.character,
+    )
     manifest["images"].append(item)
     _write_json(manifest_path, manifest)
     frontend = _refresh_frontend_assets(card)
+    _write_job_status(
+        card,
+        args.job_id,
+        {
+            "status": "completed",
+            "path": rel_path.as_posix(),
+            "asset": item,
+        },
+    )
 
     _json_out({
         "ok": True,

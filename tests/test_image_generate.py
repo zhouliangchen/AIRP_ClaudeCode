@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -258,6 +260,88 @@ class ImageGenerateConfigTest(unittest.TestCase):
         self.assertNotIn("base_url", config)
         self.assertNotIn("api_key", config)
         self.assertNotIn("model", config)
+
+    def test_safe_card_relative_path_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+
+            for value in ("../escape.png", "/tmp/escape.png", "C:/tmp/escape.png", "C:tmp/escape.png"):
+                with self.subTest(value=value):
+                    with self.assertRaises(ValueError):
+                        self.mod._safe_card_relative_path(card, value)
+
+    def test_build_manifest_item_preserves_extended_asset_metadata(self):
+        item = self.mod._build_manifest_item(
+            image_id="scene-0001",
+            kind="scene",
+            model="test-model",
+            prompt="draw scene",
+            rel_path="generated/images/scene-0001.png",
+            target="scene_illustration",
+            created_at=1234567890,
+            references=["characters/苏黎/苏黎.png"],
+            job_id="scene-round-000004",
+            characters=["苏黎"],
+        )
+
+        self.assertEqual(item["source_job_id"], "scene-round-000004")
+        self.assertEqual(item["references"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(item["characters"], ["苏黎"])
+        self.assertEqual(item["status"], "completed")
+
+    def test_write_job_status_writes_generated_job_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+
+            self.mod._write_job_status(
+                card,
+                "scene-round-000004",
+                {"status": "completed", "path": "generated/images/scene-0001.png"},
+            )
+
+            job_path = card / "generated" / "jobs" / "scene-round-000004.json"
+            self.assertTrue(job_path.exists())
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["path"], "generated/images/scene-0001.png")
+
+    def test_spawn_async_propagates_reference_output_path_job_id_and_character(self):
+        args = SimpleNamespace(
+            card_folder="card-folder",
+            prompt="draw scene",
+            kind="scene",
+            target="scene_illustration",
+            size="1024x1024",
+            model="test-model",
+            dry_run=True,
+            reference=["characters/苏黎/苏黎.png", "generated/images/scene-prev.png"],
+            output_path="characters/苏黎/苏黎.png",
+            job_id="scene-round-000004",
+            character=["苏黎", "旁白"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card-folder"
+            card.mkdir()
+            args.card_folder = str(card)
+            popen = mock.Mock()
+            with mock.patch.object(self.mod.subprocess, "Popen", popen):
+                result = self.mod._spawn_async(args)
+
+        self.assertTrue(result["ok"])
+        cmd = popen.call_args.args[0]
+        self.assertIn("--reference", cmd)
+        self.assertIn("characters/苏黎/苏黎.png", cmd)
+        self.assertIn("generated/images/scene-prev.png", cmd)
+        self.assertIn("--output-path", cmd)
+        self.assertIn("characters/苏黎/苏黎.png", cmd)
+        self.assertIn("--job-id", cmd)
+        self.assertIn("scene-round-000004", cmd)
+        self.assertIn("--character", cmd)
+        self.assertIn("苏黎", cmd)
+        self.assertIn("旁白", cmd)
 
     def test_call_openai_images_rejects_missing_base_url_without_default(self):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):
