@@ -244,8 +244,6 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
     for name in major:
         safe = _safe_name(name)
         profile_md = _read_character_file(card_folder, safe, "profile.md")
-        recent_md = _read_character_file(card_folder, safe, "recent.md")
-        goals_md = _read_character_file(card_folder, safe, "goals.md")
         state_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "state.json") or {}
         profile_json = read_json(Path(card_folder) / "memory" / "characters" / safe / "profile.json") or {}
         stat_slice = latest_vars.get(name, {}) if isinstance(latest_vars, dict) else {}
@@ -254,8 +252,6 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
             "importance": "major",
             "scene_relevance": "normal",
             "profile_summary": profile_md[:1200],
-            "recent_state": recent_md[:1200],
-            "goals": goals_md[:1000],
             "state": state_json,
             "profile": profile_json,
             "stat_slice": stat_slice,
@@ -598,8 +594,6 @@ def main():
             dynamic_parts.append(f"\n  Character: {ch.get('name')} ({ch.get('importance')}, relevance={ch.get('scene_relevance')})")
             if ch.get("profile_summary"):
                 dynamic_parts.append("    Profile: " + ch.get("profile_summary", "")[:300].replace("\n", " / "))
-            if ch.get("recent_state"):
-                dynamic_parts.append("    Recent: " + ch.get("recent_state", "")[:300].replace("\n", " / "))
 
     if agent_run_info:
         dynamic_parts.append("\n=== AGENT_RUN ===")

@@ -30,6 +30,17 @@ LEGACY_ACTOR_KEYS = {"action", "dialogue", "perception", "memory_delta"}
 ACTOR_OUTPUT_KEYS = {"agent", "agent_id", "character_name", "context_version", "events", "natural_reply"}
 ACTOR_EVENT_TYPES = {"reply"}
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
+ACTOR_CONTROL_PLANE_PHRASES = (
+    "http://localhost",
+    "localhost:8765",
+    "前端地址",
+    "送达前端",
+    "浏览器中输入下一步行动",
+    "局域网设备",
+    "Claude Code",
+    "AGENTS.md",
+    "CLAUDE.md",
+)
 
 GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "max_steps"}
 CRITIC_DECISIONS = {"pass", "revise", "block"}
@@ -58,6 +69,12 @@ SUBGM_OUTPUT_KEYS = [
 
 def _path(parent: str, key: str) -> str:
     return f"{parent}.{key}" if parent else key
+
+
+def _reject_control_plane_actor_reply(content: Any, path: str) -> None:
+    text = str(content or "")
+    if any(phrase in text for phrase in ACTOR_CONTROL_PLANE_PHRASES):
+        raise ValidationError(f"{path} contains control-plane delivery prose")
 
 
 def _require_dict(value: Any, path: str) -> Dict[str, Any]:
@@ -245,6 +262,7 @@ def natural_actor_output(actor_id: str, reply: Any, character_name: str = "") ->
     content = str(reply or "").strip()
     if not content:
         raise ValidationError("actor natural reply must not be blank")
+    _reject_control_plane_actor_reply(content, "actor_output.natural_reply")
     _reject_forbidden_keys({"natural_reply": content}, "actor_output")
 
     agent = "player" if actor_key == "player" else "character"
@@ -617,6 +635,7 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
         "natural_reply": _require_nonempty_str(data, "natural_reply", "actor_output"),
         "events": _normalize_actor_events(_require_list(data, "events", "actor_output"), "actor_output.events"),
     }
+    _reject_control_plane_actor_reply(normalized["natural_reply"], "actor_output.natural_reply")
     if len(normalized["events"]) != 1:
         raise ValidationError("actor_output.events must contain exactly one natural reply event")
     reply_event = normalized["events"][0]

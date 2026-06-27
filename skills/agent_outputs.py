@@ -17,6 +17,7 @@ import agent_schemas
 import agent_visibility
 import agent_visibility_guard
 import hidden_settings
+import player_decision_evidence
 import postprocess_outputs
 import runtime_settings
 import self_repair
@@ -830,8 +831,68 @@ def _require_called_actor_outputs(
                 )
 
 
-def _gm_output_stops_for_player_decision(gm_output: Dict[str, Any]) -> bool:
-    return str(gm_output.get("stop_reason") or "") == "player_decision" or gm_output.get("decision_point") is not None
+def _gm_output_declares_player_decision(gm_output: Dict[str, Any]) -> bool:
+    return str(gm_output.get("stop_reason") or "").strip() == "player_decision"
+
+
+def _role_action_channel_text(input_payload: Any) -> str:
+    return player_decision_evidence.role_action_reply({"player_inputs": input_payload})
+
+
+def _validate_gm_player_decisions(
+    input_payload: Any,
+    gm_outputs: list[Dict[str, Any]],
+    player_output_source_call_ids: list[str],
+    actor_path: Path,
+    gm_path: Path,
+) -> None:
+    player_participated = bool(_role_action_channel_text(input_payload))
+    player_output_source_ids = set(player_output_source_call_ids)
+    for index, output in enumerate(gm_outputs):
+        if not _gm_output_declares_player_decision(output):
+            for call in output.get("actor_calls", []):
+                if str(call.get("actor_id") or "").strip() != "player":
+                    continue
+                call_id = str(call.get("call_id") or "").strip()
+                if call_id and call_id in player_output_source_ids:
+                    player_participated = True
+            continue
+        validation = player_decision_evidence.valid_gm_player_decision(
+            output,
+            player_participated_before_gm=player_participated,
+        )
+        if not validation.get("valid"):
+            reason = str(validation.get("reason") or "invalid_player_decision")
+            if reason == "missing_prior_player_reply":
+                raise AgentOutputError(
+                    f"{actor_path.as_posix()}.player: player_decision requires prior player actor output"
+                )
+            raise AgentOutputError(f"{gm_path}.outputs[{index}].player_decision: {reason}")
+        for call in output.get("actor_calls", []):
+            if str(call.get("actor_id") or "").strip() != "player":
+                continue
+            call_id = str(call.get("call_id") or "").strip()
+            if call_id and call_id in player_output_source_ids:
+                player_participated = True
+
+
+def _player_output_source_call_ids_for_decision_chronology(
+    root: Path,
+    raw_trace: Dict[str, Any] | None,
+    normalized_actor_outputs: Dict[str, list[Dict[str, Any]]],
+    required_actor_counts: Dict[str, Counter[str]],
+    actor_path: Path,
+) -> list[str]:
+    if raw_trace is None or not normalized_actor_outputs.get("player"):
+        return []
+    output_source_call_ids_by_actor = _validate_actor_output_provenance(
+        root,
+        raw_trace,
+        {"player": normalized_actor_outputs["player"]},
+        {"player": Counter(required_actor_counts.get("player", Counter()))},
+        actor_path,
+    )
+    return output_source_call_ids_by_actor.get("player", [])
 
 
 def _gm_actor_call_requires_output(gm_output: Dict[str, Any], actor_id: str) -> bool:
@@ -957,7 +1018,7 @@ def _validate_actor_output_provenance(
 
 
 
-def _load_loop_outputs(root: Path) -> Dict[str, Any]:
+def _load_loop_outputs(root: Path, input_payload: Any = None, raw_trace: Dict[str, Any] | None = None) -> Dict[str, Any]:
     gm_path = _artifact_path(root, "gm.output.json")
     actor_path = _artifact_path(root, "actor.outputs.json")
     gm_loop = _read_json_required(gm_path)
@@ -1003,11 +1064,22 @@ def _load_loop_outputs(root: Path) -> Dict[str, Any]:
             normalized_outputs.append(normalized)
         normalized_actor_outputs[actor_key] = normalized_outputs
 
-    if any(_gm_output_stops_for_player_decision(output) for output in normalized_gm_outputs):
-        if not normalized_actor_outputs.get("player"):
-            raise AgentOutputError(
-                f"{actor_path.as_posix()}.player: player_decision requires player actor output"
-            )
+    player_output_source_call_ids = []
+    if any(_gm_output_declares_player_decision(output) for output in normalized_gm_outputs):
+        player_output_source_call_ids = _player_output_source_call_ids_for_decision_chronology(
+            root,
+            raw_trace,
+            normalized_actor_outputs,
+            required_actor_counts,
+            actor_path,
+        )
+    _validate_gm_player_decisions(
+        input_payload,
+        normalized_gm_outputs,
+        player_output_source_call_ids,
+        actor_path,
+        gm_path,
+    )
 
     return {
         "gm": {"agent": "gm_loop", "outputs": normalized_gm_outputs},
@@ -1491,7 +1563,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
         hidden_phrases,
         f"{root / 'interaction.trace.json'}",
     )
-    loop_outputs = _load_loop_outputs(root)
+    loop_outputs = _load_loop_outputs(root, input_payload, raw_trace)
     gm_path = _artifact_path(root, "gm.output.json")
     actor_path = _artifact_path(root, "actor.outputs.json")
     _validate_gm_output_visibility(gm_path, loop_outputs["gm"]["outputs"], input_payload)
@@ -1559,81 +1631,7 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
 
 def extract_player_critical_action_evidence(story_input) -> list[Dict[str, Any]]:
     """Extract GM-declared player decision evidence from story input."""
-    if not isinstance(story_input, dict):
-        return []
-    evidence = []
-    gm_outputs = story_input.get("gm")
-    if not isinstance(gm_outputs, list):
-        loop_outputs = story_input.get("loop_outputs")
-        if isinstance(loop_outputs, dict):
-            gm_branch = loop_outputs.get("gm")
-            if isinstance(gm_branch, dict):
-                gm_outputs = gm_branch.get("outputs")
-    if not isinstance(gm_outputs, list):
-        return evidence
-    player_actions = _player_actor_replies_for_critical_action(story_input)
-    if not player_actions:
-        return evidence
-    for index, output in enumerate(gm_outputs):
-        if not isinstance(output, dict):
-            continue
-        if str(output.get("stop_reason") or "").strip() != "player_decision":
-            continue
-        decision_point = output.get("decision_point")
-        if not isinstance(decision_point, dict):
-            continue
-        gm_label = str(
-            decision_point.get("required_label")
-            or decision_point.get("content")
-            or decision_point.get("summary")
-            or decision_point.get("reason")
-            or ""
-        ).strip()
-        label = player_actions[-1] if player_actions else gm_label
-        if not label:
-            continue
-        evidence_id = str(decision_point.get("id") or "").strip() or f"player-decision-{index + 1}"
-        evidence.append(
-            {
-                "id": evidence_id,
-                "required_label": label,
-                "risk_level": "gm_decision",
-            }
-        )
-    return evidence
-
-
-def _player_actor_replies_for_critical_action(story_input: Dict[str, Any]) -> list[str]:
-    loop_outputs = story_input.get("loop_outputs")
-    if not isinstance(loop_outputs, dict):
-        return []
-    actors = loop_outputs.get("actors")
-    if not isinstance(actors, dict):
-        return []
-    player_outputs = actors.get("player")
-    if not isinstance(player_outputs, list):
-        return []
-    replies: list[str] = []
-    for output in player_outputs:
-        if not isinstance(output, dict):
-            continue
-        natural = str(output.get("natural_reply") or "").strip()
-        if natural:
-            replies.append(natural)
-            continue
-        events = output.get("events")
-        if not isinstance(events, list):
-            continue
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            if str(event.get("type") or "") != "reply":
-                continue
-            content = str(event.get("content") or "").strip()
-            if content:
-                replies.append(content)
-                break
-    return replies
+    return player_decision_evidence.extract_player_critical_action_evidence(story_input)
 
 
 def build_critic_quality_metrics(run_dir: str | Path, story_output: Dict[str, Any]) -> Dict[str, Any]:

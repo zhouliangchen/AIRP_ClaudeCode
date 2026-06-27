@@ -16,6 +16,7 @@ GM_LINE = "\u4f60\u542c\u89c1\u65e7\u95e8\u8f74\u5728\u54cd\u3002"
 SELF_LINE = "\u6211\u505c\u5728\u95e8\u53e3\u3002"
 GM_MEMORY_LINE = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a" + GM_LINE
 SELF_MEMORY_LINE = "\u6211\uff1a" + SELF_LINE
+CONTROL_PLANE_LINE = "\u5f00\u5c40\u5df2\u9001\u8fbe\u524d\u7aef -> http://localhost:8765\uff0c\u53ef\u4ee5\u5728\u6d4f\u89c8\u5668\u4e2d\u8f93\u5165\u4e0b\u4e00\u6b65\u884c\u52a8\u3002"
 OLD_ARCHIVE = "\u65e7\u6863\u6848\u5ba4"
 KEY_SUMMARY = "\u6211\u66fe\u5728\u65e7\u6863\u6848\u5ba4\u53d1\u73b0\u5c01\u5b58\u540d\u518c\u3002"
 KEY_DETAIL = "\u90a3\u672c\u540d\u518c\u8bb0\u5f55\u4e86\u82cf\u9ece\u5931\u8e2a\u524d\u6700\u540e\u4e00\u6b21\u767b\u8bb0\u3002"
@@ -63,6 +64,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertTrue((self.card / "characters" / "雨蒙" / "profile.md").exists())
         self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "profile.md").exists())
         self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "background.md").exists())
+        self.assertTrue((self.card / "memory" / "characters" / "雨蒙" / "recent.md").exists())
         self.assertFalse((self.card / "memory" / "player").exists())
         self.assertFalse((self.card / "characters" / "_self").exists())
 
@@ -88,6 +90,9 @@ class ActorMemoryStoreTest(unittest.TestCase):
             "long_term": self.card / "characters" / "雨蒙" / "long_term_memories.md",
             "key_memories": self.card / "characters" / "雨蒙" / "key_memories.json",
             "short_term": self.card / "characters" / "雨蒙" / "short_term_memories.md",
+            "objective_profile": self.card / "memory" / "characters" / "雨蒙" / "profile.md",
+            "background": self.card / "memory" / "characters" / "雨蒙" / "background.md",
+            "objective_recent": self.card / "memory" / "characters" / "雨蒙" / "recent.md",
         }
 
         for attr, expected_path in expected.items():
@@ -134,6 +139,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertTrue((paths.actor_dir / "short_term_memories.md").exists())
         self.assertTrue((paths.objective_dir / "profile.md").exists())
         self.assertTrue((paths.objective_dir / "background.md").exists())
+        self.assertTrue((paths.objective_dir / "recent.md").exists())
         self.assertEqual(
             json.loads((paths.actor_dir / "key_memories.json").read_text(encoding="utf-8")),
             {"memories": []},
@@ -232,6 +238,41 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertNotIn("\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a", text)
         self.assertNotIn("\u6211\u56de\u5e94\uff1a", text)
         self.assertFalse(self.store.append_short_term_dialogue(self.card, "player", "gm", "", source_id="empty"))
+
+    def test_append_short_term_dialogue_rejects_control_plane_delivery_prose(self):
+        self.assertTrue(
+            self.store.append_short_term_dialogue(
+                self.card,
+                "player",
+                "gm",
+                GM_LINE,
+                source_id="call-1",
+            )
+        )
+        self.assertFalse(
+            self.store.append_short_term_dialogue(
+                self.card,
+                "player",
+                "player",
+                CONTROL_PLANE_LINE,
+                source_id="reply-1",
+            )
+        )
+        self.assertTrue(
+            self.store.append_short_term_dialogue(
+                self.card,
+                "player",
+                "player",
+                SELF_LINE,
+                source_id="reply-1",
+            )
+        )
+
+        text = self.store.actor_paths(self.card, "player").short_term.read_text(encoding="utf-8")
+        self.assertIn(GM_MEMORY_LINE, text)
+        self.assertIn(SELF_MEMORY_LINE, text)
+        self.assertNotIn("localhost:8765", text)
+        self.assertNotIn("\u9001\u8fbe\u524d\u7aef", text)
 
     def test_recall_key_memory_matches_natural_query_with_fullwidth_and_ascii_colons(self):
         self.store.ensure_actor_files(self.card, "player")

@@ -49,11 +49,13 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _append_lines(path: Path, header: str, lines: Iterable[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else header.rstrip() + "\n"
+    existing = path.read_text(encoding="utf-8") if path.exists() else (header.rstrip() + "\n" if header else "")
     addition = "\n".join(line for line in lines if line)
     if not addition:
         return
-    path.write_text(existing.rstrip() + "\n" + addition + "\n", encoding="utf-8")
+    prefix = existing.rstrip()
+    text = f"{prefix}\n{addition}\n" if prefix else f"{addition}\n"
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -164,8 +166,7 @@ def _prepare_actor_memory_delta(
     actor_id = str(agent_id or "").strip()
     if actor_id == "player":
         normalized_id = "player"
-        recent_path = card / "memory" / "player" / "recent.md"
-        header = "# Player Agent Memory\n"
+        memory_path = actor_memory_store.actor_paths(card, "player").short_term
     elif actor_id.startswith("character:"):
         name = actor_id.split(":", 1)[1].strip()
         if not name:
@@ -173,10 +174,9 @@ def _prepare_actor_memory_delta(
         marker = _contains_forbidden_marker(name)
         if marker:
             raise MemoryIngestionError(f"{path}: forbidden actor marker {marker}")
-        safe = _safe_name(name)
-        normalized_id = f"character:{safe}"
-        recent_path = card / "memory" / "characters" / safe / "recent.md"
-        header = "# Character Recent Memory\n"
+        paths = actor_memory_store.actor_paths(card, actor_id)
+        normalized_id = f"character:{paths.name}"
+        memory_path = paths.short_term
     else:
         marker = _contains_forbidden_marker(actor_id)
         if marker:
@@ -191,7 +191,8 @@ def _prepare_actor_memory_delta(
     if key in ledger:
         return None
 
-    return recent_path, header, _dated_lines(date_str, round_id, normalized_id, texts), key, normalized_id
+    lines = [f"{actor_memory_store.SELF_REPLIED_PREFIX}{text}" for text in texts]
+    return memory_path, "", lines, key, normalized_id
 
 
 def _post_round_job_output_path(agent_id: str) -> str:
@@ -206,18 +207,16 @@ def _post_round_job_prompt_path(agent_id: str) -> str:
     return f"prompts/post_round_memory/{_safe_name(agent_id)}.prompt.md"
 
 
-def _actor_memory_paths(card: Path, agent_id: str) -> tuple[str, Path, Path]:
-    if agent_id == "player":
-        base = card / "memory" / "player"
-        return "player", base, base / "recent.md"
-    if agent_id.startswith("character:"):
-        name = agent_id.split(":", 1)[1] or "_unknown"
-        safe = _safe_name(name)
-        base = card / "memory" / "characters" / safe
-        return name, base, base / "recent.md"
-    safe = _safe_name(agent_id)
-    base = card / "memory" / "agent_summaries" / safe
-    return agent_id, base, base / "recent.md"
+def _post_round_objective_job_output_path(agent_id: str) -> str:
+    return f"post_round_objective_memory_jobs/{_safe_name(agent_id)}.summary.json"
+
+
+def _post_round_objective_job_input_path(agent_id: str) -> str:
+    return f"post_round_objective_memory_jobs/{_safe_name(agent_id)}.job.json"
+
+
+def _post_round_objective_job_prompt_path(agent_id: str) -> str:
+    return f"prompts/post_round_objective_memory/{_safe_name(agent_id)}.prompt.md"
 
 
 def _read_optional_text(path: Path, limit: int = 12000) -> str:
@@ -298,8 +297,21 @@ def _actor_response_dialogue_items(outputs: Any) -> list[dict[str, str]]:
     for output in outputs if isinstance(outputs, list) else []:
         if not isinstance(output, dict):
             continue
+        natural_reply = str(output.get("natural_reply") or "").strip()
+        if natural_reply:
+            items.append(
+                {
+                    "speaker": "我",
+                    "source_call_id": str(output.get("source_call_id") or ""),
+                    "event_type": "natural_reply",
+                    "content": natural_reply,
+                }
+            )
+            continue
         for event in output.get("events") or []:
             if not isinstance(event, dict):
+                continue
+            if str(event.get("type") or "").strip() != "reply":
                 continue
             content = str(event.get("content") or "").strip()
             if not content:
@@ -553,6 +565,10 @@ def _post_round_memory_prompt(
     display_name = str(job_payload.get("display_name") or "").strip()
     name_line = f"我是 {display_name}。" if display_name else "我是当前正在整理记忆的这个人。"
     return f"""
+# 回合末尾自我记忆整理规则
+
+player 和 character 使用同一套整理规则。我的整理材料只来自 `characters/<角色名>/profile.md` 原文、`long_term_memories.md`、`key_memories.json` 的 tag/summary 线索、`short_term_memories.md`，以及本轮我和 GM/subGM 的直接对话。重点记忆 detail 不作为常驻输入；我只能在最终 JSON 中输出整理后的完整 `long_term_memories` 和完整 `key_memories` 列表。系统会在成功写回长期记忆和重点记忆后清空短期记忆。
+
 # 我的记忆整理
 
 {name_line}
@@ -583,6 +599,91 @@ def _post_round_memory_prompt(
 """
 
 
+def _post_round_objective_job_payload(
+    card: Path,
+    run_dir: Path,
+    story_input: Dict[str, Any],
+    agent_id: str,
+) -> Dict[str, Any]:
+    paths = actor_memory_store.ensure_actor_files(card, agent_id)
+    payload = {
+        "agent_id": "gm",
+        "target_actor_id": agent_id,
+        "character_name": paths.name,
+        "round_id": str(story_input.get("round_id") or run_dir.name),
+        "current_recent": _read_optional_text(paths.objective_recent, limit=20000),
+        "objective_profile": _read_optional_text(paths.objective_profile, limit=12000),
+        "actor_profile": _read_optional_text(paths.profile, limit=12000),
+        "round_events": _actor_visible_events(story_input, agent_id),
+    }
+    return payload
+
+
+def _post_round_objective_memory_prompt(
+    run_dir: Path,
+    agent_id: str,
+    output_path: str,
+    job_payload: Dict[str, Any],
+) -> str:
+    character_name = str(job_payload.get("character_name") or "").strip()
+    contract = {
+        "agent_id": "gm",
+        "updates": [
+            {
+                "character_name": character_name,
+                "recent": "完整的 memory/characters/<角色>/recent.md 内容",
+                "objective_profile": "可选；完整的 memory/characters/<角色>/profile.md 内容",
+                "actor_profile": "可选；完整的 characters/<角色>/profile.md 第一人称内容",
+            }
+        ],
+    }
+    return f"""
+# GM 角色客观记忆整理
+
+你是 GM agent。你需要在每轮剧情输出后，读取并整理本轮参与剧情角色的上帝视角近期经历与可选设定更新。
+
+这不是 player/character 的个人记忆整理。不要使用第一人称角色自述来代替 GM 判断；也不要把控制面、文件路径、调试信息或前端信息写入任何存档文件。
+
+## 当前角色
+
+- actor id: {agent_id}
+- 角色名: {character_name or "未命名"}
+- round: {job_payload.get("round_id") or run_dir.name}
+
+## 已有 memory/characters/<角色>/recent.md
+
+{job_payload.get("current_recent") or "暂无。"}
+
+## 已有 memory/characters/<角色>/profile.md
+
+{job_payload.get("objective_profile") or "暂无。"}
+
+## 已有 characters/<角色>/profile.md
+
+{job_payload.get("actor_profile") or "暂无。"}
+
+## 本轮与该角色相关的剧情材料
+
+```json
+{json.dumps(job_payload.get("round_events") or [], ensure_ascii=False, indent=2)}
+```
+
+## 写回规则
+
+- `recent` 必须是整理后的完整 `memory/characters/<角色>/recent.md` 内容，而不是增量片段。
+- 只有角色客观设定确实需要变化时，才输出 `objective_profile`。
+- 只有角色第一人称自我介绍确实需要变化时，才输出 `actor_profile`；该字段会写入 `characters/<角色>/profile.md`，必须保持角色第一人称沉浸口吻，不得包含幕后控制面信息。
+- 没有变化的 profile 字段可以省略或为空。
+- 最终只返回 JSON 对象，系统会保存到 `{output_path}`。
+
+## 输出 JSON 契约
+
+```json
+{json.dumps(contract, ensure_ascii=False, indent=2)}
+```
+"""
+
+
 def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
     """Materialize actor-safe post-round memory jobs for actors used this round."""
     card = Path(card_folder)
@@ -593,8 +694,11 @@ def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path
 
     scheduled_agents = _participating_actors(story_input)
     scheduled_entries: Dict[str, Dict[str, str]] = {}
+    objective_entries: Dict[str, Dict[str, str]] = {}
     payloads: Dict[str, Dict[str, Any]] = {}
     prompt_texts: Dict[str, str] = {}
+    objective_payloads: Dict[str, Dict[str, Any]] = {}
+    objective_prompt_texts: Dict[str, str] = {}
     for agent_id in scheduled_agents:
         job_rel = _post_round_job_input_path(agent_id)
         prompt_rel = _post_round_job_prompt_path(agent_id)
@@ -607,6 +711,22 @@ def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path
             "prompt": prompt_rel,
             "output": output_rel,
         }
+        objective_job_rel = _post_round_objective_job_input_path(agent_id)
+        objective_prompt_rel = _post_round_objective_job_prompt_path(agent_id)
+        objective_output_rel = _post_round_objective_job_output_path(agent_id)
+        objective_payload = _post_round_objective_job_payload(card, root, story_input, agent_id)
+        objective_payloads[agent_id] = objective_payload
+        objective_prompt_texts[agent_id] = _post_round_objective_memory_prompt(
+            root,
+            agent_id,
+            objective_output_rel,
+            objective_payload,
+        )
+        objective_entries[agent_id] = {
+            "job": objective_job_rel,
+            "prompt": objective_prompt_rel,
+            "output": objective_output_rel,
+        }
 
     manifest = _read_json(root / "manifest.json", {})
     if not isinstance(manifest, dict):
@@ -617,10 +737,18 @@ def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path
         "scheduled": scheduled_entries,
         "failed": {},
     }
+    manifest["post_round_objective_memory_jobs"] = {
+        "status": "pending" if objective_entries else "not_required",
+        "scheduled": objective_entries,
+        "failed": {},
+    }
 
     manifest_path = root / "manifest.json"
     artifact_paths: list[Path] = [manifest_path]
     for entry in scheduled_entries.values():
+        artifact_paths.append(root / entry["job"])
+        artifact_paths.append(root / entry["prompt"])
+    for entry in objective_entries.values():
         artifact_paths.append(root / entry["job"])
         artifact_paths.append(root / entry["prompt"])
     snapshots = _snapshot_files(artifact_paths)
@@ -630,6 +758,10 @@ def schedule_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path
             prompt_rel = scheduled_entries[agent_id]["prompt"]
             _write_json(root / job_rel, payloads[agent_id])
             _write_text(root / prompt_rel, prompt_texts[agent_id])
+            objective_job_rel = objective_entries[agent_id]["job"]
+            objective_prompt_rel = objective_entries[agent_id]["prompt"]
+            _write_json(root / objective_job_rel, objective_payloads[agent_id])
+            _write_text(root / objective_prompt_rel, objective_prompt_texts[agent_id])
         _write_json(manifest_path, manifest)
     except Exception:
         _restore_files(snapshots)
@@ -653,6 +785,25 @@ def _update_post_round_job_status(root: str | Path, status: str, failed: Dict[st
     else:
         jobs.setdefault("failed", {})
     manifest["post_round_memory_jobs"] = jobs
+    _write_json(manifest_path, manifest)
+    return jobs
+
+
+def _update_post_round_objective_job_status(root: str | Path, status: str, failed: Dict[str, str] | None = None) -> Dict[str, Any]:
+    run_dir = Path(root)
+    manifest_path = run_dir / "manifest.json"
+    manifest = _read_json(manifest_path, {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    jobs = manifest.get("post_round_objective_memory_jobs", {})
+    if not isinstance(jobs, dict):
+        jobs = {}
+    jobs["status"] = status
+    if failed is not None:
+        jobs["failed"] = dict(failed)
+    else:
+        jobs.setdefault("failed", {})
+    manifest["post_round_objective_memory_jobs"] = jobs
     _write_json(manifest_path, manifest)
     return jobs
 
@@ -684,6 +835,77 @@ def _validate_post_round_memory_update(payload: Any, expected_agent_id: str, pat
         raise MemoryIngestionError(f"{path.name}: {exc}") from exc
 
 
+def _objective_text_field(value: Any, field: str, limit: int, *, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if required and not text:
+        raise MemoryIngestionError(f"{field} is required")
+    if len(text) > limit:
+        raise MemoryIngestionError(f"{field} exceeds {limit} characters")
+    if actor_memory_store._contains_control_plane_memory_text(text):
+        raise MemoryIngestionError(f"{field} contains control-plane text")
+    return text
+
+
+def _validate_post_round_objective_memory_update(
+    payload: Any,
+    expected_agent_id: str,
+    expected_name: str,
+    path: Path,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise MemoryIngestionError(f"{path.name}: objective summary payload must be an object")
+    declared_agent = str(payload.get("agent_id") or "").strip()
+    if declared_agent != "gm":
+        raise MemoryIngestionError(f"{path.name}: agent_id must be gm")
+    updates = payload.get("updates")
+    if not isinstance(updates, list) or not updates:
+        raise MemoryIngestionError(f"{path.name}: updates must be a non-empty list")
+    normalized: dict[str, str] | None = None
+    for index, item in enumerate(updates):
+        if not isinstance(item, dict):
+            raise MemoryIngestionError(f"{path.name}: updates[{index}] must be an object")
+        character_name = str(item.get("character_name") or "").strip()
+        if character_name and character_name != expected_name:
+            continue
+        recent = _objective_text_field(item.get("recent"), "recent", 20000, required=True)
+        objective_profile = _objective_text_field(item.get("objective_profile"), "objective_profile", 12000)
+        actor_profile = _objective_text_field(item.get("actor_profile"), "actor_profile", 12000)
+        if actor_profile:
+            _validate_post_round_actor_safe_payload(actor_profile, f"{path.name}.updates[{index}].actor_profile")
+        normalized = {
+            "character_name": character_name or expected_name,
+            "recent": recent,
+            "objective_profile": objective_profile,
+            "actor_profile": actor_profile,
+        }
+        break
+    if normalized is None:
+        raise MemoryIngestionError(f"{path.name}: no update matched {expected_agent_id}")
+    return normalized
+
+
+def _validate_post_round_objective_memory_update_for_card(
+    card: Path,
+    payload: Any,
+    expected_agent_id: str,
+    path: Path,
+) -> dict[str, Any]:
+    expected_name = actor_memory_store.actor_paths(card, expected_agent_id).name
+    update = _validate_post_round_objective_memory_update(payload, expected_agent_id, expected_name, path)
+    if update["character_name"] != expected_name:
+        raise MemoryIngestionError(f"{path.name}: character_name mismatch, expected {expected_name}")
+    return update
+
+
+def _apply_objective_memory_update(card: Path, expected_agent_id: str, update: dict[str, str]) -> None:
+    paths = actor_memory_store.ensure_actor_files(card, expected_agent_id)
+    _write_text(paths.objective_recent, update["recent"])
+    if update.get("objective_profile"):
+        _write_text(paths.objective_profile, update["objective_profile"])
+    if update.get("actor_profile"):
+        _write_text(paths.profile, update["actor_profile"])
+
+
 def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) -> Dict[str, Any]:
     """Persist completed `post_round_memory_jobs/*.summary.json` outputs into actor memory."""
     card = Path(card_folder)
@@ -691,6 +913,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
     manifest = _read_json(root / "manifest.json", {})
     if not isinstance(manifest, dict):
         _update_post_round_job_status(root, "not_required", failed={})
+        _update_post_round_objective_job_status(root, "not_required", failed={})
         return {
             "ok": True,
             "status": "not_required",
@@ -703,6 +926,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
     jobs = manifest.get("post_round_memory_jobs")
     if not isinstance(jobs, dict):
         _update_post_round_job_status(root, "not_required", failed={})
+        _update_post_round_objective_job_status(root, "not_required", failed={})
         return {
             "ok": True,
             "status": "not_required",
@@ -715,6 +939,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
     scheduled_raw = jobs.get("scheduled")
     if not isinstance(scheduled_raw, dict) or not scheduled_raw:
         _update_post_round_job_status(root, "not_required", failed={})
+        _update_post_round_objective_job_status(root, "not_required", failed={})
         return {
             "ok": True,
             "status": "not_required",
@@ -725,6 +950,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
         }
 
     scheduled: Dict[str, tuple[Path, str]] = {}
+    objective_scheduled: Dict[str, tuple[Path, str]] = {}
     failed: Dict[str, str] = {}
     for raw_agent_id, entry in scheduled_raw.items():
         agent_id = str(raw_agent_id or "").strip()
@@ -738,6 +964,22 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
             failed[agent_id] = "post_round_memory_jobs scheduled output path is required"
             continue
         scheduled[agent_id] = (_post_round_output_path(root, output_rel), output_rel)
+
+    objective_jobs = manifest.get("post_round_objective_memory_jobs")
+    objective_scheduled_raw = objective_jobs.get("scheduled") if isinstance(objective_jobs, dict) else {}
+    if isinstance(objective_scheduled_raw, dict):
+        for raw_agent_id, entry in objective_scheduled_raw.items():
+            agent_id = str(raw_agent_id or "").strip()
+            if not agent_id:
+                continue
+            if not isinstance(entry, dict):
+                failed[f"objective:{agent_id}"] = "post_round_objective_memory_jobs scheduled entry must be an object"
+                continue
+            output_rel = entry.get("output")
+            if not isinstance(output_rel, str) or not output_rel.strip():
+                failed[f"objective:{agent_id}"] = "post_round_objective_memory_jobs scheduled output path is required"
+                continue
+            objective_scheduled[agent_id] = (_post_round_output_path(root, output_rel), output_rel)
 
     ingested: list[str] = []
     missing: Dict[str, str] = {}
@@ -753,8 +995,25 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
         except Exception as exc:
             failed[expected_agent_id] = str(exc)
 
+    for expected_agent_id, (path, output_rel) in sorted(objective_scheduled.items(), key=lambda item: item[0]):
+        if not path.exists():
+            missing[f"objective:{expected_agent_id}"] = output_rel
+            continue
+        try:
+            payload = _read_json(path, {})
+            update = _validate_post_round_objective_memory_update_for_card(
+                card,
+                payload,
+                expected_agent_id,
+                path,
+            )
+            _apply_objective_memory_update(card, expected_agent_id, update)
+        except Exception as exc:
+            failed[f"objective:{expected_agent_id}"] = str(exc)
+
     if failed:
         _update_post_round_job_status(root, "degraded_memory_state", failed=failed)
+        _update_post_round_objective_job_status(root, "degraded_memory_state", failed=failed)
         return {
             "ok": False,
             "status": "degraded_memory_state",
@@ -765,6 +1024,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
         }
     if missing:
         _update_post_round_job_status(root, "pending", failed={})
+        _update_post_round_objective_job_status(root, "pending", failed={})
         return {
             "ok": False,
             "status": "pending",
@@ -775,6 +1035,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
         }
 
     _update_post_round_job_status(root, "complete", failed={})
+    _update_post_round_objective_job_status(root, "complete", failed={})
     return {
         "ok": True,
         "status": "complete",

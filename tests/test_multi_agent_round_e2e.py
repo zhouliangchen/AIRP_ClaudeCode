@@ -83,6 +83,21 @@ def _post_round_memory_update_payload(agent_id, *, character_name="", key_memory
     return payload
 
 
+def _post_round_objective_memory_update_payload(agent_id, *, character_name=""):
+    name = character_name or ("player" if agent_id == "player" else agent_id.split(":", 1)[1])
+    return {
+        "agent_id": "gm",
+        "updates": [
+            {
+                "character_name": name,
+                "recent": f"GM记录：{name}在档案门前参与了本轮推进。\n",
+                "objective_profile": f"GM记录：{name}与档案门事件有关。\n",
+                "actor_profile": f"我是{name}。我记得档案门前发生过重要转折。\n",
+            }
+        ],
+    }
+
+
 def _write_valid_postprocess_artifact(run_dir, *, round_id, include_player_decision_option=False):
     options = [
         {
@@ -94,7 +109,7 @@ def _write_valid_postprocess_artifact(run_dir, *, round_id, include_player_decis
     if include_player_decision_option:
         options.append(
             {
-                "label": "Confirm action: whether to enter the airlock",
+                "label": "Confirm action: I keep one hand on the doorframe and look inside.",
                 "source": "player_agent_critical_action",
                 "requires_confirmation": True,
             }
@@ -163,8 +178,8 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
             ],
             "parallel_groups": [],
             "world_state_delta": [{"scope": "hidden_truth", "fact": "the archive is a disguised moon base"}],
-            "decision_point": {"reason": "whether to enter the airlock", "options": ["enter", "wait"]} if mark_decision else None,
-            "stop_reason": "player_decision" if mark_decision else "complete",
+            "decision_point": None,
+            "stop_reason": "continue" if mark_decision else "complete",
         }
 
         actor_outputs = {
@@ -210,7 +225,22 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         if mark_decision:
             self.agent_interactions.mark_decision_point(run_dir, "player must choose whether to enter", ["enter", "wait"])
 
-        _write_json(run_dir / "artifacts" / "gm.output.json", {"agent": "gm_loop", "outputs": [gm_output]})
+        gm_outputs = [gm_output]
+        if mark_decision:
+            gm_outputs.append(
+                {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The threshold waits for the player's next choice."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {"reason": "whether to enter the airlock", "options": ["enter", "wait"]},
+                    "stop_reason": "player_decision",
+                }
+            )
+
+        _write_json(run_dir / "artifacts" / "gm.output.json", {"agent": "gm_loop", "outputs": gm_outputs})
         _write_json(run_dir / "artifacts" / "actor.outputs.json", actor_outputs)
 
     def test_complete_file_protocol_round_without_live_model(self):
@@ -399,6 +429,16 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
                     active_goal="Watch the threshold.",
                 )
             _write_json(run_dir / path, payload)
+        objective_jobs = manifest_with_jobs["post_round_objective_memory_jobs"]["scheduled"]
+        for agent_id, entry in objective_jobs.items():
+            character_name = "player" if agent_id == "player" else agent_id.split(":", 1)[1]
+            _write_json(
+                run_dir / entry["output"],
+                _post_round_objective_memory_update_payload(
+                    agent_id,
+                    character_name=character_name,
+                ),
+            )
 
         post_round_memory = self.agent_memory.ingest_post_round_memory_jobs(self.card, run_dir)
         delivered = self.agent_outputs.mark_delivered(self.card)
@@ -438,12 +478,14 @@ class MultiAgentRoundE2ETest(unittest.TestCase):
         ada_long_term = (ada_memory_dir / "long_term_memories.md").read_text(encoding="utf-8")
         ada_key_memories = json.loads((ada_memory_dir / "key_memories.json").read_text(encoding="utf-8"))
         ada_short_term = (ada_memory_dir / "short_term_memories.md").read_text(encoding="utf-8")
+        ada_objective_recent = (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8")
         self.assertIn("I remember opening the archive door", player_long_term)
         self.assertIn("I opened the archive door", json.dumps(player_key_memories, ensure_ascii=False))
         self.assertEqual(player_short_term, "")
         self.assertIn("I remember seeing the player hesitate", ada_long_term)
         self.assertIn("I watched the player hesitate", json.dumps(ada_key_memories, ensure_ascii=False))
         self.assertEqual(ada_short_term, "")
+        self.assertEqual(ada_objective_recent, "GM记录：Ada在档案门前参与了本轮推进。\n")
         self.assertFalse((player_memory_dir / "summary.md").exists())
         self.assertFalse((ada_memory_dir / "summary.md").exists())
         self.assertFalse((self.card / "characters" / "_self").exists())

@@ -176,6 +176,85 @@ def _filter_actor_unaware_important_characters(world_updates: Any) -> tuple[Dict
     return filtered, skipped
 
 
+def _card_looks_blank_bootstrap(card_data: Dict[str, Any]) -> bool:
+    if not isinstance(card_data, dict):
+        return False
+    data = card_data.get("data") if isinstance(card_data.get("data"), dict) else {}
+    name = str(card_data.get("name") or data.get("name") or "").strip()
+    return (
+        str(card_data.get("mode") or "").strip() == "blank_bootstrap"
+        or str(card_data.get("source_type") or "").strip() == "blank"
+        or name in {"", "未命名角色", "player"}
+    )
+
+
+def _player_mapping_is_unset_or_default(card_folder: Any) -> bool:
+    path = Path(card_folder) / "characters" / actor_memory_store.PLAYER_MAPPING_FILE
+    if not path.exists():
+        return True
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[key.strip().casefold()] = value.strip()
+    return values.get("name") in {"", "player"} and values.get("path") in {
+        "",
+        "characters/player",
+    }
+
+
+def _analysis_declares_player_character(analysis: Dict[str, Any]) -> bool:
+    for unit in analysis.get("semantic_units", []) if isinstance(analysis, dict) else []:
+        if not isinstance(unit, dict):
+            continue
+        if (
+            str(unit.get("type") or "").strip() == "character_declaration"
+            and str(unit.get("source_channel") or "").strip() == "role_input"
+        ):
+            return True
+    return False
+
+
+def _maybe_write_initial_player_mapping(
+    card_folder: Any,
+    card_data: Dict[str, Any],
+    analysis: Dict[str, Any],
+    character_records: list[Dict[str, Any]],
+) -> dict[str, str]:
+    if (
+        not _card_looks_blank_bootstrap(card_data)
+        or not _analysis_declares_player_character(analysis)
+        or not _player_mapping_is_unset_or_default(card_folder)
+    ):
+        return {}
+    usable_records = [
+        record
+        for record in character_records
+        if isinstance(record, dict)
+        and not record.get("profile_preserved")
+        and str(record.get("name") or "").strip()
+    ]
+    names = {str(record.get("name") or "").strip() for record in usable_records}
+    if len(names) != 1:
+        return {}
+    record = usable_records[0]
+    name = str(record.get("name") or "").strip()
+    safe_name = str(record.get("safe_name") or name).strip()
+    if not name or not safe_name:
+        return {}
+    return actor_memory_store.write_player_mapping(
+        card_folder,
+        name,
+        f"characters/{safe_name}",
+    )
+
+
 def _source_input_id(raw_request: Dict[str, Any]) -> str:
     explicit_payload = raw_request.get("explicit_payload")
     if isinstance(explicit_payload, dict):
@@ -679,6 +758,7 @@ def apply_current_run(card_folder, root_dir=None):
         round_id=run_dir.name,
         source_agent="preprocess",
     )
+    _maybe_write_initial_player_mapping(card_folder, card_data, analysis, character_records)
 
     previous_input = agent_run.read_json(run_dir / "input.json", {}) or {}
     chat_log = previous_input.get("recent_chat", [])

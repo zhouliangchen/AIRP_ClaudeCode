@@ -31,7 +31,7 @@ During the turn, respond to subagent outputs:
 1. Read `gm.context.json`.
 2. Return a GM output object with world state, actor calls, and scene pressure. The orchestrator persists it under `gm.output.json` as `{ "agent": "gm_loop", "outputs": [...] }`.
 3. After player/character outputs, update non-core NPC reactions and consequence notes if needed.
-4. Stop when the next unresolved issue is a real player decision or when the chapter word/scene target is met. A `player_decision` requires a prior player actor response in this loop; if you have not called `"actor_id": "player"` and received that response, keep `stop_reason` as `continue` and ask the player agent first.
+4. Stop when the next unresolved issue is a real player decision or when the chapter word/scene target is met. A `player_decision` requires either current `role_action_channel` player-authored action evidence or a prior player actor response in this loop. If neither exists, keep `stop_reason` as `continue` and ask the player agent first.
 
 Do not repeatedly call the same actor for passive observation of the same visible stimulus. After one actor response to a visible cue, either introduce a new visible stimulus, resolve the consequence in `scene_beats` / `events`, transfer exact visible dialogue, or set an appropriate `stop_reason`. Re-calling the same actor is only justified when the world state has materially changed or a concrete reply/action is needed.
 
@@ -53,6 +53,10 @@ Write actor requests in immersive second-person natural language. Use objective 
 
 The `actor_calls[].prompt` string is the only content that may be delivered to the player/character agent after projection. Write it as a complete natural-language message to that actor. Do not put JSON, field names, visibility proof, metadata, memory objects, control-plane explanations, or hidden rationale inside `prompt`.
 
+GM/subGM may serve as the actor's senses. You may tell an actor what they can perceive in natural language, including visual, sound, smell, taste, touch, warmth, cold, pain, itch, dizziness, numbness, heartbeat, balance, pressure, and other bodily sensations. This is sensory feedback only: you must not perform the actor's voluntary action, choice, thought, conclusion, emotional interpretation, dialogue, or follow-up reaction for them.
+
+The actor's later perception exploration and actions must come back as natural-language actor replies to GM/subGM. Do not ask the actor to output `perceive_request`, `custom_action`, `visible_content`, `stop_for_player_decision`, JSON, event metadata, or any other structured actor protocol fields.
+
 For player-facing pressure, call the player agent exactly like any other actor:
 
 ```json
@@ -71,7 +75,7 @@ For player-facing pressure, call the player agent exactly like any other actor:
 }
 ```
 
-Do not use `decision_point` as a substitute for calling the player agent. `player_decision` requires a prior player actor response. In plain terms: player_decision requires a prior player actor response. When the player agent's response is a critical action that would greatly change the plot direction, stop the loop with `stop_reason: "player_decision"` and include that exact player-authored action in `decision_point.options_summary`; the control plane will send it to postprocess as one of the player-facing action options.
+Do not use `decision_point` as a substitute for player-authored action evidence. `player_decision` requires either `role_action_channel` evidence for the current player-authored action or a prior player actor response. When that player-authored action is critical enough to greatly change the plot direction, stop the loop with `stop_reason: "player_decision"` and include that exact action in `decision_point.options_summary`; the control plane will send it to postprocess as one of the player-facing action options.
 Do not set `stop_reason: "player_decision"` in the same GM output that calls `"actor_id": "player"` for that unresolved action. First call the player agent with `stop_reason: "continue"`. Only after a later GM step has read the player actor's natural-language reply may you decide whether that reply is a critical action and set `player_decision`.
 
 ## Output Schema

@@ -433,6 +433,10 @@ def _run_post_round_memory_jobs(
     scheduled = jobs.get("scheduled") if isinstance(jobs, dict) else {}
     if not isinstance(scheduled, dict):
         raise RoundRuntimeError("post_round_memory_jobs.scheduled is missing or invalid.")
+    objective_jobs = manifest.get("post_round_objective_memory_jobs") if isinstance(manifest, dict) else {}
+    objective_scheduled = objective_jobs.get("scheduled") if isinstance(objective_jobs, dict) else {}
+    if objective_scheduled and not isinstance(objective_scheduled, dict):
+        raise RoundRuntimeError("post_round_objective_memory_jobs.scheduled is missing or invalid.")
 
     failed: dict[str, str] = {}
     for agent_id in sorted(str(item) for item in scheduled_agents):
@@ -466,9 +470,42 @@ def _run_post_round_memory_jobs(
             )
         except Exception as exc:
             failed[agent_id] = str(exc)
+        objective_entry = objective_scheduled.get(agent_id) if isinstance(objective_scheduled, dict) else None
+        if not isinstance(objective_entry, dict):
+            failed[f"objective:{agent_id}"] = "post_round_objective_memory job entry is missing"
+            continue
+        objective_prompt_rel = str(objective_entry.get("prompt") or "").strip()
+        objective_job_rel = str(objective_entry.get("job") or "").strip()
+        objective_output_rel = str(objective_entry.get("output") or "").strip()
+        if not (objective_prompt_rel and objective_job_rel and objective_output_rel):
+            failed[f"objective:{agent_id}"] = "post_round_objective_memory job paths are incomplete"
+            continue
+        try:
+            prompt = (run_dir / objective_prompt_rel).read_text(encoding="utf-8")
+            job_payload = agent_run.read_json(run_dir / objective_job_rel, {}) or {}
+            if not isinstance(job_payload, dict):
+                raise RoundRuntimeError(
+                    f"{objective_job_rel}: post_round_objective_memory job payload must be an object."
+                )
+            _dispatch(
+                run_dir,
+                root,
+                run_claude,
+                f"post_round_objective_memory:{agent_run.safe_name(agent_id)}",
+                prompt,
+                extra_context={
+                    "card_folder": str(card),
+                    "post_round_objective_memory_job": job_payload,
+                    "post_round_output_path": objective_output_rel,
+                },
+                output_path=run_dir / objective_output_rel,
+            )
+        except Exception as exc:
+            failed[f"objective:{agent_id}"] = str(exc)
 
     if failed:
         agent_memory._update_post_round_job_status(run_dir, "degraded_memory_state", failed=failed)
+        agent_memory._update_post_round_objective_job_status(run_dir, "degraded_memory_state", failed=failed)
         return {
             "ok": False,
             "status": "degraded_memory_state",

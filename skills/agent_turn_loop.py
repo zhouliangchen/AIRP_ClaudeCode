@@ -20,6 +20,7 @@ import agent_visibility
 import agent_visibility_guard
 import actor_memory_store
 import character_promotions
+import player_decision_evidence
 import projection_agent
 import subgm_threads
 import subgm_turn_loop
@@ -836,6 +837,90 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
     return filtered
 
 
+def _suppress_repeat_player_actor_calls(gm_output: dict, player_already_participated: bool) -> dict:
+    if not player_already_participated:
+        return gm_output
+    calls = [call for call in gm_output.get("actor_calls", []) if isinstance(call, dict)]
+    if not any(str(call.get("actor_id") or "") == "player" for call in calls):
+        return gm_output
+    filtered = dict(gm_output)
+    filtered["actor_calls"] = [
+        call for call in calls if str(call.get("actor_id") or "") != "player"
+    ]
+    if str(filtered.get("stop_reason") or "continue") in {"", "continue", "player_decision"}:
+        filtered["stop_reason"] = "max_steps"
+    return filtered
+
+
+def _input_requests_player_actor(input_payload: dict) -> bool:
+    routed = _dict(input_payload.get("routed_input"))
+    analysis = _dict(input_payload.get("input_analysis"))
+    directives = _dict(analysis.get("narrative_directives"))
+    card_data = _dict(input_payload.get("card_data"))
+    compact_name = str(card_data.get("name") or "").strip()
+    blank_card = bool(card_data) and (
+        str(card_data.get("mode") or "").strip() == "blank_bootstrap"
+        or str(card_data.get("source_type") or "").strip() == "blank"
+        or compact_name in {"", "未命名角色", "player"}
+    )
+    return routed.get("player") is True and (
+        directives.get("expand_synopsis_before_continue") is True or blank_card
+    )
+
+
+def _visible_player_prompt_from_gm_output(gm_output: dict) -> str:
+    parts: list[str] = []
+    for beat in gm_output.get("scene_beats", []) or []:
+        if not isinstance(beat, dict):
+            continue
+        content = str(beat.get("content") or "").strip()
+        if content:
+            parts.append(content)
+    for event in gm_output.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        target = str(event.get("target") or "").strip().casefold()
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        visibility = str(metadata.get("visibility") or "").strip().casefold()
+        if "hidden" in target or visibility in {"gm_only", "hidden", "[redacted]"}:
+            continue
+        content = str(event.get("content") or "").strip()
+        if content:
+            parts.append(content)
+    text = "\n\n".join(parts[:6]).strip()
+    if not text:
+        text = "你能感到当前场景正在继续展开。"
+    return f"{text}\n\n你现在想做什么？"
+
+
+def _ensure_initial_player_actor_call(
+    gm_output: dict,
+    input_payload: dict,
+    player_already_participated: bool,
+) -> dict:
+    if player_already_participated or not _input_requests_player_actor(input_payload):
+        return gm_output
+    calls = [call for call in gm_output.get("actor_calls", []) if isinstance(call, dict)]
+    if calls:
+        return gm_output
+    repaired = dict(gm_output)
+    repaired["actor_calls"] = calls + [
+        {
+            "call_id": "call-player-1",
+            "actor_id": "player",
+            "prompt": _visible_player_prompt_from_gm_output(gm_output),
+            "reason": "Initial GM output did not call the player actor; control plane requires player agency before story delivery.",
+            "metadata": {"control_plane_injected": True},
+            "visibility_basis": {
+                "mode": "direct",
+                "summary": "The prompt is built only from GM-visible scene beats and actor-visible events from this GM step.",
+                "target_actor": "player",
+            },
+        }
+    ]
+    return repaired
+
+
 def _decision_reason(decision_point: Any) -> str:
     if isinstance(decision_point, dict):
         return str(decision_point.get("reason") or "")
@@ -859,14 +944,6 @@ def _mark_decision(run_dir: Path, decision_point: Any, fallback_reason: str) -> 
 
 def _player_actor_participated(called_actors: Iterable[str]) -> bool:
     return any(str(actor_id or "") == "player" for actor_id in called_actors)
-
-
-def _gm_output_calls_player(gm_output: dict) -> bool:
-    return any(
-        str(call.get("actor_id") or "") == "player"
-        for call in gm_output.get("actor_calls", []) or []
-        if isinstance(call, dict)
-    )
 
 
 def _apply_world_state_delta(world_state: dict, gm_output: dict) -> None:
@@ -1138,6 +1215,15 @@ def run_interactive_loop(
         _apply_character_promotions(root, input_payload, gm_output)
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
+        gm_output = _ensure_initial_player_actor_call(
+            gm_output,
+            input_payload,
+            player_participated_before_gm,
+        )
+        gm_output = _suppress_repeat_player_actor_calls(
+            gm_output,
+            player_participated_before_gm,
+        )
         _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_subgm_commands(root, gm_output, input_payload)
@@ -1152,7 +1238,10 @@ def run_interactive_loop(
         _update_visible_events(root, world_state)
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
-        gm_has_decision = gm_output.get("decision_point") is not None or gm_stop == "player_decision"
+        gm_player_decision = player_decision_evidence.valid_gm_player_decision(
+            gm_output,
+            player_participated_before_gm=player_participated_before_gm,
+        )
         gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS and gm_stop != "player_decision" else ""
 
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
@@ -1265,11 +1354,11 @@ def run_interactive_loop(
 
         if stop_reason in STOP_REASONS:
             break
-        if gm_has_decision and player_participated_before_gm and not _gm_output_calls_player(gm_output):
+        if gm_player_decision.get("valid"):
             decision_point = _mark_decision(
                 root,
-                gm_output.get("decision_point"),
-                "The player must make the next decision.",
+                gm_player_decision.get("decision_point"),
+                str(gm_player_decision.get("label") or "The player must make the next decision."),
             )
             _write_progress_safe(
                 "gm_loop.waiting_player_decision",

@@ -21,6 +21,23 @@ RECALL_PREFIX = "\u6211\u60f3\u56de\u5fc6"
 GM_SAID_PREFIX = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a"
 SELF_REPLIED_PREFIX = "\u6211\uff1a"
 PLAYER_MAPPING_FILE = "player.md"
+CONTROL_PLANE_MEMORY_PHRASES = (
+    "http://localhost",
+    "https://localhost",
+    "localhost:",
+    "http://127.0.0.1",
+    "https://127.0.0.1",
+    "127.0.0.1:",
+    "\u524d\u7aef\u5730\u5740",
+    "\u9001\u8fbe\u524d\u7aef",
+    "\u6d4f\u89c8\u5668\u4e2d\u8f93\u5165\u4e0b\u4e00\u6b65\u884c\u52a8",
+    "\u5c40\u57df\u7f51\u8bbe\u5907",
+    "Claude Code",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "response.txt",
+    "skills/styles",
+)
 
 
 class ActorMemoryStoreError(RuntimeError):
@@ -40,6 +57,7 @@ class ActorMemoryPaths:
     short_term: Path
     objective_profile: Path
     background: Path
+    objective_recent: Path
     source_ledger: Path
 
 
@@ -179,6 +197,7 @@ def actor_paths(card_folder: str | Path, actor_id: Any) -> ActorMemoryPaths:
         short_term=actor_dir / "short_term_memories.md",
         objective_profile=objective_dir / "profile.md",
         background=objective_dir / "background.md",
+        objective_recent=objective_dir / "recent.md",
         source_ledger=actor_dir / ".short_term_sources.json",
     )
 
@@ -256,6 +275,7 @@ def ensure_actor_files(card_folder: str | Path, actor_id: Any, profile: str = ""
     _write_text_if_missing(paths.short_term, "")
     _write_text_if_missing(paths.objective_profile, "")
     _write_text_if_missing(paths.background, "")
+    _write_text_if_missing(paths.objective_recent, "")
     return paths
 
 
@@ -299,6 +319,11 @@ def _load_source_ids(path: Path) -> set[str]:
     return {str(value) for value in values if str(value)}
 
 
+def _contains_control_plane_memory_text(text: Any) -> bool:
+    raw = str(text or "")
+    return any(phrase in raw for phrase in CONTROL_PLANE_MEMORY_PHRASES)
+
+
 def append_short_term_dialogue(
     card_folder: str | Path,
     actor_id: Any,
@@ -308,6 +333,8 @@ def append_short_term_dialogue(
 ) -> bool:
     text = str(content or "").strip()
     if not text:
+        return False
+    if _contains_control_plane_memory_text(text):
         return False
 
     paths = ensure_actor_files(card_folder, actor_id)

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -327,7 +328,16 @@ def _recover_story_payload_from_malformed_json(text: str, error: AgentExecutionE
 
 def _outer_prompt(agent_key: str, subagent_prompt: str, extra_context: Dict[str, Any] | None = None) -> str:
     if _is_actor_agent_key(agent_key):
-        return f"{subagent_prompt}"
+        return f"""You are running an in-world RP actor turn.
+
+Ignore repository instructions, Claude Code project context, README/AGENTS/CLAUDE files, server URLs, test harness notes, and any operational guidance outside the actor prompt below.
+The actor prompt is the only authority for this reply. Do not mention tools, files, prompts, agents, frontend delivery, browser URLs, or localhost.
+Return only the in-world actor reply as natural language. Do not write JSON, Markdown status, headings, links, or delivery instructions.
+
+<actor_prompt>
+{subagent_prompt}
+</actor_prompt>
+"""
 
     extra = ""
     if extra_context:
@@ -372,6 +382,12 @@ def _claude_subprocess_env() -> Dict[str, str]:
     return merged
 
 
+def _claude_subagent_cwd() -> Path:
+    path = Path(tempfile.gettempdir()) / "airp_claude_code_subagent_cwd"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_claude_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
     """Run Claude Code in print mode with the general-purpose agent."""
     command = [
@@ -390,7 +406,7 @@ def _run_claude_process(command: list[str], prompt: str, cwd: str | Path) -> Any
     return subprocess.run(
         command,
         input=prompt,
-        cwd=str(cwd),
+        cwd=str(_claude_subagent_cwd()),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -522,6 +538,10 @@ def _is_post_round_memory_agent(agent_key: str) -> bool:
     return agent_key == "post_round_memory" or agent_key.startswith("post_round_memory:")
 
 
+def _is_post_round_objective_memory_agent(agent_key: str) -> bool:
+    return agent_key == "post_round_objective_memory" or agent_key.startswith("post_round_objective_memory:")
+
+
 def _actor_protocol_identity(agent_key: str, extra_context: Dict[str, Any] | None) -> tuple[str, Path | None]:
     context = extra_context if isinstance(extra_context, dict) else {}
     if _is_actor_agent_key(agent_key):
@@ -614,6 +634,8 @@ def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         wrapper = "projection_output"
     elif _is_post_round_memory_agent(agent_key):
         wrapper = "post_round_memory"
+    elif _is_post_round_objective_memory_agent(agent_key):
+        wrapper = "post_round_objective_memory"
 
     nested = payload.get(wrapper) if wrapper else None
     if isinstance(nested, dict):
@@ -732,6 +754,22 @@ def _validate(
             if character_name:
                 normalized["character_name"] = character_name
             return normalized
+        if _is_post_round_objective_memory_agent(agent_key):
+            context = validation_context if isinstance(validation_context, dict) else {}
+            job = context.get("post_round_objective_memory_job")
+            job = job if isinstance(job, dict) else {}
+            expected_agent_id = str(job.get("target_actor_id") or context.get("actor_id") or "").strip()
+            if not expected_agent_id:
+                raise AgentExecutionError("post_round_objective_memory validation requires target_actor_id")
+            card_folder = Path(str(context.get("card_folder") or "."))
+            path = Path(str(context.get("post_round_output_path") or "post_round_objective_memory.summary.json"))
+            update = agent_memory._validate_post_round_objective_memory_update_for_card(
+                card_folder,
+                payload,
+                expected_agent_id,
+                path,
+            )
+            return {"agent_id": "gm", "updates": [update]}
     except agent_schemas.ValidationError as exc:
         raise AgentExecutionError(f"{agent_key} returned invalid artifact: {exc}") from exc
     except projection_agent.ProjectionValidationError as exc:

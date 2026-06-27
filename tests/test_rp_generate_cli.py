@@ -538,6 +538,14 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(result["events"], [{"type": "reply", "target": "gm", "content": reply, "metadata": {}}])
         self.assertNotIn("stop_reason", result)
 
+    def test_outer_prompt_wraps_actor_against_repository_context(self):
+        prompt = self.module._outer_prompt("player", "# actor prompt\nI only know the scene.")
+
+        self.assertIn("<actor_prompt>", prompt)
+        self.assertIn("Ignore repository", prompt)
+        self.assertIn("Return only the in-world actor reply", prompt)
+        self.assertNotEqual(prompt, "# actor prompt\nI only know the scene.")
+
     def test_dispatch_actor_reruns_after_key_memory_recall_protocol(self):
         actor_dir = self.card / "characters" / "雨蒙"
         actor_dir.mkdir(parents=True, exist_ok=True)
@@ -733,6 +741,26 @@ class RpGenerateCliTest(unittest.TestCase):
                 self.module.run_claude_agent("critic", "# critic\n", self.root)
         finally:
             self.module.subprocess.run = original_run
+
+    def test_run_claude_agent_uses_isolated_cwd_so_project_claude_md_is_not_loaded(self):
+        (self.root / "CLAUDE.md").write_text("# repo instructions\n", encoding="utf-8")
+        captured = {}
+        original_run = self.module.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        try:
+            self.module.subprocess.run = fake_run
+
+            self.module.run_claude_agent("critic", "# critic\n", self.root)
+        finally:
+            self.module.subprocess.run = original_run
+
+        used_cwd = Path(captured["cwd"]).resolve()
+        self.assertNotEqual(used_cwd, self.root.resolve())
+        self.assertFalse(any((parent / "CLAUDE.md").exists() for parent in (used_cwd, *used_cwd.parents)))
 
     def test_run_claude_agent_uses_claude_settings_env_over_process_env(self):
         settings_path = self.root / ".claude" / "settings.json"

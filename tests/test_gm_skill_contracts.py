@@ -250,9 +250,40 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("Do not write the actor's new voluntary actions", text)
         self.assertIn("do not write their seat as empty", text)
         self.assertIn("Do not set `stop_reason: \"player_decision\"` in the same GM output", text)
-        self.assertIn("player_decision requires a prior player actor response", text)
+        self.assertIn("player_decision` requires either `role_action_channel` evidence", text)
         self.assertIn("actor_id\": \"player\"", text)
         self.assertIn("send it to postprocess as one of the player-facing action options", text)
+
+    def test_gm_and_subgm_actor_requests_use_natural_language_sensory_boundary(self):
+        combined = "\n".join([
+            self.read(".claude/skills/rp-gm-agent.md"),
+            self.read(".claude/skills/rp-subgm-agent.md"),
+        ])
+
+        self.assertIn("GM/subGM may serve as the actor's senses", combined)
+        self.assertIn("pain, itch, dizziness", combined)
+        self.assertIn("visual, sound, smell, taste, touch, warmth, cold", combined)
+        self.assertIn("must not perform the actor's voluntary action", combined)
+        self.assertIn("actor's later perception exploration and actions must come back as natural-language actor replies", combined)
+        for forbidden in (
+            "`perceive_request`",
+            "`custom_action`",
+            "`visible_content`",
+            "`stop_for_player_decision`",
+        ):
+            self.assertIn(forbidden, combined)
+        self.assertIn("Do not ask the actor to output", combined)
+
+    def test_readme_documents_natural_language_actor_protocol_not_old_fields(self):
+        readme = self.read("README.md")
+
+        self.assertIn("actor 只用自然语言回复 GM/subGM", readme)
+        self.assertIn("GM/subGM 可以作为 actor 的感官", readme)
+        self.assertIn("疼痛、瘙痒、眩晕", readme)
+        self.assertIn("不能替 actor 做主动行动、选择、思考或台词", readme)
+        self.assertIn("旧字段 `perceive_request`、`custom_action`、`visible_content`、`stop_for_player_decision` 已废弃", readme)
+        self.assertNotIn("actor 可以返回受控的 `custom_action` 事件", readme)
+        self.assertNotIn("如果 actor 输出 `perceive_request`", readme)
 
     def test_actor_routing_stop_reasons_match_schema(self):
         text = self.read(".claude/skills/rp-gm-actor-routing.md")

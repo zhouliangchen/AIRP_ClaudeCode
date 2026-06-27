@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
+import player_decision_evidence
+
 
 SUPPORTED_SETTING_KEYS = {
     "style",
@@ -196,10 +198,10 @@ def count_words(text: str) -> int:
     return len(tokens)
 
 
-def _read_trace(run_dir: Path) -> dict[str, Any]:
+def _read_story_input(run_dir: Path) -> dict[str, Any]:
     for rel in (
-        Path("artifacts") / "interaction.trace.json",
-        Path("interaction.trace.json"),
+        Path("artifacts") / "story.input.json",
+        Path("story.input.json"),
     ):
         path = run_dir / rel
         try:
@@ -221,8 +223,8 @@ def build_quality_metrics(
     content = story.get("content", "") if isinstance(story, Mapping) else ""
     visible_content = extract_tag(content, "content") or (content if isinstance(content, str) else "")
     target = int(normalized["wordCount"])
-    trace = _read_trace(Path(run_dir))
-    exempted = trace.get("stop_reason") == "player_decision" or trace.get("decision_point") is not None
+    story_input = _read_story_input(Path(run_dir))
+    exempted = player_decision_evidence.has_valid_player_decision(story_input)
 
     return {
         "word_count": {

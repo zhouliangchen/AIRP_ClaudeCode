@@ -396,8 +396,25 @@ class RoundRuntimeTest(unittest.TestCase):
 
         def run_claude(agent_key, prompt, cwd):
             prompts.append((agent_key, prompt))
-            if len(prompts) == 1:
+            if agent_key == "post_round_memory:character_Ada" and len([
+                item for item in prompts if item[0] == "post_round_memory:character_Ada"
+            ]) == 1:
                 return "我想回忆：雨夜披风"
+            if agent_key.startswith("post_round_objective_memory:"):
+                return json.dumps(
+                    {
+                        "agent_id": "gm",
+                        "updates": [
+                            {
+                                "character_name": "Ada",
+                                "recent": "Ada在雨夜裹紧披风。",
+                                "objective_profile": "Ada会记住雨夜披风这件事。",
+                                "actor_profile": "我是Ada。我记得雨夜披风。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
             return json.dumps(
                 {
                     "agent_id": "character:Ada",
@@ -423,11 +440,16 @@ class RoundRuntimeTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "complete")
-        self.assertEqual(len(prompts), 2)
+        self.assertEqual(len(prompts), 3)
         self.assertEqual(prompts[0][0], "post_round_memory:character_Ada")
         self.assertIn("披风边缘有银线", prompts[1][1])
+        self.assertEqual(prompts[2][0], "post_round_objective_memory:character_Ada")
         self.assertIn("玩家借给我披风", (actor_dir / "long_term_memories.md").read_text(encoding="utf-8"))
         self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "")
+        self.assertEqual(
+            (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8"),
+            "Ada在雨夜裹紧披风。\n",
+        )
 
 
 if __name__ == "__main__":

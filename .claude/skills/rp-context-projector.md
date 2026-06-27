@@ -27,7 +27,7 @@ Projection decides what each agent is allowed to know. It is the main defense fo
 - Context projection/rendering should render false beliefs from actor memory into `immersive_context` and `subjective_memory`, not as diagnostic labels.
 - Projection-agent review edits only the deliverable actor message when needed; only `final_actor_message` is delivered to the actor.
 - Include sensory affordances: what the role can see, hear, touch, smell, remember, and plausibly infer.
-- Include memory from `memory/characters/<safe_name>/` only for that character.
+- Include actor self-memory only from `characters/<角色名>/profile.md`, `long_term_memories.md`, `key_memories.json`, and `short_term_memories.md` for that actor.
 - Keep packets compact. Prefer local facts over long global summaries for speed.
 
 ## Output Requirements

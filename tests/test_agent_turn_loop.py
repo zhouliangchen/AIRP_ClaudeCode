@@ -653,6 +653,9 @@ class AgentTurnLoopTest(unittest.TestCase):
 
     def test_interactive_loop_reports_gm_actor_and_decision_progress(self):
         self.register_character_states({"name": "Ada"})
+        input_payload = self.agent_run.read_json(self.run_dir / "input.json")
+        input_payload["routed_input"]["role_action_channel"] = "I close my hand around the pendant."
+        self.agent_run.write_json(self.run_dir / "input.json", input_payload)
         progress_calls = []
         self.agent_turn_loop.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
 
@@ -2106,11 +2109,54 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
 
-        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player", "gm", "player", "gm", "player"])
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player", "gm"])
         self.assertEqual(calls[1][1].get("card_folder"), str(self.run_dir.parent))
         self.assertNotEqual(result["stop_reason"], "player_decision")
+        self.assertEqual(result["stop_reason"], "max_steps")
         actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
-        self.assertEqual(len(actor_outputs["player"]), 3)
+        self.assertEqual(len(actor_outputs["player"]), 1)
+
+    def test_player_actor_call_is_injected_when_initial_gm_omits_player(self):
+        calls = []
+        input_payload = self.agent_run.read_json(self.run_dir / "input.json")
+        input_payload.setdefault("routed_input", {})["player"] = True
+        input_payload.setdefault("input_analysis", {})["narrative_directives"] = {
+            "expand_synopsis_before_continue": True,
+        }
+        self.agent_run.write_json(self.run_dir / "input.json", input_payload)
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "雨蒙坐在教室里，左手手背微微发热。"}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "max_steps",
+                }
+            self.assertEqual(agent_key, "player")
+            self.assertIn("雨蒙坐在教室里", packet["gm_prompt"])
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "natural_reply": "我低头看向自己的左手。",
+                "events": [{
+                    "type": "reply",
+                    "target": "gm",
+                    "content": "我低头看向自己的左手。",
+                    "metadata": {},
+                }],
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player"])
+        self.assertEqual(result["called_actors"], ["player"])
+        self.assertEqual(result["stop_reason"], "max_steps")
 
     def test_decision_point_is_marked_after_prior_player_actor_response(self):
         calls = []
@@ -2164,6 +2210,138 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(result["called_actors"], ["player"])
         self.assertEqual(result["stop_reason"], "player_decision")
         self.assertEqual(result["decision_point"]["options"], ["show", "hide"])
+
+    def test_decision_point_reason_falls_back_to_helper_label(self):
+        gm_count = 0
+
+        def dispatch(agent_key, packet):
+            nonlocal gm_count
+            if agent_key == "gm":
+                gm_count += 1
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The sealed door hums."}],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You feel the seal respond to your hand.",
+                            "reason": "The player must respond before GM can judge the action.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The seal is ready to break."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {
+                        "required_label": "Break the seal now.",
+                        "options": ["break", "wait"],
+                    },
+                    "stop_reason": "player_decision",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "natural_reply": "I press harder against the seal.",
+                "events": [{"type": "reply", "target": "gm", "content": "I press harder against the seal."}],
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
+        trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
+
+        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertEqual(trace["decision_point"]["reason"], "Break the seal now.")
+
+    def test_decision_point_without_player_decision_stop_does_not_stop_loop(self):
+        calls = []
+        gm_count = 0
+
+        def dispatch(agent_key, packet):
+            nonlocal gm_count
+            calls.append((agent_key, packet))
+            if agent_key == "gm":
+                gm_count += 1
+                if gm_count == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "SuLi watches the pendant."}],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You feel the pendant warming in your palm.",
+                            "reason": "The player character must decide the critical action.",
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The pendant light reaches the floor."}],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {
+                        "reason": "This is only a trace annotation.",
+                        "options": ["show", "hide"],
+                    },
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "player")
+            return {
+                "agent": "player",
+                "agent_id": "player",
+                "events": [{"type": "reply", "target": "gm", "content": "I keep the pendant hidden."}],
+                "stop_reason": "continue",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm", "player", "gm"])
+        self.assertEqual(result["called_actors"], ["player"])
+        self.assertEqual(result["stop_reason"], "max_steps")
+        self.assertIsNone(result["decision_point"])
+
+    def test_role_action_channel_counts_as_prior_player_participation_for_decision(self):
+        input_payload = self.agent_run.read_json(self.run_dir / "input.json")
+        input_payload["routed_input"]["role_action_channel"] = "I grip the pendant and step forward."
+        self.agent_run.write_json(self.run_dir / "input.json", input_payload)
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The pendant flashes as the player steps forward."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": {
+                    "reason": "The player's direct action changes the scene.",
+                    "options": ["continue", "stop"],
+                },
+                "stop_reason": "player_decision",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertEqual([agent_key for agent_key, _packet in calls], ["gm"])
+        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertEqual(result["decision_point"]["reason"], "The player's direct action changes the scene.")
 
     def test_gm_cannot_stop_for_player_decision_without_actor_work(self):
         calls = []
@@ -2281,11 +2459,12 @@ class AgentTurnLoopTest(unittest.TestCase):
         gm_loop = self.agent_run.read_json(self.run_dir / "gm.output.json")
         serialized = repr({
             "result_decision": result["decision_point"],
-            "trace_decision": trace["decision_point"],
+            "trace_decision": trace.get("decision_point"),
             "gm_decision": gm_loop["outputs"][0]["decision_point"],
         }).lower()
 
-        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertNotEqual(result["stop_reason"], "player_decision")
+        self.assertIsNone(result["decision_point"])
         self.assertIn("[redacted]", serialized)
         self.assertNotIn("moon-base-archive", serialized)
         self.assertNotIn("moon_base_archive", serialized)
@@ -2502,8 +2681,8 @@ class AgentTurnLoopTest(unittest.TestCase):
                     "actor_calls": [],
                     "parallel_groups": [],
                     "world_state_delta": [],
-                    "decision_point": {"reason": "Choose which report to pursue.", "options": ["archive", "gate"]},
-                    "stop_reason": "player_decision",
+                    "decision_point": None,
+                    "stop_reason": "complete",
                 }
             if agent_key == "subGM:side_a":
                 return subgm_output("side_a", "Ada found the broken seal.")
@@ -2514,7 +2693,7 @@ class AgentTurnLoopTest(unittest.TestCase):
         result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=3)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["stop_reason"], "player_decision")
+        self.assertEqual(result["stop_reason"], "complete")
         call_keys = [key for key, _packet in calls]
         self.assertEqual(call_keys[0], "gm")
         self.assertEqual(call_keys.count("gm"), 2)

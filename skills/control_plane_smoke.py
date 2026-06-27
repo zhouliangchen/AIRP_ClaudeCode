@@ -532,6 +532,24 @@ def _post_round_memory_update(agent_id: str) -> Dict[str, Any]:
     }
 
 
+def _post_round_objective_memory_update(agent_id: str) -> Dict[str, Any]:
+    character_name = "player" if agent_id == "player" else agent_id.split(":", 1)[1]
+    return {
+        "agent_id": "gm",
+        "updates": [
+            {
+                "character_name": character_name,
+                "recent": (
+                    f"GM记录：{character_name}在本轮档案门剧情中参与了推进，"
+                    "其经历已整理为上帝视角近期经历。\n"
+                ),
+                "objective_profile": f"GM记录：{character_name}与档案门和吊坠事件有关。\n",
+                "actor_profile": f"我是{character_name}。我记得档案门前的吊坠事件。\n",
+            }
+        ],
+    }
+
+
 def _write_scheduled_post_round_memory_outputs(run_dir: Path) -> Dict[str, str]:
     manifest = _read_json(run_dir / "manifest.json")
     jobs = manifest.get("post_round_memory_jobs", {})
@@ -549,6 +567,20 @@ def _write_scheduled_post_round_memory_outputs(run_dir: Path) -> Dict[str, str]:
         path = run_dir / relative_path
         _write_json(path, _post_round_memory_update(str(agent_id)))
         written[str(agent_id)] = relative_path
+
+    objective_jobs = manifest.get("post_round_objective_memory_jobs", {})
+    objective_scheduled = objective_jobs.get("scheduled", {}) if isinstance(objective_jobs, dict) else {}
+    if not isinstance(objective_scheduled, dict):
+        raise RuntimeError("post-round objective memory jobs schedule is invalid")
+    for agent_id, entry in objective_scheduled.items():
+        if not isinstance(entry, dict):
+            continue
+        relative_path = str(entry.get("output") or "")
+        if not relative_path:
+            continue
+        path = run_dir / relative_path
+        _write_json(path, _post_round_objective_memory_update(str(agent_id)))
+        written[f"objective:{agent_id}"] = relative_path
     return written
 
 

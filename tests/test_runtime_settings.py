@@ -161,6 +161,45 @@ class RuntimeSettingsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (run_dir / "artifacts" / "story.input.json").write_text(
+                json.dumps(
+                    {
+                        "loop_outputs": {
+                            "gm": {
+                                "outputs": [
+                                    {
+                                        "stop_reason": "continue",
+                                        "actor_calls": [
+                                            {
+                                                "call_id": "call-player-1",
+                                                "actor_id": "player",
+                                                "prompt": "What do you do?",
+                                            }
+                                        ],
+                                        "decision_point": None,
+                                    },
+                                    {
+                                        "stop_reason": "player_decision",
+                                        "actor_calls": [],
+                                        "decision_point": {"reason": "choose"},
+                                    }
+                                ],
+                            },
+                            "actors": {
+                                "player": [
+                                    {
+                                        "source_call_id": "call-player-1",
+                                        "natural_reply": "I pry open the door.",
+                                        "events": [],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             story = {"content": "<content>你推开门。Take cover now.</content>"}
             settings = self.mod.normalize_settings({"wordCount": 1000})
             metrics = self.mod.build_quality_metrics(
@@ -177,7 +216,7 @@ class RuntimeSettingsTest(unittest.TestCase):
         self.assertEqual(metrics["visible_content"]["text"], "你推开门。Take cover now.")
         self.assertEqual(metrics["output_perspective"]["expected"], "second_person")
 
-    def test_build_quality_metrics_uses_root_trace_when_artifacts_trace_missing(self):
+    def test_build_quality_metrics_trace_only_player_decision_does_not_exempt_word_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "interaction.trace.json").write_text(
@@ -191,9 +230,9 @@ class RuntimeSettingsTest(unittest.TestCase):
                 {"name": "北棱特调", "warning": ""},
                 {"content": "<content>Door opens.</content>"},
             )
-        self.assertTrue(metrics["word_count"]["exempted"])
+        self.assertFalse(metrics["word_count"]["exempted"])
 
-    def test_build_quality_metrics_uses_root_trace_when_artifacts_trace_invalid(self):
+    def test_build_quality_metrics_trace_only_decision_point_does_not_exempt_word_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "artifacts").mkdir()
@@ -212,7 +251,62 @@ class RuntimeSettingsTest(unittest.TestCase):
                 {"name": "北棱特调", "warning": ""},
                 {"content": "<content>Door opens.</content>"},
             )
-        self.assertTrue(metrics["word_count"]["exempted"])
+        self.assertFalse(metrics["word_count"]["exempted"])
+
+    def test_build_quality_metrics_stale_premature_player_decision_does_not_exempt_word_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "artifacts").mkdir()
+            (run_dir / "artifacts" / "story.input.json").write_text(
+                json.dumps(
+                    {
+                        "loop_outputs": {
+                            "gm": {
+                                "outputs": [
+                                    {
+                                        "stop_reason": "player_decision",
+                                        "actor_calls": [],
+                                        "decision_point": {
+                                            "id": "gm-decision-premature",
+                                            "required_label": "Choose before asking.",
+                                        },
+                                    },
+                                    {
+                                        "stop_reason": "continue",
+                                        "actor_calls": [
+                                            {
+                                                "call_id": "call-player-1",
+                                                "actor_id": "player",
+                                                "prompt": "What do you do?",
+                                            }
+                                        ],
+                                        "decision_point": None,
+                                    },
+                                ],
+                            },
+                            "actors": {
+                                "player": [
+                                    {
+                                        "source_call_id": "call-player-1",
+                                        "natural_reply": "I reply only after the premature decision.",
+                                        "events": [],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            settings = self.mod.normalize_settings({"wordCount": 1000})
+            metrics = self.mod.build_quality_metrics(
+                run_dir,
+                settings,
+                {"name": "鍖楁１鐗硅皟", "warning": ""},
+                {"content": "<content>Door opens.</content>"},
+            )
+        self.assertFalse(metrics["word_count"]["exempted"])
 
 
 if __name__ == "__main__":

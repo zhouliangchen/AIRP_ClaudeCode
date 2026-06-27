@@ -17,8 +17,6 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-import actor_memory_store
-from io_utils import read_json as _read_json
 from response_parser import parse_response
 
 
@@ -39,57 +37,6 @@ def _get_last_n_turns(card_folder: Path, n: int = 3) -> list[dict]:
     with open(log_path, "r", encoding="utf-8") as f:
         log = json.load(f)
     return log[-n:] if len(log) > n else log
-
-
-def _write_character_memory(card: Path, date_str: str, summary: str, recent_turns: list[dict]) -> list[str]:
-    """Maintain lightweight per-character memory files for blank/subagent contexts."""
-    updated = []
-    card_data = _read_json(card / ".card_data.json", {}) or {}
-    targets: list[tuple[str, Path]] = []
-    seen: set[str] = set()
-    if card_data.get("mode") == "blank_bootstrap" or card_data.get("source_type") == "blank":
-        paths = actor_memory_store.ensure_actor_files(card, "player")
-        targets.append((paths.name, paths.objective_dir))
-        seen.add(paths.name)
-
-    orchestration = card_data.get("character_orchestration", {})
-    for name in orchestration.get("major", []) or []:
-        if isinstance(name, str) and name.strip():
-            paths = actor_memory_store.ensure_actor_files(card, f"character:{name.strip()}")
-            if paths.name not in seen:
-                targets.append((paths.name, paths.objective_dir))
-                seen.add(paths.name)
-
-    if not targets:
-        return updated
-
-    last = recent_turns[-1] if recent_turns else {}
-    stat_data = last.get("variables", {}).get("stat_data", {}) if isinstance(last.get("variables"), dict) else {}
-
-    for target, char_dir in targets:
-        char_dir.mkdir(parents=True, exist_ok=True)
-        recent_path = char_dir / "recent.md"
-        existing = recent_path.read_text(encoding="utf-8") if recent_path.exists() else "# 近期角色沉淀\n"
-        line = f"\n- {date_str}: {summary}\n"
-        recent_path.write_text((existing.rstrip() + line)[-6000:], encoding="utf-8")
-
-        goals_path = char_dir / "goals.md"
-        if not goals_path.exists():
-            goals_path.write_text("# 角色目标\n\n待后续剧情或 subagent 反馈沉淀。\n", encoding="utf-8")
-
-        profile_path = char_dir / "profile.md"
-        if not profile_path.exists():
-            profile_path.write_text("# 角色档案\n\n待后续剧情沉淀。\n", encoding="utf-8")
-
-        state_path = char_dir / "state.json"
-        state = _read_json(state_path, {}) or {}
-        state["last_updated"] = date_str
-        state["last_summary"] = summary
-        if stat_data:
-            state["latest_shared_stat_keys"] = list(stat_data.keys())[:20]
-        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        updated.append(target)
-    return updated
 
 
 def write_memory(card_folder: str) -> dict:
@@ -177,8 +124,8 @@ def write_memory(card_folder: str) -> dict:
     new_content = existing.rstrip() + "\n" + entry + "\n"
     project_path.write_text(new_content, encoding="utf-8")
 
-    # 6. Update per-character memory for blank-card and subagent contexts
-    character_memory_updated = _write_character_memory(card, date_str, summary, recent_turns)
+    # 6. Actor self-memory is handled only by post-round memory jobs.
+    character_memory_updated: list[str] = []
 
     # 7. Update MEMORY.md index (update the project.md line)
     index_updated = False

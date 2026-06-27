@@ -33,6 +33,7 @@ RUNTIME_CONTRACT_TAGS = (
     "tokens",
     "polished_input",
 )
+PREPARE_REUSE_STAGES = {"", "prepared", "prompts_ready", "awaiting_input_analysis", "awaiting_agent_outputs"}
 
 
 def _strip_runtime_contract_tags(value: Any) -> str:
@@ -61,6 +62,13 @@ def _sanitize_recent_chat_for_packets(chat_log: Any) -> list[Any]:
     if not isinstance(chat_log, list):
         return []
     return [_sanitize_recent_chat_value(item) for item in chat_log]
+
+
+def _source_raw_text(user_text: Any, input_payload: Any) -> str:
+    source_payload = dict(input_payload) if isinstance(input_payload, dict) else {}
+    if source_payload.get("input_schema") == "dual_channel_v1":
+        return _to_text(source_payload.get("raw_text"))
+    return _to_text(user_text)
 
 
 def _clean_text_list(value: Any) -> list[str]:
@@ -624,6 +632,29 @@ def _input_analysis_request_reference(input_request: Dict[str, Any]) -> Dict[str
     }
 
 
+def _prepare_run_dir(card_folder, turn_index=None, expected_raw_text_hash: str = "") -> Path:
+    if turn_index is not None:
+        try:
+            expected_name = f"round-{int(turn_index) + 1:06d}"
+        except (TypeError, ValueError):
+            expected_name = ""
+        current = agent_run.current_run_dir(card_folder)
+        manifest = agent_run.read_json(current / "manifest.json", {}) if current is not None else {}
+        stage = str((manifest or {}).get("stage") or "")
+        raw_record = agent_run.read_json(current / "input.raw.json", {}) if current is not None else {}
+        source_integrity = raw_record.get("source_integrity") if isinstance(raw_record, dict) else {}
+        current_hash = source_integrity.get("raw_text_sha256") if isinstance(source_integrity, dict) else ""
+        if (
+            current is not None
+            and current.name == expected_name
+            and current.exists()
+            and stage in PREPARE_REUSE_STAGES
+            and current_hash == expected_raw_text_hash
+        ):
+            return current
+    return agent_run.create_run_dir(card_folder, turn_index=turn_index)
+
+
 def prepare_agent_run(
     card_folder,
     user_text,
@@ -637,7 +668,8 @@ def prepare_agent_run(
 ):
     """Create one round run directory and persist agent packets."""
     routed_input = route_input_payload(user_text, input_payload)
-    run_dir = agent_run.create_run_dir(card_folder, turn_index=turn_index)
+    raw_text_hash = input_analysis.sha256_text(_source_raw_text(user_text, input_payload))
+    run_dir = _prepare_run_dir(card_folder, turn_index=turn_index, expected_raw_text_hash=raw_text_hash)
     hidden_setting_records = hidden_setting_records or []
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     safe_chat_log = _sanitize_recent_chat_for_packets(chat_log)

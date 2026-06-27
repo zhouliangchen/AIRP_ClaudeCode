@@ -134,7 +134,7 @@ class AgentMemoryTest(unittest.TestCase):
             payload.pop("character_name")
         return payload
 
-    def test_ingest_memory_deltas_writes_player_character_and_world_memory(self):
+    def test_ingest_memory_deltas_writes_player_character_short_term_and_world_memory(self):
         result = self.agent_memory.ingest_memory_deltas(
             self.card,
             self.run_dir,
@@ -142,21 +142,33 @@ class AgentMemoryTest(unittest.TestCase):
         )
 
         self.assertEqual(result["ingested"], ["player", "character:Ada", "world"])
-        player_recent = (self.card / "memory" / "player" / "recent.md").read_text(encoding="utf-8")
-        ada_recent = (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8")
+        player_recent = (
+            self.card / "characters" / "player" / "short_term_memories.md"
+        ).read_text(encoding="utf-8")
+        ada_recent = (
+            self.card / "characters" / "Ada" / "short_term_memories.md"
+        ).read_text(encoding="utf-8")
         world_recent = (self.card / "memory" / "world_delta.md").read_text(encoding="utf-8")
         self.assertIn("I opened the archive door", player_recent)
         self.assertIn("I saw the player enter", ada_recent)
         self.assertIn("the archive door is open", world_recent)
+        self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
 
     def test_ingest_memory_deltas_is_idempotent_by_round_and_agent(self):
         self.agent_memory.ingest_memory_deltas(self.card, self.run_dir, date_str="2026-06-16 12:00")
         self.agent_memory.ingest_memory_deltas(self.card, self.run_dir, date_str="2026-06-16 12:01")
 
-        player_recent = (self.card / "memory" / "player" / "recent.md").read_text(encoding="utf-8")
-        ada_recent = (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8")
+        player_recent = (
+            self.card / "characters" / "player" / "short_term_memories.md"
+        ).read_text(encoding="utf-8")
+        ada_recent = (
+            self.card / "characters" / "Ada" / "short_term_memories.md"
+        ).read_text(encoding="utf-8")
         self.assertEqual(player_recent.count("I opened the archive door"), 1)
         self.assertEqual(ada_recent.count("I saw the player enter"), 1)
+        self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
 
     def test_actor_memory_rejects_gm_only_source(self):
         story_input = json.loads((self.run_dir / "story.input.json").read_text(encoding="utf-8"))
@@ -334,10 +346,13 @@ class AgentMemoryTest(unittest.TestCase):
             self.fail(f"normal prose should be accepted: {exc}")
 
         self.assertEqual(result["ingested"], ["player"])
-        player_recent = (self.card / "memory" / "player" / "recent.md").read_text(encoding="utf-8")
+        player_recent = (
+            self.card / "characters" / "player" / "short_term_memories.md"
+        ).read_text(encoding="utf-8")
         self.assertIn("I met a player named Ada", player_recent)
         self.assertIn("I found a hidden notebook", player_recent)
         self.assertIn("The world truthfully felt smaller.", player_recent)
+        self.assertFalse((self.card / "memory" / "player" / "recent.md").exists())
 
     def test_ingest_memory_deltas_rejects_legacy_player_and_character_branches(self):
         _write_json(
@@ -618,11 +633,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "agent_id": "character:Ada",
                     "character_name": "Ada",
                     "events": [
-                        {
-                            "type": "dialogue",
-                            "target": "player",
-                            "content": "Stay close.",
-                        }
+                        {"type": "natural_reply", "content": "Stay close."}
                     ],
                     "stop_reason": "continue",
                 }
@@ -647,6 +658,10 @@ class AgentMemoryTest(unittest.TestCase):
         jobs = manifest["post_round_memory_jobs"]
         self.assertEqual(jobs["status"], "pending")
         self.assertIn("character:Ada", jobs["scheduled"])
+        objective_jobs = manifest["post_round_objective_memory_jobs"]
+        self.assertEqual(objective_jobs["status"], "pending")
+        self.assertIn("character:Ada", objective_jobs["scheduled"])
+        self.assertIn("player", objective_jobs["scheduled"])
         job_path = self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json"
         self.assertTrue(job_path.exists())
         job_payload = json.loads(job_path.read_text(encoding="utf-8"))
@@ -658,6 +673,17 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertIn("long_term_memories", job_payload)
         self.assertIn("key_memory_cues", job_payload)
         self.assertNotIn("user_instruction_channel", json.dumps(job_payload, ensure_ascii=False))
+        objective_payload = json.loads(
+            (self.run_dir / "post_round_objective_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(objective_payload["agent_id"], "gm")
+        self.assertEqual(objective_payload["character_name"], "Ada")
+        self.assertIn("current_recent", objective_payload)
+        self.assertIn("objective_profile", objective_payload)
+        self.assertIn("actor_profile", objective_payload)
+        self.assertIn("round_events", objective_payload)
 
     def test_schedule_post_round_memory_jobs_includes_only_round_dialogue_for_short_term(self):
         _write_json(
@@ -695,7 +721,7 @@ class AgentMemoryTest(unittest.TestCase):
                                 "character_name": "Ada",
                                 "events": [
                                     {
-                                        "type": "dialogue",
+                                        "type": "reply",
                                         "content": "我把灯压低，轻声回应。",
                                         "source_call_id": "call-ada-main",
                                     }
@@ -727,7 +753,7 @@ class AgentMemoryTest(unittest.TestCase):
                                         "character_name": "Ada",
                                         "events": [
                                             {
-                                                "type": "action",
+                                                "type": "reply",
                                                 "content": "我把手按在门闩上。",
                                                 "source_call_id": "call-ada-side",
                                             }
@@ -777,6 +803,117 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertNotIn('"round_dialogue"', prompt_text)
         self.assertNotIn('"visible_events"', prompt_text)
 
+    def test_schedule_post_round_memory_jobs_uses_new_actor_files_and_ignores_objective_recent_and_legacy_goals(self):
+        self._write_actor_files(
+            "Ada",
+            profile="I am Ada and I speak about myself in first person.\n",
+            long_term="I remember protecting the west archive.\n",
+            key_memories=[
+                {
+                    "tag": "archive seal",
+                    "summary": "I know the west archive seal matters.",
+                    "detail": "DETAIL_SHOULD_NOT_BE_IN_POST_ROUND_PROMPT",
+                }
+            ],
+            short_term="Memory echo: The GM told me the seal hummed.\n\nMe: I held my lamp steady.\n",
+        )
+        objective_recent = self.card / "memory" / "characters" / "Ada" / "recent.md"
+        objective_recent.parent.mkdir(parents=True, exist_ok=True)
+        objective_recent.write_text("OBJECTIVE_RECENT_SENTINEL_SHOULD_NOT_APPEAR\n", encoding="utf-8")
+        legacy_goals = self.card / "memory" / "characters" / "Ada" / "goals.md"
+        legacy_goals.write_text("LEGACY_GOALS_SENTINEL_SHOULD_NOT_APPEAR\n", encoding="utf-8")
+        self._write_story_input(
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {
+                                "type": "reply",
+                                "content": "I answer the GM directly.",
+                                "source_call_id": "call-ada",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        job_payload = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        prompt_text = (
+            self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md"
+        ).read_text(encoding="utf-8")
+        job_text = json.dumps(job_payload, ensure_ascii=False)
+
+        for text in (job_text, prompt_text):
+            self.assertIn("I am Ada and I speak about myself in first person.", text)
+            self.assertIn("I remember protecting the west archive.", text)
+            self.assertIn("archive seal", text)
+            self.assertIn("I know the west archive seal matters.", text)
+            self.assertIn("Memory echo: The GM told me the seal hummed.", text)
+            self.assertIn("I answer the GM directly.", text)
+            self.assertNotIn("DETAIL_SHOULD_NOT_BE_IN_POST_ROUND_PROMPT", text)
+            self.assertNotIn("OBJECTIVE_RECENT_SENTINEL_SHOULD_NOT_APPEAR", text)
+            self.assertNotIn("LEGACY_GOALS_SENTINEL_SHOULD_NOT_APPEAR", text)
+
+    def test_schedule_post_round_memory_jobs_only_uses_current_actor_reply_shapes(self):
+        self._write_story_input(
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "natural_reply": "TOP_LEVEL_NATURAL_REPLY_INCLUDED_ONCE",
+                        "events": [
+                            {"type": "reply", "content": "REPLY_IGNORED_WHEN_TOP_LEVEL_EXISTS"},
+                            {"type": "action", "content": "LEGACY_ACTION_SENTINEL"},
+                            {"type": "dialogue", "content": "LEGACY_DIALOGUE_SENTINEL"},
+                        ],
+                    },
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "events": [
+                            {"type": "reply", "content": "EVENT_REPLY_INCLUDED"},
+                            {"type": "natural_reply", "content": "LEGACY_EVENT_NATURAL_REPLY_SENTINEL"},
+                            {"type": "memory_delta", "content": "LEGACY_MEMORY_DELTA_SENTINEL"},
+                        ],
+                    },
+                ],
+            }
+        )
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        job_payload = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        prompt_text = (
+            self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md"
+        ).read_text(encoding="utf-8")
+        job_text = json.dumps(job_payload, ensure_ascii=False)
+
+        for text in (job_text, prompt_text):
+            self.assertEqual(text.count("TOP_LEVEL_NATURAL_REPLY_INCLUDED_ONCE"), 1)
+            self.assertIn("EVENT_REPLY_INCLUDED", text)
+            self.assertNotIn("REPLY_IGNORED_WHEN_TOP_LEVEL_EXISTS", text)
+            self.assertNotIn("LEGACY_ACTION_SENTINEL", text)
+            self.assertNotIn("LEGACY_DIALOGUE_SENTINEL", text)
+            self.assertNotIn("LEGACY_EVENT_NATURAL_REPLY_SENTINEL", text)
+            self.assertNotIn("LEGACY_MEMORY_DELTA_SENTINEL", text)
+
     def test_post_round_memory_prompts_use_unified_file_backed_actor_context(self):
         self._write_actor_files(
             "雨蒙",
@@ -814,7 +951,7 @@ class AgentMemoryTest(unittest.TestCase):
                     {
                         "agent": "player",
                         "agent_id": "player",
-                        "events": [{"type": "dialogue", "content": "我握紧铜钥匙。"}],
+                        "events": [{"type": "reply", "content": "我握紧铜钥匙。"}],
                     }
                 ],
                 "character:Ada": [
@@ -822,7 +959,7 @@ class AgentMemoryTest(unittest.TestCase):
                         "agent": "character",
                         "agent_id": "character:Ada",
                         "character_name": "Wrong Packet Name",
-                        "events": [{"type": "dialogue", "content": "我会守住档案室。"}],
+                        "events": [{"type": "natural_reply", "content": "我会守住档案室。"}],
                     }
                 ],
             }
@@ -910,8 +1047,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "character_name": "Ada",
                     "events": [
                         {
-                            "type": "memory_delta",
-                            "target": "self",
+                            "type": "reply",
                             "content": "I heard the archive shelf move.",
                         }
                     ],
@@ -919,7 +1055,26 @@ class AgentMemoryTest(unittest.TestCase):
                 }
             ],
         }
-        self._write_story_input(actor_outputs, [])
+        trace_visible_events = [
+            {
+                "type": "scene_beat",
+                "actor": "gm",
+                "target": "character:Ada",
+                "content": "Ada stood beside the archive shelf while the corridor bell faded.",
+            },
+            {
+                "type": "action",
+                "actor": "character:Ada",
+                "content": "Ada steadied the lamp and listened to the shelf move.",
+            },
+            {
+                "type": "scene_beat",
+                "actor": "gm",
+                "content": "The sealed index stayed hidden from Ada.",
+                "visibility": "gm_only",
+            },
+        ]
+        self._write_story_input(actor_outputs, trace_visible_events)
         self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
         _write_json(
             self.run_dir / "post_round_memory_jobs" / "character_Ada.summary.json",
@@ -932,6 +1087,20 @@ class AgentMemoryTest(unittest.TestCase):
                         "tag": "archive shelf",
                         "summary": "I heard the archive shelf move.",
                         "detail": "The movement came from inside the archive.",
+                    }
+                ],
+            },
+        )
+        _write_json(
+            self.run_dir / "post_round_objective_memory_jobs" / "character_Ada.summary.json",
+            {
+                "agent_id": "gm",
+                "updates": [
+                    {
+                        "character_name": "Ada",
+                        "recent": "GM整理后的近期经历：Ada在档案架旁听见异常响动。\n",
+                        "objective_profile": "GM整理后的客观设定：Ada对档案室异常保持警觉。\n",
+                        "actor_profile": "我是Ada。我会在档案室异常时保持警觉。\n",
                     }
                 ],
             },
@@ -952,6 +1121,17 @@ class AgentMemoryTest(unittest.TestCase):
         key_payload = json.loads((actor_dir / "key_memories.json").read_text(encoding="utf-8"))
         self.assertEqual(key_payload["memories"][0]["summary"], "I heard the archive shelf move.")
         self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "")
+        recent = (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8")
+        self.assertEqual(recent, "GM整理后的近期经历：Ada在档案架旁听见异常响动。\n")
+        self.assertEqual(
+            (self.card / "memory" / "characters" / "Ada" / "profile.md").read_text(encoding="utf-8"),
+            "GM整理后的客观设定：Ada对档案室异常保持警觉。\n",
+        )
+        self.assertEqual(
+            (self.card / "characters" / "Ada" / "profile.md").read_text(encoding="utf-8"),
+            "我是Ada。我会在档案室异常时保持警觉。\n",
+        )
+        self.assertNotIn("Ada stood beside the archive shelf", recent)
 
     def test_ingest_post_round_memory_jobs_marks_degraded_on_hidden_marker_failure(self):
         actor_outputs = {
@@ -962,8 +1142,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "character_name": "Ada",
                     "events": [
                         {
-                            "type": "memory_delta",
-                            "target": "self",
+                            "type": "reply",
                             "content": "I heard the archive shelf move.",
                         }
                     ],
@@ -997,7 +1176,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "agent": "character",
                     "agent_id": "character:Ada",
                     "character_name": "Ada",
-                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "events": [{"type": "reply", "content": "I lift the lamp."}],
                     "stop_reason": "continue",
                 }
             ],
@@ -1011,10 +1190,14 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(result["status"], "pending")
         self.assertEqual(
             result["missing"],
-            {"character:Ada": "post_round_memory_jobs/character_Ada.summary.json"},
+            {
+                "character:Ada": "post_round_memory_jobs/character_Ada.summary.json",
+                "objective:character:Ada": "post_round_objective_memory_jobs/character_Ada.summary.json",
+            },
         )
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["post_round_memory_jobs"]["status"], "pending")
+        self.assertEqual(manifest["post_round_objective_memory_jobs"]["status"], "pending")
 
     def test_schedule_post_round_memory_jobs_excludes_visible_events_from_actor_jobs(self):
         actor_outputs = {
@@ -1022,7 +1205,7 @@ class AgentMemoryTest(unittest.TestCase):
                 {
                     "agent": "player",
                     "agent_id": "player",
-                    "events": [{"type": "action", "content": "I hold the door."}],
+                    "events": [{"type": "reply", "content": "I hold the door."}],
                     "stop_reason": "continue",
                 }
             ],
@@ -1031,7 +1214,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "agent": "character",
                     "agent_id": "character:Ada",
                     "character_name": "Ada",
-                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "events": [{"type": "reply", "content": "I lift the lamp."}],
                     "stop_reason": "continue",
                 }
             ],
@@ -1040,7 +1223,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "agent": "character",
                     "agent_id": "character:SuLi",
                     "character_name": "SuLi",
-                    "events": [{"type": "action", "content": "I check the stairs."}],
+                    "events": [{"type": "reply", "content": "I check the stairs."}],
                     "stop_reason": "continue",
                 }
             ],
@@ -1159,7 +1342,7 @@ class AgentMemoryTest(unittest.TestCase):
                                 "agent_id": "player",
                                 "events": [
                                     {
-                                        "type": "action",
+                                        "type": "reply",
                                         "content": "I wait by the archive door.",
                                     }
                                 ],
@@ -1207,7 +1390,7 @@ class AgentMemoryTest(unittest.TestCase):
                     "agent": "character",
                     "agent_id": "character:Ada",
                     "character_name": "Ada",
-                    "events": [{"type": "action", "content": "I lift the lamp."}],
+                    "events": [{"type": "reply", "content": "I lift the lamp."}],
                     "stop_reason": "continue",
                 }
             ],
@@ -1215,7 +1398,7 @@ class AgentMemoryTest(unittest.TestCase):
                 {
                     "agent": "player",
                     "agent_id": "player",
-                    "events": [{"type": "action", "content": "I hold the door."}],
+                    "events": [{"type": "natural_reply", "content": "I hold the door."}],
                     "stop_reason": "continue",
                 }
             ],

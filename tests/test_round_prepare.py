@@ -116,3 +116,55 @@ class RoundPrepareInputSelectionTest(unittest.TestCase):
         run_dir = Path(payload["agent_run"])
         intent_files = list((run_dir / "intents").glob("*/*.json"))
         self.assertEqual(intent_files, [])
+
+    def test_round_prepare_does_not_inject_legacy_character_recent_or_goals_into_context(self):
+        (self.card / ".card_data.json").write_text(
+            json.dumps(
+                {
+                    "mode": "blank_bootstrap",
+                    "source_type": "blank",
+                    "character_orchestration": {"major": ["Ada"]},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        legacy_recent = self.card / "memory" / "characters" / "Ada" / "recent.md"
+        legacy_recent.parent.mkdir(parents=True, exist_ok=True)
+        legacy_recent.write_text("LEGACY_RECENT_SENTINEL_FOR_ROUND_PREPARE\n", encoding="utf-8")
+        legacy_goals = self.card / "memory" / "characters" / "Ada" / "goals.md"
+        legacy_goals.write_text("LEGACY_GOALS_SENTINEL_FOR_ROUND_PREPARE\n", encoding="utf-8")
+        profile = self.card / "memory" / "characters" / "Ada" / "profile.md"
+        profile.write_text("Ada objective profile stays GM-only.\n", encoding="utf-8")
+        (self.styles / "input.txt").write_text("I wait by the archive door.", encoding="utf-8")
+
+        round_prepare = _load_module("round_prepare")
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(self.root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        payload = json.loads(stdout.getvalue())
+        context_payload = json.loads(
+            Path(payload["character_contexts"]).read_text(encoding="utf-8")
+        )
+        round_context = (self.styles / "round_context.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(context_payload["characters"][0]["name"], "Ada")
+        self.assertNotIn("recent_state", context_payload["characters"][0])
+        self.assertNotIn("goals", context_payload["characters"][0])
+        self.assertNotIn("LEGACY_RECENT_SENTINEL_FOR_ROUND_PREPARE", round_context)
+        self.assertNotIn("LEGACY_GOALS_SENTINEL_FOR_ROUND_PREPARE", round_context)
+        self.assertNotIn(
+            "LEGACY_RECENT_SENTINEL_FOR_ROUND_PREPARE",
+            json.dumps(context_payload, ensure_ascii=False),
+        )
+        self.assertNotIn(
+            "LEGACY_GOALS_SENTINEL_FOR_ROUND_PREPARE",
+            json.dumps(context_payload, ensure_ascii=False),
+        )

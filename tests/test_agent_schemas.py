@@ -742,6 +742,13 @@ class AgentSchemaTest(unittest.TestCase):
             }],
         )
 
+    def test_actor_output_rejects_control_plane_delivery_prose(self):
+        with self.assertRaisesRegex(self.agent_schemas.ValidationError, "control-plane"):
+            self.agent_schemas.natural_actor_output(
+                "player",
+                "开局已送达前端 -> http://localhost:8765，可以在浏览器中输入下一步行动。",
+            )
+
     def test_validate_actor_output_rejects_structured_actor_event_types(self):
         for event_type in (
             "custom_action",

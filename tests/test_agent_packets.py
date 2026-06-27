@@ -63,6 +63,16 @@ def _load_round_deliver():
     return module
 
 
+def _load_write_memory():
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    spec = importlib.util.spec_from_file_location("write_memory", ROOT / "skills" / "write_memory.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -402,6 +412,44 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertIn("memory.finalizing", progress_states)
         self.assertIn("memory.post_round_scheduling", progress_states)
         self.assertIn("complete", progress_states)
+
+    def test_write_memory_keeps_project_summary_without_actor_self_memory_writes(self):
+        (self.card / "memory").mkdir()
+        _write_json(
+            self.card / ".card_data.json",
+            {
+                "mode": "blank_bootstrap",
+                "source_type": "blank",
+                "character_orchestration": {"major": ["Ada"]},
+            },
+        )
+        _write_json(
+            self.card / "chat_log.json",
+            [
+                {
+                    "user": "I open the archive door.",
+                    "summary": "The archive door opened.",
+                    "variables": {"stat_data": {"Ada": {"hp": 10}}},
+                }
+            ],
+        )
+
+        result = _load_write_memory().write_memory(str(self.card))
+
+        self.assertTrue(result["ok"])
+        self.assertTrue((self.card / "memory" / "project.md").exists())
+        self.assertEqual(result["character_memory_updated"], [])
+        self.assertFalse((self.card / "memory" / "player").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "player" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "player" / "goals.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "recent.md").exists())
+        self.assertFalse((self.card / "memory" / "characters" / "Ada" / "goals.md").exists())
+        self.assertFalse((self.card / "characters" / "player" / "long_term_memories.md").exists())
+        self.assertFalse((self.card / "characters" / "player" / "key_memories.json").exists())
+        self.assertFalse((self.card / "characters" / "player" / "short_term_memories.md").exists())
+        self.assertFalse((self.card / "characters" / "Ada" / "long_term_memories.md").exists())
+        self.assertFalse((self.card / "characters" / "Ada" / "key_memories.json").exists())
+        self.assertFalse((self.card / "characters" / "Ada" / "short_term_memories.md").exists())
 
     def test_round_deliver_reports_delivery_failed_when_handler_fails(self):
         progress_calls = []
@@ -881,6 +929,7 @@ class AgentPacketTest(unittest.TestCase):
 
         (legacy_ada_dir / "long_term.md").write_text("legacy Ada long term should not load", encoding="utf-8")
         (legacy_ada_dir / "recent.md").write_text("legacy Ada recent should not load", encoding="utf-8")
+        (legacy_ada_dir / "goals.md").write_text("legacy Ada goals md should not load", encoding="utf-8")
         _write_json(legacy_ada_dir / "goals.json", {"goals": {"active": ["legacy Ada goal should not load"]}})
 
         result = self.agent_packets.prepare_agent_run(
@@ -897,6 +946,7 @@ class AgentPacketTest(unittest.TestCase):
         character_packet = json.loads((run_dir / "characters" / "Ada.context.json").read_text(encoding="utf-8"))
         player_memory = json.dumps(player_packet["memory"], ensure_ascii=False)
         character_memory = json.dumps(character_packet["memory"], ensure_ascii=False)
+        gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
 
         self.assertEqual(player_packet["self_knowledge"]["name"], "雨蒙")
         self.assertEqual(sorted(player_packet["memory"]), ["goals", "key_memories", "long_term", "short_term"])
@@ -917,6 +967,8 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("最左侧", character_memory)
         self.assertNotIn("legacy Ada", character_memory)
         self.assertNotIn("legacy Ada", character_packet["immersive_context"])
+        self.assertNotIn("legacy Ada goals md should not load", gm_prompt)
+        self.assertNotIn("legacy Ada goal should not load", gm_prompt)
 
     def test_prepare_agent_run_does_not_project_old_actor_memory_aliases(self):
         result = self.agent_packets.prepare_agent_run(
@@ -1836,6 +1888,60 @@ class AgentPacketTest(unittest.TestCase):
                 "output_path": "input_analysis.output.json",
             },
         )
+
+    def test_prepare_agent_run_does_not_reuse_delivered_current_round(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nKeep the sealed door hidden.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "Keep the sealed door hidden.",
+        }
+        kwargs = {
+            "user_text": "fallback should not win",
+            "chat_log": [],
+            "card_data": {"title": "Delivered Reprepare Test"},
+            "character_contexts": {"characters": []},
+            "turn_index": 1,
+            "input_payload": input_payload,
+        }
+        result = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+        run_dir = Path(result["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "delivered"
+        _write_json(run_dir / "manifest.json", manifest)
+
+        repeated = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+
+        self.assertNotEqual(repeated["run_dir"], result["run_dir"])
+        self.assertEqual(Path(repeated["run_dir"]).name, "round-000003")
+
+    def test_prepare_agent_run_does_not_reuse_current_round_for_changed_input_hash(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nKeep the sealed door hidden.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "Keep the sealed door hidden.",
+        }
+        kwargs = {
+            "user_text": "fallback should not win",
+            "chat_log": [],
+            "card_data": {"title": "Hash Mismatch Reprepare Test"},
+            "character_contexts": {"characters": []},
+            "turn_index": 1,
+            "input_payload": input_payload,
+        }
+        result = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+        changed_payload = dict(input_payload)
+        changed_payload["raw_text"] = "I stop outside the archive."
+        changed_payload["role_text"] = "I stop outside the archive."
+
+        repeated = self.agent_packets.prepare_agent_run(
+            self.card,
+            **dict(kwargs, input_payload=changed_payload),
+        )
+
+        self.assertNotEqual(repeated["run_dir"], result["run_dir"])
+        self.assertEqual(Path(repeated["run_dir"]).name, "round-000003")
 
     def test_prepare_agent_run_fails_when_message_runtime_initialization_fails(self):
         original_append_message = self.agent_packets.agent_messages.append_message

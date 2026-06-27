@@ -11,7 +11,7 @@ Use this policy when preparing `actor_calls`, interaction sequencing, and GM con
 
 Call a character actor only when the current scene gives that character a meaningful participation point: a visible stimulus to perceive, a dialogue turn to answer, a goal conflict to resolve, or a decision boundary that depends on that character's agency.
 
-The real player is not an LLM actor in the default live path. Player input is already authoritative through `routed_input.role_channel`; when the next meaningful choice belongs to the real player, set `decision_point` and `stop_reason: "player_decision"` instead of creating `actor_calls[]` for `player`.
+The current `routed_input.role_action_channel` is already authoritative player-character action for this turn. If that action itself is a critical action that would greatly change the plot direction, a later GM step may set `decision_point` and `stop_reason: "player_decision"` without another player actor call. If the critical action is not already present in `role_action_channel` and the scene requires the player character to perceive, react, choose, attempt, speak, or continue an action, create an `actor_calls[]` item for `player` first.
 
 Do not call an important character merely because they exist in the cast. Do not ask an actor to confirm GM exposition or carry hidden setup.
 
@@ -48,7 +48,7 @@ If an actor naturally asks to look, listen, remember, or clarify, continue with 
 Use `stop_reason` to mark the next control-plane step:
 
 - `continue` when GM can safely continue routing or composing.
-- `player_decision` when the next meaningful choice belongs to the real player.
+- `player_decision` only after a prior `role_action_channel` action or prior player actor response supplies the player-authored critical action. Do not set it in the same GM output that calls `actor_id: "player"`.
 - `word_target` when the scene has reached a requested chapter or response size target.
 - `complete` when the scene or requested generation unit is complete.
 - `max_steps` when the GM loop reaches the configured iteration limit.

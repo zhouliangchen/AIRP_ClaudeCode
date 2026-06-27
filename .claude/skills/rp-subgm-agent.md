@@ -30,6 +30,10 @@ Character agents still receive only first-person projected context. When calling
 
 The `actor_calls[].prompt` string is the only content that may be delivered to the character agent after projection. Write it as a complete natural-language message to that character. Do not put JSON, field names, visibility proof, metadata, memory objects, control-plane explanations, or hidden rationale inside `prompt`.
 
+GM/subGM may serve as the actor's senses. You may tell an allowed character what they can perceive in natural language, including visual, sound, smell, taste, touch, warmth, cold, pain, itch, dizziness, numbness, heartbeat, balance, pressure, and other bodily sensations. This is sensory feedback only: you must not perform the actor's voluntary action, choice, thought, conclusion, emotional interpretation, dialogue, or follow-up reaction for them.
+
+The actor's later perception exploration and actions must come back as natural-language actor replies to GM/subGM. Do not ask the actor to output `perceive_request`, `custom_action`, `visible_content`, `stop_for_player_decision`, JSON, event metadata, or any other structured actor protocol fields.
+
 ## Output Schema
 
 Return one subGM output object:

@@ -290,6 +290,9 @@ class AgentOutputsTest(unittest.TestCase):
         _write_json(self.run_dir / "artifacts" / "postprocess.output.json", payload)
 
     def _add_player_critical_action(self):
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload.setdefault("routed_input", {})["role_action_channel"] = "I open the archive door."
+        _write_json(self.run_dir / "input.json", input_payload)
         gm_outputs = json.loads((self.run_dir / "artifacts" / "gm.output.json").read_text(encoding="utf-8"))
         gm_outputs["outputs"][0]["stop_reason"] = "player_decision"
         gm_outputs["outputs"][0]["decision_point"] = {
@@ -455,7 +458,19 @@ class AgentOutputsTest(unittest.TestCase):
                 "gm": {
                     "outputs": [
                         {
+                            "stop_reason": "continue",
+                            "actor_calls": [
+                                {
+                                    "call_id": "call-player-1",
+                                    "actor_id": "player",
+                                    "prompt": "What do you do?",
+                                }
+                            ],
+                            "decision_point": None,
+                        },
+                        {
                             "stop_reason": "player_decision",
+                            "actor_calls": [],
                             "decision_point": {
                                 "id": "gm-decision-1",
                                 "required_label": "Pry open the sealed door",
@@ -463,6 +478,7 @@ class AgentOutputsTest(unittest.TestCase):
                         },
                         {
                             "stop_reason": "complete",
+                            "actor_calls": [],
                             "decision_point": {
                                 "id": "ignored",
                                 "required_label": "This is not a player decision",
@@ -475,6 +491,7 @@ class AgentOutputsTest(unittest.TestCase):
                         {
                             "agent": "player",
                             "agent_id": "player",
+                            "source_call_id": "call-player-1",
                             "natural_reply": "I brace my shoulder and pry open the sealed door.",
                             "events": [],
                         },
@@ -511,6 +528,38 @@ class AgentOutputsTest(unittest.TestCase):
                     ],
                 },
                 "actors": {},
+            },
+        }
+
+        result = self.agent_outputs.extract_player_critical_action_evidence(story_input)
+
+        self.assertEqual(result, [])
+
+    def test_critical_action_evidence_rejects_same_gm_output_that_calls_player(self):
+        story_input = {
+            "loop_outputs": {
+                "gm": {
+                    "outputs": [
+                        {
+                            "stop_reason": "player_decision",
+                            "actor_calls": [{"actor_id": "player", "prompt": "What do you do?"}],
+                            "decision_point": {
+                                "id": "gm-decision-1",
+                                "required_label": "Pry open the sealed door",
+                            },
+                        },
+                    ],
+                },
+                "actors": {
+                    "player": [
+                        {
+                            "agent": "player",
+                            "agent_id": "player",
+                            "natural_reply": "I brace my shoulder and pry open the sealed door.",
+                            "events": [],
+                        },
+                    ],
+                },
             },
         }
 
@@ -580,6 +629,46 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertNotIn("nsfw", json.dumps(metrics, ensure_ascii=False))
 
         self.agent_interactions.mark_decision_point(self.run_dir, "choose", options=["enter"])
+        trace_only_metrics = self.agent_outputs.build_critic_quality_metrics(self.run_dir, story_output)
+        self.assertFalse(trace_only_metrics["word_count"]["exempted"])
+        self.assertEqual(trace_only_metrics["word_count"]["exemption_reason"], "")
+
+        _write_json(
+            self.run_dir / "artifacts" / "story.input.json",
+            {
+                "loop_outputs": {
+                    "gm": {
+                        "outputs": [
+                            {
+                                "stop_reason": "continue",
+                                "actor_calls": [
+                                    {
+                                        "call_id": "call-player-1",
+                                        "actor_id": "player",
+                                        "prompt": "What do you do?",
+                                    }
+                                ],
+                                "decision_point": None,
+                            },
+                            {
+                                "stop_reason": "player_decision",
+                                "actor_calls": [],
+                                "decision_point": {"id": "gm-decision-1", "reason": "choose"},
+                            }
+                        ],
+                    },
+                    "actors": {
+                        "player": [
+                            {
+                                "source_call_id": "call-player-1",
+                                "natural_reply": "I enter the archive.",
+                                "events": [],
+                            }
+                        ]
+                    },
+                },
+            },
+        )
         exempt_metrics = self.agent_outputs.build_critic_quality_metrics(self.run_dir, story_output)
         self.assertTrue(exempt_metrics["word_count"]["exempted"])
         self.assertEqual(exempt_metrics["word_count"]["exemption_reason"], "player_decision")
@@ -849,6 +938,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
+                            "role_action_channel": "I inspect the signal.",
                             "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
                         "hidden_facts": [{"fact": "moon base archive"}],
@@ -2099,6 +2189,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
+                            "role_action_channel": "I inspect the signal.",
                             "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
                         "hidden_facts": [{"fact": "moon base archive"}],
@@ -2149,6 +2240,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
+                            "role_action_channel": "I inspect the signal.",
                             "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
                         "hidden_facts": [{"fact": "moon base archive"}],
@@ -2198,6 +2290,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "raw_text": "I inspect the signal.",
                         "routed_input": {
                             "role_channel": "I inspect the signal.",
+                            "role_action_channel": "I inspect the signal.",
                             "user_instruction_channel": "Hidden truth: moon base archive.",
                         },
                         "hidden_facts": [{"fact": "moon base archive"}],
@@ -2270,9 +2363,9 @@ class AgentOutputsTest(unittest.TestCase):
                 "raw_text": "I inspect the signal.",
                 "routed_input": {
                     "role_channel": "I inspect the signal.",
-                    "user_instruction_channel": "Hidden truth: player decision.",
+                    "user_instruction_channel": "Hidden truth: word target.",
                 },
-                "hidden_facts": [{"fact": "player decision"}],
+                "hidden_facts": [{"fact": "word target"}],
             },
         )
         _write_json(
@@ -2288,7 +2381,7 @@ class AgentOutputsTest(unittest.TestCase):
                         "parallel_groups": [],
                         "world_state_delta": [],
                         "decision_point": None,
-                        "stop_reason": "player_decision",
+                        "stop_reason": "word_target",
                     }
                 ],
             },
@@ -2298,7 +2391,7 @@ class AgentOutputsTest(unittest.TestCase):
 
         self.assertEqual(
             story_input["loop_outputs"]["gm"]["outputs"][0]["stop_reason"],
-            "player_decision",
+            "word_target",
         )
 
     def test_build_story_input_rejects_player_decision_call_without_actor_output(self):
@@ -2334,6 +2427,264 @@ class AgentOutputsTest(unittest.TestCase):
         with self.assertRaisesRegex(
             self.agent_outputs.AgentOutputError,
             "required artifact is missing|player_decision requires player actor output",
+        ):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_same_output_player_decision_even_with_player_output(self):
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive waits for your answer."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "What do you do next?",
+                                "reason": "The scene has reached a real player decision.",
+                                "visibility_basis": _visibility_basis("player"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-same-output",
+                            "required_label": "Choose now.",
+                        },
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "same_output_calls_player"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_rejects_unlabeled_player_decision_even_with_player_output(self):
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive waits for your answer."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-empty-label",
+                            "required_label": " ",
+                        },
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(self.agent_outputs.AgentOutputError, "missing_decision_label"):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_accepts_valid_player_decision_with_prior_player_output(self):
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive asks for a direct action."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "What do you do next?",
+                                "reason": "The player must answer before GM can judge the branch.",
+                                "visibility_basis": _visibility_basis("player"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    },
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The seal breaks under your hands."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-valid-player-output",
+                            "required_label": "I step through the door.",
+                        },
+                        "stop_reason": "player_decision",
+                    },
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(
+            story_input["loop_outputs"]["gm"]["outputs"][1]["decision_point"]["id"],
+            "gm-decision-valid-player-output",
+        )
+
+    def test_build_story_input_rejects_player_decision_before_later_player_output(self):
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive asks before anyone answers."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-premature",
+                            "required_label": "Choose now.",
+                        },
+                        "stop_reason": "player_decision",
+                    },
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "Only then does the GM ask the player."}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "What do you do next?",
+                                "reason": "The player must answer.",
+                                "visibility_basis": _visibility_basis("player"),
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    },
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(
+            self.agent_outputs.AgentOutputError,
+            "player_decision requires prior player actor output",
+        ):
+            self.agent_outputs.build_story_input(self.run_dir)
+
+    def test_build_story_input_allows_decision_point_annotation_without_player_actor_output(self):
+        actor_path = self.run_dir / "artifacts" / "actor.outputs.json"
+        actor_path.unlink()
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive waits."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {"reason": "Trace-only annotation.", "options": ["enter"]},
+                        "stop_reason": "complete",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertEqual(story_input["loop_outputs"]["gm"]["outputs"][0]["stop_reason"], "complete")
+        self.assertEqual(story_input["loop_outputs"]["actors"], {})
+
+    def test_build_story_input_allows_role_action_player_decision_without_actor_output(self):
+        role_action = "I break the seal with both hands."
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["routed_input"]["role_action_channel"] = role_action
+        _write_json(self.run_dir / "input.json", input_payload)
+        actor_path = self.run_dir / "artifacts" / "actor.outputs.json"
+        actor_path.unlink()
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The seal cracks under your hands."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-role-action",
+                            "required_label": "Break the seal.",
+                        },
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+        evidence = self.agent_outputs.extract_player_critical_action_evidence(story_input)
+
+        self.assertEqual(story_input["loop_outputs"]["actors"], {})
+        self.assertEqual(story_input["player_inputs"]["routed_input"]["role_action_channel"], role_action)
+        self.assertEqual(
+            evidence,
+            [
+                {
+                    "id": "gm-decision-role-action",
+                    "required_label": role_action,
+                    "risk_level": "gm_decision",
+                }
+            ],
+        )
+
+    def test_build_story_input_rejects_player_decision_without_actor_output_or_role_action(self):
+        actor_path = self.run_dir / "artifacts" / "actor.outputs.json"
+        actor_path.unlink()
+        _write_json(
+            self.run_dir / "artifacts" / "gm.output.json",
+            {
+                "agent": "gm_loop",
+                "outputs": [
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "The archive waits for a real player action."}],
+                        "events": [],
+                        "actor_calls": [],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": {
+                            "id": "gm-decision-missing-player",
+                            "required_label": "Choose now.",
+                        },
+                        "stop_reason": "player_decision",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(
+            self.agent_outputs.AgentOutputError,
+            "player_decision requires prior player actor output",
         ):
             self.agent_outputs.build_story_input(self.run_dir)
 
@@ -3161,7 +3512,7 @@ class AgentOutputsTest(unittest.TestCase):
                     "current_goal": "Decide whether to commit to opening the sealed door.",
                     "options": [
                         {
-                            "label": "Confirm: Pry open the sealed door",
+                            "label": "Confirm: I open the archive door.",
                             "source": "player_agent_critical_action",
                             "requires_confirmation": True,
                         },
