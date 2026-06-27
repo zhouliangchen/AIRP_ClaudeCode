@@ -357,7 +357,8 @@ def main():
 
     try:
         if args.dry_run:
-            out_path.write_bytes(b"")
+            if not output_path or not out_path.exists():
+                out_path.write_bytes(b"")
         else:
             image_bytes = _call_openai_images(args.prompt, model, args.size, config)
             out_path.write_bytes(image_bytes)

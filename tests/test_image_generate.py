@@ -371,6 +371,50 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["reason"], "invalid_path")
 
+    def test_main_dry_run_custom_output_path_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            portrait = card / "characters" / "苏黎" / "苏黎.png"
+            portrait.parent.mkdir(parents=True)
+            original_bytes = b"portrait-bytes"
+            portrait.write_bytes(original_bytes)
+            manifest_path = card / ".card_assets.json"
+            job_path = card / "generated" / "jobs" / "character-suli-reference.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw character reference",
+                "--kind",
+                "portrait",
+                "--target",
+                "character_reference",
+                "--dry-run",
+                "--output-path",
+                "characters/苏黎/苏黎.png",
+                "--job-id",
+                "character-suli-reference",
+            ]
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_refresh_frontend_assets",
+                    return_value={"content_js": False, "error": None},
+                ):
+                    with self.assertRaises(SystemExit) as exc:
+                        self.mod.main()
+
+            self.assertEqual(exc.exception.code, 0)
+            self.assertEqual(portrait.read_bytes(), original_bytes)
+            self.assertTrue(manifest_path.exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["images"]), 1)
+            self.assertEqual(manifest["images"][0]["path"], "characters/苏黎/苏黎.png")
+            self.assertTrue(job_path.exists())
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "completed")
+
     def test_call_openai_images_rejects_missing_base_url_without_default(self):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):
             self.mod._call_openai_images("draw", "image-model", "1024x1024", {"api_key": "secret"})
