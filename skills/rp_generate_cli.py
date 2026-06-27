@@ -20,6 +20,7 @@ import actor_memory_store
 import agent_memory
 import agent_schemas
 import input_analysis_apply
+import llm_runner
 import model_debug
 import projection_agent
 
@@ -448,6 +449,7 @@ def _run_claude_with_debug(
     returncode: int | None = None
     error = ""
     exception_type = ""
+    api_metadata: Dict[str, Any] = {}
     try:
         if run_claude is run_claude_agent:
             command = [
@@ -473,19 +475,38 @@ def _run_claude_with_debug(
         raise
     finally:
         ended = model_debug.utc_now()
-        logger.write_call(
-            agent_key=agent_key,
-            cwd=str(cwd),
-            prompt=prompt,
-            stdout=stdout,
-            stderr=stderr,
-            returncode=returncode,
-            started_at=model_debug.isoformat(started),
-            ended_at=model_debug.isoformat(ended),
-            duration_ms=model_debug.duration_ms(started, ended),
-            error=error,
-            exception_type=exception_type,
-        )
+        if run_claude is llm_runner.run_llm_agent:
+            try:
+                last_result = llm_runner.get_last_result()
+            except Exception:
+                last_result = None
+            if isinstance(last_result, dict):
+                api_metadata = {
+                    key: last_result[key]
+                    for key in ("provider", "model", "status", "usage", "raw_response")
+                    if key in last_result
+                }
+                preview = str(last_result.get("text") or stdout or "").strip()
+                if preview:
+                    api_metadata["response_preview"] = preview[:500]
+        try:
+            logger.write_call(
+                agent_key=agent_key,
+                cwd=str(cwd),
+                prompt=prompt,
+                stdout=stdout,
+                stderr=stderr,
+                returncode=returncode,
+                started_at=model_debug.isoformat(started),
+                ended_at=model_debug.isoformat(ended),
+                duration_ms=model_debug.duration_ms(started, ended),
+                error=error,
+                exception_type=exception_type,
+                api_metadata=api_metadata,
+            )
+        except Exception:
+            if not exception_type:
+                raise
 
 
 def _extract_agent_or_direct_text(output: str) -> str:
@@ -1559,7 +1580,7 @@ def _ensure_input_analysis(
 def run_round(
     card_folder: str | Path,
     root_dir: str | Path,
-    run_claude: Callable[[str, str, str | Path], str] = run_claude_agent,
+    run_claude: Callable[[str, str, str | Path], str] | None = None,
     run_command: Callable[..., Any] = subprocess.run,
 ) -> Dict[str, Any]:
     """Generate and deliver the currently prepared round through the thin runtime."""
@@ -1578,6 +1599,8 @@ def run_round(
         str(manifest.get("round_id") or run_dir.name),
         settings,
     )
+    if run_claude is None:
+        run_claude = llm_runner.run_llm_agent
     active_run_claude = lambda agent_key, prompt, cwd: _run_claude_with_debug(
         debug_logger,
         run_claude,

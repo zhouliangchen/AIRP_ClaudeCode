@@ -8,6 +8,7 @@ import threading
 import urllib.request
 
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -174,7 +175,8 @@ class TurnStateTest(unittest.TestCase):
         assets = (skills_dir / "rp-assets-ui.md").read_text(encoding="utf-8")
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
-        self.assertIn("Claude Code 直驱", rp)
+        self.assertIn("Claude Code as the RP entry", rp)
+        self.assertIn("configured LLM APIs", rp)
         self.assertIn("主 agent 只负责编排", rp)
         self.assertIn("按需导入", orchestrator)
         self.assertIn("不得直接撰写常规叙事正文", orchestrator)
@@ -234,7 +236,8 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("不得阻塞正文交付", assets)
         self.assertIn("ui_manifest.json", assets)
 
-        self.assertIn("Claude Code 直驱", claude)
+        self.assertIn("Claude Code 主 agent 入口", claude)
+        self.assertIn("LLM API", claude)
         self.assertIn("各阶段 skill 按需导入", claude)
         self.assertIn("叙事创作和角色扮演任务必须交给 subagent", claude)
 
@@ -892,6 +895,49 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("s.modelDebugMode === true", html)
         self.assertIn("modelDebugMode: document.getElementById('set-model-debug-mode').checked", html)
 
+    def test_frontend_exposes_llm_settings_modal(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        for field_id in [
+            "open-llm-settings",
+            "llm-settings-modal",
+            "llm-cc-enabled",
+            "llm-cc-service-url",
+            "llm-openai-enabled",
+            "llm-openai-base-url",
+            "llm-openai-api-key",
+            "llm-openai-model",
+            "llm-image-base-url",
+            "llm-image-api-key",
+            "llm-image-model",
+        ]:
+            self.assertIn(f'id="{field_id}"', html)
+
+        for function_name in [
+            "openLlmSettings",
+            "closeLlmSettings",
+            "loadLlmSettings",
+            "collectLlmSettings",
+            "saveLlmSettings",
+            "testLlmSettings",
+        ]:
+            self.assertIn(f"function {function_name}", html)
+
+        self.assertIn("BRIDGE + '/api/llm_settings'", html)
+        self.assertIn("BRIDGE + '/api/llm_settings/test'", html)
+        self.assertIn("image_generation", html)
+        self.assertIn("api_key_set", html)
+        self.assertIn("if (openaiKey)", html)
+        self.assertIn("if (imageKey)", html)
+        self.assertIn("applyLlmSettings(data)", html)
+        self.assertIn("applyLlmSettings(settings)", html)
+        self.assertIn("configuration_errors", html)
+        self.assertIn("Array.isArray(data.results)", html)
+        self.assertNotIn("save: true", html)
+        self.assertNotIn('placeholder="http://127.0.0.1:15721"', html)
+        self.assertNotIn('placeholder="https://api.openai.com/v1"', html)
+        self.assertNotIn('placeholder="gpt-image-2"', html)
+
     def test_frontend_renders_schema_v2_progress_detail_panel(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
@@ -1122,6 +1168,538 @@ class TurnStateTest(unittest.TestCase):
 
         saved = json.loads(server.SETTINGS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(saved, post_result["settings"])
+
+    def test_server_llm_settings_api_saves_redacts_and_preserves_keys(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def request_json(path, payload=None, method="GET"):
+            data = None
+            headers = {}
+            if payload is not None:
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            first = request_json(
+                "/api/llm_settings",
+                {
+                    "cc_switch": {
+                        "enabled": True,
+                        "service_url": "http://cc-switch.local:15721",
+                        "api_key": "drop-cc-key",
+                        "model": "drop-cc-model",
+                    },
+                    "openai_compatible": {
+                        "enabled": True,
+                        "base_url": "https://text.example/v1",
+                        "api_key": "openai-secret",
+                        "model": "text-model",
+                    },
+                    "image_generation": {
+                        "base_url": "https://image.example/v1",
+                        "api_key": "image-secret",
+                        "model": "image-model",
+                    },
+                },
+                method="POST",
+            )
+            get_result = request_json("/api/llm_settings")
+            roundtrip = request_json("/api/llm_settings", get_result, method="POST")
+            second = request_json(
+                "/api/llm_settings",
+                {
+                    "openai_compatible": {
+                        "enabled": True,
+                        "base_url": "https://text2.example/v1",
+                        "model": "text-model-2",
+                    },
+                    "image_generation": {
+                        "base_url": "https://image2.example/v1",
+                        "model": "image-model-2",
+                    },
+                },
+                method="POST",
+            )
+            third = request_json(
+                "/api/llm_settings",
+                {
+                    "cc_switch": {
+                        "enabled": False,
+                        "api_key": "drop-later-cc-key",
+                        "model": "drop-later-cc-model",
+                    },
+                },
+                method="POST",
+            )
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["settings"]["openai_compatible"]["api_key"], "")
+        self.assertTrue(first["settings"]["openai_compatible"]["api_key_set"])
+        self.assertEqual(first["settings"]["image_generation"]["api_key"], "")
+        self.assertTrue(first["settings"]["image_generation"]["api_key_set"])
+        self.assertNotIn("api_key", first["settings"]["cc_switch"])
+        self.assertNotIn("model", first["settings"]["cc_switch"])
+        self.assertEqual(get_result, first["settings"])
+
+        saved = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved["image_generation"]["api_key"], "image-secret")
+        self.assertNotIn("api_key", saved["cc_switch"])
+        self.assertNotIn("model", saved["cc_switch"])
+        self.assertTrue(roundtrip["settings"]["openai_compatible"]["api_key_set"])
+        self.assertTrue(roundtrip["settings"]["image_generation"]["api_key_set"])
+        saved_after_roundtrip = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved_after_roundtrip["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved_after_roundtrip["image_generation"]["api_key"], "image-secret")
+
+        self.assertTrue(second["settings"]["openai_compatible"]["api_key_set"])
+        self.assertTrue(second["settings"]["image_generation"]["api_key_set"])
+        saved_after_second = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved_after_second["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved_after_second["image_generation"]["api_key"], "image-secret")
+        self.assertEqual(saved_after_second["openai_compatible"]["base_url"], "https://text2.example/v1")
+        self.assertEqual(saved_after_second["image_generation"]["base_url"], "https://image2.example/v1")
+        self.assertFalse(third["settings"]["cc_switch"]["enabled"])
+        self.assertEqual(third["settings"]["cc_switch"]["service_url"], "http://cc-switch.local:15721")
+        self.assertNotIn("api_key", third["settings"]["cc_switch"])
+        self.assertNotIn("model", third["settings"]["cc_switch"])
+        saved_after_third = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertFalse(saved_after_third["cc_switch"]["enabled"])
+        self.assertEqual(saved_after_third["cc_switch"]["service_url"], "http://cc-switch.local:15721")
+        self.assertNotIn("api_key", saved_after_third["cc_switch"])
+        self.assertNotIn("model", saved_after_third["cc_switch"])
+
+    def test_server_llm_settings_get_uses_frontend_env_local_priority(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+        server.LLM_LOCAL_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "cc_switch": {"enabled": True, "service_url": "http://local-switch"},
+                    "openai_compatible": {
+                        "enabled": False,
+                        "base_url": "https://local.example/v1",
+                        "api_key": "local-secret",
+                        "model": "local-model",
+                    },
+                    "image_generation": {
+                        "base_url": "https://local-image.example/v1",
+                        "api_key": "local-image-secret",
+                        "model": "local-image-model",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "cc_switch": {"enabled": False, "service_url": "http://frontend-switch"},
+                    "openai_compatible": {
+                        "enabled": True,
+                        "base_url": "",
+                        "api_key": "",
+                        "model": "frontend-model",
+                    },
+                    "image_generation": {
+                        "base_url": "https://frontend-image.example/v1",
+                        "api_key": "",
+                        "model": "",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        env = {
+            "AIRP_CC_SWITCH_ENABLED": "true",
+            "AIRP_CC_SWITCH_SERVICE_URL": "http://env-switch",
+            "AIRP_OPENAI_COMPATIBLE_ENABLED": "false",
+            "AIRP_OPENAI_COMPATIBLE_BASE_URL": "https://env.example/v1",
+            "AIRP_OPENAI_COMPATIBLE_API_KEY": "env-secret",
+            "AIRP_OPENAI_COMPATIBLE_MODEL": "env-model",
+            "AIRP_IMAGE_GENERATION_BASE_URL": "https://env-image.example/v1",
+            "AIRP_IMAGE_GENERATION_API_KEY": "env-image-secret",
+            "AIRP_IMAGE_GENERATION_MODEL": "env-image-model",
+        }
+        try:
+            with mock.patch.dict(os.environ, env, clear=False):
+                with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/llm_settings", timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertFalse(result["cc_switch"]["enabled"])
+        self.assertEqual(result["cc_switch"]["service_url"], "http://frontend-switch")
+        self.assertTrue(result["openai_compatible"]["enabled"])
+        self.assertEqual(result["openai_compatible"]["base_url"], "https://env.example/v1")
+        self.assertEqual(result["openai_compatible"]["model"], "frontend-model")
+        self.assertTrue(result["openai_compatible"]["api_key_set"])
+        self.assertEqual(result["image_generation"]["base_url"], "https://frontend-image.example/v1")
+        self.assertEqual(result["image_generation"]["model"], "env-image-model")
+        self.assertTrue(result["image_generation"]["api_key_set"])
+
+    def test_server_llm_settings_get_reports_missing_configuration_to_frontend(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with mock.patch.dict(os.environ, {
+                "AIRP_CC_SWITCH_ENABLED": "",
+                "AIRP_CC_SWITCH_SERVICE_URL": "",
+                "AIRP_OPENAI_COMPATIBLE_ENABLED": "",
+                "AIRP_OPENAI_COMPATIBLE_BASE_URL": "",
+                "AIRP_OPENAI_COMPATIBLE_API_KEY": "",
+                "AIRP_OPENAI_COMPATIBLE_MODEL": "",
+                "AIRP_IMAGE_GENERATION_BASE_URL": "",
+                "AIRP_IMAGE_GENERATION_API_KEY": "",
+                "AIRP_IMAGE_GENERATION_MODEL": "",
+            }, clear=False):
+                with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/llm_settings", timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertFalse(result["cc_switch"]["enabled"])
+        self.assertEqual(result["cc_switch"]["service_url"], "")
+        self.assertIn("configuration_errors", result)
+        self.assertIn("未启用可用的文本 LLM provider", result["configuration_errors"])
+        self.assertIn("图片生成 API 缺少 api_key", result["configuration_errors"])
+
+    def test_server_llm_settings_test_uses_enabled_text_providers_only(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+        server.CLAUDE_SETTINGS_FILE.parent.mkdir(parents=True)
+        server.CLAUDE_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-test",
+                        "ANTHROPIC_API_KEY": "claude-secret",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "cc_switch": {
+                        "enabled": True,
+                        "service_url": "http://cc-switch.test",
+                    },
+                    "openai_compatible": {
+                        "enabled": True,
+                        "base_url": "https://text.example/v1",
+                        "api_key": "openai-secret",
+                        "model": "text-model",
+                    },
+                    "image_generation": {
+                        "base_url": "https://image.example/v1",
+                        "api_key": "image-secret",
+                        "model": "image-model",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+
+        def fake_test_connection(provider, config):
+            calls.append((provider, dict(config)))
+            return {"ok": True, "provider": provider, "status": 200, "model": config.get("model", "")}
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with mock.patch.object(server.llm_provider, "test_connection", side_effect=fake_test_connection):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{httpd.server_port}/api/llm_settings/test",
+                    data=json.dumps({}, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([provider for provider, _ in calls], ["cc_switch", "openai_compatible"])
+        self.assertEqual(calls[0][1]["model"], "claude-test")
+        self.assertEqual(calls[0][1]["headers"]["x-api-key"], "claude-secret")
+        self.assertEqual(calls[1][1]["api_key"], "openai-secret")
+        self.assertEqual([item["provider"] for item in result["results"]], ["cc_switch", "openai_compatible"])
+
+    def test_server_llm_settings_test_uses_unsaved_payload_without_writing_file(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        saved_settings = {
+            "cc_switch": {
+                "enabled": False,
+                "service_url": "http://cc-switch.test",
+            },
+            "openai_compatible": {
+                "enabled": False,
+                "base_url": "https://old.example/v1",
+                "api_key": "old-openai-secret",
+                "model": "old-model",
+            },
+            "image_generation": {
+                "base_url": "https://image.example/v1",
+                "api_key": "image-secret",
+                "model": "image-model",
+            },
+        }
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(json.dumps(saved_settings, ensure_ascii=False), encoding="utf-8")
+
+        calls = []
+
+        def fake_test_connection(provider, config):
+            calls.append((provider, dict(config)))
+            return {"ok": True, "provider": provider, "status": 200, "model": config.get("model", "")}
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with mock.patch.object(server.llm_provider, "test_connection", side_effect=fake_test_connection):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{httpd.server_port}/api/llm_settings/test",
+                    data=json.dumps(
+                        {
+                            "openai_compatible": {
+                                "enabled": True,
+                                "base_url": "https://new.example/v1",
+                                "api_key": "new-openai-secret",
+                                "model": "new-model",
+                            }
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([provider for provider, _ in calls], ["openai_compatible"])
+        self.assertEqual(calls[0][1]["base_url"], "https://new.example/v1")
+        self.assertEqual(calls[0][1]["model"], "new-model")
+        self.assertEqual(calls[0][1]["api_key"], "new-openai-secret")
+        self.assertEqual(json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8")), saved_settings)
+
+    def test_server_llm_settings_test_save_true_writes_payload(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "openai_compatible": {
+                        "enabled": False,
+                        "base_url": "https://old.example/v1",
+                        "api_key": "old-secret",
+                        "model": "old-model",
+                    },
+                    "cc_switch": {
+                        "enabled": False,
+                        "service_url": "http://old-cc-switch.test",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+
+        def fake_test_connection(provider, config):
+            calls.append((provider, dict(config)))
+            return {"ok": True, "provider": provider, "status": 200}
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with mock.patch.object(server.llm_provider, "test_connection", side_effect=fake_test_connection):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{httpd.server_port}/api/llm_settings/test",
+                    data=json.dumps(
+                        {
+                            "save": True,
+                            "openai_compatible": {
+                                "enabled": True,
+                                "base_url": "https://new.example/v1",
+                                "api_key": "new-secret",
+                                "model": "new-model",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([provider for provider, _ in calls], ["openai_compatible"])
+        self.assertEqual(calls[0][1]["base_url"], "https://new.example/v1")
+        saved = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertTrue(saved["openai_compatible"]["enabled"])
+        self.assertEqual(saved["openai_compatible"]["base_url"], "https://new.example/v1")
+        self.assertEqual(saved["openai_compatible"]["api_key"], "new-secret")
+        self.assertEqual(saved["openai_compatible"]["model"], "new-model")
+
+    def test_server_llm_settings_post_invalid_json_returns_json_400(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            for path in ["/api/llm_settings", "/api/llm_settings/test"]:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{httpd.server_port}{path}",
+                    data=b"{invalid json",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(cm.exception.code, 400)
+                self.assertEqual(cm.exception.headers.get_content_type(), "application/json")
+                payload = json.loads(cm.exception.read().decode("utf-8"))
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error"], "invalid json")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+    def test_server_llm_settings_test_exception_returns_json_500(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "openai_compatible": {
+                        "enabled": True,
+                        "base_url": "https://text.example/v1",
+                        "api_key": "secret",
+                        "model": "model",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with (
+                mock.patch.object(server.llm_provider, "test_connection", side_effect=RuntimeError("provider boom")),
+                mock.patch("traceback.print_exc"),
+            ):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{httpd.server_port}/api/llm_settings/test",
+                    data=json.dumps({}, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(cm.exception.code, 500)
+                self.assertEqual(cm.exception.headers.get_content_type(), "application/json")
+                payload = json.loads(cm.exception.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "provider boom")
 
     def test_server_style_profiles_api_lists_json_presets(self):
         server = _load_server()

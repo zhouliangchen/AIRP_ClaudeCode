@@ -1,9 +1,11 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,8 +33,24 @@ class AgentRuntimePumpTest(unittest.TestCase):
         self.run_dir.mkdir(parents=True)
         self.intents = _load("agent_intents")
         self.pump = _load("agent_runtime_pump")
+        self.capability_executors = _load("capability_executors")
+        self.llm_settings = importlib.import_module("llm_settings")
+        self.original_frontend_settings_path = self.llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
+        self.original_local_settings_path = self.llm_settings.DEFAULT_LOCAL_SETTINGS_PATH
+        self.original_environ = os.environ.copy()
+        for key in (
+            "OPENAI_API_KEY",
+            "AIRP_IMAGE_GENERATION_API_KEY",
+            "AIRP_IMAGE_GENERATION_BASE_URL",
+            "AIRP_IMAGE_GENERATION_MODEL",
+        ):
+            os.environ.pop(key, None)
 
     def tearDown(self):
+        self.llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH = self.original_frontend_settings_path
+        self.llm_settings.DEFAULT_LOCAL_SETTINGS_PATH = self.original_local_settings_path
+        os.environ.clear()
+        os.environ.update(self.original_environ)
         self.tmp.cleanup()
 
     def test_after_input_analysis_leaves_assets_task_pending_for_after_critic(self):
@@ -129,6 +147,47 @@ class AgentRuntimePumpTest(unittest.TestCase):
         update = completed["result"]["outputs"]["postprocess_contract_update"]
         self.assertEqual(update["ui_schema_status"], "applied")
         self.assertEqual(update["postprocess_contract_status"], "synced")
+
+    def test_assets_task_ignores_legacy_image_config_for_worker_start(self):
+        frontend_path = Path(self.tmp.name) / "styles" / "llm_settings.frontend.json"
+        local_path = Path(self.tmp.name) / "styles" / "llm_settings.local.json"
+        frontend_path.parent.mkdir(parents=True)
+        frontend_path.write_text(
+            json.dumps({"image_generation": {"api_key": ""}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        local_path.write_text(
+            json.dumps({"image_generation": {"api_key": ""}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self.llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH = frontend_path
+        self.llm_settings.DEFAULT_LOCAL_SETTINGS_PATH = local_path
+        (self.card / "image_config.local.json").write_text(
+            json.dumps({"api_key": "legacy-key"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        intent = {
+            "id": "intent-assets-1",
+            "type": "assets_task",
+            "payload": {"kind": "scene", "target": "rain", "prompt": "rainy street"},
+        }
+        calls = []
+
+        def run_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        result = self.capability_executors.execute_assets_task(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_critic",
+            run_command=run_command,
+        )
+
+        self.assertEqual(result["outputs"]["status"], "deferred")
+        self.assertEqual(result["outputs"]["reason"], "asset_worker_not_configured")
+        self.assertEqual(calls, [])
 
     def test_run_pending_intents_blocks_replay_plan_without_confirmation(self):
         created = self.intents.create_intent(

@@ -48,6 +48,8 @@ debug/
 # Image generation API local secrets (never commit)
 image_config.local.json
 skills/image_config.local.json
+skills/styles/llm_settings.frontend.json
+skills/styles/llm_settings.local.json
 .image_api.json
 *.secret.json
 

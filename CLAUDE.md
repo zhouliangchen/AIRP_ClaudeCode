@@ -21,7 +21,7 @@ Use `python -m unittest discover -s tests -v` for the repository test suite. `sk
 
 ## Architecture overview
 
-This project turns Claude Code into the orchestration layer for a local role-playing engine. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765` on the host machine or `http://<host-LAN-IP>:8765` from devices on the same LAN.
+This project keeps Claude Code as the local entry, maintenance, and script-orchestration agent for a role-playing engine. The runtime RP agents themselves are executed by Python through configured LLM APIs. Users keep one card/story folder per RP, start Claude Code from that folder, and interact through the browser UI served at `http://localhost:8765` on the host machine or `http://<host-LAN-IP>:8765` from devices on the same LAN.
 
 The core runtime is a Python standard-library bridge plus a small Node validation service:
 
@@ -29,7 +29,7 @@ The core runtime is a Python standard-library bridge plus a small Node validatio
 - `skills/start_server.py` is the safe launcher for `server.py`; it checks port `8765`, clears stale Python/Node processes when needed, waits for readiness, and returns local/LAN frontend URLs. The MVU service uses port `8766`.
 - `skills/import_prepare.py` is the startup pipeline. It cleans stale runtime state, delegates card/world import to `import_card.py`, initializes `.card_path`, `state.js`, `content.js`, `chat_log.json`, and writes `skills/styles/import_context.txt` as the single startup context file for Claude.
 - `skills/round_prepare.py` is the per-turn context pipeline. It reads user input, settings, recent memory, worldbook indexes, injection rules, and MVU state, then writes `skills/styles/round_context.txt`. Keep stable/static context near the file prefix and dynamic turn data near the suffix to preserve prompt-cache locality.
-- Claude Code orchestrates subagents that create and review narrative output through the `.agent_runs/<round>/` message runtime. `agent_messages.py` owns the append-only message bus, ACL/projection, and per-agent inbox indexes; `agent_intents.py` owns executable control-plane requests; `agent_snapshots.py` owns before-round snapshots; `agent_prompts.py` materializes prompts; `agent_actor_runtime.py` owns shared actor collaboration helpers; `agent_outputs.py` validates artifacts, assembles `story.input.json`, records critic revise/block repair history plus linked repair request messages/intents and related system improvement suggestions, and mirrors approved `story.output.json` content to `skills/styles/response.txt`. `postprocess_outputs.py` validates frontend-facing summary/options/goal data and records nonblocking UI-extension repairs. `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
+- Python orchestrates runtime agents that create and review narrative output through the `.agent_runs/<round>/` message runtime. `llm_settings.py`, `llm_provider.py`, and `llm_runner.py` resolve cc_switch Claude Code local reverse proxy first, then OpenAI-compatible fallback for text agents. `agent_messages.py` owns the append-only message bus, ACL/projection, and per-agent inbox indexes; `agent_intents.py` owns executable control-plane requests; `agent_snapshots.py` owns before-round snapshots; `agent_prompts.py` materializes prompts; `agent_actor_runtime.py` owns shared actor collaboration helpers; `agent_outputs.py` validates artifacts, assembles `story.input.json`, records critic revise/block repair history plus linked repair request messages/intents and related system improvement suggestions, and mirrors approved `story.output.json` content to `skills/styles/response.txt`. `postprocess_outputs.py` validates frontend-facing summary/options/goal data and records nonblocking UI-extension repairs. `round_deliver.py` performs word-count gating, appends token data, invokes `handler.py`, updates memory, and reports whether story planning is due.
 - `skills/agent_dispatcher.py` consumes pending intents, explicitly executes projection, actor, subGM thread, story, critic, postprocess, repair, and delivery intents, writes authoritative artifacts under `artifacts/`, and blocks unsafe or stalled runs; `skills/control_plane_smoke.py` drives a temporary no-live-model control-plane smoke that covers artifacts, interaction trace, memory delta/summary, message runtime evidence, snapshot, and delivery.
 - Input analyst emits agent-driven `capability_requests[]` for system/UI/replay/card/source work outside ordinary GM/story handling. The runtime maps those requests through a declarative capability registry; Python enforces authorization, ACL, artifact, projection, snapshot, and delivery boundaries but does not decide the semantic routing strategy from player text.
 - `skills/handler.py` parses tagged responses, executes MVU updates through `mvu_engine.py`, appends `chat_log.json`, rebuilds `content.js`, mirrors `state.js` into the card folder, and notifies the browser via `/api/done`.
@@ -37,7 +37,7 @@ The core runtime is a Python standard-library bridge plus a small Node validatio
 - `skills/import_card.py`, `skills/match_worldbook.py`, `skills/write_memory.py`, and `skills/agent_memory.py` manage card parsing, worldbook lookup, persistent narrative memory, validated subagent memory deltas, and scheduled actor self-summaries under each card folder's `memory/` directory.
 - `skills/styles/` contains the browser UI and runtime files. Files such as `content.js`, `state.js`, `input.txt`, `.pending`, `round_context.txt`, and `import_context.txt` are generated runtime artifacts, not source-of-truth code.
 
-Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code long-poll detects pending input → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` and creating a before-round snapshot → GM, subGM, story, critic, postprocess, player, and character agents collaborate through `messages.jsonl` and `intents/`; actor-facing delivery must pass through projection before reaching `inboxes/player.jsonl` or `inboxes/character_<id>.jsonl` → `agent_dispatcher.py` consumes pending intents as the executable next-action source; GM turn only declares actor calls, side-thread work, or stop reasons, then dispatcher explicitly runs projection, actor, subGM thread, and GM continuation intents before story composition → dispatcher records `interaction.trace.json`, writes authoritative artifacts under `artifacts/`, and blocks unsafe or stalled runs → `story.input.json` is assembled with sanitized interaction trace; root same-name story/critic/postprocess files are delivery-boundary exports rather than control-plane authority → in the default dispatcher path, critic pass creates `run_postprocess`, and valid postprocess core creates the later `deliver_round` intent while UI-extension repairs remain nonblocking → `round_deliver.py` validates story/critic delivery artifacts, records critic revise/block `repair_history.jsonl`, repair request message/intent, and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
+Important data flow: browser submit → `server.py` records `.player_inputs.jsonl`, writes `.pending_user_turn.json` with `role_text` / `user_instruction_text`, rebuilds `content.js`, writes `input.txt` + `.pending` + progress → Claude Code entry loop detects pending input and invokes the Python runtime → `round_prepare.py` writes `round_context.txt` and `.agent_runs/<round>/` packets/prompts/manifest, normalizing those fields into `role_channel` / `user_instruction_channel` in `input.json` and creating a before-round snapshot → `rp_generate_cli.py` / dispatcher call runtime agents through `llm_runner.run_llm_agent()` instead of one-shot Claude CLI subprocesses → GM, subGM, story, critic, postprocess, player, and character agents collaborate through `messages.jsonl` and `intents/`; actor-facing delivery must pass through projection before reaching `inboxes/player.jsonl` or `inboxes/character_<id>.jsonl` → `agent_dispatcher.py` consumes pending intents as the executable next-action source; GM turn only declares actor calls, side-thread work, or stop reasons, then dispatcher explicitly runs projection, actor, subGM thread, and GM continuation intents before story composition → dispatcher records `interaction.trace.json`, writes authoritative artifacts under `artifacts/`, and blocks unsafe or stalled runs → `story.input.json` is assembled with sanitized interaction trace; root same-name story/critic/postprocess files are delivery-boundary exports rather than control-plane authority → in the default dispatcher path, critic pass creates `run_postprocess`, and valid postprocess core creates the later `deliver_round` intent while UI-extension repairs remain nonblocking → `round_deliver.py` validates story/critic delivery artifacts, records critic revise/block `repair_history.jsonl`, repair request message/intent, and optional `.agent_runs/improvement_queue.jsonl`, mirrors approved story content to `response.txt`, and calls `handler.py` → `handler.py` clears the pending turn, updates chat/memory/state/progress, and rebuilds frontend content. Historical player edits go through `/api/player_inputs/edit`, append `.player_input_edits.jsonl`, and either update display in place or truncate the old branch and resubmit the revised input.
 
 ## Final Acceptance Checklist
 
@@ -51,25 +51,26 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 ## Runtime instructions for RP mode
 ## 多 Subagent 编排宪法
 
-- Claude Code 直驱原则不变：本项目不改造成普通后端直接调用 LLM API，仍由当前 Claude Code 会话负责工具调用、文件邮箱、subagent 调度和最终质检。
+- Claude Code 主 agent 入口原则不变：当前 Claude Code 会话仍负责 `/rp` 入口、工具调用、脚本编排、项目维护和最终质检；运行时 RP subagent 的模型推理已经迁移为 Python 直接调用 LLM API，不再依赖 Claude CLI subprocess 或 Claude Code 原生 task/subagent 机制。
 - `CLAUDE.md` 只保留项目宪法、数据权威、运行入口和交付协议；各阶段 skill 按需导入，避免巨大 prompt 常驻污染上下文。
 - 阶段 skill 名称：`rp-orchestrator`, `rp-input-router`, `rp-context-projector`, `rp-gm-agent`, `rp-story-agent`, `rp-critic-agent`, `rp-postprocess-agent`, `rp-delivery`, `rp-assets-ui`。player/character 不再注入独立 `.claude` skill；两者的角色侧行动提示由 `skills/agent_prompts.py` 的统一 actor 模板生成。
 - 叙事创作和角色扮演任务必须交给 subagent：GM 负责完整世界模拟，player 负责玩家角色第一人称具身，character agents 负责核心角色独立具身，story 负责整理成小说文本，critic 负责严格审稿。
-- 主 agent 只负责编排、脚本运行、代码/系统迭代、artifact 收集、重试循环和最终交付；不得直接撰写常规叙事正文，除非 subagent 不可用并明确标记为 fallback。
+- 主 agent 只负责编排、脚本运行、代码/系统迭代、artifact 收集、重试循环和最终交付；不得直接撰写常规叙事正文。若运行时 LLM provider 不可用，应进入阻断/修复路径，而不是静默退回主 agent 写正文。
 - Player/character subagents 拥有严格独立的第一人称上下文，不知道玩家、GM、Claude Code、prompt 或文件系统；GM 可以获取完整剧情和用户指令。
+- API 配置统一来自前端 API 设置页、三组 `AIRP_*` 环境变量和本地兜底配置文件。前端设置写入 `skills/styles/llm_settings.frontend.json`，本地兜底配置写入 `skills/styles/llm_settings.local.json`；三类配置字段统一按“前端设置 > 环境变量 > 本地配置文件”解析。代码不得注入 API 默认值，三层均缺失时前端 API 设置页必须显示配置错误。cc_switch 优先且只保存 `enabled` / `service_url`，OpenAI-compatible 文本 API 作为兜底，图片生成只读取 `image_generation`。
 - 用户输入分为 `role_channel` 和 `user_instruction_channel`。角色行动/第一人称剧情梗概进入角色通道；第三人称上帝视角设定和直接给 Claude Code 的指令进入用户指令通道，二者互不干扰。
-- 每轮使用 `.agent_runs/<round>/` 作为 agent 消息运行时：`messages.jsonl` 是 append-only 通信日志，`inboxes/` 是投影后的 per-agent 投递索引，`intents/` 是可执行控制面请求，`artifacts/` 是物化产物。默认 live path 中 GM turn 不再隐藏 actor/subGM dispatch；dispatcher 显式执行 `request_projection`、`run_actor`、`run_subgm_thread` 和后续 GM continuation。actor-facing 交付必须先经过 projection，才能进入 `inboxes/player.jsonl` 或 `inboxes/character_<id>.jsonl`；critic 通过后，默认 dispatcher 路径先执行 `run_postprocess`，只有 `postprocess.output.json.core` 通过校验后才创建 `deliver_round` intent；`round_deliver.py` 当前仍负责 story/critic 产物的机械交付、镜像 `story.output.json` 正文并调用前端处理。
+- 每轮使用 `.agent_runs/<round>/` 作为 agent 消息运行时：`messages.jsonl` 是 append-only 通信日志，`inboxes/` 是投影后的 per-agent 投递索引，`intents/` 是可执行控制面请求，`artifacts/` 是物化产物。默认 live path 由 `round_runtime.py` 驱动，串联 input analysis、GM collaboration、projection、actor、subGM、story、critic、postprocess、delivery 与 post-round memory；`agent_dispatcher.py` 和 runtime pump 只负责受控 intent 执行、helper/regression 场景和能力请求消费。actor-facing 交付必须先经过 projection，才能进入 `inboxes/player.jsonl` 或 `inboxes/character_<id>.jsonl`；critic 通过后，默认 thin runtime 先执行 postprocess，只有 `postprocess.output.json.core` 通过校验后才进入 delivery；`round_deliver.py` 当前仍负责 story/critic 产物的机械交付、镜像 `story.output.json` 正文并调用前端处理。
 - Progress updates must use declared schema-v2 state IDs from `skills/round_state.py`; after successful delivery, run lifecycle cleanup so active subGM side threads are paused instead of left running.
-- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再按 `selfRepairMode` 与 `critic.report.json.repair_routing` 分流：story/delivery 问题只重跑 story/critic；GM/actor/subGM 推进问题仅在 `full` 模式下回退本轮 dispatcher 派生产物并重新调度 GM/actor/subGM intents；若问题来自 prompt、代码或系统流程，且源码自修复配置明确允许，才进入项目源码修复流程，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
+- 质量不合格时，主 agent 先通过 `round_deliver.py` 记录 critic `revise` / `block` gate 结果，再按 `selfRepairMode` 与 `critic.report.json.repair_routing` 分流：story/delivery 问题只重跑 story/critic；GM/actor/subGM 推进问题仅在 `full` 模式下回退本轮 runtime 派生产物并重新调度 GM/actor/subGM intents；若问题来自 prompt、代码或系统流程，且源码自修复配置明确允许，才进入项目源码修复流程，否则由 critic 的 `system_iteration_suggestion` 进入 `.agent_runs/improvement_queue.jsonl`。
 - 图片生成和存档 UI 演化属于可选沉浸增强任务，必须异步执行，不得阻塞正文交付。
 
 
 
-# 话本RP — Claude Code 直驱模式
+# 话本RP — Claude Code 入口 + LLM API 运行时
 
 你不是在给酒馆生成 prompt。你就是 RP 引擎。
 
-本项目直接使用当前 Claude Code 会话已有的模型、认证和代理配置；Claude Code 作为编排层驱动本地 RP 管线。
+运行时模型配置来自前端 API 设置页、三组 `AIRP_*` 环境变量和本地兜底配置文件。前端 API 设置页写入 `skills/styles/llm_settings.frontend.json`，本地兜底配置统一写入 `skills/styles/llm_settings.local.json`，字段优先级为前端设置 > 环境变量 > 本地配置文件。Claude Code 主会话只作为入口、维护者和脚本编排层；cc_switch 的上游模型、认证和 provider 映射由 CC Switch/Claude Code 本地配置维护，本项目侧只保存 cc_switch 的 `enabled` 与 `service_url`。
 
 ## 权限预授权
 
@@ -110,13 +111,13 @@ Important data flow: browser submit → `server.py` records `.player_inputs.json
 - `python "{ROOT}/skills/import_card.py" "<卡片文件夹>" "{ROOT}"` — 单独导入角色卡（兜底）
 - `python "{ROOT}/skills/match_worldbook.py" "<卡片文件夹>"` — 匹配变量变更与世界书索引
 - `python "{ROOT}/skills/write_memory.py" "<卡片文件夹>"` — 追加本轮摘要到 project.md
-- `python -c "import sys; sys.path.insert(0, r'{ROOT}/skills'); import agent_outputs; agent_outputs.build_story_input(r'<当前 .agent_runs 轮目录>')"` — 在 dispatcher 完成 GM/projection/actor/subGM 协作后防御性重建 `story.input.json`（通常由 `round_deliver.py` 调用）
+- `python -c "import sys; sys.path.insert(0, r'{ROOT}/skills'); import agent_outputs; agent_outputs.build_story_input(r'<当前 .agent_runs 轮目录>')"` — 在 runtime 完成 GM/projection/actor/subGM 协作后防御性重建 `story.input.json`（通常由 `round_deliver.py` 调用）
 - `python "{ROOT}/skills/control_plane_smoke.py" --repo "{ROOT}"` — 运行无 live model 的多 agent 控制面冒烟测试
 - `python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"` — 回合预处理管线
 - `python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"` — 回合后处理管线
 - `python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"` — 导入/启动预处理管线
 - `python "{ROOT}/skills/start_server.py" "{ROOT}"` — 启动桥接服务器，默认允许同一局域网设备通过 `http://<本机局域网IP>:8765` 访问
-- `python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." [--kind scene|ui_background|portrait] [--target ...]` — 图片生成资产适配器（默认 gpt-image-2；需 OPENAI_API_KEY）
+- `python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." [--kind scene|ui_background|portrait] [--target ...]` — 图片生成资产适配器（配置优先级为前端 API 设置、`AIRP_IMAGE_GENERATION_*`、`skills/styles/llm_settings.local.json`，缺项时报错）
 - `python -c "..."` — 临时诊断（编码修复、JSON 检查、进程管理等非生产流程）
 
 ### 启动阶段额外权限
@@ -261,11 +262,11 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 
 **核心角色 subagent 编排**（步骤 3 的一部分，按需执行）：
 - `round_prepare.py` 会写出 `{ROOT}/skills/styles/character_contexts.json`，其中包含核心角色的私有记忆、目标、近况和变量切片。
-- 对 `CHARACTER_CONTEXTS` 中 `scene_relevance=high` 或当前场景强相关的核心角色，最多并行调用 2 个 Claude Code subagent；不重要路人/配角仍由主代理兼任。
+- 对 `CHARACTER_CONTEXTS` 中 `scene_relevance=high` 或当前场景强相关的核心角色，最多并行调度配置允许数量的 actor LLM 调用；不重要路人/配角仍由 GM 叙事兼任。
 - subagent 只站在该角色自身立场，返回：本轮私有反应、隐藏意图、可选行动/台词、变量变化建议、记忆 delta。subagent 不写 `response.txt`，不直接交付前端。
 - GM/player/character subagents 通过 `.agent_runs/<round>/` 文件邮箱交互；story agent 整理各方产物，尽可能保留角色行动和台词，同时提升整体叙事连贯性。
 - 主代理只负责调度、收集、质检、必要的系统迭代和最终镜像交付，不直接合成常规叙事正文。
-- 若当前 Claude Code 环境无法调用 subagent，则使用相同 skill 作为 fallback，但仍必须遵守第一人称上下文隔离，保持核心角色人格独立。
+- 若当前 LLM provider 不可用，本轮应按 provider 错误进入阻断/修复路径；不得静默退回由主 agent 直接撰写常规叙事正文。
 
 **空白角色卡自我沉淀**：
 - 当 `CARD_INFO` 或 `EVOLVING_PROFILE` 显示 `blank_bootstrap` 时，本局没有预置角色卡；不要抱怨缺素材。
@@ -273,7 +274,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 - 每轮 MVU 更新应维护 `/世界/*`、`/角色/*` 或实际变量路径中的核心状态；`handler.py` 会把这些状态沉淀到 `.card_data.json.evolving_profile` 与 `memory/characters/_self/`。
 
 **图片生成与 UI 自主演化**（可选，不阻塞正文交付）：
-- 若环境设置了 `OPENAI_API_KEY` 或 gitignored 本地配置 `skills/image_config.local.json` / `image_config.local.json` 中提供 `api_key`，可按需调用：`python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." --kind scene|ui_background|portrait --target ... --async`。默认模型为 `gpt-image-2`，可用 `IMAGE_MODEL` 或配置文件 `model` 覆盖；`base_url` 可指向 OpenAI-compatible 服务（如 `https://api.unity2.ai`）。
+- 图片生成 API 由统一 API 设置管理：前端写入 `skills/styles/llm_settings.frontend.json` 的 `image_generation`，本地兜底写入 `skills/styles/llm_settings.local.json` 的 `image_generation`，也可用 `AIRP_IMAGE_GENERATION_API_KEY`、`AIRP_IMAGE_GENERATION_BASE_URL`、`AIRP_IMAGE_GENERATION_MODEL` 作为中间优先级来源。可按需调用：`python "{ROOT}/skills/image_generate.py" "<卡片文件夹>" --prompt "..." --kind scene|ui_background|portrait --target ... --async`。缺少 `base_url`、`api_key` 或 `model` 会报错；旧 `image_config.local.json`、`.image_api.json`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `IMAGE_MODEL` 不再作为图片生成配置来源。
 - 图片生成和 UI 热编辑属于高耗时操作，必须在 `round_deliver.py` 成功交付前端后异步触发；不得在用户等待正文回复时同步等待图片或复杂 UI 改造完成。
 - 生成的图片写入当前卡片文件夹 `generated/images/` 与 `.card_assets.json`，前端通过 `window.CARD_ASSETS` 和 `/api/card_asset/...` 展示。
 - Claude Code 可自主微调当前卡片文件夹的 `.beautify_template.html`、`.beautify.json`、`.regex_scripts.json`、`ui_manifest.json`，让 UI 随剧本演化；不得把全局 `skills/styles/index.html` 当作单个存档的定制层。
@@ -295,7 +296,7 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 
 每轮至少更新 2 个后台角色的 `角色行动` 和 `内心想法`（即使只是"继续做同一件事"也要写 replace）。轮转优先级按"上次更新距今最久"排序。
 
-**步骤 4** — dispatcher 完成 GM、projection、actor、subGM thread 与必要的 GM continuation 后，生成 `.agent_runs/<round>/artifacts/story.input.json`；根目录同名 `.agent_runs/<round>/story.input.json` 只在交付校验/导出边界出现，不是 dispatcher/story-compose 阶段的权威产物。story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。critic pass 后，默认 dispatcher 路径必须执行 `run_postprocess` 并写入 `.agent_runs/<round>/artifacts/postprocess.output.json` 与根目录 `postprocess.output.json`；缺少摘要、当前目标或行动选项会阻断 dispatcher 创建 `deliver_round` intent，UI 扩展缺失则写入非阻塞修复队列后继续创建 `deliver_round`。可选的 `interaction.trace.json` 只向 story/critic/postprocess 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。旧 broad loop 如保留，只用于 helper/regression-only 场景，不是默认 live path。
+**步骤 4** — `round_runtime.py` 完成 GM、projection、actor、subGM thread 与必要的 GM continuation 后，生成 `.agent_runs/<round>/artifacts/story.input.json`；根目录同名 `.agent_runs/<round>/story.input.json` 只在交付校验/导出边界出现，不是 runtime/story-compose 阶段的权威产物。story agent 写入 `.agent_runs/<round>/story.output.json`，critic agent 写入 `.agent_runs/<round>/critic.report.json`。critic pass 后，默认 thin runtime 必须执行 postprocess 并写入 `.agent_runs/<round>/artifacts/postprocess.output.json` 与根目录 `postprocess.output.json`；缺少摘要、当前目标或行动选项会阻断 delivery，UI 扩展缺失则写入非阻塞修复队列后继续 delivery。可选的 `interaction.trace.json` 只向 story/critic/postprocess 暴露可见事件、私有事件计数和关键决策点；第 6、12、18... 轮会在 `manifest.json` 中排期 `memory_summaries/*.summary.json`。`manifest.json` 必须能反映 `story_ready`、`critic_passed` 或 `blocked`，不得绕过 schema gate 直接写 `{ROOT}/skills/styles/response.txt`。旧 broad loop 和 standalone dispatcher 如保留，只用于 helper/regression-only 场景，不是默认 live path。
 
 ### 后处理（AI 只需调用一次）
 

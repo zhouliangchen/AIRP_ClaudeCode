@@ -800,6 +800,37 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(captured["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "inherit")
         self.assertEqual(captured["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "gpt-5-5")
 
+    def test_run_claude_with_debug_keeps_subprocess_api_metadata_empty(self):
+        logger = self.module.model_debug.ModelDebugLogger(self.card, "round-000002")
+        original_run_process = self.module._run_claude_process
+
+        def fake_run_process(command, prompt, cwd):
+            self.assertEqual(command[:2], ["claude", "--print"])
+            self.assertEqual(prompt, "# critic\n")
+            self.assertEqual(Path(cwd), self.root)
+            return SimpleNamespace(returncode=0, stdout="subprocess text", stderr="")
+
+        try:
+            self.module._run_claude_process = fake_run_process
+            result = self.module._run_claude_with_debug(
+                logger,
+                self.module.run_claude_agent,
+                "critic",
+                "# critic\n",
+                self.root,
+            )
+        finally:
+            self.module._run_claude_process = original_run_process
+
+        self.assertEqual(result, "subprocess text")
+        index_line = (self.card / "debug" / "model_calls" / "index.jsonl").read_text(encoding="utf-8").strip()
+        index_item = json.loads(index_line)
+        payload = json.loads((self.card / index_item["relative_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["raw_output"]["stdout"], "subprocess text")
+        self.assertEqual(payload["raw_output"]["stderr"], "")
+        self.assertEqual(payload["raw_output"]["returncode"], 0)
+        self.assertEqual(payload["api_metadata"], {})
+
     def test_run_round_uses_thin_round_runtime_by_default(self):
         calls = []
 
@@ -826,6 +857,207 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], self.card)
         self.assertEqual(calls[0][1], self.root)
+
+    def test_run_round_defaults_to_llm_runner_callback(self):
+        captured = {}
+
+        def fake_debug_wrapper(logger, run_claude, agent_key, prompt, cwd):
+            captured["run_claude"] = run_claude
+            captured["logger"] = logger
+            captured["agent_key"] = agent_key
+            captured["prompt"] = prompt
+            captured["cwd"] = cwd
+            return "runner text"
+
+        def fake_run_round(card, root, *, run_claude=None, run_command=None):
+            return {
+                "ok": True,
+                "text": run_claude("gm", "prompt", root),
+            }
+
+        def fake_default_runner(agent_key, prompt, cwd):
+            return "default runner text"
+
+        original_debug_wrapper = self.module._run_claude_with_debug
+        original_run_round = self.module.round_runtime.run_round
+        original_runner = self.module.llm_runner.run_llm_agent
+        try:
+            self.module.llm_runner.run_llm_agent = fake_default_runner
+            self.module._run_claude_with_debug = fake_debug_wrapper
+            self.module.round_runtime.run_round = fake_run_round
+
+            result = self.module.run_round(self.card, self.root)
+        finally:
+            self.module.llm_runner.run_llm_agent = original_runner
+            self.module._run_claude_with_debug = original_debug_wrapper
+            self.module.round_runtime.run_round = original_run_round
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "runner text")
+        self.assertIs(captured["run_claude"], fake_default_runner)
+        self.assertEqual(captured["agent_key"], "gm")
+        self.assertEqual(captured["prompt"], "prompt")
+        self.assertEqual(Path(captured["cwd"]), self.root.resolve())
+
+    def test_run_round_resolves_default_llm_runner_after_monkeypatch(self):
+        captured = {}
+
+        def patched_runner(agent_key, prompt, cwd):
+            return "patched runner text"
+
+        def fake_debug_wrapper(logger, run_claude, agent_key, prompt, cwd):
+            captured["run_claude"] = run_claude
+            return run_claude(agent_key, prompt, cwd)
+
+        def fake_run_round(card, root, *, run_claude=None, run_command=None):
+            return {
+                "ok": True,
+                "text": run_claude("gm", "prompt", root),
+            }
+
+        original_runner = self.module.llm_runner.run_llm_agent
+        original_debug_wrapper = self.module._run_claude_with_debug
+        original_run_round = self.module.round_runtime.run_round
+        try:
+            self.module.llm_runner.run_llm_agent = patched_runner
+            self.module._run_claude_with_debug = fake_debug_wrapper
+            self.module.round_runtime.run_round = fake_run_round
+
+            result = self.module.run_round(self.card, self.root)
+        finally:
+            self.module.llm_runner.run_llm_agent = original_runner
+            self.module._run_claude_with_debug = original_debug_wrapper
+            self.module.round_runtime.run_round = original_run_round
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "patched runner text")
+        self.assertIs(captured["run_claude"], patched_runner)
+
+    def test_run_claude_with_debug_records_llm_runner_api_metadata(self):
+        logger = self.module.model_debug.ModelDebugLogger(self.card, "round-000002")
+        original_runner = self.module.llm_runner.run_llm_agent
+        original_last_result = self.module.llm_runner.get_last_result()
+
+        def fake_run_llm_agent(agent_key, prompt, cwd):
+            self.assertEqual(agent_key, "gm")
+            self.assertEqual(prompt, "# gm")
+            self.assertEqual(Path(cwd), self.root)
+            self.module.llm_runner._last_result = {
+                "provider": "openai_compatible",
+                "model": "test-model",
+                "status": "success",
+                "usage": {"input_tokens": 3, "output_tokens": 5},
+                "raw_response": {
+                    "id": "resp_123",
+                    "object": "chat.completion",
+                    "headers": {"authorization": "Bearer wrapper-token-123"},
+                    "body": {"api_key": "wrapper-api-key-123"},
+                },
+                "text": "runner text",
+                "headers": {"authorization": "Bearer should-not-be-logged"},
+            }
+            return "runner text"
+
+        try:
+            self.module.llm_runner.run_llm_agent = fake_run_llm_agent
+            result = self.module._run_claude_with_debug(
+                logger,
+                self.module.llm_runner.run_llm_agent,
+                "gm",
+                "# gm",
+                self.root,
+            )
+        finally:
+            self.module.llm_runner.run_llm_agent = original_runner
+            self.module.llm_runner._last_result = original_last_result
+
+        self.assertEqual(result, "runner text")
+        index_line = (self.card / "debug" / "model_calls" / "index.jsonl").read_text(encoding="utf-8").strip()
+        index_item = json.loads(index_line)
+        payload = json.loads((self.card / index_item["relative_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["api_metadata"]["provider"], "openai_compatible")
+        self.assertEqual(payload["api_metadata"]["model"], "test-model")
+        self.assertEqual(payload["api_metadata"]["status"], "success")
+        self.assertEqual(payload["api_metadata"]["usage"], {"input_tokens": 3, "output_tokens": 5})
+        self.assertEqual(payload["api_metadata"]["raw_response"]["id"], "resp_123")
+        self.assertEqual(payload["api_metadata"]["raw_response"]["object"], "chat.completion")
+        self.assertEqual(payload["api_metadata"]["raw_response"]["headers"], "[redacted]")
+        self.assertEqual(payload["api_metadata"]["raw_response"]["body"]["api_key"], "[redacted]")
+        self.assertNotIn("headers", payload["api_metadata"])
+        serialized_metadata = json.dumps(payload["api_metadata"], ensure_ascii=False).lower()
+        self.assertNotIn("authorization", serialized_metadata)
+        self.assertNotIn("wrapper-token-123", serialized_metadata)
+        self.assertNotIn("wrapper-api-key-123", serialized_metadata)
+
+    def test_run_claude_with_debug_records_api_metadata_when_runner_raises(self):
+        logger = self.module.model_debug.ModelDebugLogger(self.card, "round-000002")
+        original_runner = self.module.llm_runner.run_llm_agent
+        original_last_result = self.module.llm_runner.get_last_result()
+
+        def failing_run_llm_agent(agent_key, prompt, cwd):
+            self.module.llm_runner._last_result = {
+                "provider": "cc_switch",
+                "model": "claude-test",
+                "status": "error",
+                "usage": {"input_tokens": 8},
+                "raw_response": {"error": {"message": "rate limited"}},
+                "text": "",
+            }
+            raise RuntimeError("provider failed")
+
+        try:
+            self.module.llm_runner.run_llm_agent = failing_run_llm_agent
+            with self.assertRaisesRegex(RuntimeError, "provider failed"):
+                self.module._run_claude_with_debug(
+                    logger,
+                    self.module.llm_runner.run_llm_agent,
+                    "gm",
+                    "# gm",
+                    self.root,
+                )
+        finally:
+            self.module.llm_runner.run_llm_agent = original_runner
+            self.module.llm_runner._last_result = original_last_result
+
+        index_line = (self.card / "debug" / "model_calls" / "index.jsonl").read_text(encoding="utf-8").strip()
+        index_item = json.loads(index_line)
+        payload = json.loads((self.card / index_item["relative_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["exception_type"], "RuntimeError")
+        self.assertEqual(payload["api_metadata"]["provider"], "cc_switch")
+        self.assertEqual(payload["api_metadata"]["model"], "claude-test")
+        self.assertEqual(payload["api_metadata"]["status"], "error")
+        self.assertEqual(payload["api_metadata"]["raw_response"], {"error": {"message": "rate limited"}})
+
+    def test_run_claude_with_debug_ignores_stale_metadata_for_custom_callback(self):
+        logger = self.module.model_debug.ModelDebugLogger(self.card, "round-000002")
+        original_last_result = self.module.llm_runner.get_last_result()
+        self.module.llm_runner._last_result = {
+            "provider": "stale-provider",
+            "model": "stale-model",
+            "status": "success",
+            "usage": {"input_tokens": 999},
+            "raw_response": {"id": "stale"},
+        }
+
+        def custom_callback(agent_key, prompt, cwd):
+            return "custom callback text"
+
+        try:
+            result = self.module._run_claude_with_debug(
+                logger,
+                custom_callback,
+                "gm",
+                "# gm",
+                self.root,
+            )
+        finally:
+            self.module.llm_runner._last_result = original_last_result
+
+        self.assertEqual(result, "custom callback text")
+        index_line = (self.card / "debug" / "model_calls" / "index.jsonl").read_text(encoding="utf-8").strip()
+        index_item = json.loads(index_line)
+        payload = json.loads((self.card / index_item["relative_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["api_metadata"], {})
 
     def test_removed_story_quality_gate_helpers_are_absent_from_cli_surface(self):
         self.assertFalse(hasattr(self.module, "_delivery_requirements"))

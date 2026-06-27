@@ -23,6 +23,9 @@ PRESETS_DIR = ROOT / "presets"
 INPUT_FILE = ROOT / "input.txt"
 PENDING_FILE = ROOT / ".pending"
 SETTINGS_FILE = ROOT / "settings.json"
+LLM_FRONTEND_SETTINGS_FILE = ROOT / "llm_settings.frontend.json"
+LLM_LOCAL_SETTINGS_FILE = ROOT / "llm_settings.local.json"
+CLAUDE_SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
 CARD_PATH_FILE = ROOT / ".card_path"
 INITVAR_FILE = ROOT / ".initvar"
 SESSION_FILE = ROOT / ".session_init"
@@ -31,6 +34,8 @@ SESSION_FILE = ROOT / ".session_init"
 sys.path.insert(0, str(SKILLS))
 import handler
 import runtime_settings
+import llm_provider
+import llm_settings
 
 DEFAULT_SETTINGS = dict(runtime_settings.DEFAULT_SETTINGS, modelDebugMode=False)
 
@@ -103,6 +108,96 @@ def _read_settings_payload():
 
 def _write_settings_payload(settings):
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _llm_section(raw, key):
+    if isinstance(raw, dict):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _has_llm_settings_payload(payload):
+    return isinstance(payload, dict) and any(
+        key in payload for key in ("cc_switch", "openai_compatible", "image_generation")
+    )
+
+
+def _should_replace_api_key(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _merge_llm_settings_into(current, payload):
+    data = payload if isinstance(payload, dict) else {}
+
+    merged = {
+        "cc_switch": dict(current["cc_switch"]),
+        "openai_compatible": dict(current["openai_compatible"]),
+        "image_generation": dict(current["image_generation"]),
+    }
+
+    if "cc_switch" in data:
+        cc_switch = _llm_section(data, "cc_switch")
+        for key in ("enabled", "service_url"):
+            if key in cc_switch:
+                merged["cc_switch"][key] = cc_switch[key]
+
+    if "openai_compatible" in data:
+        openai_compatible = _llm_section(data, "openai_compatible")
+        for key in ("enabled", "base_url", "model"):
+            if key in openai_compatible:
+                merged["openai_compatible"][key] = openai_compatible[key]
+        if _should_replace_api_key(openai_compatible.get("api_key")):
+            merged["openai_compatible"]["api_key"] = openai_compatible["api_key"]
+
+    if "image_generation" in data:
+        image_generation = _llm_section(data, "image_generation")
+        for key in ("base_url", "model"):
+            if key in image_generation:
+                merged["image_generation"][key] = image_generation[key]
+        if _should_replace_api_key(image_generation.get("api_key")):
+            merged["image_generation"]["api_key"] = image_generation["api_key"]
+
+    return llm_settings.normalize_settings(merged, CLAUDE_SETTINGS_FILE)
+
+
+def _merge_llm_settings_payload(payload):
+    current = llm_settings.read_settings(LLM_FRONTEND_SETTINGS_FILE, CLAUDE_SETTINGS_FILE)
+    merged = _merge_llm_settings_into(current, payload)
+    return llm_settings.write_settings(LLM_FRONTEND_SETTINGS_FILE, merged)
+
+
+def _redacted_llm_settings(settings=None):
+    if settings is None:
+        settings = llm_settings.read_effective_settings(
+            LLM_FRONTEND_SETTINGS_FILE,
+            CLAUDE_SETTINGS_FILE,
+            local_path=LLM_LOCAL_SETTINGS_FILE,
+        )
+    redacted = llm_settings.redact_settings(settings)
+    errors = llm_settings.settings_errors(settings)
+    if errors:
+        redacted["configuration_errors"] = errors
+    return redacted
+
+
+def _test_llm_settings(settings):
+    results = []
+    cc_switch = settings.get("cc_switch", {})
+    if isinstance(cc_switch, dict) and cc_switch.get("enabled") is True:
+        config = dict(cc_switch)
+        config["model"] = llm_settings.resolve_claude_code_model(CLAUDE_SETTINGS_FILE)
+        config["headers"] = llm_settings.claude_code_auth_headers(CLAUDE_SETTINGS_FILE)
+        results.append(llm_provider.test_connection("cc_switch", config))
+
+    openai_compatible = settings.get("openai_compatible", {})
+    if isinstance(openai_compatible, dict) and openai_compatible.get("enabled") is True:
+        results.append(llm_provider.test_connection("openai_compatible", openai_compatible))
+
+    if not results:
+        return {"ok": False, "error": "no enabled text LLM provider configured", "results": []}
+    return {"ok": all(bool(result.get("ok")) for result in results), "results": results}
 
 
 MBTI_STACKS = {
@@ -275,6 +370,50 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json({"ok": True, "settings": settings})
             except json.JSONDecodeError:
                 self._json({"ok": False, "error": "invalid json"})
+
+        elif parsed.path == "/api/llm_settings":
+            length = int(self.headers.get("Content-Length", 0))
+            body = _safe_decode(self.rfile.read(length))
+            try:
+                data = json.loads(body)
+                saved = _merge_llm_settings_payload(data)
+                self._json({"ok": True, "settings": _redacted_llm_settings(saved)})
+            except json.JSONDecodeError:
+                self._json({"ok": False, "error": "invalid json"}, 400)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._json({"ok": False, "error": str(e)}, 500)
+
+        elif parsed.path == "/api/llm_settings/test":
+            length = int(self.headers.get("Content-Length", 0))
+            body = _safe_decode(self.rfile.read(length))
+            try:
+                data = json.loads(body)
+                if not isinstance(data, dict):
+                    data = {}
+                if data.get("save") is True:
+                    settings = _merge_llm_settings_payload(data)
+                elif _has_llm_settings_payload(data):
+                    current = llm_settings.read_effective_settings(
+                        LLM_FRONTEND_SETTINGS_FILE,
+                        CLAUDE_SETTINGS_FILE,
+                        local_path=LLM_LOCAL_SETTINGS_FILE,
+                    )
+                    settings = _merge_llm_settings_into(current, data)
+                else:
+                    settings = llm_settings.read_effective_settings(
+                        LLM_FRONTEND_SETTINGS_FILE,
+                        CLAUDE_SETTINGS_FILE,
+                        local_path=LLM_LOCAL_SETTINGS_FILE,
+                    )
+                self._json(_test_llm_settings(settings))
+            except json.JSONDecodeError:
+                self._json({"ok": False, "error": "invalid json"}, 400)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._json({"ok": False, "error": str(e)}, 500)
 
         elif parsed.path == "/api/reroll":
             card = _card_folder()
@@ -546,6 +685,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if SETTINGS_FILE.exists():
                 _write_settings_payload(settings)
             self._json(settings)
+            return
+
+        if parsed.path == "/api/llm_settings":
+            try:
+                self._json(_redacted_llm_settings())
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._json({"ok": False, "error": str(e)}, 500)
             return
 
         # API: current response progress, if available

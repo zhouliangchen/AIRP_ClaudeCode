@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate RP/UI image assets for the active card folder.
 
-Default provider target is OpenAI-compatible Images API using gpt-image-2.
+Provider target is configured through AIRP API settings.
 The script is intentionally a CLI adapter so Claude Code can call it via Bash,
 and it can later be wrapped by a true MCP server without coupling the RP bridge
 runtime to a specific harness configuration.
@@ -10,10 +10,8 @@ Usage:
   python skills/image_generate.py <card_folder> --prompt "..." [--kind scene] [--target scene_illustration]
 
 Environment / local config:
-  OPENAI_API_KEY        required for real generation unless config file provides api_key
-  OPENAI_BASE_URL       optional, defaults to https://api.openai.com/v1
-  IMAGE_MODEL           optional, defaults to gpt-image-2
-  image_config.local.json or skills/image_config.local.json are supported and gitignored
+  Frontend settings, AIRP_IMAGE_GENERATION_* env vars, and local settings are resolved
+  by llm_settings using frontend > environment > local priority.
 """
 
 from __future__ import annotations
@@ -29,8 +27,12 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+import llm_settings
 
-DEFAULT_MODEL = "gpt-image-2"
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+FRONTEND_SETTINGS_PATH = llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
+LOCAL_SETTINGS_PATH = llm_settings.DEFAULT_LOCAL_SETTINGS_PATH
 
 
 def _json_out(obj, code=0):
@@ -74,30 +76,18 @@ def _next_id(manifest: dict, kind: str) -> str:
 
 
 def _load_config(card: Path | None = None) -> dict:
-    """Load local image API config from gitignored files and environment."""
-    here = Path(__file__).resolve().parent
-    root = here.parent
-    candidates = []
-    if card:
-        candidates.append(card / "image_config.local.json")
-    candidates.extend([
-        here / "image_config.local.json",
-        root / "image_config.local.json",
-        root / ".image_api.json",
-    ])
+    """Load image API config from the unified LLM settings provider."""
+    settings = llm_settings.read_effective_settings(
+        FRONTEND_SETTINGS_PATH,
+        local_path=LOCAL_SETTINGS_PATH,
+    )
+    image_generation = settings.get("image_generation", {})
     config = {}
-    for path in candidates:
-        data = _load_json(path, None)
-        if isinstance(data, dict):
-            config.update(data)
-    if os.environ.get("OPENAI_API_KEY"):
-        config["api_key"] = os.environ["OPENAI_API_KEY"]
-    if os.environ.get("OPENAI_BASE_URL"):
-        config["base_url"] = os.environ["OPENAI_BASE_URL"]
-    if os.environ.get("IMAGE_MODEL"):
-        config["model"] = os.environ["IMAGE_MODEL"]
-    config.setdefault("base_url", "https://api.openai.com/v1")
-    config.setdefault("model", DEFAULT_MODEL)
+    if isinstance(image_generation, dict):
+        for key in ("base_url", "api_key", "model"):
+            value = image_generation.get(key)
+            if isinstance(value, str) and value.strip():
+                config[key] = value.strip()
     return config
 
 
@@ -120,7 +110,14 @@ def _candidate_generation_urls(base_url: str) -> list[str]:
 def _call_openai_images(prompt: str, model: str, size: str, config: dict) -> bytes:
     api_key = config.get("api_key")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY or api_key in image_config.local.json is not set")
+        raise RuntimeError(
+            "AIRP_IMAGE_GENERATION_API_KEY or image_generation.api_key in AIRP LLM settings is not set"
+        )
+    base_url = config.get("base_url")
+    if not base_url:
+        raise RuntimeError("AIRP_IMAGE_GENERATION_BASE_URL or image_generation.base_url in AIRP LLM settings is not set")
+    if not model:
+        raise RuntimeError("AIRP_IMAGE_GENERATION_MODEL or image_generation.model in AIRP LLM settings is not set")
 
     payload = {
         "model": model,
@@ -130,7 +127,7 @@ def _call_openai_images(prompt: str, model: str, size: str, config: dict) -> byt
     }
     data = json.dumps(payload).encode("utf-8")
     last_error = None
-    for url in _candidate_generation_urls(config.get("base_url", "https://api.openai.com/v1")):
+    for url in _candidate_generation_urls(base_url):
         req = urllib.request.Request(
             url,
             data=data,
@@ -233,7 +230,7 @@ def main():
         _json_out({"ok": False, "error": f"card folder not found: {card}"}, 2)
 
     config = _load_config(card)
-    model = args.model or config.get("model", DEFAULT_MODEL)
+    model = args.model or config.get("model", "")
 
     gen_dir = card / "generated" / "images"
     gen_dir.mkdir(parents=True, exist_ok=True)
@@ -258,7 +255,7 @@ def main():
             "ok": False,
             "error": str(e),
             "model": model,
-            "hint": "Set OPENAI_API_KEY or api_key in image_config.local.json, or use --dry-run for pipeline testing.",
+            "hint": "Set AIRP_IMAGE_GENERATION_API_KEY or image_generation.api_key in AIRP API settings, or use --dry-run for pipeline testing.",
         }, 1)
 
     item = {

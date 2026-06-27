@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 import agent_run
+import llm_settings
 import postprocess_outputs
 import replay_capabilities
 
@@ -159,19 +159,9 @@ def _text(value: Any) -> str:
 
 
 def _can_start_image_job(card: Path) -> bool:
-    if os.environ.get("OPENAI_API_KEY"):
-        return True
-    here = Path(__file__).resolve().parent
-    root = here.parent
-    for path in (
-        card / "image_config.local.json",
-        here / "image_config.local.json",
-        root / "image_config.local.json",
-        root / ".image_api.json",
-    ):
-        if path.is_file():
-            return True
-    return False
+    settings = llm_settings.read_effective_settings()
+    image_generation = settings.get("image_generation", {})
+    return bool(isinstance(image_generation, dict) and image_generation.get("api_key"))
 
 
 def _write_executor_artifact(

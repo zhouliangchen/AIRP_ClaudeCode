@@ -1,6 +1,6 @@
-# 话本 RP - Claude Code 直驱模式
+# 话本 RP - Claude Code 入口 + LLM API 运行时
 
-本项目把 Claude Code 用作本地角色扮演编排层：Python 桥接服务器负责浏览器交互和文件状态，Claude Code 负责读取上下文、生成叙事、更新记忆与触发可选的 UI/图片能力。运行方式是“一张卡或一个故事一个文件夹”，所有聊天记录、记忆、变量和定制 UI 都跟随该文件夹保存。
+本项目把 Claude Code 保留为本地角色扮演程序入口、维护者和底层脚本编排者；实际运行时的 input-analyst、GM、story、critic、postprocess、subGM、player、character、projection 和 assets-ui agent 由 Python runtime 通过 LLM API 调用。Python 桥接服务器负责浏览器交互、文件状态、控制面 artifact 和 delivery。运行方式是“一张卡或一个故事一个文件夹”，所有聊天记录、记忆、变量和定制 UI 都跟随该文件夹保存。
 
 ## 快速开始
 
@@ -70,16 +70,22 @@ AIRP_ClaudeCode/
 
 默认服务会监听所有网卡，便于手机、平板等同一局域网设备访问。如果只想允许本机访问，可在启动前设置 `$env:AIRP_HOST="127.0.0.1"`。若局域网地址仍打不开，请确认设备在同一网络，并允许 Windows 防火墙中的 Python 入站连接；也可用管理员 PowerShell 执行 `New-NetFirewallRule -DisplayName "AIRP ClaudeCode Frontend 8765" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8765 -Profile Private,Domain`。
 
+## 模型与 API 设置
+
+运行时 RP agent 默认优先使用 cc_switch Claude Code 本地反代；cc_switch 只在 AIRP 中配置 `enabled` 和 `service_url`，API key、模型名和上游 provider 映射由 CC Switch/Claude Code 本地配置维护。若 cc_switch 不可用或关闭，可启用 OpenAI-compatible 文本 API 作为兜底，配置 `base_url`、`api_key` 和 `model`。
+
+前端侧栏的“API 设置”会统一管理 cc_switch、OpenAI-compatible 文本 API 和图片生成 API，并写入 `skills/styles/llm_settings.frontend.json`。本地兜底配置统一写入 `skills/styles/llm_settings.local.json`。三类配置的字段优先级统一为：前端设置 > 环境变量 > 本地配置文件；代码不会注入 API 默认值，三层均未设置时，前端 API 设置页会显示配置错误。环境变量分组为：`AIRP_CC_SWITCH_ENABLED` / `AIRP_CC_SWITCH_SERVICE_URL`，`AIRP_OPENAI_COMPATIBLE_ENABLED` / `AIRP_OPENAI_COMPATIBLE_BASE_URL` / `AIRP_OPENAI_COMPATIBLE_API_KEY` / `AIRP_OPENAI_COMPATIBLE_MODEL`，以及 `AIRP_IMAGE_GENERATION_BASE_URL` / `AIRP_IMAGE_GENERATION_API_KEY` / `AIRP_IMAGE_GENERATION_MODEL`。
+
 ## 图片与 UI 热更新
 
-`skills/image_generate.py` 是 OpenAI-compatible 图片生成适配器，默认模型为 `gpt-image-2`。可用环境变量或本地配置提供密钥：
+`skills/image_generate.py` 是 OpenAI-compatible 图片生成适配器。它只读取统一设置中的 `image_generation`，并按“前端设置 > 环境变量 > 本地配置文件”解析；缺少 `base_url`、`api_key` 或 `model` 时会报错：
 
 ```powershell
-$env:OPENAI_API_KEY="sk-..."
+$env:AIRP_IMAGE_GENERATION_API_KEY="sk-..."
 python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside convenience store" --kind scene --target scene_illustration --async
 ```
 
-也可在卡片文件夹、项目根目录或 `skills/` 下放置 `image_config.local.json`，或在项目根目录使用 `.image_api.json` 配置 `api_key`、`base_url`、`model`。这些文件已被忽略，不要提交。生成图片会写入当前卡片文件夹的 `generated/images/` 和 `.card_assets.json`，脚本会重建 `content.js`，已打开的浏览器会自动看到新图片。
+前端配置文件为 `skills/styles/llm_settings.frontend.json`，本地兜底配置文件为 `skills/styles/llm_settings.local.json`，图片字段均位于 `image_generation`，支持 `api_key`、`base_url`、`model`。当前建议的初始值已写入本地配置文件；代码中不再硬编码这些值。旧的 `image_config.local.json`、`.image_api.json` 以及旧 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `IMAGE_MODEL` 不再作为图片生成配置读取。生成图片会写入当前卡片文件夹的 `generated/images/` 和 `.card_assets.json`，脚本会重建 `content.js`，已打开的浏览器会自动看到新图片。
 
 图片与 UI 工作永远是正文交付后的异步增强。story、critic、GM 或主 agent 可以把视觉需求记录成非阻塞 `assets_task`；默认 thin runtime 会通过 `agent_runtime_pump.py` 和 `capability_executors.py` 将该 intent 标记为 `queued`、`deferred` 或 `completed`，并写入 `artifacts/runtime_pump/` 下的审计结果。在没有外部图片/UI worker 时会标记为 `deferred`，不会阻塞已经通过 critic 的文本交付，也不会调用真实图片模型。
 
@@ -99,7 +105,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 每轮会为已注册的重要角色生成隔离上下文；`max_parallel_subagents` 只限制运行时同一安全批次最多并行调度多少角色，不限制已注册重要角色的上下文数量。GM 输出的 `parallel_groups` 会被控制面校验；互不依赖、不同角色的合法 actor calls 可并行执行，不安全的并行声明会降级为串行并写入路由警告；若 actor call 与活跃 subGM 占用冲突，则会在批次调度前被拒绝。默认 live path 中，GM turn 不再隐藏调用 actor/subGM：GM 只产出 actor call、支线命令或停止原因，`agent_turn_loop.py` 随后显式完成 projection、actor 调度、subGM 支线推进和必要的 GM continuation。`agent_actor_runtime.py` 提供共享 actor 协作 helper，统一处理投影包、actor 输出校验、trace 和物化产物写入。Claude Code 工作流会在场景强相关时最多并行调用配置允许数量的核心角色 subagent，让它们只从角色自身立场用自然语言回复 GM/subGM，表达可见行动、感知探索、对话和想法。GM 可读取完整剧情与用户指令；player/character 只读取第一人称投影上下文，不接触 GM 隐藏事实。
 
-`CLAUDE.md` 只作为 Claude Code 主 agent 的仓库级编排规则。默认 live path 调用 GM、story、critic、postprocess、player/character 和回合后记忆整理等运行时子 agent 时，会把 Claude Code subprocess 启动在仓库外隔离工作目录；这些子 agent 只接收嵌入 prompt 的运行时上下文，不自动继承项目 `CLAUDE.md`。
+`CLAUDE.md` 只作为 Claude Code 主 agent 的仓库级入口、维护和项目规则。默认 live path 调用 GM、story、critic、postprocess、player/character 和回合后记忆整理等运行时 agent 时，不再启动一次性 Claude CLI subprocess；`rp_generate_cli.py` 默认通过 `llm_runner.run_llm_agent()` 直接调用配置的 LLM provider。运行时 agent 只接收嵌入 prompt 的运行时上下文，不自动继承项目 `CLAUDE.md`。
 
 projection 采用两层边界：actor context rendering / `agent_projection.project_actor_context` 先从 actor 记忆、信念、感官和可见事实构建 immersive context；LLM projection agent 只负责对待交付的 actor-facing 消息做语义 review 与局部改写，并返回 `final_actor_message`。Python 只保留最小确定性协议门，校验 actor id、source call id、ACL、artifact provenance、retry 和 rollback 不变量。player/character 收到的是 immersive context；隐藏事实、projection feedback 和 misconception 标签都不是 actor-facing 内容，错误认知应作为角色自己的主观记忆或信念保留。
 
@@ -205,9 +211,8 @@ cd skills; npm install
 chat_log.json
 memory/
 generated/
-image_config.local.json
-skills/image_config.local.json
-.image_api.json
+skills/styles/llm_settings.local.json
+skills/styles/llm_settings.frontend.json
 *.secret.json
 skills/styles/content.js
 skills/styles/state.js

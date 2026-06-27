@@ -316,6 +316,20 @@ body {
   outline: none;
 }
 .settings-meta-row input:focus { border-color: var(--accent2); }
+.settings-action {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: var(--font-ui);
+  font-size: 0.82em;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-action:hover { border-color: var(--accent2); color: var(--accent2); }
 #instruction-channel-card textarea {
   width: 100%;
   min-height: 96px;
@@ -439,6 +453,98 @@ body {
 }
 .btn-edit-update { background: var(--border); color: var(--text); }
 .btn-edit-branch { background: var(--accent2); color: #fff; }
+.llm-settings-backdrop {
+  position: fixed; inset: 0; z-index: 230;
+  display: none; align-items: center; justify-content: center;
+  padding: 18px; background: rgba(0,0,0,.36);
+}
+.llm-settings-modal {
+  width: min(94vw, 720px);
+  max-height: min(88vh, 760px);
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.25);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.llm-settings-modal header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.llm-settings-modal h3 { font-size: 0.95em; color: var(--accent); margin: 0; }
+.llm-settings-close {
+  border: 1px solid var(--border); background: var(--input-bg);
+  color: var(--muted); border-radius: 5px; padding: 2px 8px; cursor: pointer;
+}
+.llm-settings-body {
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: grid;
+  gap: 12px;
+}
+.llm-settings-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.llm-settings-section h4 {
+  color: var(--accent);
+  font-size: 0.82em;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.llm-settings-field {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+}
+.llm-settings-field span {
+  color: var(--muted);
+  font-size: 0.82em;
+}
+.llm-settings-field input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-family: var(--font-ui);
+  font-size: 0.82em;
+  outline: none;
+}
+.llm-settings-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent2);
+}
+.llm-settings-field input:not([type="checkbox"]):focus { border-color: var(--accent2); }
+.llm-settings-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 0 14px 14px;
+}
+.llm-settings-actions button {
+  border: none; border-radius: 7px; padding: 8px 12px;
+  font-size: 0.82em; font-weight: 600; cursor: pointer;
+}
+.llm-settings-test { background: var(--border); color: var(--text); }
+.llm-settings-save { background: var(--accent2); color: #fff; }
+#llm-settings-status {
+  min-height: 1.4em;
+  padding: 0 14px 10px;
+  font-size: 0.78em;
+  color: var(--muted);
+}
+#llm-settings-status.error { color: #b0624a; }
+@media (max-width: 560px) {
+  .llm-settings-field { grid-template-columns: 1fr; }
+  .llm-settings-actions { flex-direction: column; }
+  .llm-settings-actions button { width: 100%; }
+}
 #input-panel .meta-row {
   display: flex; gap: 12px; align-items: center; margin-top: 6px;
   font-size: 0.75em; color: var(--muted);
@@ -1308,6 +1414,7 @@ body {
           <span class="toggle-slider"></span>
         </label>
       </div>
+      <button id="open-llm-settings" class="settings-action" type="button" onclick="openLlmSettings()">API 设置</button>
     </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
@@ -1371,6 +1478,67 @@ body {
     <div class="player-input-editor-actions">
       <button class="btn-edit-update" type="button" onclick="submitPlayerInputEdit('update_only')">仅更新</button>
       <button class="btn-edit-branch" type="button" onclick="submitPlayerInputEdit('branch_submit')">更新并提交</button>
+    </div>
+  </div>
+</div>
+
+<div id="llm-settings-modal" class="llm-settings-backdrop" role="dialog" aria-modal="true" aria-labelledby="llm-settings-title" onclick="closeLlmSettings()">
+  <div class="llm-settings-modal" onclick="event.stopPropagation()">
+    <header>
+      <h3 id="llm-settings-title">API 设置</h3>
+      <button class="llm-settings-close" type="button" onclick="closeLlmSettings()" aria-label="关闭">×</button>
+    </header>
+    <div class="llm-settings-body">
+      <section class="llm-settings-section">
+        <h4>CC Switch 反代</h4>
+        <label class="llm-settings-field">
+          <span>启用</span>
+          <input id="llm-cc-enabled" type="checkbox">
+        </label>
+        <label class="llm-settings-field">
+          <span>服务地址</span>
+          <input id="llm-cc-service-url" type="url" spellcheck="false" placeholder="未设置将报错">
+        </label>
+      </section>
+      <section class="llm-settings-section">
+        <h4>OpenAI-compatible</h4>
+        <label class="llm-settings-field">
+          <span>启用</span>
+          <input id="llm-openai-enabled" type="checkbox">
+        </label>
+        <label class="llm-settings-field">
+          <span>请求 URL</span>
+          <input id="llm-openai-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
+        </label>
+        <label class="llm-settings-field">
+          <span>API key</span>
+          <input id="llm-openai-api-key" type="password" autocomplete="new-password">
+        </label>
+        <label class="llm-settings-field">
+          <span>模型名</span>
+          <input id="llm-openai-model" type="text" spellcheck="false">
+        </label>
+      </section>
+      <section class="llm-settings-section">
+        <h4>图片生成 API</h4>
+        <label class="llm-settings-field">
+          <span>请求 URL</span>
+          <input id="llm-image-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
+        </label>
+        <label class="llm-settings-field">
+          <span>API key</span>
+          <input id="llm-image-api-key" type="password" autocomplete="new-password">
+        </label>
+        <label class="llm-settings-field">
+          <span>模型名</span>
+          <input id="llm-image-model" type="text" spellcheck="false" placeholder="未设置将报错">
+        </label>
+      </section>
+    </div>
+    <div id="llm-settings-status"></div>
+    <div class="llm-settings-actions">
+      <button class="llm-settings-test" type="button" onclick="testLlmSettings()">连接测试</button>
+      <button class="llm-settings-save" type="button" onclick="saveLlmSettings()">保存</button>
     </div>
   </div>
 </div>
@@ -2219,6 +2387,138 @@ async function saveSettings() {
     badge.classList.add('show');
     setTimeout(() => badge.classList.remove('show'), 1500);
   } catch(e) { /* offline */ }
+}
+
+function setLlmSettingsStatus(message, isError) {
+  const status = document.getElementById('llm-settings-status');
+  if (!status) return;
+  status.textContent = message || '';
+  status.classList.toggle('error', !!isError);
+}
+
+function setLlmInputValue(id, value) {
+  const input = document.getElementById(id);
+  if (input) input.value = value || '';
+}
+
+function applyLlmSettings(settings) {
+  const cc = settings.cc_switch || {};
+  const openai = settings.openai_compatible || {};
+  const image = settings.image_generation || {};
+  document.getElementById('llm-cc-enabled').checked = cc.enabled === true;
+  setLlmInputValue('llm-cc-service-url', cc.service_url);
+  document.getElementById('llm-openai-enabled').checked = openai.enabled === true;
+  setLlmInputValue('llm-openai-base-url', openai.base_url);
+  setLlmInputValue('llm-openai-model', openai.model);
+  setLlmInputValue('llm-image-base-url', image.base_url);
+  setLlmInputValue('llm-image-model', image.model);
+  const openaiKey = document.getElementById('llm-openai-api-key');
+  const imageKey = document.getElementById('llm-image-api-key');
+  if (openaiKey) {
+    openaiKey.value = '';
+    openaiKey.placeholder = openai.api_key_set ? '已保存，留空保留' : '未设置';
+  }
+  if (imageKey) {
+    imageKey.value = '';
+    imageKey.placeholder = image.api_key_set ? '已保存，留空保留' : '未设置';
+  }
+}
+
+function applyLlmConfigurationErrors(settings, fallbackMessage) {
+  const errors = settings && Array.isArray(settings.configuration_errors) ? settings.configuration_errors : [];
+  if (errors.length) {
+    setLlmSettingsStatus(errors.join('；'), true);
+    return true;
+  }
+  setLlmSettingsStatus(fallbackMessage || '', false);
+  return false;
+}
+
+async function loadLlmSettings() {
+  setLlmSettingsStatus('读取中...', false);
+  const r = await fetch(BRIDGE + '/api/llm_settings');
+  const data = await r.json();
+  if (!r.ok || data.ok === false) throw new Error(data.error || '读取失败');
+  applyLlmSettings(data);
+  applyLlmConfigurationErrors(data, '');
+}
+
+function collectLlmSettings() {
+  const openaiKey = document.getElementById('llm-openai-api-key').value.trim();
+  const imageKey = document.getElementById('llm-image-api-key').value.trim();
+  const openai = {
+    enabled: document.getElementById('llm-openai-enabled').checked,
+    base_url: document.getElementById('llm-openai-base-url').value.trim(),
+    model: document.getElementById('llm-openai-model').value.trim()
+  };
+  const image = {
+    base_url: document.getElementById('llm-image-base-url').value.trim(),
+    model: document.getElementById('llm-image-model').value.trim()
+  };
+  if (openaiKey) openai.api_key = openaiKey;
+  if (imageKey) image.api_key = imageKey;
+  return {
+    cc_switch: {
+      enabled: document.getElementById('llm-cc-enabled').checked,
+      service_url: document.getElementById('llm-cc-service-url').value.trim()
+    },
+    openai_compatible: openai,
+    image_generation: image
+  };
+}
+
+async function saveLlmSettings() {
+  setLlmSettingsStatus('保存中...', false);
+  try {
+    const r = await fetch(BRIDGE + '/api/llm_settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectLlmSettings())
+    });
+    const data = await r.json();
+    if (!r.ok || data.ok === false) throw new Error(data.error || '保存失败');
+    const settings = data.settings || data;
+    applyLlmSettings(settings);
+    applyLlmConfigurationErrors(settings, '已保存');
+  } catch(e) {
+    setLlmSettingsStatus(e.message || '保存失败', true);
+  }
+}
+
+async function testLlmSettings() {
+  setLlmSettingsStatus('测试中...', false);
+  try {
+    const r = await fetch(BRIDGE + '/api/llm_settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectLlmSettings())
+    });
+    const data = await r.json();
+    if (!r.ok || data.ok === false) throw new Error(data.error || '连接失败');
+    const results = Array.isArray(data.results) ? data.results : [];
+    const okResults = results.filter(function(item) { return item && item.ok; });
+    const labels = okResults.map(function(item) {
+      const provider = item.provider || 'unknown';
+      return item.model ? provider + ' / ' + item.model : provider;
+    });
+    setLlmSettingsStatus('连接成功: ' + (labels.join(', ') || 'unknown'), false);
+  } catch(e) {
+    setLlmSettingsStatus(e.message || '连接失败', true);
+  }
+}
+
+function openLlmSettings() {
+  const modal = document.getElementById('llm-settings-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  loadLlmSettings().catch(function(e) {
+    setLlmSettingsStatus(e.message || '读取失败', true);
+  });
+}
+
+function closeLlmSettings() {
+  const modal = document.getElementById('llm-settings-modal');
+  if (modal) modal.style.display = 'none';
 }
 
 function updateTokenCount() {

@@ -1,17 +1,17 @@
 ---
 name: rp
-description: Use when starting or resuming this repository's Claude Code direct-driven RP workflow from /rp.
+description: Use when starting or resuming this repository's Claude Code entry plus LLM API runtime RP workflow from /rp.
 ---
 
 ## RP Entry
 
-This project is a Claude Code 直驱 RP engine. Claude Code is not a thin client for a backend LLM API; it is the live orchestration layer that runs scripts, dispatches subagents, reads and writes file-mailbox artifacts, and performs final quality control.
+This project keeps Claude Code as the RP entry, maintenance, script orchestration, and final quality-control agent. Runtime RP subagents are executed by the Python runtime through configured LLM APIs, while the `.agent_runs/<round>/` file-mailbox remains the control-plane authority.
 
 Core boundary:
 
 - 主 agent 只负责编排, tool/script execution, code or prompt maintenance, artifact collection, final gating, and delivery.
-- Routine narrative writing and role embodiment must be delegated to GM, player, character, story, and critic subagents whenever the environment supports subagents.
-- If subagents are unavailable, the main agent may use the same stage skills as a fallback, but must preserve the same context isolation and output artifacts.
+- Routine narrative writing and role embodiment must be delegated to GM, player, character, story, critic, postprocess, projection, and assets-ui runtime agents through `llm_runner.run_llm_agent()`.
+- If the configured LLM provider is unavailable, block or route repair explicitly; do not silently fall back to main-agent narrative writing.
 - Stage skills are loaded on demand through `rp-orchestrator`; do not load every RP skill when a turn only needs startup, delivery, or a specific repair.
 
 Enter `rp-orchestrator` first. It selects startup mode, runs the required Python pipeline, creates `.agent_runs/<round>/` artifacts, selectively imports the stage skills needed for the turn, and delivers only after critic approval.
