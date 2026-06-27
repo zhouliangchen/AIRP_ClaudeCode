@@ -134,12 +134,7 @@ def run_round(
             runtime_settings=_runtime_settings_from_applied(input_analysis_result),
             run_command=run_command,
         )
-        runtime_pump["persistent_assets"] = assets_ui_runtime.process_persistent_requirements(
-            card,
-            run_dir,
-            phase="after_critic",
-            run_command=run_command,
-        )
+        runtime_pump["persistent_assets"] = _run_persistent_assets(card, run_dir, run_command)
 
         _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
         stages.append("postprocess")
@@ -179,6 +174,27 @@ def run_round(
     except Exception:
         restore_failed_runtime_state("error")
         raise
+
+
+def _run_persistent_assets(
+    card: Path,
+    run_dir: Path,
+    run_command: Callable[..., Any],
+) -> dict[str, Any]:
+    try:
+        return assets_ui_runtime.process_persistent_requirements(
+            card,
+            run_dir,
+            phase="after_critic",
+            run_command=run_command,
+        )
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": "persistent_assets_error",
+            "jobs": [],
+            "error": str(exc),
+        }
 
 
 def _load_manifest(run_dir: Path) -> dict[str, Any]:

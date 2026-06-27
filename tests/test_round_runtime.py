@@ -224,6 +224,46 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertEqual(calls[0][2], "after_critic")
         self.assertIn("persistent_assets", result["runtime_pump"])
 
+    def test_run_round_persistent_assets_error_does_not_block_delivery(self):
+        import assets_ui_runtime
+
+        original = assets_ui_runtime.process_persistent_requirements
+
+        def fake_process(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        assets_ui_runtime.process_persistent_requirements = fake_process
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=_fake_run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            assets_ui_runtime.process_persistent_requirements = original
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertIn("persistent_assets", result["runtime_pump"])
+        self.assertEqual(result["runtime_pump"]["persistent_assets"]["status"], "failed")
+        self.assertEqual(
+            result["runtime_pump"]["persistent_assets"]["reason"],
+            "persistent_assets_error",
+        )
+        self.assertIn("delivery", result["runtime"]["stages"])
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["stage"], "delivered")
+
     def test_run_round_audits_input_analysis_capability_requests(self):
         request = {
             "id": "unknown-capability",
