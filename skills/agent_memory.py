@@ -223,7 +223,7 @@ def _read_optional_text(path: Path, limit: int = 12000) -> str:
     try:
         if not path.exists():
             return ""
-        return path.read_text(encoding="utf-8")[:limit].strip()
+        return path.read_text(encoding="utf-8")[:limit]
     except Exception:
         return ""
 
@@ -613,6 +613,7 @@ def _post_round_objective_job_payload(
         "round_id": str(story_input.get("round_id") or run_dir.name),
         "current_recent": _read_optional_text(paths.objective_recent, limit=20000),
         "objective_profile": _read_optional_text(paths.objective_profile, limit=12000),
+        "background": _read_optional_text(paths.background, limit=16000),
         "actor_profile": _read_optional_text(paths.profile, limit=12000),
         "round_events": _actor_visible_events(story_input, agent_id),
     }
@@ -633,6 +634,7 @@ def _post_round_objective_memory_prompt(
                 "character_name": character_name,
                 "recent": "完整的 memory/characters/<角色>/recent.md 内容",
                 "objective_profile": "可选；完整的 memory/characters/<角色>/profile.md 内容",
+                "background": "可选；完整的 memory/characters/<角色>/background.md 内容",
                 "actor_profile": "可选；完整的 characters/<角色>/profile.md 第一人称内容",
             }
         ],
@@ -658,6 +660,10 @@ def _post_round_objective_memory_prompt(
 
 {job_payload.get("objective_profile") or "暂无。"}
 
+## 已有 memory/characters/<角色>/background.md
+
+{job_payload.get("background") or "暂无。"}
+
 ## 已有 characters/<角色>/profile.md
 
 {job_payload.get("actor_profile") or "暂无。"}
@@ -672,8 +678,9 @@ def _post_round_objective_memory_prompt(
 
 - `recent` 必须是整理后的完整 `memory/characters/<角色>/recent.md` 内容，而不是增量片段。
 - 只有角色客观设定确实需要变化时，才输出 `objective_profile`。
+- 只有角色背景设定确实需要变化时，才输出 `background`；该字段会写入 `memory/characters/<角色>/background.md`，必须是完整文件内容。
 - 只有角色第一人称自我介绍确实需要变化时，才输出 `actor_profile`；该字段会写入 `characters/<角色>/profile.md`，必须保持角色第一人称沉浸口吻，不得包含幕后控制面信息。
-- 没有变化的 profile 字段可以省略或为空。
+- 没有变化的 profile/background 字段可以省略或为空。
 - 最终只返回 JSON 对象，系统会保存到 `{output_path}`。
 
 ## 输出 JSON 契约
@@ -869,6 +876,7 @@ def _validate_post_round_objective_memory_update(
             continue
         recent = _objective_text_field(item.get("recent"), "recent", 20000, required=True)
         objective_profile = _objective_text_field(item.get("objective_profile"), "objective_profile", 12000)
+        background = _objective_text_field(item.get("background"), "background", 16000)
         actor_profile = _objective_text_field(item.get("actor_profile"), "actor_profile", 12000)
         if actor_profile:
             _validate_post_round_actor_safe_payload(actor_profile, f"{path.name}.updates[{index}].actor_profile")
@@ -876,6 +884,7 @@ def _validate_post_round_objective_memory_update(
             "character_name": character_name or expected_name,
             "recent": recent,
             "objective_profile": objective_profile,
+            "background": background,
             "actor_profile": actor_profile,
         }
         break
@@ -902,6 +911,8 @@ def _apply_objective_memory_update(card: Path, expected_agent_id: str, update: d
     _write_text(paths.objective_recent, update["recent"])
     if update.get("objective_profile"):
         _write_text(paths.objective_profile, update["objective_profile"])
+    if update.get("background"):
+        _write_text(paths.background, update["background"])
     if update.get("actor_profile"):
         _write_text(paths.profile, update["actor_profile"])
 

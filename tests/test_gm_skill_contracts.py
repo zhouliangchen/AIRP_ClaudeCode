@@ -274,6 +274,21 @@ class GmSkillContractsTest(unittest.TestCase):
             self.assertIn(forbidden, combined)
         self.assertIn("Do not ask the actor to output", combined)
 
+    def test_gm_and_subgm_document_dream_memory_proxy_exception(self):
+        gm = self.read(".claude/skills/rp-gm-agent.md")
+        subgm = self.read(".claude/skills/rp-subgm-agent.md")
+
+        for text in (gm, subgm):
+            self.assertIn("flashback, memory, or dream", text)
+            self.assertIn("temporary proxy exception", text)
+            self.assertIn("second-person recap", text)
+            self.assertIn("must not become a general license", text)
+        self.assertIn("conflicts with the actor's current personal memory", gm)
+        self.assertIn("conflicts with the allowed character's current personal memory", subgm)
+        self.assertIn("messages_to_gm", subgm)
+        self.assertIn("boundary_requests", subgm)
+        self.assertIn("do not directly edit character profiles or memories", subgm)
+
     def test_readme_documents_natural_language_actor_protocol_not_old_fields(self):
         readme = self.read("README.md")
 

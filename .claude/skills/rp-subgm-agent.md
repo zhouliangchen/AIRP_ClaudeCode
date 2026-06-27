@@ -32,6 +32,8 @@ The `actor_calls[].prompt` string is the only content that may be delivered to t
 
 GM/subGM may serve as the actor's senses. You may tell an allowed character what they can perceive in natural language, including visual, sound, smell, taste, touch, warmth, cold, pain, itch, dizziness, numbness, heartbeat, balance, pressure, and other bodily sensations. This is sensory feedback only: you must not perform the actor's voluntary action, choice, thought, conclusion, emotional interpretation, dialogue, or follow-up reaction for them.
 
+A flashback, memory, or dream that conflicts with the allowed character's current personal memory is the only temporary proxy exception: subGM may briefly write that character's past or dream self inside that assigned side-thread scene. This must not become a general license to control any current important character. After the scene ends, use `actor_calls[].prompt` as soon as possible to give that character a second-person recap, and report durable setting or memory impact through `messages_to_gm` or `boundary_requests`; do not directly edit character profiles or memories.
+
 The actor's later perception exploration and actions must come back as natural-language actor replies to GM/subGM. Do not ask the actor to output `perceive_request`, `custom_action`, `visible_content`, `stop_for_player_decision`, JSON, event metadata, or any other structured actor protocol fields.
 
 ## Output Schema

@@ -649,6 +649,11 @@ class AgentMemoryTest(unittest.TestCase):
             }
         ]
         self._write_story_input(actor_outputs, trace_visible_events)
+        objective_dir = self.card / "memory" / "characters" / "Ada"
+        objective_dir.mkdir(parents=True, exist_ok=True)
+        (objective_dir / "background.md").write_text(
+            "Ada grew up near the old archive.\n", encoding="utf-8"
+        )
 
         result = self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
 
@@ -682,6 +687,10 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(objective_payload["character_name"], "Ada")
         self.assertIn("current_recent", objective_payload)
         self.assertIn("objective_profile", objective_payload)
+        self.assertIn("background", objective_payload)
+        self.assertEqual(
+            objective_payload["background"], "Ada grew up near the old archive.\n"
+        )
         self.assertIn("actor_profile", objective_payload)
         self.assertIn("round_events", objective_payload)
 
@@ -1100,6 +1109,7 @@ class AgentMemoryTest(unittest.TestCase):
                         "character_name": "Ada",
                         "recent": "GM整理后的近期经历：Ada在档案架旁听见异常响动。\n",
                         "objective_profile": "GM整理后的客观设定：Ada对档案室异常保持警觉。\n",
+                        "background": "GM整理后的背景设定：Ada从小在旧档案馆附近长大。\n",
                         "actor_profile": "我是Ada。我会在档案室异常时保持警觉。\n",
                     }
                 ],
@@ -1128,10 +1138,59 @@ class AgentMemoryTest(unittest.TestCase):
             "GM整理后的客观设定：Ada对档案室异常保持警觉。\n",
         )
         self.assertEqual(
+            (self.card / "memory" / "characters" / "Ada" / "background.md").read_text(encoding="utf-8"),
+            "GM整理后的背景设定：Ada从小在旧档案馆附近长大。\n",
+        )
+        self.assertEqual(
             (self.card / "characters" / "Ada" / "profile.md").read_text(encoding="utf-8"),
             "我是Ada。我会在档案室异常时保持警觉。\n",
         )
         self.assertNotIn("Ada stood beside the archive shelf", recent)
+
+    def test_objective_memory_without_background_preserves_existing_background(self):
+        actor_dir = self.card / "characters" / "Ada"
+        objective_dir = self.card / "memory" / "characters" / "Ada"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        objective_dir.mkdir(parents=True, exist_ok=True)
+        (objective_dir / "background.md").write_text("旧背景保留。\n", encoding="utf-8")
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": self.run_dir.name,
+                "stage": "delivered",
+                "post_round_memory_jobs": {"status": "pending", "scheduled": {}},
+                "post_round_objective_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {
+                        "character:Ada": {
+                            "output": "post_round_objective_memory_jobs/character_Ada.summary.json"
+                        }
+                    },
+                },
+            },
+        )
+        output_dir = self.run_dir / "post_round_objective_memory_jobs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            output_dir / "character_Ada.summary.json",
+            {
+                "agent_id": "gm",
+                "updates": [
+                    {
+                        "character_name": "Ada",
+                        "recent": "近期经历。\n",
+                    }
+                ],
+            },
+        )
+
+        result = self.agent_memory.ingest_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            (objective_dir / "background.md").read_text(encoding="utf-8"),
+            "旧背景保留。\n",
+        )
 
     def test_ingest_post_round_memory_jobs_marks_degraded_on_hidden_marker_failure(self):
         actor_outputs = {
