@@ -106,8 +106,31 @@ class AgentRuntimePumpTest(unittest.TestCase):
         self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
         completed = self.intents.list_intents(self.run_dir, "completed")[0]
         self.assertEqual(completed["result"]["outputs"]["status"], "deferred")
+        self.assertEqual(completed["result"]["outputs"]["jobs"][0]["reason"], "asset_worker_not_configured")
         artifact = _read_json(self.run_dir / "artifacts" / "runtime_pump" / "after_critic.json")
         self.assertEqual(artifact["processed"][0]["intent_id"], created["id"])
+
+    def test_assets_task_executor_delegates_to_assets_ui_runtime(self):
+        intent = {
+            "id": "intent-assets-1",
+            "type": "assets_task",
+            "payload": {
+                "kind": "scene_illustration",
+                "target": "scene_illustration",
+                "prompt": "rainy night street",
+            },
+        }
+
+        result = self.capability_executors.execute_assets_task(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_critic",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("jobs", result["outputs"])
+        self.assertTrue((self.run_dir / "artifacts" / "assets_ui" / "intent-assets-1.json").exists())
 
     def test_assets_task_applies_ui_schema_contract_update_before_completion(self):
         self.intents.create_intent(
@@ -186,7 +209,7 @@ class AgentRuntimePumpTest(unittest.TestCase):
         )
 
         self.assertEqual(result["outputs"]["status"], "deferred")
-        self.assertEqual(result["outputs"]["reason"], "asset_worker_not_configured")
+        self.assertEqual(result["outputs"]["jobs"][0]["reason"], "asset_worker_not_configured")
         self.assertEqual(calls, [])
 
     def test_run_pending_intents_blocks_replay_plan_without_confirmation(self):
