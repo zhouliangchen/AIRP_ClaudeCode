@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 import agent_run
@@ -13,6 +13,14 @@ import postprocess_outputs
 
 
 DEFAULT_UI_MANIFEST = {"version": 1, "mode": "autonomous", "generated_assets": []}
+
+
+class InvalidAssetPathError(ValueError):
+    """Raised when a planned asset path is not card-relative and safe."""
+
+    def __init__(self, path_text: str):
+        self.path_text = path_text
+        super().__init__(f"invalid asset path: {path_text}")
 
 
 def process_assets_task(
@@ -38,11 +46,35 @@ def process_assets_task(
     jobs: list[dict[str, Any]] = []
 
     for job in _as_list(plan.get("character_reference_jobs")):
-        materialized = _materialize_character_reference_job(card, run_root, settings, job, run_command)
+        materialized = _materialize_job(
+            card,
+            run_root,
+            job,
+            lambda current_job: _materialize_character_reference_job(
+                card,
+                run_root,
+                settings,
+                current_job,
+                run_command,
+            ),
+            default_kind="character_reference",
+        )
         jobs.append(materialized)
 
     for job in _as_list(plan.get("scene_jobs")):
-        materialized = _materialize_scene_job(card, run_root, settings, job, run_command)
+        materialized = _materialize_job(
+            card,
+            run_root,
+            job,
+            lambda current_job: _materialize_scene_job(
+                card,
+                run_root,
+                settings,
+                current_job,
+                run_command,
+            ),
+            default_kind="scene_illustration",
+        )
         jobs.append(materialized)
 
     summary_status = _summarize_status(jobs)
@@ -135,6 +167,10 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     payload = context.get("payload") if isinstance(context.get("payload"), dict) else {}
     run_dir = Path(context["run_dir"])
     job_id = _text(payload.get("job_id")) or f"scene-{run_dir.name}"
+    characters = _safe_character_names(payload.get("characters"))
+    reference_candidates = _as_string_list(payload.get("reference_candidates"))
+    if not reference_candidates and characters:
+        reference_candidates = [f"characters/{name}/{name}.png" for name in characters]
     plan: dict[str, Any] = {
         "schema_version": 1,
         "scene_jobs": [
@@ -143,9 +179,9 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
                 "kind": _text(payload.get("kind")) or "scene_illustration",
                 "target": _text(payload.get("target")) or "scene_illustration",
                 "prompt": _text(payload.get("prompt")) or _default_persistent_prompt(Path(context["card_path"]), run_dir),
-                "characters": _as_string_list(payload.get("characters")),
+                "characters": characters,
                 "reference_policy": _text(payload.get("reference_policy")) or "optional",
-                "reference_candidates": _normalize_reference_list(payload.get("reference_candidates")),
+                "reference_candidates": reference_candidates,
             }
         ],
     }
@@ -216,7 +252,7 @@ def _materialize_scene_job(
         "kind": _text(job.get("kind")) or "scene_illustration",
         "target": _text(job.get("target")) or "scene_illustration",
         "prompt": _text(job.get("prompt")),
-        "characters": _as_string_list(job.get("characters")),
+        "characters": _safe_character_names(job.get("characters")),
         "reference_policy": _text(job.get("reference_policy")) or "optional",
         "reference_candidates": references,
         "resolved_references": existing_references,
@@ -333,7 +369,7 @@ def _load_run_json(run_dir: Path, name: str) -> dict[str, Any]:
 
 
 def _load_character_profiles(card: Path, payload: dict[str, Any]) -> dict[str, str]:
-    names = _as_string_list(payload.get("characters"))
+    names = _safe_character_names(payload.get("characters"))
     profiles: dict[str, str] = {}
     for name in names:
         profile_path = card / "memory" / "characters" / name / "profile.md"
@@ -352,15 +388,25 @@ def _normalize_reference_list(value: Any) -> list[str]:
 
 
 def _normalize_relative_path(value: Any) -> str:
-    text = _text(value).replace("\\", "/")
-    if not text:
+    raw_text = _text(value)
+    if not raw_text:
         return ""
-    path = Path(text)
-    if path.is_absolute():
-        raise ValueError(f"absolute paths are not allowed: {text}")
+    text = raw_text.replace("\\", "/")
+    windows_path = PureWindowsPath(raw_text)
+    posix_path = PurePosixPath(text)
+    if (
+        text.startswith("/")
+        or raw_text.startswith("\\")
+        or windows_path.drive
+        or windows_path.root
+        or windows_path.anchor
+        or posix_path.root
+        or posix_path.anchor
+    ):
+        raise InvalidAssetPathError(raw_text)
     parts = [part for part in text.split("/") if part not in {"", "."}]
     if any(part == ".." for part in parts):
-        raise ValueError(f"parent traversal is not allowed: {text}")
+        raise InvalidAssetPathError(raw_text)
     return "/".join(parts)
 
 
@@ -389,6 +435,8 @@ def _summarize_status(jobs: list[dict[str, Any]]) -> str:
         return "not_required"
     if "waiting_on_references" in statuses:
         return "waiting_on_references"
+    if "failed" in statuses:
+        return "failed"
     if "queued" in statuses:
         return "queued"
     if "deferred" in statuses:
@@ -429,3 +477,62 @@ def _as_string_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _safe_character_names(value: Any) -> list[str]:
+    names: list[str] = []
+    for item in _as_list(value):
+        name = _safe_character_name(item)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _safe_character_name(value: Any) -> str:
+    name = _text(value)
+    if not name:
+        return ""
+    normalized = name.replace("\\", "/")
+    windows_path = PureWindowsPath(name)
+    posix_path = PurePosixPath(normalized)
+    if (
+        "/" in normalized
+        or name.startswith("\\")
+        or normalized.startswith("/")
+        or ":" in name
+        or windows_path.drive
+        or windows_path.root
+        or windows_path.anchor
+        or posix_path.root
+        or posix_path.anchor
+    ):
+        return ""
+    if name in {".", ".."}:
+        return ""
+    return name
+
+
+def _materialize_job(
+    card: Path,
+    run_dir: Path,
+    job: Any,
+    materialize: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    default_kind: str,
+) -> dict[str, Any]:
+    current_job = job if isinstance(job, dict) else {}
+    try:
+        return materialize(current_job)
+    except InvalidAssetPathError as exc:
+        failed = {
+            "schema_version": 1,
+            "job_id": _text(current_job.get("job_id")) or default_kind,
+            "kind": _text(current_job.get("kind")) or default_kind,
+            "target": _text(current_job.get("target")),
+            "prompt": _text(current_job.get("prompt")),
+            "status": "failed",
+            "reason": "invalid_asset_path",
+            "invalid_path": exc.path_text,
+        }
+        _write_job(card, run_dir, failed["job_id"], failed)
+        return failed

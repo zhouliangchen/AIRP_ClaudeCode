@@ -190,3 +190,107 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "not_required")
         self.assertEqual(result["jobs"], [])
+
+    def test_process_assets_task_marks_invalid_planner_paths_as_failed_without_raising(self):
+        unsafe_paths = [
+            "C:tmp/foo.png",
+            "C:/tmp/foo.png",
+            "/tmp/foo.png",
+            "../escape.png",
+        ]
+        for unsafe_path in unsafe_paths:
+            with self.subTest(unsafe_path=unsafe_path):
+                result = self.mod.process_assets_task(
+                    self.card,
+                    self.run_dir,
+                    {
+                        "id": f"intent-invalid-{unsafe_path}",
+                        "type": "assets_task",
+                        "payload": {
+                            "kind": "scene_illustration",
+                            "target": "scene_illustration",
+                            "prompt": "bad path test",
+                        },
+                    },
+                    phase="after_critic",
+                    planner=lambda context, path=unsafe_path: {
+                        "schema_version": 1,
+                        "scene_jobs": [
+                            {
+                                "job_id": "scene-invalid-path",
+                                "kind": "scene_illustration",
+                                "target": "scene_illustration",
+                                "prompt": "scene",
+                                "reference_policy": "optional",
+                                "reference_candidates": [path],
+                            }
+                        ],
+                    },
+                )
+
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["outputs"]["status"], "failed")
+                self.assertEqual(result["outputs"]["jobs"][0]["status"], "failed")
+                self.assertEqual(result["outputs"]["jobs"][0]["reason"], "invalid_asset_path")
+                self.assertEqual(result["outputs"]["jobs"][0]["invalid_path"], unsafe_path)
+
+    def test_process_assets_task_ignores_unsafe_character_profile_names(self):
+        captured = {}
+        (self.card / "memory" / "escape").mkdir(parents=True)
+        (self.card / "memory" / "escape" / "profile.md").write_text("SHOULD_NOT_LOAD", encoding="utf-8")
+
+        def planner(context):
+            captured["character_profiles"] = context["character_profiles"]
+            return {"schema_version": 1, "scene_jobs": []}
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-unsafe-characters",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "character profile safety",
+                    "characters": ["苏黎", "../escape", "C:bad", "nested/name"],
+                },
+            },
+            phase="after_critic",
+            planner=planner,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outputs"]["status"], "not_required")
+        self.assertEqual(captured["character_profiles"], {"苏黎": "苏黎：银灰短发，黑色风衣，左眼下有细小泪痣。"})
+
+    def test_process_assets_task_default_plan_waits_for_missing_required_character_references(self):
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-default-plan",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "苏黎站在雨中",
+                    "characters": ["苏黎"],
+                    "reference_policy": "required",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outputs"]["status"], "waiting_on_references")
+        self.assertEqual(result["outputs"]["jobs"][0]["status"], "waiting_on_references")
+        self.assertEqual(
+            result["outputs"]["jobs"][0]["reference_candidates"],
+            ["characters/苏黎/苏黎.png"],
+        )
+        self.assertEqual(
+            result["outputs"]["jobs"][0]["missing_references"],
+            ["characters/苏黎/苏黎.png"],
+        )
