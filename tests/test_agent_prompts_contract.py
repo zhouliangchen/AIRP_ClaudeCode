@@ -28,6 +28,17 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("capability: \"character.rename\"", text)
         self.assertIn("from_name: \"player\"", text)
 
+    def test_input_analysis_prompt_describes_assets_ui_planning_payload(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts._input_analyst_prompt({})
+
+        self.assertIn("assets.generate_image", text)
+        self.assertIn("asset_requirement", text)
+        self.assertIn("reference_policy", text)
+        self.assertIn("characters", text)
+        self.assertIn("scene_illustration_each_round", text)
+
     def test_story_prompt_contract_requires_derived_content_edits_for_retcon(self):
         prompts = _load_module("agent_prompts")
 
