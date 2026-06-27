@@ -317,7 +317,6 @@ def render_actor_context(actor_id: str, actor_state: dict[str, Any] | None, worl
 
     if actor_id == "player":
         lines.append("我是当前扮演的角色。")
-        _append_line(lines, "我此刻的行动意图：", world.get("role_channel"))
     else:
         name = _clean_text(actor.get("name") or actor.get("character_name") or actor_id.split(":", 1)[-1])
         role = _clean_text(actor.get("role") or actor.get("identity"))

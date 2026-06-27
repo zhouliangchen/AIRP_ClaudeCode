@@ -1028,6 +1028,29 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertIn("reached max_steps", messages[-1]["content"])
         self.assertEqual(messages[-1]["status"], "needs_gm")
 
+    def test_default_side_thread_does_not_stop_at_max_steps(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if len(calls) < 6:
+                return subgm_output(
+                    status="running",
+                    messages_to_gm=[],
+                    next_resume_point=f"continue step {len(calls)}",
+                )
+            return subgm_output(status="completed")
+
+        result = self.subgm_turn_loop.run_side_thread(
+            self.run_dir,
+            "side_suli_rooftop",
+            dispatch,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["steps"], 6)
+        self.assertEqual(len(calls), 6)
+
     def test_blocked_thread_dispatches_once_to_report_current_block(self):
         self.subgm_threads.append_subgm_message(
             self.run_dir,

@@ -322,7 +322,7 @@ def _actor_base_prompt(
     long_term_memory = _section_text(memory["long_term"], "暂无长期记忆。")
     key_memory_cues = _section_text(memory["key_memories"], "暂无需要主动回忆的重点记忆。")
     short_term_memory = _section_text(memory["short_term"], "暂无短期记忆。")
-    current_context = gm_prompt or "暂时没有新的外部话语。"
+    current_context = gm_prompt or "暂无GM消息。"
     return f"""
 # {title}
 

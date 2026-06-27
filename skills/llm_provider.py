@@ -10,8 +10,9 @@ from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 
 
-DEFAULT_TIMEOUT = 60
-DEFAULT_CC_SWITCH_MAX_TOKENS = 4096
+DEFAULT_TIMEOUT = 300
+DEFAULT_CC_SWITCH_TIMEOUT = 300
+DEFAULT_CC_SWITCH_MAX_TOKENS = 800000
 
 
 class LlmProviderError(RuntimeError):
@@ -83,8 +84,9 @@ def _error(provider: str, config: Mapping[str, Any], message: str) -> LlmProvide
 
 
 def _read_json_response(provider: str, request: urllib.request.Request, config: Mapping[str, Any], urlopen) -> tuple[dict[str, Any], int]:
+    timeout = DEFAULT_CC_SWITCH_TIMEOUT if provider == "cc_switch" else DEFAULT_TIMEOUT
     try:
-        with urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
+        with urlopen(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200) or 200)
             raw = response.read().decode("utf-8")
     except HTTPError as exc:

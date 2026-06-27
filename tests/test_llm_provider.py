@@ -116,7 +116,7 @@ class LlmProviderTest(unittest.TestCase):
         request, timeout = capture.requests[-1]
         body = self._request_json(capture)
         self.assertEqual(request.full_url, "https://llm.example/v1/chat/completions")
-        self.assertEqual(timeout, 60)
+        self.assertEqual(timeout, 300)
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-key")
         self.assertEqual(request.get_header("Content-type"), "application/json")
@@ -160,7 +160,7 @@ class LlmProviderTest(unittest.TestCase):
         request, timeout = capture.requests[-1]
         body = self._request_json(capture)
         self.assertEqual(request.full_url, "http://127.0.0.1:15721/v1/messages")
-        self.assertEqual(timeout, 60)
+        self.assertEqual(timeout, 300)
         self.assertEqual(request.get_header("Content-type"), "application/json")
         self.assertEqual(request.get_header("Anthropic-version"), "2023-06-01")
         self.assertEqual(request.get_header("X-api-key"), "local-secret")
@@ -175,6 +175,28 @@ class LlmProviderTest(unittest.TestCase):
         self.assertEqual(result["usage"], {"input_tokens": 5, "output_tokens": 6})
         self.assertEqual(result["model"], "claude-sonnet")
         self.assertEqual(result["status"], 200)
+
+    def test_cc_switch_uses_large_default_max_tokens_when_not_configured(self):
+        capture = CapturingUrlopen(
+            {
+                "model": "claude-sonnet",
+                "content": [{"type": "text", "text": "{}"}],
+                "usage": {},
+            }
+        )
+
+        self.mod.complete_cc_switch(
+            "Continue",
+            agent_key="input_analyst",
+            config={
+                "service_url": "http://127.0.0.1:15721",
+                "model": "claude-sonnet",
+            },
+            urlopen=capture,
+        )
+
+        body = self._request_json(capture)
+        self.assertEqual(body["max_tokens"], 800000)
 
     def test_missing_required_config_raises_provider_error(self):
         with self.assertRaisesRegex(self.mod.LlmProviderError, "openai_compatible.*api_key"):

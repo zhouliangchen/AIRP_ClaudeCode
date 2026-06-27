@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ CONTROL_PLANE_MEMORY_PHRASES = (
     "response.txt",
     "skills/styles",
 )
+ATOMIC_REPLACE_RETRIES = 3
+ATOMIC_REPLACE_RETRY_DELAY_SECONDS = 0.05
 
 
 class ActorMemoryStoreError(RuntimeError):
@@ -216,7 +219,14 @@ def _write_text_atomic(path: Path, text: str) -> None:
         ) as handle:
             temp_name = handle.name
             handle.write(text)
-        os.replace(temp_name, path)
+        for attempt in range(ATOMIC_REPLACE_RETRIES + 1):
+            try:
+                os.replace(temp_name, path)
+                break
+            except PermissionError:
+                if attempt >= ATOMIC_REPLACE_RETRIES:
+                    raise
+                time.sleep(ATOMIC_REPLACE_RETRY_DELAY_SECONDS)
     finally:
         if temp_name:
             try:

@@ -1,4 +1,4 @@
-"""Bounded runner for one subGM side thread."""
+"""Runner for one subGM side thread."""
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ def _write_progress_safe(stage, label, percent=None, detail=None):
         return None
 
 
-MAX_SUBGM_STEPS = 4
 RUNNABLE_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 STOP_STATUSES = {"completed", "paused", "blocked", "needs_gm"}
 WORLD_VISIBLE_ACTOR_EVENTS = {"reply"}
@@ -537,9 +536,9 @@ def run_side_thread(
     thread_id: str,
     dispatch: DispatchFn,
     *,
-    max_steps: int = MAX_SUBGM_STEPS,
+    max_steps: int | None = None,
 ) -> dict:
-    """Run one already-created subGM side thread through a bounded loop."""
+    """Run one already-created subGM side thread until terminal status or an explicit step limit."""
     root = Path(run_dir)
     safe_id = subgm_threads.safe_thread_id(thread_id)
     side_dir = subgm_threads.thread_dir(root, safe_id)
@@ -562,27 +561,30 @@ def run_side_thread(
     if not (side_dir / "interaction.trace.json").exists():
         agent_interactions.init_trace(side_dir, participants=[f"subGM:{safe_id}"])
 
-    try:
-        step_limit = int(max_steps)
-    except (TypeError, ValueError):
-        step_limit = 0
-    if step_limit <= 0:
-        return {
-            "ok": True,
-            "thread_id": safe_id,
-            "status": "max_steps",
-            "steps": 0,
-            "called_actors": [],
-        }
+    step_limit: int | None = None
+    if max_steps is not None:
+        try:
+            step_limit = int(max_steps)
+        except (TypeError, ValueError):
+            step_limit = 0
+        if step_limit <= 0:
+            return {
+                "ok": True,
+                "thread_id": safe_id,
+                "status": "max_steps",
+                "steps": 0,
+                "called_actors": [],
+            }
     initially_blocked = status == "blocked"
     if initially_blocked:
-        step_limit = min(step_limit, 1)
+        step_limit = 1 if step_limit is None else min(step_limit, 1)
     steps = 0
     called_actors: list[str] = []
     final_status = status
     last_output: dict | None = None
 
-    for step_index in range(step_limit):
+    while step_limit is None or steps < step_limit:
+        step_index = steps
         with SIDE_THREAD_IO_LOCK:
             state_before = _load_state(side_dir)
         _write_progress_safe(
@@ -631,7 +633,7 @@ def run_side_thread(
         if final_status in STOP_STATUSES:
             break
 
-    if final_status not in STOP_STATUSES and steps >= step_limit and not initially_blocked:
+    if step_limit is not None and final_status not in STOP_STATUSES and steps >= step_limit and not initially_blocked:
         _persist_max_steps_notice(root, safe_id, last_output)
         final_status = "max_steps"
 
@@ -694,4 +696,4 @@ def run_ready_side_threads(
     return [results[thread_id] for thread_id in sorted(results)]
 
 
-__all__ = ["MAX_SUBGM_STEPS", "SubgmTurnLoopError", "run_side_thread", "run_ready_side_threads"]
+__all__ = ["SubgmTurnLoopError", "run_side_thread", "run_ready_side_threads"]

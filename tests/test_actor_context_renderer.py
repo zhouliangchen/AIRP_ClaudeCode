@@ -134,7 +134,7 @@ class ActorContextRendererTest(unittest.TestCase):
         self.assertNotIn("gm_only", serialized)
         self.assertNotIn("belief_is_false", serialized)
 
-    def test_render_player_context_uses_first_person_anchor(self):
+    def test_render_player_context_does_not_inject_role_channel_as_current_message(self):
         actor = {
             "name": "player",
             "memory": {"short_term": ["I stepped into the rain."]},
@@ -144,7 +144,8 @@ class ActorContextRendererTest(unittest.TestCase):
         rendered = self.renderer.render_actor_context("player", actor, world)
 
         self.assertIn("我是当前扮演的角色。", rendered["immersive_context"])
-        self.assertIn("我此刻的行动意图：I keep my hand on the doorframe.", rendered["immersive_context"])
+        self.assertNotIn("I keep my hand on the doorframe.", rendered["immersive_context"])
+        self.assertNotIn("我此刻的行动意图", rendered["immersive_context"])
         self.assertNotIn("runtime", rendered["immersive_context"].lower())
         self.assertNotIn("You are", rendered["immersive_context"])
         self.assertNotIn("Current first-person anchor", rendered["immersive_context"])

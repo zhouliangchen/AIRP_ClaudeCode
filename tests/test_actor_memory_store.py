@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -411,6 +412,32 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertEqual(key_payload["memories"][0]["tag"], OLD_ARCHIVE)
         self.assertEqual(short_term.read_text(encoding="utf-8"), "")
         self.assertEqual(json.loads(source_ledger.read_text(encoding="utf-8")), {"source_ids": []})
+
+    def test_short_term_write_retries_transient_replace_permission_error(self):
+        self.store.ensure_actor_files(self.card, f"character:{SULI}")
+        original_replace = self.store.os.replace
+        attempts = {"count": 0}
+
+        def flaky_replace(src, dst):
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                raise PermissionError("temporary Windows file lock")
+            return original_replace(src, dst)
+
+        with mock.patch.object(self.store.os, "replace", side_effect=flaky_replace):
+            self.assertTrue(
+                self.store.append_short_term_dialogue(
+                    self.card,
+                    f"character:{SULI}",
+                    "gm",
+                    GM_LINE,
+                    source_id="call-after-lock",
+                )
+            )
+
+        short_term = self.card / "characters" / SULI / "short_term_memories.md"
+        self.assertIn(GM_MEMORY_LINE, short_term.read_text(encoding="utf-8"))
+        self.assertEqual(attempts["count"], 1)
 
     def test_apply_memory_update_validation_failure_preserves_short_term(self):
         self.store.ensure_actor_files(self.card, "player")
