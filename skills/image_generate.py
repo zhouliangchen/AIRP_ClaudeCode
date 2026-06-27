@@ -20,6 +20,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -84,8 +85,11 @@ def _path_is_within(base: Path, target: Path) -> bool:
 
 
 def _safe_card_relative_path(card: Path, value: str) -> str:
-    rel = Path(str(value).replace("\\", "/"))
-    if not str(value).strip() or rel.is_absolute() or rel.anchor or rel.drive or any(part == ".." for part in rel.parts):
+    raw = str(value).strip()
+    if not raw or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError(f"path must stay inside card folder: {value}")
+    rel = Path(raw.replace("\\", "/"))
+    if rel.is_absolute() or rel.anchor or rel.drive or any(part == ".." for part in rel.parts):
         raise ValueError(f"path must stay inside card folder: {value}")
     resolved = (card / rel).resolve()
     if not _path_is_within(card.resolve(), resolved):
@@ -296,9 +300,6 @@ def main():
     parser.add_argument("--async", dest="async_job", action="store_true", help="queue detached generation job and return immediately")
     args = parser.parse_args()
 
-    if args.async_job:
-        _json_out(_spawn_async(args))
-
     card = Path(args.card_folder).resolve()
     if not card.exists():
         _json_out({"ok": False, "error": f"card folder not found: {card}"}, 2)
@@ -317,6 +318,9 @@ def main():
             },
         )
         _json_out({"ok": False, "error": str(exc)}, 2)
+
+    if args.async_job:
+        _json_out(_spawn_async(args))
 
     config = _load_config(card)
     model = args.model or config.get("model", "")
