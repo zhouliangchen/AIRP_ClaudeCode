@@ -2434,7 +2434,7 @@ class AgentPacketTest(unittest.TestCase):
 
         def stub_prepare_agent_run(**kwargs):
             called.update(kwargs)
-            called["snapshots_before_prepare"] = list((self.card / ".agent_runs" / "snapshots").glob("*"))
+            called["snapshots_before_prepare"] = list((self.card / "backup").glob("*"))
             run_dir = Path(expected_run_dir)
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "manifest.json").write_text(
@@ -2526,9 +2526,9 @@ class AgentPacketTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue().strip())
         self.assertEqual(payload["agent_run"], expected_run_dir)
         self.assertNotIn("dispatcher_runtime", payload)
-        snapshots = list((self.card / ".agent_runs" / "snapshots").glob("*"))
+        snapshots = list((self.card / "backup").glob("*"))
         self.assertTrue(snapshots)
-        metadata = json.loads((snapshots[0] / "snapshot.json").read_text(encoding="utf-8"))
+        metadata = json.loads((snapshots[0] / "backup.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["reason"], "before_round_prepare")
         self.assertEqual(metadata["round_id"], "round-000001")
         self.assertIn("snapshot", payload)

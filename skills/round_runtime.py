@@ -13,15 +13,26 @@ import agent_outputs
 import agent_prompts
 import agent_run
 import agent_runtime_pump
+import agent_snapshots
 import agent_turn_loop
 import input_analysis_apply
 import input_routing_requests
 import postprocess_outputs
+import retcon_replay
 import rp_generate_cli
 
 
 class RoundRuntimeError(RuntimeError):
     """Raised when the thin runtime cannot continue."""
+
+
+_INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
+    "",
+    "prepared",
+    "prompts_ready",
+    "awaiting_agent_outputs",
+    "analysis_applied",
+}
 
 
 def run_round(
@@ -39,91 +50,128 @@ def run_round(
     run_dir = Path(run_dir)
     manifest = _load_manifest(run_dir)
     stages: list[str] = []
-
-    input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
-    stages.append("input_analysis")
-    runtime_pump = {
-        "after_input_analysis": input_analysis_result.get("runtime_pump", {}).get(
-            "after_input_analysis",
-            {"ok": True, "phase": "after_input_analysis", "processed": [], "blocked": [], "rejected": [], "deferred": []},
-        )
-    }
-
-    loop_result = _run_gm_collaboration(card, root, run_dir, manifest, run_claude)
-    stages.append("gm_collaboration")
-
-    story_input = agent_outputs.build_relaxed_story_input(run_dir)
-    story_output = _run_story(root, run_dir, manifest, run_claude, story_input)
-    stages.append("story")
-
-    critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
-    stages.append("critic")
-    repair_attempts = 0
-    while str(critic.get("decision") or "") != "pass" and _critic_allows_story_repair(critic):
-        if repair_attempts >= 1:
-            break
-        repair_attempts += 1
-        _record_story_repair_attempt(run_dir, critic, repair_attempts)
-        story_output = _run_story(
-            root,
-            run_dir,
-            manifest,
-            run_claude,
-            story_input,
-            repair_context={
-                "critic_report": critic,
-                "repair_instruction": str(critic.get("repair_instruction") or ""),
-                "previous_rejected_story_output": story_output,
-            },
-        )
-        stages.append("story_repair")
-        critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
-        stages.append("critic_repair")
-
-    if str(critic.get("decision") or "") != "pass":
-        return _blocked(
-            run_dir,
-            stages,
-            "critic_requires_revision",
-            {"critic": critic, "loop_result": loop_result},
-        )
-
-    runtime_pump["after_critic"] = agent_runtime_pump.run_pending_intents(
+    runtime_snapshot = agent_snapshots.create_snapshot(
         card,
-        run_dir,
-        phase="after_critic",
-        runtime_settings=_runtime_settings_from_applied(input_analysis_result),
-        run_command=run_command,
+        str(manifest.get("round_id") or run_dir.name),
+        reason="before_round_runtime",
     )
 
-    _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
-    stages.append("postprocess")
+    def restore_failed_runtime_state(reason: str) -> dict[str, Any]:
+        snapshot_id = str(runtime_snapshot.get("snapshot_id") or "")
+        if not snapshot_id:
+            return {"ok": False, "reason": "snapshot_missing"}
+        return agent_snapshots.restore_snapshot(
+            card,
+            snapshot_id,
+            mode=f"round_runtime_{reason}",
+        )
 
-    delivery = _run_delivery(card, root, run_dir, run_command)
-    stages.append("delivery")
-    ok = rp_generate_cli._delivery_complete(delivery)
-    post_round_memory = {"ok": True, "status": "not_required", "scheduled": []}
-    if ok:
-        post_round_memory = _run_post_round_memory_jobs(card, root, run_dir, run_claude)
-        if post_round_memory.get("status") != "not_required":
-            stages.append("post_round_memory")
-    result = {
-        "ok": ok,
-        "action": "generated" if ok else "blocked",
-        "run_dir": str(run_dir),
-        "runtime": {"mode": "thin", "stages": stages},
-        "input_analysis": input_analysis_result,
-        "delivery": delivery,
-        "loop_result": loop_result,
-        "runtime_pump": runtime_pump,
-        "post_round_memory": post_round_memory,
-    }
-    _write_artifact(run_dir, "runtime.result.json", result)
-    if ok:
-        agent_run.update_manifest_stage(run_dir, "delivered", "Thin runtime delivery completed.")
-    else:
-        agent_run.update_manifest_stage(run_dir, "blocked", "Thin runtime delivery did not complete.")
-    return result
+    try:
+        input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
+        stages.append("input_analysis")
+        if input_analysis_result.get("action") == "retcon_replay_prepared":
+            return {
+                "ok": False,
+                "action": "retcon_replay_prepared",
+                "run_dir": str(run_dir),
+                "runtime": {"mode": "thin", "stages": stages},
+                "input_analysis": input_analysis_result,
+            }
+        runtime_pump = {
+            "after_input_analysis": input_analysis_result.get("runtime_pump", {}).get(
+                "after_input_analysis",
+                {"ok": True, "phase": "after_input_analysis", "processed": [], "blocked": [], "rejected": [], "deferred": []},
+            )
+        }
+
+        loop_result = _run_gm_collaboration(card, root, run_dir, manifest, run_claude)
+        stages.append("gm_collaboration")
+
+        story_input = agent_outputs.build_relaxed_story_input(run_dir)
+        story_output = _run_story(root, run_dir, manifest, run_claude, story_input)
+        stages.append("story")
+
+        critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
+        stages.append("critic")
+        repair_attempts = 0
+        while str(critic.get("decision") or "") != "pass" and _critic_allows_story_repair(critic):
+            if repair_attempts >= 1:
+                break
+            repair_attempts += 1
+            _record_story_repair_attempt(run_dir, critic, repair_attempts)
+            story_output = _run_story(
+                root,
+                run_dir,
+                manifest,
+                run_claude,
+                story_input,
+                repair_context={
+                    "critic_report": critic,
+                    "repair_instruction": str(critic.get("repair_instruction") or ""),
+                    "previous_rejected_story_output": story_output,
+                },
+            )
+            stages.append("story_repair")
+            critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
+            stages.append("critic_repair")
+
+        if str(critic.get("decision") or "") != "pass":
+            result = _blocked(
+                run_dir,
+                stages,
+                "critic_requires_revision",
+                {"critic": critic, "loop_result": loop_result},
+            )
+            result["rollback"] = restore_failed_runtime_state("blocked")
+            _write_artifact(run_dir, "runtime.result.json", result)
+            return result
+
+        runtime_pump["after_critic"] = agent_runtime_pump.run_pending_intents(
+            card,
+            run_dir,
+            phase="after_critic",
+            runtime_settings=_runtime_settings_from_applied(input_analysis_result),
+            run_command=run_command,
+        )
+
+        _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
+        stages.append("postprocess")
+
+        delivery = _run_delivery(card, root, run_dir, run_command)
+        stages.append("delivery")
+        ok = rp_generate_cli._delivery_complete(delivery)
+        post_round_memory = {"ok": True, "status": "not_required", "scheduled": []}
+        if ok:
+            post_round_memory = _run_post_round_memory_jobs(card, root, run_dir, run_claude)
+            if post_round_memory.get("status") != "not_required":
+                stages.append("post_round_memory")
+        replay_advance = {"ok": True, "action": "not_required"}
+        if ok:
+            replay_advance = retcon_replay.advance_after_delivery(card)
+        result = {
+            "ok": ok,
+            "action": "generated" if ok else "blocked",
+            "run_dir": str(run_dir),
+            "runtime": {"mode": "thin", "stages": stages},
+            "input_analysis": input_analysis_result,
+            "delivery": delivery,
+            "loop_result": loop_result,
+            "runtime_pump": runtime_pump,
+            "post_round_memory": post_round_memory,
+        }
+        if replay_advance.get("action") != "not_required":
+            result["retcon_replay"] = replay_advance
+        if not ok:
+            result["rollback"] = restore_failed_runtime_state("blocked")
+        _write_artifact(run_dir, "runtime.result.json", result)
+        if ok:
+            agent_run.update_manifest_stage(run_dir, "delivered", "Thin runtime delivery completed.")
+        else:
+            agent_run.update_manifest_stage(run_dir, "blocked", "Thin runtime delivery did not complete.")
+        return result
+    except Exception:
+        restore_failed_runtime_state("error")
+        raise
 
 
 def _load_manifest(run_dir: Path) -> dict[str, Any]:
@@ -153,6 +201,65 @@ def _copy_to_artifact(run_dir: Path, source_name: str) -> None:
     destination = _artifact_path(run_dir, source_name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
+
+
+def _input_analysis_apply_allowed(stage: Any) -> bool:
+    return str(stage or "") in _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES
+
+
+def _read_input_analysis_output(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RoundRuntimeError(f"{path}: input analysis output is invalid JSON.") from exc
+    except OSError as exc:
+        raise RoundRuntimeError(f"{path}: input analysis output cannot be read.") from exc
+    if not isinstance(payload, dict):
+        raise RoundRuntimeError(f"{path}: input analysis output must be a JSON object.")
+    return payload
+
+
+def _reuse_applied_input_analysis(
+    output_path: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    source_path = output_path
+    artifact_path = output_path.parent / "artifacts" / output_path.name
+    if not source_path.exists() and artifact_path.exists():
+        source_path = artifact_path
+    payload = dict(_read_input_analysis_output(source_path))
+    if source_path != output_path:
+        agent_run.write_json(output_path, payload)
+    payload.setdefault("ok", True)
+    if not isinstance(payload.get("manifest"), dict):
+        runtime_settings = manifest.get("runtime_settings")
+        style_profile = manifest.get("style_profile")
+        payload["manifest"] = {
+            "runtime_settings": runtime_settings if isinstance(runtime_settings, dict) else {},
+            "style_profile": style_profile if isinstance(style_profile, dict) else {},
+        }
+    payload.setdefault("capability_requests", [])
+    payload.setdefault(
+        "runtime_pump",
+        {
+            "after_input_analysis": {
+                "ok": True,
+                "phase": "after_input_analysis",
+                "processed": [],
+                "blocked": [],
+                "rejected": [],
+                "deferred": [],
+                "skipped": [
+                    {
+                        "type": "input_analysis_apply",
+                        "reason": "already_applied",
+                        "stage": str(manifest.get("stage") or ""),
+                    }
+                ],
+            }
+        },
+    )
+    return payload
 
 
 def _prompt_text(run_dir: Path, manifest: dict[str, Any], key: str, default: str) -> str:
@@ -199,6 +306,9 @@ def _ensure_input_analysis(
     run_claude: Callable[[str, str, str | Path], str],
 ) -> dict[str, Any]:
     output_path = run_dir / "input_analysis.output.json"
+    if not _input_analysis_apply_allowed(manifest.get("stage")):
+        return _reuse_applied_input_analysis(output_path, manifest)
+
     prompt: str | None = None
     last_error: rp_generate_cli.AgentExecutionError | None = None
     for attempt in range(2):
@@ -215,6 +325,16 @@ def _ensure_input_analysis(
                 attempts=1,
                 initial_error=last_error,
             )
+        replay = retcon_replay.prepare_replay_from_current_run(card, run_dir)
+        if replay.get("action") == "retcon_replay_prepared":
+            return {
+                "ok": True,
+                "action": "retcon_replay_prepared",
+                "run_dir": str(run_dir),
+                "retcon_replay": replay,
+            }
+        if replay.get("ok") is False:
+            raise RoundRuntimeError(f"retcon replay preparation failed: {replay}")
         try:
             applied = input_analysis_apply.apply_current_run(card, root)
             break

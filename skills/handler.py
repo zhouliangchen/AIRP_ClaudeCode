@@ -1494,6 +1494,11 @@ def _subjective_player_profile_markdown(name, fields):
     return "\n\n".join(lines).rstrip() + "\n"
 
 
+def _is_blank_player_placeholder_name(name):
+    text = str(name or "").strip()
+    return text in {"", "未命名角色", "player", "{{user}}"}
+
+
 def _derive_blank_identity_from_user_text(user_text):
     text = str(user_text or "")
     text = re.sub(r"\[USER_INSTRUCTION\].*", "", text, flags=re.DOTALL).strip()
@@ -1547,6 +1552,8 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
         name = player_name
     if not name:
         name = _find_first_str(stat_data, ["姓名", "名字", "名称", "name"])
+    if _is_blank_player_placeholder_name(name):
+        name = ""
     role = ""
     if isinstance(stat_data, dict):
         player_obj = stat_data.get("玩家")
@@ -1563,7 +1570,7 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     location = _find_first_str(stat_data, ["地点", "当前位置"])
     scene = _find_first_str(stat_data, ["当前场景", "场景"])
 
-    if name and name != "{{user}}":
+    if name and not _is_blank_player_placeholder_name(name):
         card_data["name"] = name
         card_data.setdefault("data", {})["name"] = name
     if role:
@@ -1596,7 +1603,7 @@ def evolve_blank_profile(card_folder, turn_index, user_text, ai_text, summary, s
     card_data.setdefault("data", {})["extensions"] = card_data.get("data", {}).get("extensions", {})
     _write_json_file(card_path, card_data)
 
-    if card_data.get("name"):
+    if card_data.get("name") and not _is_blank_player_placeholder_name(card_data.get("name")):
         actor_memory_store.write_player_mapping(card_folder, card_data.get("name"))
     paths = actor_memory_store.ensure_actor_files(card_folder, "player")
     subjective_text = _subjective_player_profile_markdown(card_data.get("name", ""), fields)

@@ -3501,6 +3501,27 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(result["reason"], "postprocess_core_invalid")
         self.assertIn("missing fixed option for critical action", "\n".join(result["detail"]["errors"]))
 
+    def test_prepare_delivery_fills_default_postprocess_option_when_noncritical_options_empty(self):
+        self._write_story_and_critic(
+            decision="pass",
+            postprocess_payload={
+                "schema_version": 1,
+                "core": {
+                    "summary": "The morning scene settles into a strange calm.",
+                    "current_goal": "Find out what the mark means.",
+                    "options": [],
+                },
+            },
+        )
+
+        result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
+
+        self.assertTrue(result["ok"])
+        options = result["postprocess"]["core"]["options"]
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["source"], "postprocess_fallback")
+        self.assertFalse(options[0]["requires_confirmation"])
+
     def test_prepare_delivery_success_includes_and_exports_normalized_postprocess(self):
         self._add_player_critical_action()
         self._write_story_and_critic(

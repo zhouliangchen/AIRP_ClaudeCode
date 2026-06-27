@@ -155,7 +155,7 @@ class ReplayCapabilitiesTest(unittest.TestCase):
 
     def test_materialize_replay_plan_writes_artifact_inside_run_without_side_effects(self):
         plan = self._valid_plan()
-        snapshot_dir = self.run_dir.parent / "snapshots" / plan["snapshot_id"]
+        snapshot_dir = self.run_dir.parent.parent / "backup" / plan["snapshot_id"]
         snapshot_dir.mkdir(parents=True)
         existing_artifact = self.run_dir / "artifacts" / "story.input.json"
         existing_artifact.parent.mkdir(parents=True)
@@ -178,7 +178,7 @@ class ReplayCapabilitiesTest(unittest.TestCase):
         self.assertTrue(snapshot_dir.is_dir())
         self.assertEqual(existing_artifact.read_text(encoding="utf-8"), '{"keep": true}')
 
-    def test_materialize_replay_plan_requires_existing_snapshot_inside_agent_runs(self):
+    def test_materialize_replay_plan_requires_existing_snapshot_inside_backup(self):
         plan = self._valid_plan()
 
         with self.assertRaisesRegex(self.mod.ReplayCapabilityError, "snapshot"):

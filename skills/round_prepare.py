@@ -24,6 +24,7 @@ import hidden_settings
 import match_worldbook
 import mvu_check
 import runtime_settings
+import retcon_replay
 from handler import apply_injections, read_pending_user_turn, write_progress
 from io_utils import read_file, read_json, walk_paths
 
@@ -388,6 +389,14 @@ def main():
         user_text,
         player_input_history,
     )
+    replay_constraint = retcon_replay.active_constraint_for_pending(
+        card_folder,
+        read_pending_user_turn(card_folder),
+    )
+    if replay_constraint:
+        payload = dict(explicit_input_payload) if isinstance(explicit_input_payload, dict) else {}
+        payload["retcon_replay"] = replay_constraint
+        explicit_input_payload = payload
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
     except Exception:

@@ -315,6 +315,59 @@ class RoundRuntimeTest(unittest.TestCase):
         written = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
         self.assertEqual(written["attempt"], 2)
 
+    def test_existing_input_analysis_is_reused_after_apply_stage(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "story_ready"
+        _write_json(self.run_dir / "manifest.json", manifest)
+        payload = {
+            "schema_version": 1,
+            "round_id": "round-000001",
+            "analysis_mode": "fixture",
+            "source_integrity": {},
+            "semantic_units": [],
+            "routed_input": {"role_channel": "reuse existing"},
+            "world_updates": {},
+            "narrative_directives": {},
+            "routing_requests": [],
+            "capability_requests": [],
+            "risks": [],
+        }
+        _write_json(self.run_dir / "input_analysis.output.json", payload)
+
+        def apply_current_run(*_args, **_kwargs):
+            raise AssertionError("input analysis must not be applied again after story_ready")
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = apply_current_run
+        try:
+            result = self.round_runtime._ensure_input_analysis(
+                self.card,
+                self.root,
+                self.run_dir,
+                manifest,
+                _fake_run_claude,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["analysis_mode"], "fixture")
+        self.assertEqual(result["manifest"]["runtime_settings"]["wordCount"], 800)
+        self.assertEqual(result["runtime_pump"]["after_input_analysis"]["skipped"][0]["reason"], "already_applied")
+
+        (self.run_dir / "input_analysis.output.json").unlink()
+        _write_json(self.run_dir / "artifacts" / "input_analysis.output.json", payload)
+        result = self.round_runtime._ensure_input_analysis(
+            self.card,
+            self.root,
+            self.run_dir,
+            manifest,
+            _fake_run_claude,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["analysis_mode"], "fixture")
+        self.assertTrue((self.run_dir / "input_analysis.output.json").exists())
+
     def test_run_round_auto_repairs_story_only_critic_revision(self):
         calls = {"story": 0, "critic": 0, "repair_context_seen": False}
 
@@ -483,6 +536,122 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertEqual(critic["decision"], "pass")
         history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
         self.assertIn("story_composition", history)
+
+    def test_run_round_restores_actor_short_term_when_critic_blocks(self):
+        actor_dir = self.card / "characters" / "player"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "short_term_memories.md").write_text("old short-term\n", encoding="utf-8")
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "gm":
+                return json.dumps(
+                    {
+                        "agent": "gm",
+                        "scene_beats": [{"content": "门后传来微弱灯光。", "metadata": {}}],
+                        "events": [],
+                        "actor_calls": [
+                            {
+                                "call_id": "call-player-1",
+                                "actor_id": "player",
+                                "prompt": "You hear careful knocks at the archive door.",
+                                "reason": "player can hear the door",
+                                "visibility_basis": {
+                                    "mode": "direct",
+                                    "summary": "player is directly addressed by this test GM prompt.",
+                                    "target_actor": "player",
+                                    "visible_to": ["player"],
+                                },
+                            }
+                        ],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "character_promotions": [],
+                        "subgm_commands": [],
+                        "decision_point": None,
+                        "stop_reason": "complete",
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "projection":
+                return json.dumps(
+                    {
+                        "decision": "pass",
+                        "target_actor_id": "player",
+                        "source_call_id": "call-player-1",
+                        "final_actor_message": "You hear careful knocks at the archive door.",
+                        "feedback": "",
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "player":
+                return json.dumps(
+                    {
+                        "agent": "player",
+                        "agent_id": "player",
+                        "natural_reply": "I listen before answering.",
+                        "events": [
+                            {
+                                "type": "reply",
+                                "target": "gm",
+                                "content": "I listen before answering.",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "story":
+                return json.dumps(
+                    {
+                        "content": "You pause by the archive door.",
+                        "character_dialogues": [],
+                        "derived_content_edits": [],
+                        "metadata": {},
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "critic":
+                return json.dumps(
+                    {
+                        "decision": "revise",
+                        "hard_failures": ["fixture critic block"],
+                        "soft_issues": [],
+                        "repair_instruction": "",
+                        "system_iteration_suggestion": "",
+                        "quality_checks": {},
+                        "repair_routing": {
+                            "stage": "gm_loop",
+                            "target_agents": ["gm"],
+                            "rollback": "round",
+                            "can_auto_repair": False,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            return _fake_run_claude(agent_key, prompt, cwd)
+
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "critic_requires_revision")
+        self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "old short-term\n")
 
     def test_run_post_round_memory_jobs_executes_recall_protocol_before_ingest(self):
         actor_dir = self.card / "characters" / "Ada"

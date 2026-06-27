@@ -139,6 +139,13 @@ def _write_default_player_mapping(card_folder: str | Path, paths: "ActorMemoryPa
     )
 
 
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
 def write_player_mapping(card_folder: str | Path, name: Any, relative_path: Any = "") -> dict[str, str]:
     card = Path(card_folder)
     safe_name = _safe_component(str(name or "").strip(), "player")
@@ -158,7 +165,28 @@ def write_player_mapping(card_folder: str | Path, name: Any, relative_path: Any 
         _player_mapping_path(card),
         f"name: {safe_name}\npath: {normalized_rel}\n",
     )
+    cleanup_stale_player_placeholder_dirs(card)
     return {"name": safe_name, "path": normalized_rel}
+
+
+def cleanup_stale_player_placeholder_dirs(card_folder: str | Path) -> dict[str, Any]:
+    card = Path(card_folder)
+    _, mapped_actor_dir = _player_mapping(card)
+    removed: list[str] = []
+
+    legacy_actor_dir = card / "characters" / "player"
+    if legacy_actor_dir.exists() and not _same_path(legacy_actor_dir, mapped_actor_dir):
+        _remove_path(legacy_actor_dir)
+        removed.append("characters/player")
+
+    mapping = _parse_player_mapping(_read_text(_player_mapping_path(card)))
+    mapped_name = _safe_component(mapping.get("name") or "player", "player")
+    legacy_objective_dir = card / "memory" / "characters" / "player"
+    if legacy_objective_dir.exists() and mapped_name != "player":
+        _remove_path(legacy_objective_dir)
+        removed.append("memory/characters/player")
+
+    return {"ok": True, "removed": removed}
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -425,6 +453,7 @@ def ensure_actor_files(card_folder: str | Path, actor_id: Any, profile: str = ""
         if legacy_self.exists():
             shutil.rmtree(legacy_self)
         _write_default_player_mapping(card_folder, paths)
+        cleanup_stale_player_placeholder_dirs(card_folder)
     _write_text_if_missing(paths.profile, str(profile or ""))
     _write_text_if_missing(paths.long_term, "")
     _write_json_if_missing(paths.key_memories, {"memories": []})

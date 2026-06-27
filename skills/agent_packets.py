@@ -228,6 +228,13 @@ def _input_analysis_explicit_payload(input_payload: Dict[str, Any]) -> Dict[str,
     return payload
 
 
+def _retcon_replay_payload(input_payload: Any) -> Dict[str, Any]:
+    if not isinstance(input_payload, dict):
+        return {}
+    replay = input_payload.get("retcon_replay")
+    return dict(replay) if isinstance(replay, dict) else {}
+
+
 def _actor_visible_role_channel(routed_input: Dict[str, Any]) -> str:
     """Return actor-visible role text only after explicit or analysis-applied routing."""
     schema = _to_text(routed_input.get("input_schema")).strip()
@@ -428,6 +435,7 @@ def build_gm_packet(
     hidden_setting_records=None,
     runtime_settings_payload=None,
     objective_world_payload=None,
+    retcon_replay=None,
 ):
     """Build GM packet with both role and instruction channels."""
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
@@ -436,7 +444,7 @@ def build_gm_packet(
         if isinstance(objective_world_payload, dict)
         else objective_world.read_objective_world(card_folder)
     )
-    return {
+    packet = {
         "agent": "gm",
         "card_folder": str(card_folder),
         "role_channel": _to_text(routed_input.get("role_channel")),
@@ -452,6 +460,9 @@ def build_gm_packet(
         "runtime_settings": runtime_payload["settings"],
         "style_profile": runtime_payload["style_profile"],
     }
+    if isinstance(retcon_replay, dict) and retcon_replay:
+        packet["retcon_replay"] = retcon_replay
+    return packet
 
 
 def build_player_packet(
@@ -668,6 +679,7 @@ def prepare_agent_run(
 ):
     """Create one round run directory and persist agent packets."""
     routed_input = route_input_payload(user_text, input_payload)
+    retcon_replay_payload = _retcon_replay_payload(input_payload)
     raw_text_hash = input_analysis.sha256_text(_source_raw_text(user_text, input_payload))
     run_dir = _prepare_run_dir(card_folder, turn_index=turn_index, expected_raw_text_hash=raw_text_hash)
     hidden_setting_records = hidden_setting_records or []
@@ -699,6 +711,8 @@ def prepare_agent_run(
     input_json["runtime_settings"] = runtime_payload["settings"]
     input_json["style_profile"] = runtime_payload["style_profile"]
     input_json["postprocess_repairs"] = postprocess_outputs.read_pending_repairs(card_folder)
+    if retcon_replay_payload:
+        input_json["retcon_replay"] = retcon_replay_payload
     degraded_memory_state = agent_memory.previous_post_round_memory_state(card_folder)
     if degraded_memory_state:
         input_json["degraded_memory_state"] = degraded_memory_state
@@ -744,6 +758,7 @@ def prepare_agent_run(
         hidden_setting_records=hidden_setting_records,
         runtime_settings_payload=runtime_payload,
         objective_world_payload=objective_payload,
+        retcon_replay=retcon_replay_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(input_request)
     player_packet = build_player_packet(card_folder, routed_input, safe_chat_log, world_state=world_state)
@@ -814,6 +829,14 @@ def rebuild_agent_run_from_analysis(
             "style_profile": previous_manifest.get("style_profile", {}),
         }
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
+    previous_input_json = agent_run.read_json(root / "input.json", {}) or {}
+    retcon_replay_payload = (
+        previous_input_json.get("retcon_replay")
+        if isinstance(previous_input_json, dict)
+        else {}
+    )
+    if not isinstance(retcon_replay_payload, dict):
+        retcon_replay_payload = {}
     world_state = _build_world_state(
         routed_input,
         chat_log,
@@ -840,6 +863,8 @@ def rebuild_agent_run_from_analysis(
         "style_profile": runtime_payload["style_profile"],
         "postprocess_repairs": postprocess_outputs.read_pending_repairs(card_folder),
     }
+    if retcon_replay_payload:
+        input_json["retcon_replay"] = retcon_replay_payload
     agent_run.write_json(root / "input.json", input_json)
     _append_required_message(
         root,
@@ -865,6 +890,7 @@ def rebuild_agent_run_from_analysis(
         hidden_setting_records=hidden_setting_records,
         runtime_settings_payload=runtime_payload,
         objective_world_payload=objective_payload,
+        retcon_replay=retcon_replay_payload,
     )
     gm_packet["input_analysis_request"] = _input_analysis_request_reference(raw_request)
     player_packet = build_player_packet(card_folder, routed_input, chat_log, world_state=world_state)

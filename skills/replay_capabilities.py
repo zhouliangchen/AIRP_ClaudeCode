@@ -134,10 +134,10 @@ def _require_snapshot_id(payload: dict[str, Any], key: str, path: str) -> str:
 
 
 def _require_existing_snapshot(run_dir: str | Path, snapshot_id: str) -> Path:
-    snapshots_root = (Path(run_dir).parent / "snapshots").resolve()
+    snapshots_root = (Path(run_dir).parent.parent / "backup").resolve()
     snapshot_dir = (snapshots_root / snapshot_id).resolve()
     if snapshot_dir == snapshots_root or snapshots_root not in snapshot_dir.parents:
-        raise ReplayCapabilityError("replay_plan.snapshot_id escapes snapshots directory")
+        raise ReplayCapabilityError("replay_plan.snapshot_id escapes backup directory")
     if not snapshot_dir.is_dir():
         raise ReplayCapabilityError("replay_plan.snapshot_id does not exist")
     return snapshot_dir

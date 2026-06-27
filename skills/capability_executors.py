@@ -159,6 +159,12 @@ def execute_character_rename(
     if not from_name:
         raise CapabilityExecutorError("intent payload from_name is required")
 
+    idempotent = _idempotent_character_rename_result(card, from_name, to_name, actor_id)
+    if idempotent:
+        idempotent["reason"] = _text(payload.get("reason"))
+        _write_executor_artifact(run_dir, "character_renames", intent, idempotent)
+        return {"status": "completed", "outputs": idempotent}
+
     rename_result = actor_memory_store.rename_character_identity(card, from_name, to_name)
     registry_result = character_registry.rename_registered_character(
         card,
@@ -170,6 +176,34 @@ def execute_character_rename(
     outputs["reason"] = _text(payload.get("reason"))
     _write_executor_artifact(run_dir, "character_renames", intent, outputs)
     return {"status": "completed", "outputs": outputs}
+
+
+def _idempotent_character_rename_result(
+    card: Path,
+    from_name: str,
+    to_name: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    if not to_name:
+        return {}
+    source_path = card / "characters" / from_name
+    if source_path.exists():
+        return {}
+    target_path = card / "characters" / to_name
+    if not target_path.exists():
+        return {}
+    current_player_name = actor_memory_store.actor_paths(card, "player").name
+    source_is_player_placeholder = from_name in {"player", "未命名角色"} or actor_id == "player"
+    if source_is_player_placeholder and current_player_name == to_name:
+        return {
+            "from_name": from_name,
+            "to_name": to_name,
+            "actor_id": actor_id,
+            "player_mapping_updated": False,
+            "idempotent": True,
+            "registry": {"ok": True, "status": "not_required"},
+        }
+    return {}
 
 
 def _payload(intent: dict[str, Any]) -> dict[str, Any]:

@@ -1532,6 +1532,9 @@ def build_relaxed_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "warning": style_profile.get("warning", ""),
         },
     }
+    retcon_replay = input_payload.get("retcon_replay") if isinstance(input_payload, dict) else {}
+    if isinstance(retcon_replay, dict) and retcon_replay:
+        story_input["retcon_replay"] = retcon_replay
     story_input["story_prompt_context"] = {
         key: value
         for key, value in story_input.items()

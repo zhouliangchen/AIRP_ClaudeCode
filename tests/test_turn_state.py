@@ -546,6 +546,37 @@ class TurnStateTest(unittest.TestCase):
         self.assertFalse((self.card / "memory" / "characters" / "雨蒙" / "profile.json").exists())
         self.assertFalse((self.card / "characters" / "_self").exists())
 
+    def test_blank_profile_direct_self_name_overrides_placeholder_stat_name(self):
+        (self.card / ".card_data.json").write_text(
+            json.dumps(
+                {
+                    "mode": "blank_bootstrap",
+                    "source_type": "blank",
+                    "name": "未命名角色",
+                    "data": {"name": "未命名角色"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        self.handler.evolve_blank_profile(
+            str(self.card),
+            1,
+            "我叫雨蒙，一名普通的高一男生。今天早上我看见粉色云彩。",
+            "<p>你在教室里醒来。</p>",
+            "你在教室里醒来。",
+            {"角色": {"姓名": "未命名角色"}, "世界": {"地点": "高一教室"}},
+        )
+
+        card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        player_mapping = (self.card / "characters" / "player.md").read_text(encoding="utf-8")
+
+        self.assertEqual(card_data["name"], "雨蒙")
+        self.assertIn("name: 雨蒙", player_mapping)
+        self.assertIn("path: characters/雨蒙", player_mapping)
+        self.assertFalse((self.card / "characters" / "未命名角色").exists())
+
     def test_frontend_polls_progress_and_refreshes_after_submit(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 

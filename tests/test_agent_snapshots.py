@@ -53,7 +53,8 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertTrue((snapshot_dir / "chat_log.json").exists())
         self.assertTrue((snapshot_dir / ".card_data.json").exists())
         self.assertTrue((snapshot_dir / "memory" / "project.md").exists())
-        metadata = json.loads((snapshot_dir / "snapshot.json").read_text(encoding="utf-8"))
+        metadata = json.loads((snapshot_dir / "backup.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["backup_id"], result["backup_id"])
         self.assertEqual(metadata["snapshot_id"], result["snapshot_id"])
         self.assertEqual(metadata["round_id"], "round-000001")
         self.assertEqual(metadata["reason"], "before_input")
@@ -61,6 +62,42 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertIn(".card_data.json", metadata["copied"])
         self.assertIn("memory", metadata["copied"])
         self.assertFalse(metadata["objective_world_included"])
+
+    def test_create_snapshot_uses_backup_root_and_copies_entire_save_state(self):
+        self._write_card_state()
+        actor_dir = self.card / "characters" / "player"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "long_term_memories.md").write_text("actor memory", encoding="utf-8")
+        (self.card / ".player_inputs.jsonl").write_text('{"id":"input-1"}\n', encoding="utf-8")
+        (self.card / "generated").mkdir()
+        (self.card / "generated" / "scene.txt").write_text("scene asset", encoding="utf-8")
+        (self.card / "debug").mkdir()
+        (self.card / "debug" / "trace.json").write_text("debug trace", encoding="utf-8")
+        (self.card / ".agent_runs" / "round-000001").mkdir(parents=True)
+        (self.card / ".agent_runs" / "round-000001" / "gm.output.json").write_text("{}", encoding="utf-8")
+        (self.card / "backup" / "old").mkdir(parents=True)
+        (self.card / "backup" / "old" / "backup.json").write_text("{}", encoding="utf-8")
+
+        result = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_round_prepare",
+        )
+
+        backup_dir = Path(result["snapshot_dir"])
+        self.assertEqual(backup_dir.parent, self.card / "backup")
+        self.assertTrue((backup_dir / "chat_log.json").is_file())
+        self.assertTrue((backup_dir / "characters" / "player" / "long_term_memories.md").is_file())
+        self.assertTrue((backup_dir / ".player_inputs.jsonl").is_file())
+        self.assertTrue((backup_dir / "generated" / "scene.txt").is_file())
+        self.assertFalse((backup_dir / "debug").exists())
+        self.assertFalse((backup_dir / ".agent_runs").exists())
+        self.assertFalse((backup_dir / "backup").exists())
+        metadata = json.loads((backup_dir / "backup.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["backup_id"], result["snapshot_id"])
+        self.assertIn("characters", metadata["copied"])
+        self.assertIn(".player_inputs.jsonl", metadata["copied"])
+        self.assertIn("generated", metadata["copied"])
 
     def test_create_snapshot_records_and_copies_objective_world_archive(self):
         self._write_card_state()
@@ -85,10 +122,33 @@ class AgentSnapshotsTest(unittest.TestCase):
         )
 
         snapshot_dir = Path(result["snapshot_dir"])
-        metadata = json.loads((snapshot_dir / "snapshot.json").read_text(encoding="utf-8"))
+        metadata = json.loads((snapshot_dir / "backup.json").read_text(encoding="utf-8"))
         copied_payload = json.loads((snapshot_dir / "memory" / "objective_world.json").read_text(encoding="utf-8"))
         self.assertTrue(metadata["objective_world_included"])
         self.assertEqual(copied_payload["facts"][0]["fact"], "The locked door leads to a moon base.")
+
+    def test_snapshot_restores_subjective_character_memory(self):
+        self._write_card_state()
+        actor_dir = self.card / "characters" / "player"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "short_term_memories.md").write_text("old memory\n", encoding="utf-8")
+
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_round_runtime",
+        )
+        (actor_dir / "short_term_memories.md").write_text("draft memory\n", encoding="utf-8")
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_runtime_failed",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertIn("characters", restored["restored"])
+        self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "old memory\n")
 
     def test_restore_snapshot_restores_files(self):
         self._write_card_state()
@@ -108,6 +168,57 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertTrue(restored["ok"])
         self.assertEqual(restored["mode"], "round_progression")
         self.assertEqual((self.card / "memory" / "project.md").read_text(encoding="utf-8"), "old memory")
+
+    def test_restore_snapshot_removes_stale_player_placeholder_dir_after_restore(self):
+        self._write_card_state()
+        (self.card / "characters" / "Yumeng").mkdir(parents=True)
+        (self.card / "characters" / "Yumeng" / "profile.md").write_text("real player\n", encoding="utf-8")
+        (self.card / "characters" / "player.md").write_text(
+            "name: Yumeng\npath: characters/Yumeng\n",
+            encoding="utf-8",
+        )
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_input",
+        )
+        backup_dir = Path(created["backup_dir"])
+        stale = backup_dir / "characters" / "player"
+        stale.mkdir()
+        (stale / "short_term_memories.md").write_text("stale placeholder\n", encoding="utf-8")
+        (self.card / "characters").rename(self.card / "characters.removed")
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_progression",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertIn("characters/player", restored["removed"])
+        self.assertTrue((self.card / "characters" / "Yumeng" / "profile.md").exists())
+        self.assertFalse((self.card / "characters" / "player").exists())
+
+    def test_restore_snapshot_removes_snapshot_items_absent_from_snapshot(self):
+        self._write_card_state()
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_input",
+        )
+        actor_dir = self.card / "characters" / "player"
+        actor_dir.mkdir(parents=True)
+        (actor_dir / "short_term_memories.md").write_text("draft memory\n", encoding="utf-8")
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_progression",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertIn("characters", restored["removed"])
+        self.assertFalse((self.card / "characters").exists())
 
     def test_create_snapshot_ids_do_not_collide_for_same_round(self):
         self._write_card_state()
@@ -135,9 +246,9 @@ class AgentSnapshotsTest(unittest.TestCase):
         self._write_card_state()
         (self.card / "memory" / "project.md").write_text("safe memory", encoding="utf-8")
         agent_runs = self.card / ".agent_runs"
-        (agent_runs / "snapshots").mkdir(parents=True)
+        (self.card / "backup").mkdir(parents=True)
         write_json(
-            agent_runs / "snapshot.json",
+            self.card / "backup" / "backup.json",
             {
                 "snapshot_id": "..",
                 "round_id": "round-000001",
@@ -145,8 +256,8 @@ class AgentSnapshotsTest(unittest.TestCase):
                 "copied": ["memory"],
             },
         )
-        (agent_runs / "memory").mkdir()
-        (agent_runs / "memory" / "project.md").write_text("escaped memory", encoding="utf-8")
+        (self.card / "backup" / "memory").mkdir()
+        (self.card / "backup" / "memory" / "project.md").write_text("escaped memory", encoding="utf-8")
 
         result = self.snapshots.restore_snapshot(
             self.card,
@@ -183,22 +294,23 @@ class AgentSnapshotsTest(unittest.TestCase):
         self._write_card_state()
         (self.card / "memory" / "project.md").write_text("current memory", encoding="utf-8")
         snapshot_id = "round-000001-20260621T123456123456Z-abcdef123456"
-        snapshot_dir = self.card / ".agent_runs" / "snapshots" / snapshot_id
+        snapshot_dir = self.card / "backup" / snapshot_id
         write_json(
-            snapshot_dir / "snapshot.json",
+            snapshot_dir / "backup.json",
             {
                 "snapshot_id": snapshot_id,
+                "backup_id": snapshot_id,
                 "round_id": "round-000001",
                 "reason": "test",
-                "copied": ["../memory", ".agent_runs/snapshots/evil", "memory"],
+                "copied": ["../memory", "backup/evil", "memory"],
             },
         )
         (snapshot_dir / "memory").mkdir()
         (snapshot_dir / "memory" / "project.md").write_text("restored memory", encoding="utf-8")
         (snapshot_dir.parent / "memory").mkdir()
         (snapshot_dir.parent / "memory" / "project.md").write_text("traversal memory", encoding="utf-8")
-        (snapshot_dir / ".agent_runs" / "snapshots" / "evil").mkdir(parents=True)
-        (snapshot_dir / ".agent_runs" / "snapshots" / "evil" / "project.md").write_text(
+        (snapshot_dir / "backup" / "evil").mkdir(parents=True)
+        (snapshot_dir / "backup" / "evil" / "project.md").write_text(
             "nested snapshot memory",
             encoding="utf-8",
         )

@@ -1196,6 +1196,35 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("derived_content_edits", "\n".join(normalized["hard_failures"]))
         self.assertIn("complete replacement", normalized["repair_instruction"])
 
+    def test_normalize_critic_report_does_not_require_derived_edits_during_active_replay(self):
+        critic = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<content>Current replay turn.</content>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "retcon_replay": {"status": "active", "active_input_index": 1},
+            "player_inputs": {
+                "input_analysis": {
+                    "narrative_directives": {"rewrite_previous_output": True},
+                    "world_updates": {"retcon_requests": [{"id": "r1", "text": "dream"}]},
+                    "semantic_units": [{"type": "edit_request"}],
+                }
+            },
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["decision"], "pass")
+        self.assertEqual(normalized["hard_failures"], [])
+
     def test_normalize_critic_report_keeps_token_failure_when_current_story_has_placeholder(self):
         hard_failures = ["story.output.json contains placeholder <tokens> values ('NNNN')"]
         critic = {

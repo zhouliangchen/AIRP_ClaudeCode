@@ -172,12 +172,62 @@ def _process_gm_capability_requests(root: Path, input_payload: dict, gm_output: 
     requests = gm_output.get("capability_requests")
     if not isinstance(requests, list) or not requests:
         return {"ok": True, "processed_count": 0}
+    requests = _normalize_gm_capability_requests(requests, gm_output, source_intent_id)
     return input_routing_requests.process_capability_requests(
         root,
         requests,
         runtime_settings=_runtime_settings(input_payload),
         source_intent_id=source_intent_id,
     )
+
+
+def _gm_capability_evidence_text(gm_output: dict) -> str:
+    for key in ("scene_beats", "events"):
+        items = gm_output.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if content:
+                return content
+    return "GM capability request"
+
+
+def _normalize_gm_capability_requests(
+    requests: list[dict],
+    gm_output: dict,
+    source_intent_id: str,
+) -> list[dict]:
+    normalized_requests = []
+    evidence_text = _gm_capability_evidence_text(gm_output)
+    for index, request in enumerate(requests, start=1):
+        if not isinstance(request, dict):
+            normalized_requests.append(request)
+            continue
+        normalized = dict(request)
+        capability = str(normalized.get("capability") or "").strip()
+        payload = normalized.get("payload") if isinstance(normalized.get("payload"), dict) else {}
+        normalized.setdefault("id", f"{source_intent_id}-capability_{index}")
+        normalized.setdefault("requested_by", "gm")
+        normalized.setdefault("source_channel", "gm_output")
+        normalized.setdefault("risk", "medium")
+        normalized.setdefault("summary", capability or "GM capability request")
+        reason = normalized.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            if capability == "character.rename":
+                normalized["reason"] = (
+                    "GM requested a character rename from "
+                    f"{payload.get('from_name', '')} to {payload.get('to_name', '')}."
+                )
+            else:
+                normalized["reason"] = "GM requested a runtime capability."
+        evidence = normalized.get("evidence")
+        if not isinstance(evidence, dict) or not str(evidence.get("raw_excerpt") or "").strip():
+            normalized["evidence"] = {"raw_excerpt": evidence_text}
+        normalized_requests.append(normalized)
+    return normalized_requests
 
 
 def _participants(input_payload: dict) -> list[str]:
@@ -912,6 +962,24 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
     return filtered
 
 
+def _gm_output_calls_player(gm_output: dict) -> bool:
+    return any(
+        isinstance(call, dict) and str(call.get("actor_id") or "").strip() == "player"
+        for call in gm_output.get("actor_calls", []) or []
+    )
+
+
+def _coerce_same_output_player_decision(gm_output: dict) -> dict:
+    if str(gm_output.get("stop_reason") or "").strip() != "player_decision":
+        return gm_output
+    if not _gm_output_calls_player(gm_output):
+        return gm_output
+    normalized = dict(gm_output)
+    normalized["stop_reason"] = "continue"
+    normalized["decision_point"] = None
+    return normalized
+
+
 def _input_requests_player_actor(input_payload: dict) -> bool:
     routed = _dict(input_payload.get("routed_input"))
     analysis = _dict(input_payload.get("input_analysis"))
@@ -1292,6 +1360,7 @@ def run_interactive_loop(
             player_participated_before_gm,
         )
         _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
+        gm_output = _coerce_same_output_player_decision(gm_output)
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_subgm_commands(root, gm_output, input_payload)
         _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))

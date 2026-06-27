@@ -1270,8 +1270,15 @@ _DERIVED_CONTENT_EDIT_FIELDS = (
 _DERIVED_CONTENT_FULL_EDIT_FIELDS = ("ai", "content", "new_ai")
 
 
+def _story_input_is_active_retcon_replay(story_input: Dict[str, Any]) -> bool:
+    replay = story_input.get("retcon_replay")
+    return isinstance(replay, dict) and str(replay.get("status") or "") == "active"
+
+
 def _story_input_requires_derived_content_edits(story_input: Dict[str, Any] | None) -> bool:
     if not isinstance(story_input, dict):
+        return False
+    if _story_input_is_active_retcon_replay(story_input):
         return False
     player_inputs = story_input.get("player_inputs")
     if not isinstance(player_inputs, dict):

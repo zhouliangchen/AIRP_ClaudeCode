@@ -36,6 +36,14 @@ def validate_postprocess_output(payload, *, critical_action_evidence=None):
     summary = _clean_text(core.get("summary"))
     current_goal = _clean_text(core.get("current_goal"))
     options = _normalize_options(core.get("options"))
+    if not options and summary and current_goal and not critical_action_evidence:
+        options = [
+            {
+                "label": current_goal,
+                "source": "postprocess_fallback",
+                "requires_confirmation": False,
+            }
+        ]
 
     if not summary:
         errors.append("core.summary is required")

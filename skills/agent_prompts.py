@@ -428,6 +428,14 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "channel contains both, split them semantically; do not use keyword "
         "rules. Narrative guidance is a GM/story suggestion and must not be "
         "treated as the player actor's direct reply or short-term memory.\n"
+        "\nPlayer identity declaration contract: when the current protagonist names themself "
+        "or states their current stable identity in the role channel, emit a "
+        "`semantic_units[].type: \"character_declaration\"` unit for that declaration. "
+        "If the save is still using a placeholder protagonist name such as `player` or "
+        "`未命名角色`, also emit a top-level capability request with "
+        "`capability: \"character.rename\"`, `target: \"memory\"`, `from_name: \"player\"`, "
+        "`to_name` set to the declared protagonist name, and `actor_id: \"player\"`. "
+        "This preserves the same protagonist identity and is not a protagonist switch.\n"
         "\nCapability request contract: use top-level `capability_requests[]` "
         "for explicit user-requested system, UI, save-data, retcon/replay, or "
         "source-feature work that should be routed outside ordinary GM/story "
@@ -664,6 +672,7 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
     contract = _json_block({
         "content": "final prose to deliver",
         "character_dialogues": [],
+        "derived_content_edits": [],
         "metadata": {},
     })
     return _base_prompt(
@@ -677,7 +686,12 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "trace files, memory files, or hidden settings for story prose.",
         contract_notes=(
             "Story writes only prose, source-backed character dialogues, "
-            "and derived-content repair edits. Do not write `<summary>` or `<options>` "
+            "and derived-content repair edits. Leave `derived_content_edits` empty for normal turns; "
+            "when `story_input.input_analysis.narrative_directives.rewrite_previous_output` is true, "
+            "the response must include a non-empty `derived_content_edits` array with actionable objects "
+            "such as `{\"turn_index\": 0, \"ai\": \"replacement AI prose\"}` to repair earlier "
+            "AI-derived content without modifying player input. "
+            "Do not write `<summary>` or `<options>` "
             "in `story.output.json`; postprocess owns summary, options, current goal, "
             "and frontend data after critic pass; postprocess also owns MVU variable update commands. "
             "Do not write `<UpdateVariable>`; postprocess owns MVU variable update commands."

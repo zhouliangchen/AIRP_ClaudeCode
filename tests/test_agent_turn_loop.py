@@ -298,6 +298,47 @@ class AgentTurnLoopTest(unittest.TestCase):
         audit = self.agent_run.read_json(audit_files[0])
         self.assertEqual(audit["status"], "queued")
 
+    def test_gm_capability_request_missing_optional_schema_fields_is_completed(self):
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The protagonist finally remembers the name Yumeng."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "capability_requests": [
+                    {
+                        "capability": "character.rename",
+                        "target": "memory",
+                        "requested_by": "gm",
+                        "source_channel": "gm_output",
+                        "authorization_gate": "none",
+                        "payload": {
+                            "from_name": "player",
+                            "to_name": "Yumeng",
+                            "actor_id": "player",
+                        },
+                    }
+                ],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        pending = self.agent_intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "character_rename")
+        self.assertEqual(pending[0]["payload"]["to_name"], "Yumeng")
+        audit_files = list((self.run_dir / "artifacts" / "capability_requests").glob("gm_step_1-capability_1-*.json"))
+        self.assertEqual(len(audit_files), 1)
+        audit = self.agent_run.read_json(audit_files[0])
+        self.assertEqual(audit["status"], "queued")
+        self.assertEqual(audit["request"]["id"], "gm_step_1-capability_1")
+        self.assertEqual(audit["request"]["risk"], "medium")
+
     def test_actor_natural_language_reply_is_wrapped_for_internal_artifacts(self):
         self.register_characters("Ada")
         reply = "我把门轻轻合上，低声说：先听听外面的脚步。"
@@ -2636,7 +2677,8 @@ class AgentTurnLoopTest(unittest.TestCase):
 
         self.assertNotEqual(result["stop_reason"], "player_decision")
         self.assertIsNone(result["decision_point"])
-        self.assertIn("[redacted]", serialized)
+        self.assertEqual(gm_loop["outputs"][0]["stop_reason"], "continue")
+        self.assertIsNone(gm_loop["outputs"][0]["decision_point"])
         self.assertNotIn("moon-base-archive", serialized)
         self.assertNotIn("moon_base_archive", serialized)
 

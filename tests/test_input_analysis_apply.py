@@ -326,3 +326,232 @@ class InputAnalysisApplyTest(unittest.TestCase):
             role_text=role_text,
             user_instruction_text=instruction_text,
         )
+
+    def test_capability_request_source_channel_aliases_are_normalized(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        role_text = "\u6211\u53eb\u96e8\u8499"
+        raw_text = role_text
+        raw_request = {
+            "raw_text": raw_text,
+            "role_text": role_text,
+            "user_instruction_text": "",
+        }
+        analysis = {
+            "schema_version": 1,
+            "round_id": "round-000001",
+            "analysis_mode": "fixture",
+            "source_integrity": {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(role_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                "raw_preserved": True,
+            },
+            "semantic_units": [
+                {
+                    "id": "su-001",
+                    "source_channel": "role_input",
+                    "type": "character_declaration",
+                    "raw_excerpt": role_text,
+                    "derived_summary": "\u4e3b\u89d2\u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "confidence": 0.9,
+                    "visibility": "public_world",
+                    "persist": True,
+                }
+            ],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+            },
+            "routing": {
+                "role_channel": role_text,
+                "user_instruction_channel": "",
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "routing_requests": [],
+            "capability_requests": [
+                {
+                    "id": "cap-001",
+                    "requested_by": "input_analyst",
+                    "target": "memory",
+                    "capability": "character.rename",
+                    "summary": "\u5c06\u5360\u4f4d\u540d\u6539\u4e3a\u96e8\u8499",
+                    "reason": "\u73a9\u5bb6\u5728 role channel \u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "source_channel": "role_text",
+                    "risk": "low",
+                    "authorization_gate": "none",
+                    "payload": {
+                        "from_name": "player",
+                        "to_name": "\u96e8\u8499",
+                        "actor_id": "player",
+                    },
+                    "evidence": {"raw_excerpt": role_text},
+                },
+                {
+                    "id": "cap-002",
+                    "requested_by": "input_analyst",
+                    "target": "memory",
+                    "capability": "character.rename",
+                    "summary": "\u5c06\u5360\u4f4d\u540d\u6539\u4e3a\u96e8\u8499",
+                    "reason": "\u73a9\u5bb6\u5728 role channel \u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "source_channel": "role",
+                    "risk": "low",
+                    "authorization_gate": "none",
+                    "payload": {
+                        "from_name": "\u672a\u547d\u540d\u89d2\u8272",
+                        "to_name": "\u96e8\u8499",
+                        "actor_id": "player",
+                    },
+                    "evidence": {"raw_excerpt": role_text},
+                },
+            ],
+            "risks": [],
+        }
+
+        normalized, changed = mod._normalize_capability_request_source_channels(
+            copy.deepcopy(analysis),
+            raw_request,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            [request["source_channel"] for request in normalized["capability_requests"]],
+            ["role_input", "role_input"],
+        )
+        input_analysis.validate_input_analysis(
+            normalized,
+            raw_text=raw_text,
+            role_text=role_text,
+            user_instruction_text="",
+        )
+
+    def test_live_input_analysis_schema_aliases_are_normalized(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        role_text = "\u6211\u53eb\u96e8\u8499\uff0c\u5929\u7a7a\u51fa\u73b0\u8be1\u5f02\u7684\u7c89\u8272\u4e91\u5f69\u3002"
+        raw_text = role_text
+        raw_request = {
+            "raw_text": raw_text,
+            "role_text": role_text,
+            "user_instruction_text": "",
+        }
+        analysis = {
+            "schema_version": 1,
+            "round_id": "round-000001",
+            "analysis_mode": "fixture",
+            "source_integrity": {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(role_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(""),
+                "raw_preserved": True,
+            },
+            "semantic_units": [
+                {
+                    "id": "su-001",
+                    "type": "hidden_fact",
+                    "raw_excerpt": "\u5929\u7a7a\u51fa\u73b0\u8be1\u5f02\u7684\u7c89\u8272\u4e91\u5f69",
+                    "derived_summary": "\u7c89\u8272\u4e91\u5f69\u662f\u9700\u8981GM\u8ddf\u8e2a\u7684\u9690\u85cf\u4e8b\u5b9e\u3002",
+                    "confidence": 0.8,
+                    "visibility": "gm_only",
+                    "persist": True,
+                }
+            ],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+            },
+            "routing": {
+                "role_channel": role_text,
+                "user_instruction_channel": "",
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "routing_requests": [],
+            "capability_requests": [
+                {
+                    "id": "cap-001",
+                    "requested_by": "player",
+                    "target": "memory",
+                    "capability": "character.rename",
+                    "summary": "\u5c06\u4e3b\u89d2\u5360\u4f4d\u540d\u91cd\u547d\u540d\u4e3a\u96e8\u8499",
+                    "reason": "\u73a9\u5bb6\u5728\u89d2\u8272\u901a\u9053\u4e2d\u81ea\u6211\u4ecb\u7ecd\u4e3a\u96e8\u8499\u3002",
+                    "source_channel": "role",
+                    "risk": "low",
+                    "authorization_gate": "manual_confirmation",
+                    "payload": {
+                        "from_name": "\u672a\u547d\u540d\u89d2\u8272",
+                        "to_name": "\u96e8\u8499",
+                        "actor_id": "player",
+                    },
+                    "evidence": {"raw_excerpt": "\u6211\u53eb\u96e8\u8499"},
+                },
+                {
+                    "id": "cap-002",
+                    "requested_by": "input_analyst",
+                    "target": "memory",
+                    "capability": "character.rename",
+                    "summary": "\u5c06\u4e3b\u89d2\u5360\u4f4d\u540d\u91cd\u547d\u540d\u4e3a\u96e8\u8499",
+                    "reason": "\u73a9\u5bb6\u5728\u89d2\u8272\u901a\u9053\u4e2d\u81ea\u6211\u4ecb\u7ecd\u4e3a\u96e8\u8499\u3002",
+                    "source_channel": "role_text",
+                    "risk": "low",
+                    "authorization_gate": "automatic",
+                    "payload": {
+                        "from_name": "player",
+                        "to_name": "\u96e8\u8499",
+                        "actor_id": "player",
+                    },
+                    "evidence": {"raw_excerpt": "\u6211\u53eb\u96e8\u8499"},
+                },
+            ],
+            "risks": [],
+        }
+
+        normalized, semantic_changed = mod._normalize_legacy_semantic_units(
+            copy.deepcopy(analysis),
+            raw_request,
+        )
+        normalized, capability_changed = mod._normalize_capability_request_source_channels(
+            normalized,
+            raw_request,
+        )
+
+        self.assertTrue(semantic_changed)
+        self.assertTrue(capability_changed)
+        self.assertEqual(normalized["semantic_units"][0]["type"], "hidden_setting")
+        self.assertEqual(
+            [
+                (
+                    request["requested_by"],
+                    request["source_channel"],
+                    request["authorization_gate"],
+                )
+                for request in normalized["capability_requests"]
+            ],
+            [
+                ("input_analyst", "role_input", "none"),
+                ("input_analyst", "role_input", "none"),
+            ],
+        )
+        input_analysis.validate_input_analysis(
+            normalized,
+            raw_text=raw_text,
+            role_text=role_text,
+            user_instruction_text="",
+        )

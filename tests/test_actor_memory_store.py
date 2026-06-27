@@ -136,6 +136,20 @@ class ActorMemoryStoreTest(unittest.TestCase):
             OLD_ARCHIVE,
         )
 
+    def test_non_placeholder_player_mapping_removes_stale_player_dirs(self):
+        stale_actor = self.card / "characters" / "player"
+        stale_objective = self.card / "memory" / "characters" / "player"
+        stale_actor.mkdir(parents=True)
+        stale_objective.mkdir(parents=True)
+        (stale_actor / "short_term_memories.md").write_text("stale placeholder memory\n", encoding="utf-8")
+        (stale_objective / "recent.md").write_text("stale objective memory\n", encoding="utf-8")
+
+        result = self.store.write_player_mapping(self.card, "Yumeng", "characters/Yumeng")
+
+        self.assertEqual(result["path"], "characters/Yumeng")
+        self.assertFalse(stale_actor.exists())
+        self.assertFalse(stale_objective.exists())
+
     def test_rename_non_player_character_does_not_switch_player_mapping(self):
         (self.card / "characters").mkdir(parents=True)
         (self.card / "characters" / "player.md").write_text(

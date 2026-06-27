@@ -423,6 +423,10 @@ def _normalize_legacy_semantic_units(
         semantic_units,
         raw_request,
     )
+    type_aliases = {
+        "hidden_fact": "hidden_setting",
+        "hidden_facts": "hidden_setting",
+    }
     next_index = 1
     for unit in semantic_units:
         if not isinstance(unit, dict):
@@ -430,6 +434,12 @@ def _normalize_legacy_semantic_units(
             continue
 
         normalized = dict(unit)
+        unit_type = str(normalized.get("type") or "").strip()
+        aliased_type = type_aliases.get(unit_type)
+        if aliased_type:
+            normalized["type"] = aliased_type
+            changed = True
+
         if not isinstance(normalized.get("id"), str) or not normalized["id"].strip():
             while True:
                 candidate = f"unit-{next_index:03d}"
@@ -537,6 +547,122 @@ def _normalize_routing_channel_aliases(analysis: Dict[str, Any]) -> tuple[Dict[s
     normalized = dict(analysis)
     normalized["routing"] = normalized_routing
     return normalized, True
+
+
+_CAPABILITY_SOURCE_CHANNEL_ALIASES = {
+    "instruction": "user_instruction",
+    "instruction_text": "user_instruction",
+    "user_instruction_channel": "user_instruction",
+    "user_instruction_text": "user_instruction",
+    "role": "role_input",
+    "role_channel": "role_input",
+    "role_text": "role_input",
+    "player_input": "role_input",
+    "raw": "raw_input",
+    "raw_text": "raw_input",
+    "gm": "gm_output",
+    "gm_response": "gm_output",
+}
+
+_CAPABILITY_REQUESTER_ALIASES = {
+    "player": "input_analyst",
+    "role": "input_analyst",
+    "user": "input_analyst",
+    "user_instruction": "input_analyst",
+}
+
+_CAPABILITY_AUTHORIZATION_GATE_ALIASES = {
+    "auto": "none",
+    "automatic": "none",
+    "automated": "none",
+}
+
+
+def _capability_request_source_channel(
+    request: Dict[str, Any],
+    raw_request: Dict[str, Any],
+) -> str:
+    existing = str(request.get("source_channel") or "").strip()
+    if existing in capability_registry.VALID_SOURCE_CHANNELS:
+        return existing
+    alias = _CAPABILITY_SOURCE_CHANNEL_ALIASES.get(existing)
+    if alias:
+        return alias
+
+    evidence = request.get("evidence")
+    raw_excerpt = ""
+    if isinstance(evidence, dict):
+        raw_excerpt = str(evidence.get("raw_excerpt") or "").strip()
+    role_text = str(raw_request.get("role_text") or "")
+    instruction_text = str(raw_request.get("user_instruction_text") or "")
+    raw_text = str(raw_request.get("raw_text") or "")
+
+    if _contains_text(role_text, raw_excerpt):
+        return "role_input"
+    if _contains_text(instruction_text, raw_excerpt):
+        return "user_instruction"
+    if _contains_text(raw_text, raw_excerpt):
+        return "raw_input"
+
+    requested_by = str(request.get("requested_by") or "").strip()
+    if requested_by == "gm":
+        return "gm_output"
+    if role_text:
+        return "role_input"
+    if instruction_text:
+        return "user_instruction"
+    return "raw_input"
+
+
+def _normalize_capability_request_source_channels(
+    analysis: Dict[str, Any],
+    raw_request: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    capability_requests = analysis.get("capability_requests")
+    if not isinstance(capability_requests, list):
+        return analysis, False
+
+    changed = False
+    normalized_requests = []
+    for request in capability_requests:
+        if not isinstance(request, dict):
+            normalized_requests.append(request)
+            continue
+        target_channel = _capability_request_source_channel(request, raw_request)
+        normalized = dict(request)
+        if normalized.get("source_channel") != target_channel:
+            normalized["source_channel"] = target_channel
+            changed = True
+
+        requested_by = str(normalized.get("requested_by") or "").strip()
+        target_requester = _CAPABILITY_REQUESTER_ALIASES.get(requested_by, requested_by)
+        if target_requester != requested_by:
+            normalized["requested_by"] = target_requester
+            changed = True
+
+        gate = str(normalized.get("authorization_gate") or "").strip()
+        target_gate = _CAPABILITY_AUTHORIZATION_GATE_ALIASES.get(gate, gate)
+        definition = capability_registry.CAPABILITIES.get(
+            str(normalized.get("capability") or "").strip()
+        )
+        expected_gate = (
+            str(definition.get("authorization_gate") or "")
+            if isinstance(definition, dict)
+            else ""
+        )
+        if expected_gate == "none" and target_gate == "manual_confirmation":
+            target_gate = "none"
+        if target_gate != gate:
+            normalized["authorization_gate"] = target_gate
+            changed = True
+
+        normalized_requests.append(normalized)
+
+    if not changed:
+        return analysis, False
+    normalized_analysis = dict(analysis)
+    normalized_analysis["capability_requests"] = normalized_requests
+    return normalized_analysis, True
 
 
 def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
@@ -706,7 +832,16 @@ def apply_current_run(card_folder, root_dir=None):
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
     analysis, normalized_channel_aliases = _normalize_routing_channel_aliases(analysis)
     analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
-    normalized = normalized or normalized_channel_aliases or normalized_routing_requests
+    analysis, normalized_capability_sources = _normalize_capability_request_source_channels(
+        analysis,
+        raw_request,
+    )
+    normalized = (
+        normalized
+        or normalized_channel_aliases
+        or normalized_routing_requests
+        or normalized_capability_sources
+    )
     input_analysis.validate_input_analysis(
         analysis,
         raw_text=str(raw_request.get("raw_text") or ""),
