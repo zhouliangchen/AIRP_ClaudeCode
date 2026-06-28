@@ -530,6 +530,30 @@ def _natural_lines(value: Any, *, indent: int = 0, limit: int = 30) -> list[str]
     return [prefix + text] if text else []
 
 
+def _key_memory_cue_lines(value: Any, *, limit: int = 20) -> list[str]:
+    lines: list[str] = []
+    source = value if isinstance(value, list) else []
+    for item in source:
+        if len(lines) >= limit:
+            lines.append("- ...")
+            break
+        if not isinstance(item, dict):
+            text = str(item or "").strip()
+            if text:
+                lines.append(f'可进一步回忆"{text}"')
+            continue
+        tag = str(item.get("tag") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if tag:
+            cue = f'可进一步回忆"{tag}"'
+            if summary:
+                cue += f"：{summary}"
+            lines.append(cue)
+        elif summary:
+            lines.append(f'可进一步回忆"{summary}"')
+    return lines
+
+
 def _post_round_dialogue_text(round_dialogue: Any) -> str:
     if not isinstance(round_dialogue, list) or not round_dialogue:
         return "- 本轮没有需要我整理进短期记忆的直接对话。"
@@ -550,7 +574,7 @@ def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
     long_term = str(job_payload.get("long_term_memories") or "").strip()
     short_term = str(job_payload.get("short_term_memories") or "").strip()
     key_cues = job_payload.get("key_memory_cues", [])
-    key_lines = _natural_lines(key_cues, limit=20)
+    key_lines = _key_memory_cue_lines(key_cues, limit=20)
     sections = [
         "## 我是谁",
         profile if profile else "暂无。",

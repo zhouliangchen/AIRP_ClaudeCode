@@ -91,6 +91,31 @@ def _agent_stream(text):
     )
 
 
+def _agent_stream_with_tool_result(tool_text, final_text):
+    return "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "task_started",
+                    "task_type": "local_agent",
+                    "subagent_type": "general-purpose",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "tool_use_result": {
+                        "status": "completed",
+                        "content": [{"type": "text", "text": tool_text}],
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "subtype": "success", "result": final_text}),
+        ]
+    )
+
+
 def _gm_output(
     *,
     scene_beats=None,
@@ -331,6 +356,16 @@ class RpGenerateCliTest(unittest.TestCase):
         no_agent_stream = json.dumps({"type": "result", "subtype": "success", "result": json.dumps(payload)})
         with self.assertRaisesRegex(self.module.AgentExecutionError, "local_agent"):
             self.module.extract_agent_text(no_agent_stream)
+
+    def test_extract_agent_text_prefers_final_result_after_tool_use(self):
+        text = self.module.extract_agent_text(
+            _agent_stream_with_tool_result(
+                "工具返回：封存索引的详情",
+                "我想起灯座下方的索引，低声提醒自己。",
+            )
+        )
+
+        self.assertEqual(text, "我想起灯座下方的索引，低声提醒自己。")
 
     def test_extract_json_object_uses_first_balanced_object(self):
         payload = self.module._extract_json_object(
@@ -588,6 +623,51 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("索引藏在Ada灯座下方。", prompts[1])
         self.assertEqual(result["natural_reply"], "我想起灯座下方的索引，低声提醒自己。")
 
+    def test_dispatch_actor_reacts_again_when_recall_request_is_final_result_after_tool_use(self):
+        actor_dir = self.card / "characters" / "雨蒙"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "封存索引",
+                            "summary": "我知道它和Ada的灯有关",
+                            "detail": "索引藏在Ada灯座下方。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream_with_tool_result(
+                    "工具返回：这不是actor最终回答。",
+                    "我想回忆：封存索引",
+                )
+            return _agent_stream("我想起灯座下方的索引，低声提醒自己。")
+
+        result = self.module._dispatch_agent_payload(
+            "player",
+            "# player\n",
+            self.root,
+            fake_run_claude,
+            extra_context={"loop_packet": {"actor_id": "player", "card_folder": str(self.card)}},
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("索引藏在Ada灯座下方。", prompts[1])
+        self.assertEqual(result["natural_reply"], "我想起灯座下方的索引，低声提醒自己。")
+
     def test_dispatch_post_round_memory_reruns_after_key_memory_recall_protocol(self):
         actor_dir = self.card / "characters" / "Ada"
         actor_dir.mkdir(parents=True, exist_ok=True)
@@ -612,6 +692,64 @@ class RpGenerateCliTest(unittest.TestCase):
             prompts.append(prompt)
             if len(prompts) == 1:
                 return _agent_stream("我想回忆：雨夜披风")
+            payload = {
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "long_term_memories": "我记得雨夜里玩家借给我披风。",
+                "key_memories": [
+                    {
+                        "tag": "雨夜披风",
+                        "summary": "玩家曾把披风借给我",
+                        "detail": "那天雨很冷，我记得披风边缘有银线。",
+                    }
+                ],
+            }
+            return _agent_stream(json.dumps(payload, ensure_ascii=False))
+
+        result = self.module._dispatch_agent_payload(
+            "post_round_memory",
+            "# memory\n",
+            self.root,
+            fake_run_claude,
+            extra_context={
+                "card_folder": str(self.card),
+                "post_round_memory_job": {"agent_id": "character:Ada", "character_name": "Ada"},
+                "post_round_output_path": "post_round_memory_jobs/character_Ada.summary.json",
+            },
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("披风边缘有银线", prompts[1])
+        self.assertEqual(result["agent_id"], "character:Ada")
+        self.assertIn("雨夜", result["long_term_memories"])
+
+    def test_dispatch_post_round_memory_reacts_again_when_recall_request_is_final_result_after_tool_use(self):
+        actor_dir = self.card / "characters" / "Ada"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "雨夜披风",
+                            "summary": "玩家曾把披风借给我",
+                            "detail": "那天雨很冷，我记得披风边缘有银线。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream_with_tool_result(
+                    "工具返回：这不是记忆整理最终输出。",
+                    "我想回忆：雨夜披风",
+                )
             payload = {
                 "agent_id": "character:Ada",
                 "character_name": "Ada",

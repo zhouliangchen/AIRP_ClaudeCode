@@ -183,24 +183,25 @@ def _clip_recall_cue(text: str, limit: int) -> str:
 
 def _recall_cue(value: Any) -> str:
     if isinstance(value, dict):
-        cue_parts = [
-            _plain_memory_text(value.get(key))
-            for key in ("tag", "summary")
-            if _plain_memory_text(value.get(key))
-        ]
-        if cue_parts:
-            text = "；".join(cue_parts)
+        tag = _plain_memory_text(value.get("tag"))
+        summary = _plain_memory_text(value.get("summary"))
+        if tag:
+            text = f'"{tag}"'
+            if summary:
+                text += f"：{summary}"
             limit = STRUCTURED_KEY_MEMORY_CUE_LIMIT
         else:
             topic = value.get("topic") or value.get("title")
-            text = _plain_memory_text(topic if topic else value.get("content"))
+            raw_text = _plain_memory_text(topic if topic else value.get("content"))
+            text = f'"{raw_text}"' if raw_text else ""
             limit = KEY_MEMORY_CUE_LIMIT
     else:
-        text = _plain_memory_text(value)
+        raw_text = _plain_memory_text(value)
+        text = f'"{raw_text}"' if raw_text else ""
         limit = KEY_MEMORY_CUE_LIMIT
     if not text:
         return ""
-    return f"我想回忆：{_clip_recall_cue(text, limit)}"
+    return f"可进一步回忆{_clip_recall_cue(text, limit)}"
 
 
 def _append_unique_memory_value(memory: dict[str, list[Any]], key: str, value: Any) -> None:

@@ -24,6 +24,22 @@ class ActorContextRendererTest(unittest.TestCase):
     def setUp(self):
         self.renderer = load_module("actor_context_renderer")
 
+    def test_key_memory_cues_are_not_rendered_as_recall_triggers(self):
+        memory = self.renderer.project_actor_memory(
+            {
+                "key_memories": [
+                    {
+                        "tag": "雨夜披风",
+                        "summary": "玩家曾把披风借给我",
+                        "detail": "那天雨很冷，我记得披风边缘有银线。",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(memory["key_memories"], ['可进一步回忆"雨夜披风"：玩家曾把披风借给我'])
+        self.assertNotIn("我想回忆：", "".join(memory["key_memories"]))
+
     def test_render_context_reads_root_actor_memory_when_card_folder_is_present(self):
         with tempfile.TemporaryDirectory() as temp:
             card = Path(temp) / "card"
@@ -62,7 +78,7 @@ class ActorContextRendererTest(unittest.TestCase):
             self.assertIn("我是 Ada，我习惯先观察再行动。", text)
             self.assertIn("我记得：我记得玩家曾在雨夜保护我。", text)
             self.assertIn("刚才我记得：刚才我听见门后有脚步声。", text)
-            self.assertIn("我想回忆：雨夜", text)
+            self.assertIn('可进一步回忆"雨夜"', text)
             self.assertIn("玩家把披风借给我", text)
             self.assertNotIn("detail-secret", text)
             self.assertNotIn("钟楼背面", text)
@@ -125,7 +141,7 @@ class ActorContextRendererTest(unittest.TestCase):
         self.assertIn("我的身份是：royal paladin。", rendered["immersive_context"])
         self.assertIn("我记得：I was taught that cursed heroes endanger civilians.", rendered["immersive_context"])
         self.assertIn("我现在想要：Keep civilians safe.", rendered["immersive_context"])
-        self.assertIn("我想回忆：", rendered["immersive_context"])
+        self.assertIn('可进一步回忆"', rendered["immersive_context"])
         self.assertNotIn("chapel key beneath the broken altar", rendered["immersive_context"])
         self.assertNotIn("You are", rendered["immersive_context"])
         self.assertNotIn("Your current goal", rendered["immersive_context"])
@@ -199,7 +215,7 @@ class ActorContextRendererTest(unittest.TestCase):
         self.assertIn("I distrust the old crown.", rendered["immersive_context"])
         self.assertIn("I saw a blue cloak.", rendered["immersive_context"])
         self.assertIn("Keep civilians safe.", rendered["immersive_context"])
-        self.assertIn("我想回忆：", rendered["immersive_context"])
+        self.assertIn('可进一步回忆"', rendered["immersive_context"])
         self.assertNotIn("You are", rendered["immersive_context"])
 
         for forbidden in (
@@ -302,6 +318,6 @@ class ActorContextRendererTest(unittest.TestCase):
         serialized = json.dumps(projected, ensure_ascii=False)
 
         self.assertLessEqual(sum(len(str(item)) for item in projected["long_term"]), 1000)
-        self.assertIn("我想回忆：", serialized)
+        self.assertTrue(any(item.startswith('可进一步回忆"') for item in projected["key_memories"]))
         self.assertNotIn("The exact shelf was marked seven.", serialized)
         self.assertNotIn("hidden behind Ada's lamp", serialized)

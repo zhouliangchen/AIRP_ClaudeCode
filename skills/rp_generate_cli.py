@@ -103,7 +103,7 @@ def extract_agent_text(stream_text: str) -> str:
 
     if not saw_local_agent:
         raise AgentExecutionError("Claude Code stream did not include a local_agent task.")
-    result = tool_result_text or final_result_text
+    result = final_result_text or tool_result_text
     if not result:
         raise AgentExecutionError("Claude Code local_agent task returned no text.")
     return result
