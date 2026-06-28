@@ -176,9 +176,62 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
         self.assertEqual(result["outputs"]["jobs"][0]["status"], "queued")
         command = calls[0][0][0]
-        self.assertIn("--reference", command)
-        self.assertIn("characters/苏黎/苏黎.png", command)
+        self.assertNotIn("--reference", command)
+        self.assertEqual(len(result["outputs"]["jobs"][0]["resolved_references"]), 1)
         self.assertIn("--job-id", command)
+
+    def test_process_assets_task_preserves_required_reference_worker_deferred_reason(self):
+        self._configure_image_settings()
+        reference = self.card / "characters" / "Ada" / "Ada.png"
+        reference.parent.mkdir(parents=True)
+        reference.write_bytes(b"png")
+
+        def run_command(*args, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "ok": False,
+                        "status": "deferred",
+                        "error": "reference_image_not_supported",
+                        "references": ["characters/Ada/Ada.png"],
+                    },
+                    ensure_ascii=False,
+                ),
+                stderr="",
+            )
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-required-reference",
+                "type": "assets_task",
+                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "Ada scene"},
+            },
+            phase="after_critic",
+            run_command=run_command,
+            planner=lambda context: {
+                "schema_version": 1,
+                "scene_jobs": [
+                    {
+                        "job_id": "scene-required-reference",
+                        "kind": "scene_illustration",
+                        "target": "scene_illustration",
+                        "prompt": "Ada scene",
+                        "characters": ["Ada"],
+                        "reference_policy": "required",
+                        "reference_candidates": ["characters/Ada/Ada.png"],
+                    }
+                ],
+            },
+        )
+
+        job = result["outputs"]["jobs"][0]
+        self.assertEqual(job["status"], "deferred")
+        self.assertEqual(job["reason"], "reference_image_not_supported")
+        written = _read_json(self.card / "generated" / "jobs" / "scene-required-reference.json")
+        self.assertEqual(written["reason"], "reference_image_not_supported")
 
     def test_process_persistent_requirements_noops_without_requirement(self):
         result = self.mod.process_persistent_requirements(

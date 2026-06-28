@@ -290,22 +290,48 @@ def _materialize_scene_job(
         payload["reason"] = "missing_character_reference"
         payload["missing_references"] = missing_references
     elif _image_settings_ready(settings) and run_command is not None:
+        worker_references = existing_references if payload["reference_policy"] == "required" else []
         payload["command"] = _run_job_command(
             card,
             job_id,
             payload["prompt"],
             payload["kind"],
             payload["target"],
-            existing_references,
+            worker_references,
             run_command,
         )
-        if payload["command"]["returncode"] == 0:
-            payload["status"] = "queued"
-            payload.pop("reason", None)
-        else:
-            payload["reason"] = "asset_worker_start_failed"
+        _apply_worker_result(payload, payload["command"])
     _write_job(card, run_dir, job_id, payload)
     return payload
+
+
+def _apply_worker_result(payload: dict[str, Any], command: dict[str, Any]) -> None:
+    if command["returncode"] == 0:
+        payload["status"] = "queued"
+        payload.pop("reason", None)
+        return
+
+    child = _parse_worker_stdout(command.get("stdout"))
+    child_status = _text(child.get("status"))
+    child_reason = _text(child.get("reason")) or _text(child.get("error"))
+    if child_status in {"deferred", "failed"}:
+        payload["status"] = child_status
+        payload["reason"] = child_reason or child_status
+        if isinstance(child.get("references"), list):
+            payload["worker_references"] = child.get("references")
+        return
+    payload["reason"] = "asset_worker_start_failed"
+
+
+def _parse_worker_stdout(stdout: Any) -> dict[str, Any]:
+    text = _text(stdout)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 def _run_job_command(
