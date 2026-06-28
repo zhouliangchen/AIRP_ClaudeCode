@@ -812,6 +812,83 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertNotIn('"round_dialogue"', prompt_text)
         self.assertNotIn('"visible_events"', prompt_text)
 
+    def test_schedule_post_round_memory_jobs_uses_projected_actor_message(self):
+        _write_json(
+            self.run_dir / "manifest.json",
+            {
+                "round_id": self.run_dir.name,
+                "stage": "delivered",
+                "expected_outputs": {},
+            },
+        )
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": self.run_dir.name,
+                "loop_outputs": {
+                    "gm": {
+                        "outputs": [
+                            {
+                                "agent": "gm",
+                                "actor_calls": [
+                                    {
+                                        "actor_id": "player",
+                                        "call_id": "call-player-1",
+                                        "prompt": "Raw objective claim.",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    "actors": {
+                        "player": [
+                            {
+                                "agent": "player",
+                                "agent_id": "player",
+                                "natural_reply": "I answer from what I heard.",
+                                "source_call_id": "call-player-1",
+                            }
+                        ]
+                    },
+                },
+                "side_threads": {"threads": []},
+                "memory_deltas": {"actors": {}, "world": []},
+                "interaction_trace": {"visible_events": []},
+            },
+        )
+        with (self.run_dir / "messages.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "id": "msg-projected-1",
+                        "from": "projection",
+                        "to": ["player"],
+                        "type": "projected_message",
+                        "visibility": "actor_facing",
+                        "status": "delivered",
+                        "source_call_id": "call-player-1",
+                        "payload": {
+                            "actor_id": "player",
+                            "natural_message": "Projected actor-facing wording.",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+        result = self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        self.assertTrue(result["ok"])
+        job_payload = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "player.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        dialogue_text = json.dumps(job_payload["round_dialogue"], ensure_ascii=False)
+        self.assertIn("Projected actor-facing wording.", dialogue_text)
+        self.assertNotIn("Raw objective claim.", dialogue_text)
+
     def test_schedule_post_round_memory_jobs_uses_new_actor_files_and_ignores_objective_recent_and_legacy_goals(self):
         self._write_actor_files(
             "Ada",

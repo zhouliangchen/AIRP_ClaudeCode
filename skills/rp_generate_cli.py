@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterable
 
 import agent_outputs
 import agent_prompts
@@ -1268,6 +1268,7 @@ _DERIVED_CONTENT_EDIT_FIELDS = (
     "new_first_paragraph",
 )
 _DERIVED_CONTENT_FULL_EDIT_FIELDS = ("ai", "content", "new_ai")
+_MIN_RETCON_FULL_AI_CHARS = 160
 
 
 def _story_input_is_active_retcon_replay(story_input: Dict[str, Any]) -> bool:
@@ -1315,7 +1316,19 @@ def _story_output_derived_content_edits(story: Dict[str, Any]) -> list[Dict[str,
         parsed = _loads_json_relaxed(raw)
         if isinstance(parsed, list):
             edits.extend(_normalize_derived_content_edit(item) for item in parsed if isinstance(item, dict))
-    return [edit for edit in edits if edit]
+    return _dedupe_derived_content_edits(edit for edit in edits if edit)
+
+
+def _dedupe_derived_content_edits(edits: Iterable[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    unique: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for edit in edits:
+        key = json.dumps(edit, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(edit)
+    return unique
 
 
 def _normalize_derived_content_edit(edit: Dict[str, Any]) -> Dict[str, Any]:
@@ -1356,10 +1369,42 @@ def _normalize_derived_content_edit(edit: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _compact_text_len(text: str) -> int:
+    return len("".join(str(text).split()))
+
+
+def _is_meta_retcon_note(text: str) -> bool:
+    compact = "".join(str(text or "").strip().split())
+    if not compact:
+        return True
+    if compact.startswith(("（注：", "(注：", "注：", "说明：", "备注：")):
+        return True
+    meta_terms = ("上一轮", "前一轮", "并非真实发生", "梦境内容", "主角从梦中醒来")
+    return _compact_text_len(compact) < 260 and sum(1 for term in meta_terms if term in compact) >= 2
+
+
+def _has_full_ai_derived_edit_text(edit: Dict[str, Any]) -> bool:
+    for field in _DERIVED_CONTENT_FULL_EDIT_FIELDS:
+        value = edit.get(field)
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if _compact_text_len(text) < _MIN_RETCON_FULL_AI_CHARS:
+            continue
+        if _is_meta_retcon_note(text):
+            continue
+        return True
+    return False
+
+
 def _has_actionable_derived_content_edits(story: Dict[str, Any], *, require_full_ai: bool = False) -> bool:
     fields = _DERIVED_CONTENT_FULL_EDIT_FIELDS if require_full_ai else _DERIVED_CONTENT_EDIT_FIELDS
     for edit in _story_output_derived_content_edits(story):
         if "turn_index" not in edit:
+            continue
+        if require_full_ai:
+            if _has_full_ai_derived_edit_text(edit):
+                return True
             continue
         if any(isinstance(edit.get(field), str) and edit.get(field).strip() for field in fields):
             return True
@@ -1385,7 +1430,8 @@ def _force_retcon_derived_edit_revise(critic: Dict[str, Any]) -> Dict[str, Any]:
         "Emit an actionable <derived_content_edits> JSON array that updates the affected "
         "earlier AI turn while preserving every player input field, then rewrite the current scene. "
         "For dream/retcon repairs, provide a complete replacement of the affected previous AI "
-        "turn with `turn_index: 0` and `ai`; do not only replace the first paragraph."
+        "turn with `turn_index: 0` and `ai`; this must be full narrative prose, not a summary note, "
+        "and must not only replace the first paragraph."
     )
     normalized["repair_instruction"] = (
         instruction + "\n" + derived_instruction if instruction else derived_instruction

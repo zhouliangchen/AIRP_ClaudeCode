@@ -87,6 +87,25 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("turn_index", text)
         self.assertIn('"ai"', text)
 
+    def test_prompts_enforce_important_actor_source_authority(self):
+        prompts = _load_module("agent_prompts")
+
+        gm_text = prompts._gm_prompt({})
+        story_text = prompts._story_prompt({"story_input": {"loop_outputs": {"actors": {}}}})
+        critic_text = prompts._critic_prompt({
+            "story_input": {"loop_outputs": {"actors": {}}},
+            "story_output": {"content": ""},
+        })
+
+        self.assertIn("Important actor authority", gm_text)
+        self.assertIn("must not compose direct dialogue", gm_text)
+        self.assertIn("complete second-person recap through `actor_calls[].prompt`", gm_text)
+        self.assertIn("source-backed by `story_input.loop_outputs.actors`", story_text)
+        self.assertIn("GM `scene_beats`, GM `events`, and GM actor-call prompts are not actor sources", story_text)
+        self.assertIn("Unsupported important-actor dialogue/action must be omitted", story_text)
+        self.assertIn("hard failure that requires story revision", critic_text)
+        self.assertIn("not a soft issue", critic_text)
+
 
 if __name__ == "__main__":
     unittest.main()

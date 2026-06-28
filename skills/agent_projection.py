@@ -202,6 +202,36 @@ def _visible_events(world: Dict[str, Any], actor_id: str, actor: Dict[str, Any])
     return events
 
 
+def _current_round_authority(world: Dict[str, Any], actor_id: str) -> Dict[str, Any]:
+    analysis = _as_dict(world.get("input_analysis"))
+    directives = _as_dict(analysis.get("narrative_directives"))
+    world_updates = _as_dict(analysis.get("world_updates"))
+    retcons = [
+        _json_safe(item)
+        for item in _as_list(world_updates.get("retcon_requests"))
+        if isinstance(item, dict)
+    ]
+    edit_requests = [
+        _json_safe(item)
+        for item in _as_list(analysis.get("semantic_units"))
+        if isinstance(item, dict) and str(item.get("type") or "") == "edit_request"
+    ]
+    rewrite_previous = directives.get("rewrite_previous_output") is True
+    if not rewrite_previous and not retcons and not edit_requests:
+        return {}
+
+    authority = {
+        "actor_id": actor_id,
+        "rewrite_previous_output": rewrite_previous,
+        "retcon_requests": retcons,
+        "edit_requests": edit_requests,
+        "role_channel": _safe_text(world.get("role_channel")),
+        "role_action_channel": _safe_text(world.get("role_action_channel")),
+        "narrative_guidance_channel": _safe_text(world.get("narrative_guidance_channel")),
+    }
+    return {key: value for key, value in authority.items() if value not in ("", [], {}, None)}
+
+
 def project_actor_context(
     actor_id: str,
     world_state: dict | None,
@@ -232,6 +262,9 @@ def project_actor_context(
         "visible_events": _visible_events(world, actor_key, actor),
         "role_channel_anchor": _text(world.get("role_channel")) if actor_key == "player" else "",
     }
+    authority = _current_round_authority(world, actor_key)
+    if authority:
+        packet["current_round_authority"] = authority
     card_folder = _text(actor.get("card_folder")).strip()
     if card_folder:
         packet["card_folder"] = card_folder

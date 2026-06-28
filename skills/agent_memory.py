@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 import agent_memory_model
+import agent_messages
 import agent_run
 import agent_visibility
 import actor_memory_store
@@ -277,17 +278,51 @@ def _post_round_actor_outputs(story_input: Dict[str, Any], agent_id: str) -> lis
     return outputs
 
 
-def _actor_call_dialogue_item(call: Any, speaker: str, agent_id: str) -> dict[str, str] | None:
+def _projected_actor_messages(run_dir: Path) -> dict[tuple[str, str], str]:
+    messages: dict[tuple[str, str], str] = {}
+    try:
+        records = agent_messages.read_messages(run_dir)
+    except Exception:
+        return messages
+    for message in records:
+        if not isinstance(message, dict):
+            continue
+        if message.get("type") != "projected_message":
+            continue
+        if message.get("visibility") != "actor_facing" or message.get("status") != "delivered":
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        actor_id = str(payload.get("actor_id") or "").strip()
+        source_call_id = str(message.get("source_call_id") or payload.get("source_call_id") or "").strip()
+        natural_message = str(payload.get("natural_message") or "").strip()
+        if actor_id and source_call_id and natural_message:
+            messages[(actor_id, source_call_id)] = natural_message
+    return messages
+
+
+def _actor_call_dialogue_item(
+    call: Any,
+    speaker: str,
+    agent_id: str,
+    projected_messages: dict[tuple[str, str], str] | None = None,
+) -> dict[str, str] | None:
     if not isinstance(call, dict):
         return None
     if str(call.get("actor_id") or "") != agent_id:
         return None
-    content = str(call.get("prompt") or "").strip()
+    call_id = str(call.get("call_id") or "").strip()
+    content = ""
+    if projected_messages:
+        content = str(projected_messages.get((agent_id, call_id)) or "").strip()
+    if not content:
+        content = str(call.get("prompt") or "").strip()
     if not content:
         return None
     return {
         "speaker": speaker,
-        "call_id": str(call.get("call_id") or ""),
+        "call_id": call_id,
         "content": content,
     }
 
@@ -327,8 +362,13 @@ def _actor_response_dialogue_items(outputs: Any) -> list[dict[str, str]]:
     return items
 
 
-def _round_dialogue_for_actor(story_input: Dict[str, Any], agent_id: str) -> list[dict[str, str]]:
+def _round_dialogue_for_actor(
+    story_input: Dict[str, Any],
+    agent_id: str,
+    run_dir: Path | None = None,
+) -> list[dict[str, str]]:
     dialogue: list[dict[str, str]] = []
+    projected_messages = _projected_actor_messages(run_dir) if run_dir is not None else {}
     loop_outputs = story_input.get("loop_outputs", {})
     if isinstance(loop_outputs, dict):
         gm_loop = loop_outputs.get("gm", {})
@@ -337,7 +377,12 @@ def _round_dialogue_for_actor(story_input: Dict[str, Any], agent_id: str) -> lis
                 if not isinstance(output, dict):
                     continue
                 for call in output.get("actor_calls") or []:
-                    item = _actor_call_dialogue_item(call, "对我说的话", agent_id)
+                    item = _actor_call_dialogue_item(
+                        call,
+                        "对我说的话",
+                        agent_id,
+                        projected_messages,
+                    )
                     if item:
                         dialogue.append(item)
         dialogue.extend(_actor_response_dialogue_items(_actor_outputs_from_mapping(loop_outputs.get("actors", {}), agent_id)))
@@ -351,7 +396,12 @@ def _round_dialogue_for_actor(story_input: Dict[str, Any], agent_id: str) -> lis
             subgm_output = thread.get("subgm_output")
             if isinstance(subgm_output, dict):
                 for call in subgm_output.get("actor_calls") or []:
-                    item = _actor_call_dialogue_item(call, "对我说的话", agent_id)
+                    item = _actor_call_dialogue_item(
+                        call,
+                        "对我说的话",
+                        agent_id,
+                        projected_messages,
+                    )
                     if item:
                         dialogue.append(item)
             dialogue.extend(_actor_response_dialogue_items(_actor_outputs_from_mapping(thread.get("actor_outputs", {}), agent_id)))
@@ -536,7 +586,7 @@ def _post_round_job_payload(
         "display_name": str(stored.get("name") or "").strip(),
         "round_id": str(story_input.get("round_id") or run_dir.name),
         "profile": str(stored.get("profile") or ""),
-        "round_dialogue": _round_dialogue_for_actor(story_input, agent_id),
+        "round_dialogue": _round_dialogue_for_actor(story_input, agent_id, run_dir),
         "short_term_memories": str(stored.get("short_term") or ""),
         "long_term_memories": str(stored.get("long_term") or ""),
         "key_memory_cues": key_cues,

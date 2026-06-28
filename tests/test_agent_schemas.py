@@ -1121,6 +1121,24 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertEqual(normalized["content"], payload["content"])
         self.assertEqual(normalized["character_dialogues"][0]["source_agent"], "character:ada")
 
+    def test_valid_story_output_preserves_derived_content_edits(self):
+        payload = {
+            "content": "雨蒙在上学路上醒来。",
+            "character_dialogues": [],
+            "derived_content_edits": [
+                {
+                    "turn_index": 0,
+                    "ai": "第一轮AI正文被替换为梦境中的教室场景。",
+                    "reason": "玩家权威输入确认上一轮是梦境。",
+                }
+            ],
+            "metadata": {"round_id": "round-000002"},
+        }
+
+        normalized = self.agent_schemas.validate_story_output(payload)
+
+        self.assertEqual(normalized["derived_content_edits"], payload["derived_content_edits"])
+
     def test_valid_critic_report_supports_all_decisions(self):
         for decision in ("pass", "revise", "block"):
             with self.subTest(decision=decision):

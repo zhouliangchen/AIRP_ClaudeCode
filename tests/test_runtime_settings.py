@@ -216,6 +216,27 @@ class RuntimeSettingsTest(unittest.TestCase):
         self.assertEqual(metrics["visible_content"]["text"], "你推开门。Take cover now.")
         self.assertEqual(metrics["output_perspective"]["expected"], "second_person")
 
+    def test_build_quality_metrics_excludes_derived_edit_control_tags_from_visible_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            story = {
+                "content": (
+                    '<derived_content_edits>[{"turn_index": 0, "ai": "这一段是旧轮次修补文本，不应计入当前正文。"}]'
+                    "</derived_content_edits>\n"
+                    "你推开门。Take cover now.\n"
+                    "<character_dialogues>[]</character_dialogues>"
+                )
+            }
+            metrics = self.mod.build_quality_metrics(
+                run_dir,
+                self.mod.normalize_settings({"wordCount": 1000}),
+                {"name": "北棱特调", "warning": ""},
+                story,
+            )
+
+        self.assertEqual(metrics["visible_content"]["text"], "你推开门。Take cover now.")
+        self.assertEqual(metrics["word_count"]["current"], 7)
+
     def test_build_quality_metrics_trace_only_player_decision_does_not_exempt_word_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

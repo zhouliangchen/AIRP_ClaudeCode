@@ -333,7 +333,7 @@ def _actor_base_prompt(
 我记得：
 {long_term_memory}
 
-有些事情很重要，虽然现在只有个大概的印象，在下面列出；不过我清晰地记在了记忆的深层。如果现在需要回忆起来，需要输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。
+有些事情很重要，但如果不仔细回忆的话只有个大概的印象，其中每段记忆都与一个主题词关联，在下面列出：
 {key_memory_cues}
 
 最近的事情：
@@ -352,7 +352,8 @@ def _actor_base_prompt(
 我可以自然地说出自己想记住的事或当前目标，但不修改人设、背景、人格、身体事实或权威设定。
 我只写自己的想法、动作、台词和感受，不能控制他人行动，也不能让环境按照我的意愿给出结果。
 
-现在，如果没有其他重点记忆需要回忆，那就好好想想接下来怎么办吧。
+现在，如果有重点记忆需要回忆，就输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。
+如果没有其他重点记忆需要回忆，那就好好想想接下来怎么办吧。
 我不用“配合剧情”，我不相信世界有剧本。越自然越好，也许现实会奖励真实活着的每一个人。
 我只是 {display_name or "我自己"}，不是别人；我不用扮演任何人。
 我只能使用自然语言写自己想了什么、做了什么、说了什么，不能操作其他人，也不能替环境按我的意愿作出结果。
@@ -554,6 +555,13 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "\nEvery `actor_calls[]` item must include valid per-call "
         "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
         "actor-visible, targeted to the same actor, and free of GM-only causes.\n"
+        "\nImportant actor authority: GM scene beats and events may describe visible "
+        "environment, pressure, and consequences, but must not compose direct dialogue, "
+        "voluntary actions, private thoughts, or long-term choices for the player or "
+        "registered important characters. Use `actor_calls[].prompt` to ask that actor "
+        "instead. The only exception is an explicitly authorized temporary "
+        "flashback/memory/dream/retcon recap scene; after that scene, still send the "
+        "actor a complete second-person recap through `actor_calls[].prompt`.\n"
         "\nMain-loop hard stop rules: keep advancing through GM narration and actor calls until one of "
         "these two conditions is met: (1) accumulated raw scene text, including GM scene/event text and "
         "actor replies, exceeds 120% of the runtime word-count target; then use `stop_reason: \"word_target\"`; "
@@ -704,6 +712,12 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         contract_notes=(
             "Story writes only prose, source-backed character dialogues, "
             "and derived-content repair edits. Leave `derived_content_edits` empty for normal turns; "
+            "For the player and registered important characters, story prose may quote or narrate "
+            "their voluntary dialogue, actions, private thoughts, or long-term choices only when "
+            "source-backed by `story_input.loop_outputs.actors` or side-thread `actor_outputs`; "
+            "GM `scene_beats`, GM `events`, and GM actor-call prompts are not actor sources for "
+            "those decisions. Unsupported important-actor dialogue/action must be omitted or "
+            "rewritten as external visible pressure, not invented as that actor's choice. "
             "when `story_input.input_analysis.narrative_directives.rewrite_previous_output` is true, "
             "the response must include a non-empty `derived_content_edits` array with actionable objects "
             "such as `{\"turn_index\": 0, \"ai\": \"replacement AI prose\"}` to repair earlier "
@@ -765,6 +779,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- If `quality_metrics.word_count.exempted` is true because of a player decision stop, set the length status to `exempt` or otherwise note the player decision exemption instead of requiring expansion.\n"
         "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
         "- `story.output.json` does not require `<summary>` or `<options>`; hard-failing their absence is incorrect because postprocess owns `core.summary` and `core.options` after critic pass.\n"
+        "- Treat unsupported direct dialogue, voluntary actions, private thoughts, or long-term choices for the player or registered important characters as a hard failure that requires story revision, not a soft issue. Actor-source support must come from `story_input.loop_outputs.actors` or side-thread `actor_outputs`; GM scene beats, GM events, and GM actor-call prompts are not actor sources.\n"
         "- If all failures can be repaired by rewriting only `story.output.json`, set `repair_routing.stage` to `story_composition`, `target_agents` to `[\"story\"]`, `rollback` to `story_only`, and `can_auto_repair` to true.\n"
         "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
     )

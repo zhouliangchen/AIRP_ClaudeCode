@@ -1166,6 +1166,25 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn('"turn_index": 0', normalized["content"])
         self.assertNotIn('"turn": 1', normalized["content"])
 
+    def test_normalize_story_output_deduplicates_derived_content_edit_field_and_tag(self):
+        edit = {"turn_index": 0, "ai": "梦中教室完整改写正文。" * 20}
+        story = {
+            "content": (
+                "<derived_content_edits>"
+                + json.dumps([edit], ensure_ascii=False)
+                + "</derived_content_edits>\n"
+                "Current scene."
+            ),
+            "character_dialogues": [],
+            "derived_content_edits": [dict(edit)],
+            "metadata": {},
+        }
+
+        normalized = self.module._normalize_story_output(story)
+
+        self.assertEqual(normalized["derived_content_edits"], [edit])
+        self.assertEqual(normalized["content"].count('"turn_index": 0'), 1)
+
     def test_normalize_critic_report_revises_retcon_story_with_only_first_paragraph_edit(self):
         critic = {
             "decision": "pass",
@@ -1195,6 +1214,39 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(normalized["decision"], "revise")
         self.assertIn("derived_content_edits", "\n".join(normalized["hard_failures"]))
         self.assertIn("complete replacement", normalized["repair_instruction"])
+
+    def test_normalize_critic_report_revises_retcon_story_with_note_only_full_ai_edit(self):
+        critic = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": "<p>Current.</p>",
+            "character_dialogues": [],
+            "derived_content_edits": [
+                {
+                    "turn_index": 0,
+                    "ai": "（注：上一轮的教室场景为梦境内容，并非真实发生。主角从梦中醒来后身处上学路上，而非教室。）",
+                }
+            ],
+        }
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "narrative_directives": {"rewrite_previous_output": True},
+                    "world_updates": {"retcon_requests": [{"id": "r1", "text": "dream"}]},
+                }
+            }
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertIn("derived_content_edits", "\n".join(normalized["hard_failures"]))
+        self.assertIn("not a summary note", normalized["repair_instruction"])
 
     def test_normalize_critic_report_forces_auto_repair_for_retcon_missing_derived_edits(self):
         critic = {

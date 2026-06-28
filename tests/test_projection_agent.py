@@ -341,6 +341,65 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertEqual(actor_packet["card_folder"], str(card))
         self.assertIn("never open a sealed archive", packet["actor_context"])
 
+    def test_review_packet_includes_current_round_retcon_authority(self):
+        import agent_projection
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            actor_dir = card / "characters" / "Yumeng"
+            objective_dir = card / "memory" / "characters" / "Yumeng"
+            actor_dir.mkdir(parents=True)
+            objective_dir.mkdir(parents=True)
+            (actor_dir / "profile.md").write_text("我是雨蒙。", encoding="utf-8")
+            (actor_dir / "long_term_memories.md").write_text(
+                "我坐在教室座位上，完全想不起早上发生了什么。",
+                encoding="utf-8",
+            )
+            (objective_dir / "profile.md").write_text(
+                "已确认信息：目前在教室内上课。",
+                encoding="utf-8",
+            )
+
+            world_state = {
+                "role_channel": "梦境破碎，我在上学路上醒来，手心攥着粉色花朵吊坠。",
+                "input_analysis": {
+                    "narrative_directives": {"rewrite_previous_output": True},
+                    "world_updates": {
+                        "retcon_requests": [
+                            {
+                                "text": "之前的教室场景应被视为梦境内容，当前场景是主角在上学路上醒来。",
+                                "status": "active",
+                            }
+                        ]
+                    },
+                    "semantic_units": [
+                        {
+                            "type": "edit_request",
+                            "derived_summary": "之前的教室场景应被视为梦境，当前场景是主角在上学路上醒来。",
+                        }
+                    ],
+                },
+            }
+            actor_packet = agent_projection.project_actor_context(
+                "player",
+                world_state,
+                {"name": "雨蒙", "card_folder": str(card)},
+                "你站在上学路上，左手握着温热的粉色花朵吊坠。",
+            )
+
+            packet = self.projection.build_review_packet(
+                actor_id="player",
+                source_call_id="call-player-1",
+                source_message_id="msg-player-1",
+                requested_actor_message="你站在上学路上，左手握着温热的粉色花朵吊坠。",
+                actor_packet=actor_packet,
+                objective_context={},
+            )
+
+        self.assertIn("Current round rewrite/retcon authority", packet["review_reference"])
+        self.assertIn("旧角色记忆或客观档案可能是待修正内容", packet["review_reference"])
+        self.assertIn("之前的教室场景应被视为梦境内容", packet["review_reference"])
+
     def test_subjective_false_belief_stays_in_actor_context_without_false_label(self):
         packet = self.projection.build_review_packet(
             actor_id="character:CurrentPaladin",

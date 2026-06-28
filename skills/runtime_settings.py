@@ -198,6 +198,25 @@ def count_words(text: str) -> int:
     return len(tokens)
 
 
+def strip_control_tags(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    cleaned = text
+    for tag in (
+        "derived_content_edits",
+        "character_dialogues",
+        "metadata",
+        "tokens",
+    ):
+        cleaned = re.sub(
+            rf"<{re.escape(tag)}\b[^>]*>.*?</{re.escape(tag)}>",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    return cleaned.strip()
+
+
 def _read_story_input(run_dir: Path) -> dict[str, Any]:
     for rel in (
         Path("artifacts") / "story.input.json",
@@ -222,6 +241,7 @@ def build_quality_metrics(
     normalized = normalize_settings(settings)
     content = story.get("content", "") if isinstance(story, Mapping) else ""
     visible_content = extract_tag(content, "content") or (content if isinstance(content, str) else "")
+    visible_content = strip_control_tags(visible_content)
     target = int(normalized["wordCount"])
     story_input = _read_story_input(Path(run_dir))
     exempted = player_decision_evidence.has_valid_player_decision(story_input)

@@ -157,6 +157,22 @@ def _objective_reference_text(objective_context: dict[str, Any] | None) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
+def _current_round_authority_text(actor: dict[str, Any]) -> str:
+    authority = _as_dict(actor.get("current_round_authority"))
+    if not authority:
+        return ""
+    details = _natural_reference(authority)
+    if not details:
+        return ""
+    guidance = (
+        "本轮玩家输入或 input analysis 已声明 rewrite/retcon/edit_request。"
+        "旧角色记忆或客观档案可能是待修正内容，projection 不得仅因旧记忆中的地点、状态或上一轮 AI 输出与本轮玩家权威输入冲突而拒绝。"
+        "但这只适用于闪回、记忆、梦境、回溯修正或其后给 actor 的第二人称连续性回顾；"
+        "若 GM/subGM 借此替 actor 决定当前自由行动、台词或长期选择，仍应要求重写。"
+    )
+    return guidance + "\n" + details
+
+
 def _actor_review_context(actor_id: str, actor: dict[str, Any], card_folder: str) -> str:
     stored_memory = _read_actor_memory(card_folder, actor_id)
     sections = [_section("Target actor immersive context", actor.get("immersive_context"))]
@@ -177,6 +193,9 @@ def _review_reference(
 ) -> str:
     stored_memory = _read_actor_memory(card_folder, actor_id)
     sections = _stored_objective_reference_sections(stored_memory)
+    authority_text = _current_round_authority_text(actor)
+    if authority_text:
+        sections.append(_section("Current round rewrite/retcon authority", authority_text))
     reference_text = _objective_reference_text(objective_context)
     if reference_text:
         sections.append(_section("Objective review reference", reference_text))

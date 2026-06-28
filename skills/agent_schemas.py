@@ -657,6 +657,7 @@ def validate_story_output(payload: Any) -> Dict[str, Any]:
     return {
         "content": _require_str(data, "content", "story_output"),
         "character_dialogues": _optional_list(data, "character_dialogues", "story_output"),
+        "derived_content_edits": _optional_list(data, "derived_content_edits", "story_output"),
         "metadata": _optional_dict(data, "metadata", "story_output"),
     }
 
