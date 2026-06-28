@@ -399,6 +399,282 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             ["characters/苏黎/苏黎.png"],
         )
 
+    def test_default_plan_treats_reuse_character_references_as_required(self):
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-reuse-reference",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "summary": "用户指令要求每轮提供一张带角色的剧情插图。",
+                    "planner_hints": "雨蒙故作镇定回到教室，并观察苏黎是否注意到吊坠。",
+                    "characters": ["雨蒙", "苏黎"],
+                    "reference_policy": "reuse",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        outputs = result["outputs"]
+        self.assertEqual(outputs["status"], "waiting_on_references")
+        self.assertEqual(outputs["jobs"][0]["kind"], "character_reference")
+        self.assertEqual(outputs["jobs"][1]["kind"], "character_reference")
+        scene_job = outputs["jobs"][2]
+        self.assertEqual(scene_job["status"], "waiting_on_references")
+        self.assertEqual(scene_job["reference_policy"], "required")
+        self.assertEqual(
+            scene_job["reference_candidates"],
+            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+        )
+        self.assertIn("剧情插图", scene_job["prompt"])
+        self.assertIn("雨蒙故作镇定回到教室", scene_job["prompt"])
+        self.assertIn("苏黎", scene_job["prompt"])
+        self.assertNotEqual(scene_job["prompt"], "用户指令要求每轮提供一张带角色的剧情插图。")
+
+    def test_default_plan_infers_art_style_when_save_has_no_reference_images(self):
+        (self.run_dir / "story.output.json").write_text(
+            json.dumps(
+                {
+                    "content": "废弃神社的夜雨里，纸灯笼映出潮湿石阶，少女握着裂开的御守回头。"
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-style-infer",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "为当前剧情生成插图",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        scene_job = result["outputs"]["jobs"][0]
+        self.assertIn("画风策略：当前存档没有可用参考图片", scene_job["prompt"])
+        self.assertIn("根据剧情题材、时代、情绪、场景和角色状态智能匹配画风", scene_job["prompt"])
+        self.assertIn("废弃神社的夜雨", scene_job["prompt"])
+
+    def test_default_plan_uses_user_requested_art_style(self):
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-style-override",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "为当前剧情生成插图",
+                    "art_style": "90年代赛璐璐动画画风，低饱和胶片颗粒",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        scene_job = result["outputs"]["jobs"][0]
+        self.assertIn("用户指定画风：90年代赛璐璐动画画风，低饱和胶片颗粒", scene_job["prompt"])
+        self.assertEqual(scene_job["art_style"], "90年代赛璐璐动画画风，低饱和胶片颗粒")
+
+    def test_default_plan_requires_matching_character_appearance_reference(self):
+        base_reference = self.card / "characters" / "苏黎" / "苏黎.png"
+        base_reference.parent.mkdir(parents=True)
+        base_reference.write_bytes(b"base portrait")
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-transformed-reference",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "苏黎展开半透明蝶翼，银白长发漂浮在光里。",
+                    "characters": ["苏黎"],
+                    "character_appearances": [
+                        {
+                            "name": "苏黎",
+                            "appearance_state": "蝶化形态",
+                            "description": "银白长发，半透明蝶翼，瞳孔泛蓝光。",
+                        }
+                    ],
+                    "reference_policy": "required",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        outputs = result["outputs"]
+        self.assertEqual(outputs["status"], "waiting_on_references")
+        self.assertEqual(outputs["jobs"][0]["kind"], "character_reference")
+        self.assertEqual(outputs["jobs"][0]["target_path"], "characters/苏黎/苏黎-蝶化形态.png")
+        self.assertIn("蝶化形态", outputs["jobs"][0]["prompt"])
+        scene_job = outputs["jobs"][1]
+        self.assertEqual(scene_job["status"], "waiting_on_references")
+        self.assertEqual(scene_job["reference_candidates"], ["characters/苏黎/苏黎-蝶化形态.png"])
+        self.assertEqual(scene_job["missing_references"], ["characters/苏黎/苏黎-蝶化形态.png"])
+        self.assertEqual(scene_job["character_appearances"][0]["appearance_state"], "蝶化形态")
+
+    def test_character_reference_job_writes_to_target_path(self):
+        self._configure_image_settings()
+        calls = []
+
+        def run_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-reference-output-path",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "苏黎展开半透明蝶翼。",
+                    "characters": ["苏黎"],
+                    "character_appearances": [
+                        {"name": "苏黎", "appearance_state": "蝶化形态"}
+                    ],
+                    "reference_policy": "required",
+                },
+            },
+            phase="after_critic",
+            run_command=run_command,
+            planner=None,
+        )
+
+        self.assertEqual(result["outputs"]["jobs"][0]["status"], "queued")
+        command = calls[0][0][0]
+        self.assertIn("--output-path", command)
+        self.assertIn("characters/苏黎/苏黎-蝶化形态.png", command)
+        self.assertIn("--character", command)
+        self.assertIn("苏黎", command)
+
+    def test_persistent_requirement_reuses_characters_and_reference_policy(self):
+        manifest = {
+            "version": 1,
+            "mode": "autonomous",
+            "generated_assets": [],
+            "asset_requirements": {
+                "scene_illustration_each_round": {
+                    "enabled": True,
+                    "reason": "从本轮开始每轮必须提供剧情插图",
+                    "prompt": "带雨蒙和苏黎的剧情插图",
+                    "characters": ["雨蒙", "苏黎"],
+                    "reference_policy": "required",
+                }
+            },
+        }
+        (self.card / "ui_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        result = self.mod.process_persistent_requirements(
+            self.card,
+            self.run_dir,
+            phase="after_critic",
+            planner=None,
+        )
+
+        self.assertEqual(result["outputs"]["status"], "waiting_on_references")
+        scene_job = result["outputs"]["jobs"][2]
+        self.assertEqual(scene_job["characters"], ["雨蒙", "苏黎"])
+        self.assertEqual(scene_job["reference_policy"], "required")
+        self.assertEqual(
+            scene_job["reference_candidates"],
+            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+        )
+
+    def test_persistent_requirement_infers_current_scene_characters_for_references(self):
+        (self.card / "memory" / "characters" / "雨蒙").mkdir(parents=True)
+        (self.card / "memory" / "characters" / "雨蒙" / "profile.md").write_text(
+            "雨蒙：普通的高一男生，随身握着粉色花朵吊坠。",
+            encoding="utf-8",
+        )
+        manifest = {
+            "version": 1,
+            "mode": "autonomous",
+            "generated_assets": [],
+            "asset_requirements": {
+                "scene_illustration_each_round": {
+                    "enabled": True,
+                    "reason": "从本轮开始每轮必须提供剧情插图",
+                    "prompt": "",
+                }
+            },
+        }
+        (self.card / "ui_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "player.context.json").write_text(
+            json.dumps({"self_knowledge": {"name": "雨蒙"}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "actor.outputs.json").write_text(
+            json.dumps(
+                {
+                    "character:苏黎": [
+                        {
+                            "agent_id": "character:苏黎",
+                            "character_name": "苏黎",
+                            "natural_reply": "……认识。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (self.run_dir / "story.output.json").write_text(
+            json.dumps(
+                {
+                    "content": (
+                        "雨蒙在教室里摊开掌心，苏黎看着发光的吊坠。\n"
+                        "<character_dialogues>"
+                        '[{"character_name": "苏黎", "content": "……认识。"}]'
+                        "</character_dialogues>"
+                    )
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.mod.process_persistent_requirements(
+            self.card,
+            self.run_dir,
+            phase="after_critic",
+            planner=None,
+        )
+
+        scene_job = result["outputs"]["jobs"][2]
+        self.assertEqual(scene_job["characters"], ["雨蒙", "苏黎"])
+        self.assertEqual(scene_job["reference_policy"], "required")
+        self.assertEqual(
+            scene_job["reference_candidates"],
+            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+        )
+        self.assertIn("画面必须包含角色：雨蒙、苏黎", scene_job["prompt"])
+
     def test_process_assets_task_resumes_waiting_scene_job_when_references_exist(self):
         self._configure_image_settings()
         waiting_payload = {

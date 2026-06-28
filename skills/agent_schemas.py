@@ -28,7 +28,7 @@ FORBIDDEN_ACTOR_MARKERS = set(FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDE
 
 LEGACY_ACTOR_KEYS = {"action", "dialogue", "perception", "memory_delta"}
 ACTOR_OUTPUT_KEYS = {"agent", "agent_id", "character_name", "context_version", "events", "natural_reply"}
-ACTOR_EVENT_TYPES = {"reply"}
+ACTOR_EVENT_TYPES = {"projection_feedback", "reply"}
 ACTOR_EVENT_KEYS = {"type", "target", "content", "metadata"}
 ACTOR_CONTROL_PLANE_PHRASES = (
     "http://localhost",
@@ -231,7 +231,7 @@ def _normalize_actor_event(item: Any, path: str) -> Dict[str, Any]:
     if event_type not in ACTOR_EVENT_TYPES:
         raise ValidationError(f"{_path(path, 'type')} is not an allowed actor event type")
     metadata = _optional_dict(data, "metadata", path)
-    if metadata:
+    if event_type == "reply" and metadata:
         raise ValidationError(f"{_path(path, 'metadata')} must be empty for actor natural replies")
     content = _require_str(data, "content", path)
     target = _optional_str(data, "target", "", path)
@@ -634,18 +634,24 @@ def validate_actor_output(payload: Any) -> Dict[str, Any]:
         "actor_output.agent_id",
     )
 
+    natural_reply = _require_str(data, "natural_reply", "actor_output").strip()
     normalized = {
         "agent": agent,
         "agent_id": agent_id,
-        "natural_reply": _require_nonempty_str(data, "natural_reply", "actor_output"),
+        "natural_reply": natural_reply,
         "events": _normalize_actor_events(_require_list(data, "events", "actor_output"), "actor_output.events"),
     }
-    _reject_control_plane_actor_reply(normalized["natural_reply"], "actor_output.natural_reply")
     if len(normalized["events"]) != 1:
         raise ValidationError("actor_output.events must contain exactly one natural reply event")
     reply_event = normalized["events"][0]
-    if reply_event["content"].strip() != normalized["natural_reply"]:
-        raise ValidationError("actor_output.events[0].content must match actor_output.natural_reply")
+    if reply_event["type"] == "reply":
+        if not normalized["natural_reply"]:
+            raise ValidationError("actor_output.natural_reply must not be blank")
+        _reject_control_plane_actor_reply(normalized["natural_reply"], "actor_output.natural_reply")
+        if reply_event["content"].strip() != normalized["natural_reply"]:
+            raise ValidationError("actor_output.events[0].content must match actor_output.natural_reply")
+    elif normalized["natural_reply"]:
+        raise ValidationError("actor_output.natural_reply must be blank for projection feedback")
     if agent == "character":
         normalized["character_name"] = _optional_str(data, "character_name", path="actor_output")
     return normalized

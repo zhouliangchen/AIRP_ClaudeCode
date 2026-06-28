@@ -57,6 +57,16 @@ class AgentTurnLoopError(RuntimeError):
     """Raised when the deterministic loop cannot validate or continue."""
 
 
+class ProjectionRejected(AgentTurnLoopError):
+    """Raised when projection rejects an actor prompt but GM can recover."""
+
+    def __init__(self, decision: str, feedback: str, result: dict):
+        super().__init__(f"projection rejected actor message with {decision}: {feedback}")
+        self.decision = decision
+        self.feedback = feedback
+        self.result = result
+
+
 def _dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
@@ -615,6 +625,8 @@ def _validate_projection_result(actor_id: str, source_call_id: str, payload: Any
     decision = str(result.get("decision") or "")
     if decision not in {"pass", "edited"}:
         feedback = str(result.get("feedback") or "").strip()
+        if decision in {"needs_rewrite", "blocked"}:
+            raise ProjectionRejected(decision, feedback, result)
         detail = f": {feedback}" if feedback else ""
         raise AgentTurnLoopError(f"projection rejected actor message with {decision}{detail}")
     return result
@@ -642,7 +654,11 @@ def _project_actor_message(
             card_folder=str(card_folder),
         )
         projection_output = dispatch("projection", projection_packet)
-        projection_result = _validate_projection_result(actor_id, call_id, projection_output)
+        try:
+            projection_result = _validate_projection_result(actor_id, call_id, projection_output)
+        except ProjectionRejected as exc:
+            _block_projection_intent(run_dir, intent_id, exc)
+            raise
         projected = agent_actor_runtime.project_actor_request(
             run_dir,
             actor_id=actor_id,
@@ -659,6 +675,22 @@ def _project_actor_message(
         raise
     except Exception as exc:
         raise _runtime_write_error("project actor message", exc) from exc
+
+
+def _block_projection_intent(run_dir: Path, intent_id: str, exc: ProjectionRejected) -> None:
+    try:
+        agent_actor_runtime.agent_intents.block_intent(
+            run_dir,
+            intent_id,
+            f"projection_{exc.decision}",
+            outputs={
+                "decision": exc.decision,
+                "feedback": exc.feedback,
+                "projection_result": exc.result,
+            },
+        )
+    except Exception:
+        return
 
 
 def _record_actor_response_message(run_dir: Path, actor_id: str, call: dict, actor_output: dict) -> str:
@@ -739,16 +771,19 @@ def _dispatch_actor_call(
     packet = agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
     root = Path(run_dir)
     request_message_id, intent_id = _record_request_actor_intent(root, "gm", actor_id, call)
-    projection_result = _project_actor_message(
-        root,
-        card_folder,
-        actor_id,
-        call,
-        packet,
-        request_message_id,
-        intent_id,
-        dispatch,
-    )
+    try:
+        projection_result = _project_actor_message(
+            root,
+            card_folder,
+            actor_id,
+            call,
+            packet,
+            request_message_id,
+            intent_id,
+            dispatch,
+        )
+    except ProjectionRejected as exc:
+        return _projection_rejection_actor_output(actor_id, call, exc), None
     final_actor_message = str(projection_result.get("final_actor_message") or "").strip()
     if final_actor_message:
         packet = dict(packet)
@@ -795,6 +830,34 @@ def _dispatch_actor_call(
             "current_hash": current_hash,
         }
     return actor_output, warning
+
+
+def _projection_rejection_actor_output(actor_id: str, call: dict, exc: ProjectionRejected) -> dict:
+    content = (
+        f"Projection rejected actor prompt with {exc.decision}: {exc.feedback}"
+        if exc.feedback
+        else f"Projection rejected actor prompt with {exc.decision}."
+    )
+    output = {
+        "agent": "player" if actor_id == "player" else "character",
+        "agent_id": actor_id,
+        "natural_reply": "",
+        "events": [
+            {
+                "type": "projection_feedback",
+                "target": "gm",
+                "content": content,
+                "metadata": {
+                    "decision": exc.decision,
+                    "feedback": exc.feedback,
+                    "call_id": str(call.get("call_id") or ""),
+                },
+            }
+        ],
+    }
+    if actor_id.startswith("character:"):
+        output["character_name"] = actor_id.split(":", 1)[1]
+    return output
 
 
 def _process_actor_output(
@@ -900,6 +963,7 @@ def run_gm_only_step(
     _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
     _apply_character_promotions(root, input_payload, gm_output)
     _process_gm_capability_requests(root, input_payload, gm_output, f"gm_step_{step_index + 1}")
+    gm_output = _normalize_player_character_actor_calls(gm_output, root)
     registered_actor_targets = _registered_actor_targets(input_payload)
     gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
 
@@ -963,6 +1027,66 @@ def _filter_gm_actor_calls(gm_output: dict, registered_actor_targets: set[str]) 
         if str(call.get("actor_id") or "") in registered_actor_targets
     ]
     return filtered
+
+
+def _normalize_player_character_actor_calls(gm_output: dict, run_dir: str | Path) -> dict:
+    aliases = _player_character_actor_aliases(Path(run_dir))
+    if not aliases:
+        return gm_output
+    normalized_calls = []
+    changed = False
+    for call in gm_output.get("actor_calls", []) or []:
+        if not isinstance(call, dict):
+            continue
+        actor_id = str(call.get("actor_id") or "").strip()
+        if _canonical_actor_alias(actor_id) not in aliases:
+            normalized_calls.append(call)
+            continue
+        normalized_call = dict(call)
+        normalized_call["actor_id"] = "player"
+        metadata = dict(normalized_call.get("metadata") or {})
+        metadata.setdefault("original_actor_id", actor_id)
+        normalized_call["metadata"] = metadata
+        basis = normalized_call.get("visibility_basis")
+        if isinstance(basis, dict):
+            normalized_basis = dict(basis)
+            if _canonical_actor_alias(normalized_basis.get("target_actor")) in aliases:
+                normalized_basis["target_actor"] = "player"
+            visible_to = normalized_basis.get("visible_to")
+            if isinstance(visible_to, list):
+                normalized_basis["visible_to"] = [
+                    "player" if _canonical_actor_alias(item) in aliases else item
+                    for item in visible_to
+                ]
+            elif normalized_basis.get("target_actor") == "player":
+                normalized_basis["visible_to"] = ["player"]
+            normalized_call["visibility_basis"] = normalized_basis
+        normalized_calls.append(normalized_call)
+        changed = True
+    if not changed:
+        return gm_output
+    normalized = dict(gm_output)
+    normalized["actor_calls"] = normalized_calls
+    return normalized
+
+
+def _player_character_actor_aliases(run_dir: Path) -> set[str]:
+    try:
+        player_paths = actor_memory_store.actor_paths(_card_folder_for_run(run_dir), "player")
+    except Exception:
+        return set()
+    name = str(getattr(player_paths, "name", "") or "").strip()
+    if not name or name == "player":
+        return set()
+    return {
+        _canonical_actor_alias(f"character:{name}"),
+        _canonical_actor_alias(f"character:{_safe_character_actor_suffix(name)}"),
+    }
+
+
+def _canonical_actor_alias(actor_id: Any) -> str:
+    text = str(actor_id or "").strip()
+    return actor_memory_store.canonical_actor_id(text) if text else ""
 
 
 def _gm_output_calls_player(gm_output: dict) -> bool:
@@ -1122,6 +1246,8 @@ def _normalize_subgm_command_actor_ids(gm_output: dict, input_payload: dict) -> 
         if not isinstance(command, dict):
             normalized_commands.append(command)
             continue
+        if _is_assets_subgm_command(command):
+            continue
         item = dict(command)
         for field in ("allowed_characters", "forbidden_characters"):
             values = item.get(field)
@@ -1130,6 +1256,23 @@ def _normalize_subgm_command_actor_ids(gm_output: dict, input_payload: dict) -> 
         normalized_commands.append(item)
     gm_output["subgm_commands"] = normalized_commands
     return gm_output
+
+
+def _is_assets_subgm_command(command: dict) -> bool:
+    metadata = command.get("metadata")
+    capability = ""
+    if isinstance(metadata, dict):
+        capability = str(metadata.get("capability") or metadata.get("target") or "").strip().lower()
+    text = " ".join(
+        str(command.get(key) or "").lower()
+        for key in ("thread_id", "title", "objective", "message")
+    )
+    return (
+        capability.startswith("assets.")
+        or capability in {"assets-ui", "image", "image_generation"}
+        or "illustration" in text
+        or "image" in text
+    )
 
 
 def _apply_subgm_commands(root: Path, gm_output: dict, input_payload: dict | None = None) -> dict:
@@ -1355,6 +1498,7 @@ def run_interactive_loop(
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_character_promotions(root, input_payload, gm_output)
         _process_gm_capability_requests(root, input_payload, gm_output, f"gm_step_{step_index + 1}")
+        gm_output = _normalize_player_character_actor_calls(gm_output, root)
         registered_actor_targets = _registered_actor_targets(input_payload)
         gm_output = _filter_gm_actor_calls(gm_output, registered_actor_targets)
         gm_output = _ensure_initial_player_actor_call(

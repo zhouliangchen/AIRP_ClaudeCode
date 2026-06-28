@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import shutil
 from pathlib import Path
@@ -70,6 +71,15 @@ def run_round(
     try:
         input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
         stages.append("input_analysis")
+        current_run_dir = agent_run.current_run_dir(card)
+        if current_run_dir is not None and Path(current_run_dir).resolve() != run_dir.resolve():
+            run_dir = Path(current_run_dir)
+            manifest = _load_manifest(run_dir)
+            runtime_snapshot = agent_snapshots.create_snapshot(
+                card,
+                str(manifest.get("round_id") or run_dir.name),
+                reason="before_round_runtime_current_switch",
+            )
         runtime_pump = {
             "after_input_analysis": input_analysis_result.get("runtime_pump", {}).get(
                 "after_input_analysis",
@@ -108,6 +118,10 @@ def run_round(
             critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
             stages.append("critic_repair")
 
+        if str(critic.get("decision") or "") != "pass" and _critic_is_soft_revision_only(critic) and repair_attempts > 0:
+            critic = _downgrade_soft_revision_to_delivery_warning(run_dir, critic)
+            stages.append("critic_soft_warning")
+
         if str(critic.get("decision") or "") != "pass":
             result = _blocked(
                 run_dir,
@@ -125,6 +139,7 @@ def run_round(
             phase="after_critic",
             runtime_settings=_runtime_settings_from_applied(input_analysis_result),
             run_command=run_command,
+            async_asset_tasks=True,
         )
         runtime_pump["persistent_assets"] = _run_persistent_assets(card, run_dir, run_command)
 
@@ -503,6 +518,29 @@ def _critic_allows_story_repair(critic: dict[str, Any]) -> bool:
     return str(routing.get("stage") or "") == "story_composition"
 
 
+def _critic_is_soft_revision_only(critic: dict[str, Any]) -> bool:
+    if str(critic.get("decision") or "") != "revise":
+        return False
+    hard_failures = critic.get("hard_failures")
+    if isinstance(hard_failures, list) and any(str(item).strip() for item in hard_failures):
+        return False
+    if hard_failures and not isinstance(hard_failures, list):
+        return False
+    soft_issues = critic.get("soft_issues")
+    return isinstance(soft_issues, list) and any(str(item).strip() for item in soft_issues)
+
+
+def _downgrade_soft_revision_to_delivery_warning(run_dir: Path, critic: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(critic)
+    updated["decision"] = "pass"
+    updated["delivery_decision"] = "pass_with_soft_warnings"
+    updated["soft_warning_policy"] = "auto_repair_exhausted_soft_only"
+    updated["original_critic_decision"] = str(critic.get("decision") or "")
+    agent_run.write_json(run_dir / "critic.report.json", updated)
+    _write_artifact(run_dir, "critic.report.json", updated)
+    return updated
+
+
 def _record_story_repair_attempt(run_dir: Path, critic: dict[str, Any], attempt: int) -> None:
     manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
     if not isinstance(manifest, dict):
@@ -586,37 +624,28 @@ def _run_post_round_memory_jobs(
         raise RoundRuntimeError("post_round_objective_memory_jobs.scheduled is missing or invalid.")
 
     failed: dict[str, str] = {}
+    dispatch_tasks: list[dict[str, Any]] = []
     for agent_id in sorted(str(item) for item in scheduled_agents):
         entry = scheduled.get(agent_id)
         if not isinstance(entry, dict):
             failed[agent_id] = "post_round_memory job entry is missing"
-            continue
-        prompt_rel = str(entry.get("prompt") or "").strip()
-        job_rel = str(entry.get("job") or "").strip()
-        output_rel = str(entry.get("output") or "").strip()
-        if not (prompt_rel and job_rel and output_rel):
-            failed[agent_id] = "post_round_memory job paths are incomplete"
-            continue
-        try:
-            prompt = (run_dir / prompt_rel).read_text(encoding="utf-8")
-            job_payload = agent_run.read_json(run_dir / job_rel, {}) or {}
-            if not isinstance(job_payload, dict):
-                raise RoundRuntimeError(f"{job_rel}: post_round_memory job payload must be an object.")
-            _dispatch(
-                run_dir,
-                root,
-                run_claude,
-                f"post_round_memory:{agent_run.safe_name(agent_id)}",
-                prompt,
-                extra_context={
-                    "card_folder": str(card),
-                    "post_round_memory_job": job_payload,
-                    "post_round_output_path": output_rel,
-                },
-                output_path=run_dir / output_rel,
-            )
-        except Exception as exc:
-            failed[agent_id] = str(exc)
+        else:
+            prompt_rel = str(entry.get("prompt") or "").strip()
+            job_rel = str(entry.get("job") or "").strip()
+            output_rel = str(entry.get("output") or "").strip()
+            if prompt_rel and job_rel and output_rel:
+                dispatch_tasks.append(
+                    {
+                        "failure_key": agent_id,
+                        "agent_key": f"post_round_memory:{agent_run.safe_name(agent_id)}",
+                        "prompt_rel": prompt_rel,
+                        "job_rel": job_rel,
+                        "output_rel": output_rel,
+                        "context_key": "post_round_memory_job",
+                    }
+                )
+            else:
+                failed[agent_id] = "post_round_memory job paths are incomplete"
         objective_entry = objective_scheduled.get(agent_id) if isinstance(objective_scheduled, dict) else None
         if not isinstance(objective_entry, dict):
             failed[f"objective:{agent_id}"] = "post_round_objective_memory job entry is missing"
@@ -624,31 +653,51 @@ def _run_post_round_memory_jobs(
         objective_prompt_rel = str(objective_entry.get("prompt") or "").strip()
         objective_job_rel = str(objective_entry.get("job") or "").strip()
         objective_output_rel = str(objective_entry.get("output") or "").strip()
-        if not (objective_prompt_rel and objective_job_rel and objective_output_rel):
-            failed[f"objective:{agent_id}"] = "post_round_objective_memory job paths are incomplete"
-            continue
-        try:
-            prompt = (run_dir / objective_prompt_rel).read_text(encoding="utf-8")
-            job_payload = agent_run.read_json(run_dir / objective_job_rel, {}) or {}
-            if not isinstance(job_payload, dict):
-                raise RoundRuntimeError(
-                    f"{objective_job_rel}: post_round_objective_memory job payload must be an object."
-                )
-            _dispatch(
-                run_dir,
-                root,
-                run_claude,
-                f"post_round_objective_memory:{agent_run.safe_name(agent_id)}",
-                prompt,
-                extra_context={
-                    "card_folder": str(card),
-                    "post_round_objective_memory_job": job_payload,
-                    "post_round_output_path": objective_output_rel,
-                },
-                output_path=run_dir / objective_output_rel,
+        if objective_prompt_rel and objective_job_rel and objective_output_rel:
+            dispatch_tasks.append(
+                {
+                    "failure_key": f"objective:{agent_id}",
+                    "agent_key": f"post_round_objective_memory:{agent_run.safe_name(agent_id)}",
+                    "prompt_rel": objective_prompt_rel,
+                    "job_rel": objective_job_rel,
+                    "output_rel": objective_output_rel,
+                    "context_key": "post_round_objective_memory_job",
+                }
             )
-        except Exception as exc:
-            failed[f"objective:{agent_id}"] = str(exc)
+        else:
+            failed[f"objective:{agent_id}"] = "post_round_objective_memory job paths are incomplete"
+
+    def run_task(task: dict[str, Any]) -> None:
+        prompt_rel = str(task["prompt_rel"])
+        job_rel = str(task["job_rel"])
+        output_rel = str(task["output_rel"])
+        prompt = (run_dir / prompt_rel).read_text(encoding="utf-8")
+        job_payload = agent_run.read_json(run_dir / job_rel, {}) or {}
+        if not isinstance(job_payload, dict):
+            raise RoundRuntimeError(f"{job_rel}: {task['context_key']} payload must be an object.")
+        _dispatch(
+            run_dir,
+            root,
+            run_claude,
+            str(task["agent_key"]),
+            prompt,
+            extra_context={
+                "card_folder": str(card),
+                str(task["context_key"]): job_payload,
+                "post_round_output_path": output_rel,
+            },
+            output_path=run_dir / output_rel,
+        )
+
+    if dispatch_tasks:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(dispatch_tasks)) as executor:
+            futures = {executor.submit(run_task, task): task for task in dispatch_tasks}
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    failed[str(task["failure_key"])] = str(exc)
 
     if failed:
         agent_memory._update_post_round_job_status(run_dir, "degraded_memory_state", failed=failed)

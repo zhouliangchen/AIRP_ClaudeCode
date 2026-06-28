@@ -758,6 +758,34 @@ class AgentSchemaTest(unittest.TestCase):
             }],
         )
 
+    def test_validate_actor_output_accepts_projection_feedback(self):
+        payload = {
+            "agent": "player",
+            "agent_id": "player",
+            "natural_reply": "",
+            "events": [
+                {
+                    "type": "projection_feedback",
+                    "target": "gm",
+                    "content": "Projection rejected actor prompt with needs_rewrite: Use only visible facts.",
+                    "metadata": {
+                        "decision": "needs_rewrite",
+                        "feedback": "Use only visible facts.",
+                        "call_id": "call-player-1",
+                    },
+                }
+            ],
+        }
+
+        normalized = self.agent_schemas.validate_actor_output(payload)
+
+        self.assertEqual(normalized["natural_reply"], "")
+        self.assertEqual(normalized["events"][0]["type"], "projection_feedback")
+        self.assertEqual(
+            normalized["events"][0]["metadata"]["decision"],
+            "needs_rewrite",
+        )
+
     def test_actor_output_rejects_control_plane_delivery_prose(self):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "control-plane"):
             self.agent_schemas.natural_actor_output(

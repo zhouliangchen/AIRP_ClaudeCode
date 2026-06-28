@@ -36,6 +36,7 @@ import handler
 import runtime_settings
 import llm_provider
 import llm_settings
+import agent_memory
 
 DEFAULT_SETTINGS = dict(runtime_settings.DEFAULT_SETTINGS, modelDebugMode=False)
 
@@ -85,6 +86,21 @@ def _card_folder():
     return None
 
 
+def _post_round_memory_input_block(card_folder):
+    if not card_folder:
+        return {}
+    try:
+        state = agent_memory.previous_post_round_memory_state(card_folder)
+    except Exception as exc:
+        return {
+            "status": "degraded_memory_state",
+            "job_type": "post_round_memory_jobs",
+            "failed": {"state_check": str(exc)},
+            "scheduled": {},
+        }
+    return state if isinstance(state, dict) else {}
+
+
 def _settings_payload(raw):
     data = raw if isinstance(raw, dict) else {}
     settings = runtime_settings.normalize_settings(data)
@@ -128,6 +144,15 @@ def _should_replace_api_key(value):
     return isinstance(value, str) and bool(value.strip())
 
 
+def _openai_tier_section(raw, tier):
+    if not isinstance(raw, dict):
+        return {}
+    value = raw.get(tier)
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
 def _merge_llm_settings_into(current, payload):
     data = payload if isinstance(payload, dict) else {}
 
@@ -145,11 +170,16 @@ def _merge_llm_settings_into(current, payload):
 
     if "openai_compatible" in data:
         openai_compatible = _llm_section(data, "openai_compatible")
-        for key in ("enabled", "base_url", "model"):
-            if key in openai_compatible:
-                merged["openai_compatible"][key] = openai_compatible[key]
-        if _should_replace_api_key(openai_compatible.get("api_key")):
-            merged["openai_compatible"]["api_key"] = openai_compatible["api_key"]
+        if "enabled" in openai_compatible:
+            merged["openai_compatible"]["enabled"] = openai_compatible["enabled"]
+        for tier in llm_settings.TEXT_MODEL_TIERS:
+            incoming = _openai_tier_section(openai_compatible, tier)
+            target = merged["openai_compatible"][tier]
+            for key in ("base_url", "model"):
+                if key in incoming:
+                    target[key] = incoming[key]
+            if _should_replace_api_key(incoming.get("api_key")):
+                target["api_key"] = incoming["api_key"]
 
     if "image_generation" in data:
         image_generation = _llm_section(data, "image_generation")
@@ -186,14 +216,22 @@ def _test_llm_settings(settings):
     results = []
     cc_switch = settings.get("cc_switch", {})
     if isinstance(cc_switch, dict) and cc_switch.get("enabled") is True:
-        config = dict(cc_switch)
-        config["model"] = llm_settings.resolve_claude_code_model(CLAUDE_SETTINGS_FILE)
-        config["headers"] = llm_settings.claude_code_auth_headers(CLAUDE_SETTINGS_FILE)
-        results.append(llm_provider.test_connection("cc_switch", config))
+        for tier in llm_settings.TEXT_MODEL_TIERS:
+            config = dict(cc_switch)
+            config["model"] = llm_settings.resolve_claude_code_model_tier(tier, CLAUDE_SETTINGS_FILE)
+            config["headers"] = llm_settings.claude_code_auth_headers(CLAUDE_SETTINGS_FILE)
+            result = llm_provider.test_connection("cc_switch", config)
+            result["tier"] = tier
+            results.append(result)
 
     openai_compatible = settings.get("openai_compatible", {})
     if isinstance(openai_compatible, dict) and openai_compatible.get("enabled") is True:
-        results.append(llm_provider.test_connection("openai_compatible", openai_compatible))
+        for tier in llm_settings.TEXT_MODEL_TIERS:
+            tier_config = openai_compatible.get(tier)
+            config = dict(tier_config if isinstance(tier_config, dict) else {})
+            result = llm_provider.test_connection("openai_compatible", config)
+            result["tier"] = tier
+            results.append(result)
 
     if not results:
         return {"ok": False, "error": "no enabled text LLM provider configured", "results": []}
@@ -278,6 +316,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     else role_text
                 )
                 text = role_text
+
+            incoming_has_content = bool(role_text or instruction_text) if has_dual_channel else bool(text.strip())
+            if incoming_has_content:
+                blocking = _post_round_memory_input_block(_card_folder())
+                if blocking:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": "post_round_memory_pending",
+                            "blocking": blocking,
+                        },
+                        409,
+                    )
+                    return
 
             if has_dual_channel and (role_text or instruction_text):
                 has_visible_role_text = bool(role_text.strip())

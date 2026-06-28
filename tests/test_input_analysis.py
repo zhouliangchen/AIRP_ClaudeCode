@@ -132,6 +132,45 @@ class InputAnalysisTest(unittest.TestCase):
         self.assertEqual(result["analysis_mode"], "ai")
         self.assertEqual(result["semantic_units"][0]["type"], "action")
 
+    def test_validate_rejects_dual_channel_role_routing_rewrite(self):
+        data = self._analysis()
+        data["routing"]["role_channel"] = "我尝试将项链扔掉。"
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            "routing.role_channel must be present in role_text",
+        ):
+            self.mod.validate_input_analysis(
+                data,
+                raw_text=self.raw,
+                role_text=self.role,
+                user_instruction_text=self.instruction,
+                explicit_payload={"input_schema": "dual_channel_v1"},
+            )
+
+    def test_validate_accepts_dual_channel_quote_style_variants(self):
+        role = "我尝试将“吊坠”扔掉。"
+        raw = role + "\n\n[USER_INSTRUCTION]\n" + self.instruction
+        data = self._analysis()
+        data["source_integrity"] = {
+            "raw_text_sha256": self.mod.sha256_text(raw),
+            "role_text_sha256": self.mod.sha256_text(role),
+            "user_instruction_text_sha256": self.mod.sha256_text(self.instruction),
+            "raw_preserved": True,
+        }
+        data["routing"]["role_channel"] = "我尝试将「吊坠」扔掉。"
+        data["routing"]["role_action_channel"] = "我尝试将「吊坠」扔掉。"
+
+        result = self.mod.validate_input_analysis(
+            data,
+            raw_text=raw,
+            role_text=role,
+            user_instruction_text=self.instruction,
+            explicit_payload={"input_schema": "dual_channel_v1"},
+        )
+
+        self.assertEqual(result["routing"]["role_action_channel"], "我尝试将「吊坠」扔掉。")
+
     def test_validate_accepts_world_update_record_safe_status_variants(self):
         for status in ("active", "superseded", "retracted"):
             with self.subTest(status=status):
@@ -761,7 +800,7 @@ class InputAnalysisTest(unittest.TestCase):
 
         self._validate(data)
 
-    def test_validate_allows_explicit_payload_routing_override_text(self):
+    def test_validate_rejects_explicit_payload_routing_override_text(self):
         data = self._analysis()
         data["routing"]["role_channel"] = "analysis rewrite"
         data["routing"]["user_instruction_channel"] = "analysis instruction rewrite"
@@ -770,17 +809,18 @@ class InputAnalysisTest(unittest.TestCase):
         data["source_integrity"]["role_text_sha256"] = self.mod.sha256_text(explicit_role)
         data["source_integrity"]["user_instruction_text_sha256"] = self.mod.sha256_text(explicit_instruction)
 
-        self.mod.validate_input_analysis(
-            data,
-            raw_text=self.raw,
-            role_text=explicit_role,
-            user_instruction_text=explicit_instruction,
-            explicit_payload={
-                "input_schema": "dual_channel_v1",
-                "role_text": explicit_role,
-                "user_instruction_text": explicit_instruction,
-            },
-        )
+        with self.assertRaisesRegex(self.mod.InputAnalysisError, "routing.role_channel"):
+            self.mod.validate_input_analysis(
+                data,
+                raw_text=self.raw,
+                role_text=explicit_role,
+                user_instruction_text=explicit_instruction,
+                explicit_payload={
+                    "input_schema": "dual_channel_v1",
+                    "role_text": explicit_role,
+                    "user_instruction_text": explicit_instruction,
+                },
+            )
 
     def test_routing_converts_channel_values_to_strings(self):
         data = self._analysis()

@@ -526,6 +526,68 @@ class InputAnalysisApplyTest(unittest.TestCase):
             user_instruction_text=instruction_text,
         )
 
+    def test_source_integrity_is_normalized_from_raw_request(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        role_text = "我叫雨蒙，一名普通的高一男生。"
+        instruction_text = "作品基调：校园非日常喜剧。"
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        integrity = {
+            "raw_text_sha256": input_analysis.sha256_text(raw_text),
+            "role_text_sha256": input_analysis.sha256_text(role_text),
+            "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+            "raw_preserved": True,
+        }
+        analysis = {
+            "schema_version": 1,
+            "round_id": "round-000001",
+            "analysis_mode": "ai",
+            "source_integrity": {
+                "raw_text_sha256": "wrong",
+                "role_text_sha256": integrity["role_text_sha256"],
+                "user_instruction_text_sha256": integrity[
+                    "user_instruction_text_sha256"
+                ],
+                "raw_preserved": True,
+            },
+            "semantic_units": [],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": False,
+                "expand_synopsis_before_continue": False,
+                "continue_after_player_action": True,
+            },
+            "routing": {
+                "role_channel": role_text,
+                "user_instruction_channel": instruction_text,
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "routing_requests": [],
+            "capability_requests": [],
+            "risks": [],
+        }
+
+        normalized, changed = mod._normalize_source_integrity(
+            copy.deepcopy(analysis),
+            {"source_integrity": integrity},
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(normalized["source_integrity"], integrity)
+        input_analysis.validate_input_analysis(
+            normalized,
+            raw_text=raw_text,
+            role_text=role_text,
+            user_instruction_text=instruction_text,
+        )
+
     def test_capability_request_source_channel_aliases_are_normalized(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis

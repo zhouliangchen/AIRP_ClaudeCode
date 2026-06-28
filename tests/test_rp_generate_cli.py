@@ -623,6 +623,90 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("索引藏在Ada灯座下方。", prompts[1])
         self.assertEqual(result["natural_reply"], "我想起灯座下方的索引，低声提醒自己。")
 
+    def test_dispatch_actor_reruns_when_recall_protocol_appears_after_intro_line(self):
+        actor_dir = self.card / "characters" / "雨蒙"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "吊坠与光丝关联",
+                            "summary": "我见过吊坠让窗外光丝变亮",
+                            "detail": "吊坠贴近掌心时，粉色光丝的脉动会变快。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream("我先稳住呼吸。\n\n我想回忆：吊坠与光丝关联")
+            return _agent_stream("我想起光丝的脉动，决定提醒GM我需要确认吊坠。")
+
+        result = self.module._dispatch_agent_payload(
+            "player",
+            "# player\n",
+            self.root,
+            fake_run_claude,
+            extra_context={"loop_packet": {"actor_id": "player", "card_folder": str(self.card)}},
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("粉色光丝的脉动会变快", prompts[1])
+        self.assertEqual(result["natural_reply"], "我想起光丝的脉动，决定提醒GM我需要确认吊坠。")
+
+    def test_dispatch_actor_reruns_when_recall_protocol_is_wrapped_in_parentheses(self):
+        actor_dir = self.card / "characters" / "雨蒙"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "粉色天象",
+                            "summary": "我见过粉色云层旋转",
+                            "detail": "粉色云层像花朵一样旋转，靠近时记忆断片。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prompts = []
+
+        def fake_run_claude(agent_key, prompt, cwd):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return _agent_stream("我盯着手背的痕迹。\n\n（我想回忆：粉色天象）")
+            return _agent_stream("我想起粉色云层旋转的画面，先把手背藏起来。")
+
+        result = self.module._dispatch_agent_payload(
+            "player",
+            "# player\n",
+            self.root,
+            fake_run_claude,
+            extra_context={"loop_packet": {"actor_id": "player", "card_folder": str(self.card)}},
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("粉色云层像花朵一样旋转", prompts[1])
+        self.assertEqual(result["natural_reply"], "我想起粉色云层旋转的画面，先把手背藏起来。")
+
     def test_dispatch_actor_reacts_again_when_recall_request_is_final_result_after_tool_use(self):
         actor_dir = self.card / "characters" / "雨蒙"
         actor_dir.mkdir(parents=True, exist_ok=True)
@@ -1494,6 +1578,56 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertEqual(normalized["decision"], "revise")
         self.assertEqual(normalized["hard_failures"], [continuity_failure])
+
+    def test_normalize_critic_report_downgrades_unregistered_minor_dialogue_failure(self):
+        failure = (
+            "Unsupported dialogue for character LinXiao without actor source. "
+            "Since LinXiao is not registered as an actor, remove her dialogue."
+        )
+        critic = {
+            "decision": "revise",
+            "hard_failures": [failure],
+            "soft_issues": [],
+            "repair_instruction": "Fix dialogue provenance.",
+            "system_iteration_suggestion": "",
+        }
+        story = {"content": "<content>Clean story.</content>", "character_dialogues": [], "metadata": {}}
+        story_input = {"loop_outputs": {"actors": {}}}
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["hard_failures"], [])
+        self.assertEqual(normalized["soft_issues"][0]["issue"], "unregistered_minor_character_dialogue_source")
+        self.assertIn("LinXiao", normalized["soft_issues"][0]["detail"])
+
+    def test_normalize_critic_report_keeps_registered_character_dialogue_failure_hard(self):
+        failure = (
+            "Unsupported dialogue for character Ada without actor source. "
+            "Since Ada is not registered as an actor, remove her dialogue."
+        )
+        critic = {
+            "decision": "revise",
+            "hard_failures": [failure],
+            "soft_issues": [],
+            "repair_instruction": "Fix dialogue provenance.",
+            "system_iteration_suggestion": "",
+        }
+        story = {"content": "<content>Clean story.</content>", "character_dialogues": [], "metadata": {}}
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "world_updates": {
+                        "important_characters": [{"name": "Ada", "status": "active"}]
+                    }
+                }
+            },
+            "loop_outputs": {"actors": {}},
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["hard_failures"], [failure])
+        self.assertEqual(normalized["soft_issues"], [])
 
     def test_normalize_critic_report_keeps_compound_token_and_non_token_failure_when_story_is_clean(self):
         compound_failure = (

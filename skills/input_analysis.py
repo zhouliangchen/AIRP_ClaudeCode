@@ -81,6 +81,23 @@ ROUTING_REQUEST_AUTHORIZATION_GATES = {
     "none",
     "allowSourceCodeSelfRepair",
 }
+GROUNDING_QUOTE_TRANSLATION = str.maketrans(
+    {
+        "“": "\"",
+        "”": "\"",
+        "„": "\"",
+        "‟": "\"",
+        "＂": "\"",
+        "「": "\"",
+        "」": "\"",
+        "『": "\"",
+        "』": "\"",
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+    }
+)
 
 
 class InputAnalysisError(RuntimeError):
@@ -155,6 +172,8 @@ def validate_input_analysis(
     _validate_routing_grounded(
         data.get("routing"),
         raw_text=raw_text,
+        role_text=role_text,
+        user_instruction_text=user_instruction_text,
         explicit_payload=explicit_payload,
     )
     _validate_routing_requests(data.get("routing_requests"))
@@ -526,15 +545,45 @@ def _explicit_dual_channel_payload(explicit_payload):
     )
 
 
-def _validate_routing_grounded(routing, *, raw_text, explicit_payload=None):
-    if _explicit_dual_channel_payload(explicit_payload):
-        return
+def _grounded_in(text, source):
+    text_value = _to_text(text).strip()
+    source_value = _to_text(source)
+    if not text_value:
+        return True
+    if text_value in source_value:
+        return True
+    return text_value.translate(GROUNDING_QUOTE_TRANSLATION) in source_value.translate(
+        GROUNDING_QUOTE_TRANSLATION
+    )
+
+
+def _validate_routing_grounded(
+    routing,
+    *,
+    raw_text,
+    role_text="",
+    user_instruction_text="",
+    explicit_payload=None,
+):
     if not isinstance(routing, dict):
+        return
+    if _explicit_dual_channel_payload(explicit_payload):
+        role_source = _to_text(role_text)
+        instruction_source = _to_text(user_instruction_text)
+        for key in ("role_channel", "role_action_channel", "narrative_guidance_channel"):
+            text = _to_text(routing.get(key)).strip()
+            if not _grounded_in(text, role_source):
+                raise InputAnalysisError(f"routing.{key} must be present in role_text")
+        instruction_text = _to_text(routing.get("user_instruction_channel")).strip()
+        if not _grounded_in(instruction_text, instruction_source):
+            raise InputAnalysisError(
+                "routing.user_instruction_channel must be present in user_instruction_text"
+            )
         return
     raw = _to_text(raw_text)
     for key in ("role_channel", "role_action_channel", "narrative_guidance_channel", "user_instruction_channel"):
         text = _to_text(routing.get(key)).strip()
-        if text and text not in raw:
+        if not _grounded_in(text, raw):
             raise InputAnalysisError(f"routing.{key} must be present in raw_text")
 
 

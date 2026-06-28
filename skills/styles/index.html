@@ -149,8 +149,7 @@ body {
   border-color: var(--accent2);
   color: #fff;
 }
-#mobile-settings-backdrop,
-#mobile-actions-card {
+#mobile-settings-backdrop {
   display: none;
 }
 
@@ -285,6 +284,28 @@ body {
 }
 .chip-action:hover { background: #ede6d8; border-color: var(--accent); }
 .chip-action:active { background: var(--accent); color: #fff; }
+.turn-actions-card {
+  margin: 10px 0 22px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 8px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.06), 0 0 1px rgba(0,0,0,.04);
+}
+.turn-actions-card h4 {
+  font-size: 0.82em;
+  color: var(--accent);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+.turn-actions-card .turn-actions-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 .summary-text { color: var(--muted); font-size: 0.82em; line-height: 1.55; }
 /* settings controls */
 .setting-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
@@ -615,13 +636,6 @@ body {
     padding: 14px 12px;
     align-items: stretch;
   }
-  #mobile-actions-card {
-    display: block;
-    flex: 0 0 auto;
-    margin: 0 8px 8px;
-    max-height: 30vh;
-    overflow-y: auto;
-  }
   #content-panel #doc,
   #beautify-container,
   .beautify-panel-inline {
@@ -661,7 +675,6 @@ body {
     pointer-events: auto;
   }
   #mobile-settings-drawer { display: flex; }
-  #sidebar #actions-card { display: none !important; }
   .side-card { padding: 8px 10px; }
   .chip-action {
     max-width: 100%;
@@ -682,10 +695,6 @@ body {
   #input-panel .meta-row {
     display: none;
   }
-}
-
-@media (min-width: 721px) {
-  #mobile-actions-card { display: none !important; }
 }
 
 @media (max-width: 420px) {
@@ -1378,16 +1387,7 @@ body {
     <div id="beautify-container"></div>
   </div>
 
-  <div class="side-card" id="mobile-actions-card" style="display:none;">
-    <h4 id="mobile-actions-title">下一步行动</h4>
-    <div id="mobile-actions"></div>
-  </div>
-
   <div id="sidebar">
-    <div class="side-card" id="actions-card" style="display:none;">
-      <h4>📂 可选项</h4>
-      <div id="sb-actions"></div>
-    </div>
     <div id="mobile-settings-drawer">
     <div class="side-card" id="instruction-channel-card">
       <h4>用户指令</h4>
@@ -1526,16 +1526,40 @@ body {
           <input id="llm-openai-enabled" type="checkbox">
         </label>
         <label class="llm-settings-field">
-          <span>请求 URL</span>
-          <input id="llm-openai-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
+          <span>核心 URL</span>
+          <input id="llm-openai-core-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
         </label>
         <label class="llm-settings-field">
-          <span>API key</span>
-          <input id="llm-openai-api-key" type="password" autocomplete="new-password">
+          <span>核心 API key</span>
+          <input id="llm-openai-core-api-key" type="password" autocomplete="new-password">
         </label>
         <label class="llm-settings-field">
-          <span>模型名</span>
-          <input id="llm-openai-model" type="text" spellcheck="false">
+          <span>核心模型名</span>
+          <input id="llm-openai-core-model" type="text" spellcheck="false">
+        </label>
+        <label class="llm-settings-field">
+          <span>审查 URL</span>
+          <input id="llm-openai-review-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
+        </label>
+        <label class="llm-settings-field">
+          <span>审查 API key</span>
+          <input id="llm-openai-review-api-key" type="password" autocomplete="new-password">
+        </label>
+        <label class="llm-settings-field">
+          <span>审查模型名</span>
+          <input id="llm-openai-review-model" type="text" spellcheck="false">
+        </label>
+        <label class="llm-settings-field">
+          <span>角色 URL</span>
+          <input id="llm-openai-actor-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
+        </label>
+        <label class="llm-settings-field">
+          <span>角色 API key</span>
+          <input id="llm-openai-actor-api-key" type="password" autocomplete="new-password">
+        </label>
+        <label class="llm-settings-field">
+          <span>角色模型名</span>
+          <input id="llm-openai-actor-model" type="text" spellcheck="false">
         </label>
       </section>
       <section class="llm-settings-section">
@@ -1573,6 +1597,8 @@ let _prevContentHtml = '';  // cache to avoid spurious innerHTML resets
 let _prevBeautifyHtml = '';  // separate cache for beautify panel
 let _prevAssetSig = '';      // generated asset manifest cache
 let activePlayerInputId = null;
+let activeActionSignature = null;
+let dismissedActionSignature = null;
 
 var _consecutiveFailures = 0;
 
@@ -1827,36 +1853,25 @@ function render() {
   const sum = replaceUser(window.SUMMARY_TEXT || '暂无');
   setText('sb-summary', sum);
 
-  // Actions — prefer per-turn TURN_OPTIONS, fall back to static S.actions
-  const actionsCard = document.getElementById('actions-card');
-  const turnOpts = window.TURN_OPTIONS;
-  const mobileActionsCard = document.getElementById('mobile-actions-card');
-  const actionsDiv = document.getElementById('sb-actions');
-  const mobileActionsDiv = document.getElementById('mobile-actions');
-  const actionTargets = [
-    { card: actionsCard, title: actionsCard ? actionsCard.querySelector('h4') : null, body: actionsDiv },
-    { card: mobileActionsCard, title: document.getElementById('mobile-actions-title'), body: mobileActionsDiv }
-  ];
-  function setActionTargets(titleHtml, opts) {
-    actionTargets.forEach(function(target) {
-      if (!target.card || !target.body) return;
-      target.card.style.display = '';
-      if (target.title) target.title.innerHTML = titleHtml;
-      renderOptions(target.body, opts);
-    });
-  }
-  function hideActionTargets() {
-    actionTargets.forEach(function(target) {
-      if (target.card) target.card.style.display = 'none';
-      if (target.body) target.body.innerHTML = '';
-    });
-  }
-  if (turnOpts && turnOpts.length > 0) {
-    setActionTargets('🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''), turnOpts);
-  } else if (S.actions && S.actions.length > 0) {
-    setActionTargets('📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''), S.actions);
+  // Actions — render inline after the latest output so they scroll with text.
+  const turnOpts = Array.isArray(window.TURN_OPTIONS) ? window.TURN_OPTIONS : [];
+  const fallbackActions = Array.isArray(S.actions) ? S.actions : [];
+  if (turnOpts.length > 0) {
+    renderInlineActions(
+      contentEl,
+      '🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''),
+      turnOpts,
+      'turn'
+    );
+  } else if (fallbackActions.length > 0) {
+    renderInlineActions(
+      contentEl,
+      '📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''),
+      fallbackActions,
+      'fallback'
+    );
   } else {
-    hideActionTargets();
+    clearInlineActions();
   }
 
 
@@ -2035,6 +2050,55 @@ function setHtml(id, val) {
   if (el && el.innerHTML !== val) el.innerHTML = val;
 }
 
+function actionSignature(kind, opts) {
+  const generatedCount = window.STATE && window.STATE.generatedCount ? window.STATE.generatedCount : 0;
+  return JSON.stringify({ kind: kind, generatedCount: generatedCount, options: opts });
+}
+
+function clearInlineActions() {
+  const doc = document.getElementById('doc');
+  if (!doc) return;
+  doc.querySelectorAll('.turn-actions-card').forEach(function(card) {
+    card.remove();
+  });
+  activeActionSignature = null;
+}
+
+function dismissCurrentInlineActions() {
+  if (activeActionSignature) dismissedActionSignature = activeActionSignature;
+  clearInlineActions();
+}
+
+function renderInlineActions(contentEl, titleHtml, opts, kind) {
+  if (!contentEl || !Array.isArray(opts) || opts.length === 0) {
+    clearInlineActions();
+    return;
+  }
+  const signature = actionSignature(kind, opts);
+  activeActionSignature = signature;
+  const existing = contentEl.querySelector('.turn-actions-card');
+  if (dismissedActionSignature === signature) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing && existing.getAttribute('data-action-signature') === signature) return;
+  if (existing) existing.remove();
+
+  const card = document.createElement('div');
+  card.className = 'turn-actions-card';
+  card.setAttribute('data-action-signature', signature);
+
+  const title = document.createElement('h4');
+  title.innerHTML = titleHtml;
+  card.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'turn-actions-body';
+  renderOptions(body, opts);
+  card.appendChild(body);
+  contentEl.appendChild(card);
+}
+
 function renderOptions(container, opts) {
   container.innerHTML = '';
   opts.forEach(function(optHtml) {
@@ -2048,6 +2112,7 @@ function renderOptions(container, opts) {
       const ta = document.getElementById('role-input');
       ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
       syncLegacyInputBridge();
+      dismissCurrentInlineActions();
       ta.focus();
     });
     container.appendChild(span);
@@ -2339,6 +2404,7 @@ async function doSubmit() {
     const data = await r.json();
     if (data.ok) {
       setProgressVisible({ stage: 'received', label: '已发送，等待处理', percent: 10 });
+      dismissCurrentInlineActions();
       reloadData();
       if (roleInput) roleInput.value = '';
       if (instructionInput) instructionInput.value = '';
@@ -2465,6 +2531,33 @@ function setLlmInputValue(id, value) {
   if (input) input.value = value || '';
 }
 
+function openaiTierSettings(openai, tier) {
+  const value = openai && openai[tier];
+  return value && typeof value === 'object' ? value : {};
+}
+
+function applyOpenaiTierSettings(openai, tier) {
+  const tierSettings = openaiTierSettings(openai, tier);
+  setLlmInputValue('llm-openai-' + tier + '-base-url', tierSettings.base_url);
+  setLlmInputValue('llm-openai-' + tier + '-model', tierSettings.model);
+  const keyInput = document.getElementById('llm-openai-' + tier + '-api-key');
+  if (keyInput) {
+    keyInput.value = '';
+    keyInput.placeholder = tierSettings.api_key_set ? '已保存，留空保留' : '未设置';
+  }
+}
+
+function collectOpenaiTierSettings(tier) {
+  const keyInput = document.getElementById('llm-openai-' + tier + '-api-key');
+  const apiKey = keyInput ? keyInput.value.trim() : '';
+  const result = {
+    base_url: document.getElementById('llm-openai-' + tier + '-base-url').value.trim(),
+    model: document.getElementById('llm-openai-' + tier + '-model').value.trim()
+  };
+  if (apiKey) result.api_key = apiKey;
+  return result;
+}
+
 function applyLlmSettings(settings) {
   const cc = settings.cc_switch || {};
   const openai = settings.openai_compatible || {};
@@ -2472,16 +2565,12 @@ function applyLlmSettings(settings) {
   document.getElementById('llm-cc-enabled').checked = cc.enabled === true;
   setLlmInputValue('llm-cc-service-url', cc.service_url);
   document.getElementById('llm-openai-enabled').checked = openai.enabled === true;
-  setLlmInputValue('llm-openai-base-url', openai.base_url);
-  setLlmInputValue('llm-openai-model', openai.model);
+  applyOpenaiTierSettings(openai, 'core');
+  applyOpenaiTierSettings(openai, 'review');
+  applyOpenaiTierSettings(openai, 'actor');
   setLlmInputValue('llm-image-base-url', image.base_url);
   setLlmInputValue('llm-image-model', image.model);
-  const openaiKey = document.getElementById('llm-openai-api-key');
   const imageKey = document.getElementById('llm-image-api-key');
-  if (openaiKey) {
-    openaiKey.value = '';
-    openaiKey.placeholder = openai.api_key_set ? '已保存，留空保留' : '未设置';
-  }
   if (imageKey) {
     imageKey.value = '';
     imageKey.placeholder = image.api_key_set ? '已保存，留空保留' : '未设置';
@@ -2508,18 +2597,17 @@ async function loadLlmSettings() {
 }
 
 function collectLlmSettings() {
-  const openaiKey = document.getElementById('llm-openai-api-key').value.trim();
   const imageKey = document.getElementById('llm-image-api-key').value.trim();
   const openai = {
     enabled: document.getElementById('llm-openai-enabled').checked,
-    base_url: document.getElementById('llm-openai-base-url').value.trim(),
-    model: document.getElementById('llm-openai-model').value.trim()
+    core: collectOpenaiTierSettings('core'),
+    review: collectOpenaiTierSettings('review'),
+    actor: collectOpenaiTierSettings('actor')
   };
   const image = {
     base_url: document.getElementById('llm-image-base-url').value.trim(),
     model: document.getElementById('llm-image-model').value.trim()
   };
-  if (openaiKey) openai.api_key = openaiKey;
   if (imageKey) image.api_key = imageKey;
   return {
     cc_switch: {

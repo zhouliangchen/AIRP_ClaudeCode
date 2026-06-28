@@ -98,6 +98,7 @@ def normalize_capability_request(request: dict[str, Any]) -> dict[str, Any]:
         "payload": _optional_dict(data, "payload", "capability_request"),
         "evidence": _optional_dict(data, "evidence", "capability_request"),
     }
+    normalized["target"] = _normalize_target_alias(normalized["capability"], normalized["target"])
     _validate_request_shape(normalized)
 
     definition = CAPABILITIES.get(normalized["capability"])
@@ -215,6 +216,12 @@ def _default_risk(capability: str) -> str:
     if capability.startswith("legacy."):
         return "low"
     return "medium"
+
+
+def _normalize_target_alias(capability: str, target: str) -> str:
+    if capability == "assets.generate_image" and target == "assets.generate_image":
+        return "assets-ui"
+    return target
 
 
 def _validate_request_shape(normalized: dict[str, Any]) -> None:

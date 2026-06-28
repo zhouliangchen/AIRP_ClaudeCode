@@ -592,10 +592,23 @@ def _recall_protocol_query(text: Any) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith(actor_memory_store.RECALL_PREFIX):
-            return actor_memory_store._normalize_recall_query(stripped)
-        return ""
+        candidate = _strip_recall_protocol_wrapping(stripped)
+        if candidate.startswith(actor_memory_store.RECALL_PREFIX):
+            return actor_memory_store._normalize_recall_query(candidate)
     return ""
+
+
+def _strip_recall_protocol_wrapping(text: str) -> str:
+    candidate = text.strip()
+    wrappers = {
+        "（": "）",
+        "(": ")",
+        "【": "】",
+        "[": "]",
+    }
+    while len(candidate) >= 2 and candidate[0] in wrappers and candidate.endswith(wrappers[candidate[0]]):
+        candidate = candidate[1:-1].strip()
+    return candidate
 
 
 def _actor_protocol_query_from_payload(payload: Dict[str, Any]) -> str:
@@ -1479,6 +1492,8 @@ def _normalize_critic_report_for_story(
             if not cleaned:
                 normalized["decision"] = "pass"
 
+    normalized = _downgrade_unregistered_minor_dialogue_failures(normalized, story_input)
+
     if (
         _story_input_requires_derived_content_edits(story_input)
         and not _has_actionable_derived_content_edits(story, require_full_ai=True)
@@ -1486,6 +1501,67 @@ def _normalize_critic_report_for_story(
         return _force_retcon_derived_edit_revise(normalized)
     _infer_story_repair_routing_from_issues(normalized)
     return normalized
+
+
+_UNREGISTERED_DIALOGUE_FAILURE_RE = re.compile(
+    r"Unsupported dialogue for character\s+(.+?)\s+without actor source.*?not registered as an actor",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _downgrade_unregistered_minor_dialogue_failures(
+    critic: Dict[str, Any],
+    story_input: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    hard_failures = critic.get("hard_failures")
+    if not isinstance(hard_failures, list) or not hard_failures:
+        return critic
+    protected_names = _protected_character_names_from_story_input(story_input)
+    kept: list[Any] = []
+    downgraded: list[dict[str, Any]] = []
+    for failure in hard_failures:
+        name = _unregistered_dialogue_failure_name(failure)
+        if name and name not in protected_names:
+            downgraded.append(
+                {
+                    "issue": "unregistered_minor_character_dialogue_source",
+                    "detail": str(failure),
+                    "character": name,
+                }
+            )
+            continue
+        kept.append(failure)
+    if not downgraded:
+        return critic
+    normalized = dict(critic)
+    soft_issues = normalized.get("soft_issues")
+    if not isinstance(soft_issues, list):
+        soft_issues = []
+    normalized["soft_issues"] = soft_issues + downgraded
+    normalized["hard_failures"] = kept
+    if not kept and str(normalized.get("decision") or "") == "pass":
+        normalized["decision"] = "revise"
+    return normalized
+
+
+def _unregistered_dialogue_failure_name(failure: Any) -> str:
+    match = _UNREGISTERED_DIALOGUE_FAILURE_RE.search(str(failure or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _protected_character_names_from_story_input(story_input: Dict[str, Any] | None) -> set[str]:
+    if not isinstance(story_input, dict):
+        return set()
+    names = set(_player_character_names_from_story_input(story_input))
+    loop_outputs = story_input.get("loop_outputs")
+    if isinstance(loop_outputs, dict):
+        actors = loop_outputs.get("actors")
+        if isinstance(actors, dict):
+            for actor_id in actors:
+                text = str(actor_id or "").strip()
+                if text.startswith("character:"):
+                    names.add(text.split(":", 1)[1])
+    return names
 
 
 def _infer_story_repair_routing_from_issues(critic: Dict[str, Any]) -> None:

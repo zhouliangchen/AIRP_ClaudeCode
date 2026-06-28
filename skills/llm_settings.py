@@ -15,6 +15,7 @@ DEFAULT_SETTINGS_PATH = DEFAULT_FRONTEND_SETTINGS_PATH
 DEFAULT_CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 TRUE_BOOL_STRINGS = {"1", "true", "yes", "y", "on"}
 FALSE_BOOL_STRINGS = {"0", "false", "no", "n", "off"}
+TEXT_MODEL_TIERS = ("core", "review", "actor")
 
 
 def _read_json(path: str | Path, default: Any) -> Any:
@@ -31,6 +32,22 @@ def _section(raw: Mapping[str, Any], key: str) -> Mapping[str, Any]:
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _openai_tier_section(openai_compatible: Mapping[str, Any], tier: str) -> Mapping[str, Any]:
+    tier_value = openai_compatible.get(tier)
+    if isinstance(tier_value, Mapping):
+        return tier_value
+    return {}
+
+
+def _openai_tier_settings(openai_compatible: Mapping[str, Any], tier: str) -> dict[str, str]:
+    section = _openai_tier_section(openai_compatible, tier)
+    return {
+        "base_url": _string(section.get("base_url")),
+        "api_key": _string(section.get("api_key")),
+        "model": _string(section.get("model")),
+    }
 
 
 def _bool_value(value: Any, default: bool) -> bool:
@@ -78,9 +95,9 @@ def normalize_settings(
         },
         "openai_compatible": {
             "enabled": _bool_value(openai_compatible.get("enabled"), False),
-            "base_url": _string(openai_compatible.get("base_url")),
-            "api_key": _string(openai_compatible.get("api_key")),
-            "model": _string(openai_compatible.get("model")),
+            "core": _openai_tier_settings(openai_compatible, "core"),
+            "review": _openai_tier_settings(openai_compatible, "review"),
+            "actor": _openai_tier_settings(openai_compatible, "actor"),
         },
         "image_generation": {
             "base_url": _string(image_generation.get("base_url")),
@@ -145,6 +162,41 @@ def _merge_string(frontend: Any, env: Mapping[str, str], env_key: str, local: An
     return _string(frontend) or _string(env.get(env_key)) or _string(local)
 
 
+def _merge_string_from_env_keys(frontend: Any, env: Mapping[str, str], env_keys: tuple[str, ...], local: Any) -> str:
+    frontend_value = _string(frontend)
+    if frontend_value:
+        return frontend_value
+    for env_key in env_keys:
+        env_value = _string(env.get(env_key))
+        if env_value:
+            return env_value
+    return _string(local)
+
+
+def _openai_env_keys(tier: str, key: str) -> tuple[str, ...]:
+    env_key = key.upper()
+    return (f"AIRP_OPENAI_COMPATIBLE_{tier.upper()}_{env_key}",)
+
+
+def _merge_openai_tier(
+    frontend_openai: Mapping[str, Any],
+    environ: Mapping[str, str],
+    local_openai: Mapping[str, Any],
+    tier: str,
+) -> dict[str, str]:
+    frontend_tier = _openai_tier_section(frontend_openai, tier)
+    local_tier = _openai_tier_section(local_openai, tier)
+    return {
+        key: _merge_string_from_env_keys(
+            frontend_tier.get(key),
+            environ,
+            _openai_env_keys(tier, key),
+            local_tier.get(key),
+        )
+        for key in ("base_url", "api_key", "model")
+    }
+
+
 def read_effective_settings(
     path: str | Path | None = None,
     claude_settings_path: str | Path | None = None,
@@ -173,24 +225,9 @@ def read_effective_settings(
             ),
         },
         "openai_compatible": {
-            "base_url": _merge_string(
-                frontend_openai.get("base_url"),
-                environ,
-                "AIRP_OPENAI_COMPATIBLE_BASE_URL",
-                local_normalized["openai_compatible"].get("base_url"),
-            ),
-            "api_key": _merge_string(
-                frontend_openai.get("api_key"),
-                environ,
-                "AIRP_OPENAI_COMPATIBLE_API_KEY",
-                local_normalized["openai_compatible"].get("api_key"),
-            ),
-            "model": _merge_string(
-                frontend_openai.get("model"),
-                environ,
-                "AIRP_OPENAI_COMPATIBLE_MODEL",
-                local_normalized["openai_compatible"].get("model"),
-            ),
+            "core": _merge_openai_tier(frontend_openai, environ, local_normalized["openai_compatible"], "core"),
+            "review": _merge_openai_tier(frontend_openai, environ, local_normalized["openai_compatible"], "review"),
+            "actor": _merge_openai_tier(frontend_openai, environ, local_normalized["openai_compatible"], "actor"),
         },
         "image_generation": {
             "base_url": _merge_string(
@@ -257,6 +294,12 @@ def redact_settings(settings: Mapping[str, Any] | None) -> dict[str, Any]:
     }
     for section_name in ("openai_compatible", "image_generation"):
         section = result[section_name]
+        if section_name == "openai_compatible":
+            for tier in TEXT_MODEL_TIERS:
+                tier_section = section[tier]
+                tier_section["api_key_set"] = bool(tier_section.get("api_key"))
+                tier_section["api_key"] = ""
+            continue
         section["api_key_set"] = bool(section.get("api_key"))
         section["api_key"] = ""
     return result
@@ -271,14 +314,21 @@ def settings_errors(settings: Mapping[str, Any] | None) -> list[str]:
 
     cc_usable = bool(cc_switch.get("enabled") and cc_switch.get("service_url"))
     openai_required = ("base_url", "api_key", "model")
-    openai_missing = [key for key in openai_required if not openai_compatible.get(key)]
-    openai_usable = bool(openai_compatible.get("enabled") and not openai_missing)
+    openai_missing_by_tier = {
+        tier: [key for key in openai_required if not openai_compatible[tier].get(key)]
+        for tier in TEXT_MODEL_TIERS
+    }
+    openai_usable = bool(
+        openai_compatible.get("enabled")
+        and all(not missing for missing in openai_missing_by_tier.values())
+    )
 
     if cc_switch.get("enabled") and not cc_switch.get("service_url"):
         errors.append("cc_switch 缺少 service_url")
     if openai_compatible.get("enabled"):
-        for key in openai_missing:
-            errors.append(f"OpenAI-compatible 缺少 {key}")
+        for tier, missing in openai_missing_by_tier.items():
+            for key in missing:
+                errors.append(f"OpenAI-compatible {tier} 缺少 {key}")
     if not cc_usable and not openai_usable:
         errors.append("未启用可用的文本 LLM provider")
 
@@ -289,9 +339,25 @@ def settings_errors(settings: Mapping[str, Any] | None) -> list[str]:
     return errors
 
 
-def resolve_claude_code_model(claude_settings_path: str | Path | None = None) -> str:
+def resolve_claude_code_model_tier(
+    tier: str,
+    claude_settings_path: str | Path | None = None,
+) -> str:
     env = _claude_env(claude_settings_path)
-    return env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") or env.get("ANTHROPIC_MODEL") or ""
+    model_keys = {
+        "core": ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_OPUS_MODEL", "ANTHROPIC_MODEL"),
+        "review": ("ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_SONNET_MODEL", "ANTHROPIC_MODEL"),
+        "actor": ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_HAIKU_MODEL", "ANTHROPIC_MODEL"),
+    }.get(tier, ("ANTHROPIC_MODEL",))
+    for key in model_keys:
+        value = env.get(key)
+        if value:
+            return value
+    return ""
+
+
+def resolve_claude_code_model(claude_settings_path: str | Path | None = None) -> str:
+    return resolve_claude_code_model_tier("core", claude_settings_path)
 
 
 def claude_code_auth_headers(claude_settings_path: str | Path | None = None) -> dict[str, str]:

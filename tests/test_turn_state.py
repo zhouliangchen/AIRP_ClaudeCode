@@ -5,6 +5,7 @@ import re
 import sys
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 
 import unittest
@@ -918,6 +919,16 @@ class TurnStateTest(unittest.TestCase):
         self.assertLess(instruction_index, input_panel_index)
         self.assertIn("mobile-settings-open", html)
 
+    def test_frontend_renders_next_actions_inline_after_output_and_dismisses_current_turn(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="actions-card"', html)
+        self.assertNotIn('id="mobile-actions-card"', html)
+        self.assertIn("function renderInlineActions", html)
+        self.assertIn("contentEl.appendChild(card)", html)
+        self.assertIn("dismissCurrentInlineActions();", html)
+        self.assertIn("dismissedActionSignature", html)
+
     def test_frontend_exposes_self_repair_mode_setting(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
@@ -959,14 +970,24 @@ class TurnStateTest(unittest.TestCase):
             "llm-cc-enabled",
             "llm-cc-service-url",
             "llm-openai-enabled",
-            "llm-openai-base-url",
-            "llm-openai-api-key",
-            "llm-openai-model",
+            "llm-openai-core-base-url",
+            "llm-openai-core-api-key",
+            "llm-openai-core-model",
+            "llm-openai-review-base-url",
+            "llm-openai-review-api-key",
+            "llm-openai-review-model",
+            "llm-openai-actor-base-url",
+            "llm-openai-actor-api-key",
+            "llm-openai-actor-model",
             "llm-image-base-url",
             "llm-image-api-key",
             "llm-image-model",
         ]:
             self.assertIn(f'id="{field_id}"', html)
+
+        self.assertNotIn('id="llm-openai-base-url"', html)
+        self.assertNotIn('id="llm-openai-api-key"', html)
+        self.assertNotIn('id="llm-openai-model"', html)
 
         for function_name in [
             "openLlmSettings",
@@ -982,7 +1003,7 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("BRIDGE + '/api/llm_settings/test'", html)
         self.assertIn("image_generation", html)
         self.assertIn("api_key_set", html)
-        self.assertIn("if (openaiKey)", html)
+        self.assertIn("collectOpenaiTierSettings", html)
         self.assertIn("if (imageKey)", html)
         self.assertIn("applyLlmSettings(data)", html)
         self.assertIn("applyLlmSettings(settings)", html)
@@ -1153,6 +1174,62 @@ class TurnStateTest(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=5)
 
+    def test_server_submit_blocks_when_post_round_memory_is_pending(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.INPUT_FILE = self.styles / "input.txt"
+        server.PENDING_FILE = self.styles / ".pending"
+        server.CARD_PATH_FILE = self.styles / ".card_path"
+        server.SETTINGS_FILE = self.styles / "settings.json"
+        server.handler.STYLES = self.styles
+        server.CARD_PATH_FILE.write_text(str(self.card), encoding="utf-8")
+        manifest_path = self.card / ".agent_runs" / "round-000001" / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                "round_id": "round-000001",
+                "post_round_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {"player": {"output": "post_round_memory_jobs/player.summary.json"}},
+                    "failed": {},
+                },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            body = json.dumps({"text": "next turn"}, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}/api/submit",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            payload = json.loads(raised.exception.read().decode("utf-8"))
+
+            self.assertEqual(raised.exception.code, 409)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["error"], "post_round_memory_pending")
+            self.assertEqual(payload["blocking"]["previous_round_id"], "round-000001")
+            self.assertFalse(server.PENDING_FILE.exists())
+            self.assertFalse(server.INPUT_FILE.exists())
+            self.assertEqual(self.handler.read_player_inputs(str(self.card)), [])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
     def test_server_settings_api_normalizes_runtime_settings_and_preserves_debug_mode(self):
         server = _load_server()
         server.ROOT = self.styles
@@ -1271,9 +1348,21 @@ class TurnStateTest(unittest.TestCase):
                     },
                     "openai_compatible": {
                         "enabled": True,
-                        "base_url": "https://text.example/v1",
-                        "api_key": "openai-secret",
-                        "model": "text-model",
+                        "core": {
+                            "base_url": "https://core.example/v1",
+                            "api_key": "core-secret",
+                            "model": "core-model",
+                        },
+                        "review": {
+                            "base_url": "https://review.example/v1",
+                            "api_key": "review-secret",
+                            "model": "review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://actor.example/v1",
+                            "api_key": "actor-secret",
+                            "model": "actor-model",
+                        },
                     },
                     "image_generation": {
                         "base_url": "https://image.example/v1",
@@ -1290,8 +1379,18 @@ class TurnStateTest(unittest.TestCase):
                 {
                     "openai_compatible": {
                         "enabled": True,
-                        "base_url": "https://text2.example/v1",
-                        "model": "text-model-2",
+                        "core": {
+                            "base_url": "https://core2.example/v1",
+                            "model": "core-model-2",
+                        },
+                        "review": {
+                            "base_url": "https://review2.example/v1",
+                            "model": "review-model-2",
+                        },
+                        "actor": {
+                            "base_url": "https://actor2.example/v1",
+                            "model": "actor-model-2",
+                        },
                     },
                     "image_generation": {
                         "base_url": "https://image2.example/v1",
@@ -1317,8 +1416,10 @@ class TurnStateTest(unittest.TestCase):
             thread.join(timeout=5)
 
         self.assertTrue(first["ok"])
-        self.assertEqual(first["settings"]["openai_compatible"]["api_key"], "")
-        self.assertTrue(first["settings"]["openai_compatible"]["api_key_set"])
+        self.assertEqual(first["settings"]["openai_compatible"]["core"]["api_key"], "")
+        self.assertTrue(first["settings"]["openai_compatible"]["core"]["api_key_set"])
+        self.assertTrue(first["settings"]["openai_compatible"]["review"]["api_key_set"])
+        self.assertTrue(first["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertEqual(first["settings"]["image_generation"]["api_key"], "")
         self.assertTrue(first["settings"]["image_generation"]["api_key_set"])
         self.assertNotIn("api_key", first["settings"]["cc_switch"])
@@ -1326,22 +1427,34 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(get_result, first["settings"])
 
         saved = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(saved["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved["openai_compatible"]["core"]["api_key"], "core-secret")
+        self.assertEqual(saved["openai_compatible"]["review"]["api_key"], "review-secret")
+        self.assertEqual(saved["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved["image_generation"]["api_key"], "image-secret")
         self.assertNotIn("api_key", saved["cc_switch"])
         self.assertNotIn("model", saved["cc_switch"])
-        self.assertTrue(roundtrip["settings"]["openai_compatible"]["api_key_set"])
+        self.assertTrue(roundtrip["settings"]["openai_compatible"]["core"]["api_key_set"])
+        self.assertTrue(roundtrip["settings"]["openai_compatible"]["review"]["api_key_set"])
+        self.assertTrue(roundtrip["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertTrue(roundtrip["settings"]["image_generation"]["api_key_set"])
         saved_after_roundtrip = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(saved_after_roundtrip["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved_after_roundtrip["openai_compatible"]["core"]["api_key"], "core-secret")
+        self.assertEqual(saved_after_roundtrip["openai_compatible"]["review"]["api_key"], "review-secret")
+        self.assertEqual(saved_after_roundtrip["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved_after_roundtrip["image_generation"]["api_key"], "image-secret")
 
-        self.assertTrue(second["settings"]["openai_compatible"]["api_key_set"])
+        self.assertTrue(second["settings"]["openai_compatible"]["core"]["api_key_set"])
+        self.assertTrue(second["settings"]["openai_compatible"]["review"]["api_key_set"])
+        self.assertTrue(second["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertTrue(second["settings"]["image_generation"]["api_key_set"])
         saved_after_second = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(saved_after_second["openai_compatible"]["api_key"], "openai-secret")
+        self.assertEqual(saved_after_second["openai_compatible"]["core"]["api_key"], "core-secret")
+        self.assertEqual(saved_after_second["openai_compatible"]["review"]["api_key"], "review-secret")
+        self.assertEqual(saved_after_second["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved_after_second["image_generation"]["api_key"], "image-secret")
-        self.assertEqual(saved_after_second["openai_compatible"]["base_url"], "https://text2.example/v1")
+        self.assertEqual(saved_after_second["openai_compatible"]["core"]["base_url"], "https://core2.example/v1")
+        self.assertEqual(saved_after_second["openai_compatible"]["review"]["base_url"], "https://review2.example/v1")
+        self.assertEqual(saved_after_second["openai_compatible"]["actor"]["base_url"], "https://actor2.example/v1")
         self.assertEqual(saved_after_second["image_generation"]["base_url"], "https://image2.example/v1")
         self.assertFalse(third["settings"]["cc_switch"]["enabled"])
         self.assertEqual(third["settings"]["cc_switch"]["service_url"], "http://cc-switch.local:15721")
@@ -1365,9 +1478,21 @@ class TurnStateTest(unittest.TestCase):
                     "cc_switch": {"enabled": True, "service_url": "http://local-switch"},
                     "openai_compatible": {
                         "enabled": False,
-                        "base_url": "https://local.example/v1",
-                        "api_key": "local-secret",
-                        "model": "local-model",
+                        "core": {
+                            "base_url": "https://local-core.example/v1",
+                            "api_key": "local-core-secret",
+                            "model": "local-core-model",
+                        },
+                        "review": {
+                            "base_url": "https://local-review.example/v1",
+                            "api_key": "local-review-secret",
+                            "model": "local-review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://local-actor.example/v1",
+                            "api_key": "local-actor-secret",
+                            "model": "local-actor-model",
+                        },
                     },
                     "image_generation": {
                         "base_url": "https://local-image.example/v1",
@@ -1385,9 +1510,16 @@ class TurnStateTest(unittest.TestCase):
                     "cc_switch": {"enabled": False, "service_url": "http://frontend-switch"},
                     "openai_compatible": {
                         "enabled": True,
-                        "base_url": "",
-                        "api_key": "",
-                        "model": "frontend-model",
+                        "core": {
+                            "base_url": "",
+                            "api_key": "",
+                            "model": "frontend-core-model",
+                        },
+                        "review": {
+                            "base_url": "https://frontend-review.example/v1",
+                            "api_key": "",
+                            "model": "",
+                        },
                     },
                     "image_generation": {
                         "base_url": "https://frontend-image.example/v1",
@@ -1408,9 +1540,15 @@ class TurnStateTest(unittest.TestCase):
             "AIRP_CC_SWITCH_ENABLED": "true",
             "AIRP_CC_SWITCH_SERVICE_URL": "http://env-switch",
             "AIRP_OPENAI_COMPATIBLE_ENABLED": "false",
-            "AIRP_OPENAI_COMPATIBLE_BASE_URL": "https://env.example/v1",
-            "AIRP_OPENAI_COMPATIBLE_API_KEY": "env-secret",
-            "AIRP_OPENAI_COMPATIBLE_MODEL": "env-model",
+            "AIRP_OPENAI_COMPATIBLE_CORE_BASE_URL": "https://env-core.example/v1",
+            "AIRP_OPENAI_COMPATIBLE_CORE_API_KEY": "env-core-secret",
+            "AIRP_OPENAI_COMPATIBLE_CORE_MODEL": "env-core-model",
+            "AIRP_OPENAI_COMPATIBLE_REVIEW_BASE_URL": "https://env-review.example/v1",
+            "AIRP_OPENAI_COMPATIBLE_REVIEW_API_KEY": "env-review-secret",
+            "AIRP_OPENAI_COMPATIBLE_REVIEW_MODEL": "env-review-model",
+            "AIRP_OPENAI_COMPATIBLE_ACTOR_BASE_URL": "https://env-actor.example/v1",
+            "AIRP_OPENAI_COMPATIBLE_ACTOR_API_KEY": "env-actor-secret",
+            "AIRP_OPENAI_COMPATIBLE_ACTOR_MODEL": "env-actor-model",
             "AIRP_IMAGE_GENERATION_BASE_URL": "https://env-image.example/v1",
             "AIRP_IMAGE_GENERATION_API_KEY": "env-image-secret",
             "AIRP_IMAGE_GENERATION_MODEL": "env-image-model",
@@ -1427,9 +1565,15 @@ class TurnStateTest(unittest.TestCase):
         self.assertFalse(result["cc_switch"]["enabled"])
         self.assertEqual(result["cc_switch"]["service_url"], "http://frontend-switch")
         self.assertTrue(result["openai_compatible"]["enabled"])
-        self.assertEqual(result["openai_compatible"]["base_url"], "https://env.example/v1")
-        self.assertEqual(result["openai_compatible"]["model"], "frontend-model")
-        self.assertTrue(result["openai_compatible"]["api_key_set"])
+        self.assertEqual(result["openai_compatible"]["core"]["base_url"], "https://env-core.example/v1")
+        self.assertEqual(result["openai_compatible"]["core"]["model"], "frontend-core-model")
+        self.assertTrue(result["openai_compatible"]["core"]["api_key_set"])
+        self.assertEqual(result["openai_compatible"]["review"]["base_url"], "https://frontend-review.example/v1")
+        self.assertEqual(result["openai_compatible"]["review"]["model"], "env-review-model")
+        self.assertTrue(result["openai_compatible"]["review"]["api_key_set"])
+        self.assertEqual(result["openai_compatible"]["actor"]["base_url"], "https://env-actor.example/v1")
+        self.assertEqual(result["openai_compatible"]["actor"]["model"], "env-actor-model")
+        self.assertTrue(result["openai_compatible"]["actor"]["api_key_set"])
         self.assertEqual(result["image_generation"]["base_url"], "https://frontend-image.example/v1")
         self.assertEqual(result["image_generation"]["model"], "env-image-model")
         self.assertTrue(result["image_generation"]["api_key_set"])
@@ -1450,9 +1594,15 @@ class TurnStateTest(unittest.TestCase):
                 "AIRP_CC_SWITCH_ENABLED": "",
                 "AIRP_CC_SWITCH_SERVICE_URL": "",
                 "AIRP_OPENAI_COMPATIBLE_ENABLED": "",
-                "AIRP_OPENAI_COMPATIBLE_BASE_URL": "",
-                "AIRP_OPENAI_COMPATIBLE_API_KEY": "",
-                "AIRP_OPENAI_COMPATIBLE_MODEL": "",
+                "AIRP_OPENAI_COMPATIBLE_CORE_BASE_URL": "",
+                "AIRP_OPENAI_COMPATIBLE_CORE_API_KEY": "",
+                "AIRP_OPENAI_COMPATIBLE_CORE_MODEL": "",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_BASE_URL": "",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_API_KEY": "",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_MODEL": "",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_BASE_URL": "",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_API_KEY": "",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_MODEL": "",
                 "AIRP_IMAGE_GENERATION_BASE_URL": "",
                 "AIRP_IMAGE_GENERATION_API_KEY": "",
                 "AIRP_IMAGE_GENERATION_MODEL": "",
@@ -1481,7 +1631,9 @@ class TurnStateTest(unittest.TestCase):
             json.dumps(
                 {
                     "env": {
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-core-test",
                         "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-test",
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-actor-test",
                         "ANTHROPIC_API_KEY": "claude-secret",
                     }
                 },
@@ -1499,9 +1651,21 @@ class TurnStateTest(unittest.TestCase):
                     },
                     "openai_compatible": {
                         "enabled": True,
-                        "base_url": "https://text.example/v1",
-                        "api_key": "openai-secret",
-                        "model": "text-model",
+                        "core": {
+                            "base_url": "https://core.example/v1",
+                            "api_key": "core-secret",
+                            "model": "core-model",
+                        },
+                        "review": {
+                            "base_url": "https://review.example/v1",
+                            "api_key": "review-secret",
+                            "model": "review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://actor.example/v1",
+                            "api_key": "actor-secret",
+                            "model": "actor-model",
+                        },
                     },
                     "image_generation": {
                         "base_url": "https://image.example/v1",
@@ -1540,11 +1704,39 @@ class TurnStateTest(unittest.TestCase):
             thread.join(timeout=5)
 
         self.assertTrue(result["ok"])
-        self.assertEqual([provider for provider, _ in calls], ["cc_switch", "openai_compatible"])
-        self.assertEqual(calls[0][1]["model"], "claude-test")
+        self.assertEqual([provider for provider, _ in calls], [
+            "cc_switch",
+            "cc_switch",
+            "cc_switch",
+            "openai_compatible",
+            "openai_compatible",
+            "openai_compatible",
+        ])
+        self.assertEqual([config["model"] for _, config in calls[:3]], [
+            "claude-core-test",
+            "claude-test",
+            "claude-actor-test",
+        ])
         self.assertEqual(calls[0][1]["headers"]["x-api-key"], "claude-secret")
-        self.assertEqual(calls[1][1]["api_key"], "openai-secret")
-        self.assertEqual([item["provider"] for item in result["results"]], ["cc_switch", "openai_compatible"])
+        self.assertEqual(calls[3][1]["api_key"], "core-secret")
+        self.assertEqual(calls[4][1]["api_key"], "review-secret")
+        self.assertEqual(calls[5][1]["api_key"], "actor-secret")
+        self.assertEqual([item["provider"] for item in result["results"]], [
+            "cc_switch",
+            "cc_switch",
+            "cc_switch",
+            "openai_compatible",
+            "openai_compatible",
+            "openai_compatible",
+        ])
+        self.assertEqual([item["tier"] for item in result["results"]], [
+            "core",
+            "review",
+            "actor",
+            "core",
+            "review",
+            "actor",
+        ])
 
     def test_server_llm_settings_test_uses_unsaved_payload_without_writing_file(self):
         server = _load_server()
@@ -1560,9 +1752,21 @@ class TurnStateTest(unittest.TestCase):
             },
             "openai_compatible": {
                 "enabled": False,
-                "base_url": "https://old.example/v1",
-                "api_key": "old-openai-secret",
-                "model": "old-model",
+                "core": {
+                    "base_url": "https://old-core.example/v1",
+                    "api_key": "old-core-secret",
+                    "model": "old-core-model",
+                },
+                "review": {
+                    "base_url": "https://old-review.example/v1",
+                    "api_key": "old-review-secret",
+                    "model": "old-review-model",
+                },
+                "actor": {
+                    "base_url": "https://old-actor.example/v1",
+                    "api_key": "old-actor-secret",
+                    "model": "old-actor-model",
+                },
             },
             "image_generation": {
                 "base_url": "https://image.example/v1",
@@ -1590,9 +1794,21 @@ class TurnStateTest(unittest.TestCase):
                         {
                             "openai_compatible": {
                                 "enabled": True,
-                                "base_url": "https://new.example/v1",
-                                "api_key": "new-openai-secret",
-                                "model": "new-model",
+                                "core": {
+                                    "base_url": "https://new-core.example/v1",
+                                    "api_key": "new-core-secret",
+                                    "model": "new-core-model",
+                                },
+                                "review": {
+                                    "base_url": "https://new-review.example/v1",
+                                    "api_key": "new-review-secret",
+                                    "model": "new-review-model",
+                                },
+                                "actor": {
+                                    "base_url": "https://new-actor.example/v1",
+                                    "api_key": "new-actor-secret",
+                                    "model": "new-actor-model",
+                                },
                             }
                         },
                         ensure_ascii=False,
@@ -1608,10 +1824,16 @@ class TurnStateTest(unittest.TestCase):
             thread.join(timeout=5)
 
         self.assertTrue(result["ok"])
-        self.assertEqual([provider for provider, _ in calls], ["openai_compatible"])
-        self.assertEqual(calls[0][1]["base_url"], "https://new.example/v1")
-        self.assertEqual(calls[0][1]["model"], "new-model")
-        self.assertEqual(calls[0][1]["api_key"], "new-openai-secret")
+        self.assertEqual([provider for provider, _ in calls], [
+            "openai_compatible",
+            "openai_compatible",
+            "openai_compatible",
+        ])
+        self.assertEqual(calls[0][1]["base_url"], "https://new-core.example/v1")
+        self.assertEqual(calls[0][1]["model"], "new-core-model")
+        self.assertEqual(calls[0][1]["api_key"], "new-core-secret")
+        self.assertEqual(calls[1][1]["api_key"], "new-review-secret")
+        self.assertEqual(calls[2][1]["api_key"], "new-actor-secret")
         self.assertEqual(json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8")), saved_settings)
 
     def test_server_llm_settings_test_save_true_writes_payload(self):
@@ -1626,9 +1848,21 @@ class TurnStateTest(unittest.TestCase):
                 {
                     "openai_compatible": {
                         "enabled": False,
-                        "base_url": "https://old.example/v1",
-                        "api_key": "old-secret",
-                        "model": "old-model",
+                        "core": {
+                            "base_url": "https://old-core.example/v1",
+                            "api_key": "old-core-secret",
+                            "model": "old-core-model",
+                        },
+                        "review": {
+                            "base_url": "https://old-review.example/v1",
+                            "api_key": "old-review-secret",
+                            "model": "old-review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://old-actor.example/v1",
+                            "api_key": "old-actor-secret",
+                            "model": "old-actor-model",
+                        },
                     },
                     "cc_switch": {
                         "enabled": False,
@@ -1659,9 +1893,21 @@ class TurnStateTest(unittest.TestCase):
                             "save": True,
                             "openai_compatible": {
                                 "enabled": True,
-                                "base_url": "https://new.example/v1",
-                                "api_key": "new-secret",
-                                "model": "new-model",
+                                "core": {
+                                    "base_url": "https://new-core.example/v1",
+                                    "api_key": "new-core-secret",
+                                    "model": "new-core-model",
+                                },
+                                "review": {
+                                    "base_url": "https://new-review.example/v1",
+                                    "api_key": "new-review-secret",
+                                    "model": "new-review-model",
+                                },
+                                "actor": {
+                                    "base_url": "https://new-actor.example/v1",
+                                    "api_key": "new-actor-secret",
+                                    "model": "new-actor-model",
+                                },
                             },
                         },
                         ensure_ascii=False,
@@ -1677,13 +1923,19 @@ class TurnStateTest(unittest.TestCase):
             thread.join(timeout=5)
 
         self.assertTrue(result["ok"])
-        self.assertEqual([provider for provider, _ in calls], ["openai_compatible"])
-        self.assertEqual(calls[0][1]["base_url"], "https://new.example/v1")
+        self.assertEqual([provider for provider, _ in calls], [
+            "openai_compatible",
+            "openai_compatible",
+            "openai_compatible",
+        ])
+        self.assertEqual(calls[0][1]["base_url"], "https://new-core.example/v1")
         saved = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
         self.assertTrue(saved["openai_compatible"]["enabled"])
-        self.assertEqual(saved["openai_compatible"]["base_url"], "https://new.example/v1")
-        self.assertEqual(saved["openai_compatible"]["api_key"], "new-secret")
-        self.assertEqual(saved["openai_compatible"]["model"], "new-model")
+        self.assertEqual(saved["openai_compatible"]["core"]["base_url"], "https://new-core.example/v1")
+        self.assertEqual(saved["openai_compatible"]["core"]["api_key"], "new-core-secret")
+        self.assertEqual(saved["openai_compatible"]["core"]["model"], "new-core-model")
+        self.assertEqual(saved["openai_compatible"]["review"]["api_key"], "new-review-secret")
+        self.assertEqual(saved["openai_compatible"]["actor"]["api_key"], "new-actor-secret")
 
     def test_server_llm_settings_post_invalid_json_returns_json_400(self):
         server = _load_server()
@@ -1727,9 +1979,21 @@ class TurnStateTest(unittest.TestCase):
                 {
                     "openai_compatible": {
                         "enabled": True,
-                        "base_url": "https://text.example/v1",
-                        "api_key": "secret",
-                        "model": "model",
+                        "core": {
+                            "base_url": "https://core.example/v1",
+                            "api_key": "core-secret",
+                            "model": "core-model",
+                        },
+                        "review": {
+                            "base_url": "https://review.example/v1",
+                            "api_key": "review-secret",
+                            "model": "review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://actor.example/v1",
+                            "api_key": "actor-secret",
+                            "model": "actor-model",
+                        },
                     }
                 },
                 ensure_ascii=False,

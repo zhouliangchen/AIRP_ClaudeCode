@@ -2,6 +2,8 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -170,6 +172,70 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertTrue((artifacts / "delivery.result.json").exists())
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
+
+    def test_run_round_refreshes_current_run_after_replay_switch(self):
+        replay_dir = self.card / ".agent_runs" / "round-000002-replay-001"
+        replay_dir.mkdir(parents=True)
+        (replay_dir / "prompts").mkdir()
+        (replay_dir / "prompts" / "input_analyst.prompt.md").write_text(
+            "# input replay\n",
+            encoding="utf-8",
+        )
+        for name in ["gm", "story", "critic"]:
+            (replay_dir / "prompts" / f"{name}.prompt.md").write_text(
+                f"# {name} replay\n",
+                encoding="utf-8",
+            )
+        replay_manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        replay_manifest["round_id"] = "round-000002-replay-001"
+        _write_json(replay_dir / "manifest.json", replay_manifest)
+        _write_json(
+            replay_dir / "input.json",
+            {
+                "raw_text": "我推开门。",
+                "routed_input": {"role_channel": "我推开门。"},
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+            },
+        )
+        _write_json(replay_dir / "gm.context.json", {"agent": "gm"})
+        _write_json(replay_dir / "player.context.json", {"agent": "player", "actor_id": "player"})
+
+        seen = {"gm_prompt": ""}
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "gm":
+                seen["gm_prompt"] = prompt
+            return _fake_run_claude(agent_key, prompt, cwd)
+
+        def apply_current_run(*_args, **_kwargs):
+            (self.card / ".agent_runs" / "current").write_text(
+                str(replay_dir.resolve()),
+                encoding="utf-8",
+            )
+            return {
+                "ok": True,
+                "capability_requests": [],
+                "manifest": {
+                    "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                    "style_profile": {},
+                },
+            }
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = apply_current_run
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertIn("# gm replay", seen["gm_prompt"])
+        self.assertTrue((replay_dir / "artifacts" / "gm.output.json").exists())
 
     def test_run_round_processes_persistent_assets_requirement_after_critic(self):
         import assets_ui_runtime
@@ -351,7 +417,7 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertEqual(pump["skipped"][0]["reason"], "phase_deferred")
         after_critic = result["runtime_pump"]["after_critic"]
         self.assertEqual(after_critic["processed"][0]["type"], "assets_task")
-        self.assertIn(after_critic["processed"][0]["outputs"]["status"], {"queued", "deferred"})
+        self.assertIn(after_critic["processed"][0]["outputs"]["status"], {"started", "queued", "deferred"})
         self.assertEqual(
             result["runtime_pump"]["after_critic"]["processed"][0]["type"],
             "assets_task",
@@ -359,7 +425,13 @@ class RoundRuntimeTest(unittest.TestCase):
         agent_intents = _load_module("agent_intents")
         pending = agent_intents.list_intents(self.run_dir, "pending")
         self.assertEqual(pending, [])
-        completed = agent_intents.list_intents(self.run_dir, "completed")
+        completed = []
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            completed = agent_intents.list_intents(self.run_dir, "completed")
+            if completed:
+                break
+            time.sleep(0.02)
         self.assertEqual(completed[0]["type"], "assets_task")
 
     def test_input_analysis_apply_failure_retries_with_rejection_feedback(self):
@@ -679,6 +751,74 @@ class RoundRuntimeTest(unittest.TestCase):
         history = (self.run_dir / "repair_history.jsonl").read_text(encoding="utf-8")
         self.assertIn("story_composition", history)
 
+    def test_run_round_delivers_after_auto_repair_when_only_soft_warnings_remain(self):
+        calls = {"story": 0, "critic": 0}
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "story":
+                calls["story"] += 1
+                return json.dumps(
+                    {
+                        "content": (
+                            "<content>repaired story content after critic feedback</content>"
+                            if calls["story"] > 1
+                            else "<content>first draft story content</content>"
+                        ),
+                        "character_dialogues": [],
+                        "metadata": {},
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "critic":
+                calls["critic"] += 1
+                return json.dumps(
+                    {
+                        "decision": "revise",
+                        "hard_failures": ["fix the first draft"] if calls["critic"] == 1 else [],
+                        "soft_issues": [] if calls["critic"] == 1 else [{"issue": "minor style polish remains"}],
+                        "repair_instruction": "Rewrite the story." if calls["critic"] == 1 else "Polish style if there is another pass.",
+                        "system_iteration_suggestion": "",
+                        "quality_checks": {},
+                        "repair_routing": {
+                            "stage": "story_composition",
+                            "target_agents": ["story"],
+                            "rollback": "story_only",
+                            "can_auto_repair": True,
+                            "risk": "low",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            return _fake_run_claude(agent_key, prompt, cwd)
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
+            "ok": True,
+            "capability_requests": [],
+            "manifest": {
+                "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                "style_profile": {},
+            },
+        }
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=run_claude,
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["story"], 2)
+        self.assertEqual(calls["critic"], 2)
+        self.assertIn("critic_soft_warning", result["runtime"]["stages"])
+        critic = json.loads((self.run_dir / "critic.report.json").read_text(encoding="utf-8"))
+        self.assertEqual(critic["decision"], "pass")
+        self.assertEqual(critic["delivery_decision"], "pass_with_soft_warnings")
+        self.assertEqual(critic["soft_warning_policy"], "auto_repair_exhausted_soft_only")
+
     def test_run_round_restores_actor_short_term_when_critic_blocks(self):
         actor_dir = self.card / "characters" / "player"
         actor_dir.mkdir(parents=True)
@@ -885,6 +1025,11 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "complete")
         self.assertEqual(len(prompts), 3)
+        actor_prompt_items = [item for item in prompts if item[0] == "post_round_memory:character_Ada"]
+        objective_prompt_items = [item for item in prompts if item[0] == "post_round_objective_memory:character_Ada"]
+        self.assertEqual(len(actor_prompt_items), 2)
+        self.assertEqual(len(objective_prompt_items), 1)
+        prompts[:] = [actor_prompt_items[0], actor_prompt_items[1], objective_prompt_items[0]]
         self.assertEqual(prompts[0][0], "post_round_memory:character_Ada")
         self.assertIn("披风边缘有银线", prompts[1][1])
         self.assertEqual(prompts[2][0], "post_round_objective_memory:character_Ada")
@@ -894,6 +1039,93 @@ class RoundRuntimeTest(unittest.TestCase):
             (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8"),
             "Ada在雨夜裹紧披风。\n",
         )
+
+    def test_run_post_round_memory_jobs_dispatches_actor_and_objective_jobs_in_parallel(self):
+        for name in ("Ada", "Ben"):
+            actor_dir = self.card / "characters" / name
+            actor_dir.mkdir(parents=True, exist_ok=True)
+            (actor_dir / "profile.md").write_text(f"I am {name}.\n", encoding="utf-8")
+            (actor_dir / "long_term_memories.md").write_text("", encoding="utf-8")
+            (actor_dir / "short_term_memories.md").write_text(f"{name}: I saw the gate.\n", encoding="utf-8")
+            (actor_dir / "key_memories.json").write_text('{"memories":[]}', encoding="utf-8")
+        _write_json(
+            self.run_dir / "story.input.json",
+            {
+                "round_id": self.run_dir.name,
+                "loop_outputs": {
+                    "actors": {
+                        "character:Ada": [
+                            {
+                                "agent": "character",
+                                "agent_id": "character:Ada",
+                                "character_name": "Ada",
+                                "events": [{"type": "reply", "target": "gm", "content": "I saw the gate."}],
+                            }
+                        ],
+                        "character:Ben": [
+                            {
+                                "agent": "character",
+                                "agent_id": "character:Ben",
+                                "character_name": "Ben",
+                                "events": [{"type": "reply", "target": "gm", "content": "I heard the bell."}],
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def run_claude(agent_key, prompt, cwd):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.05)
+                if agent_key.startswith("post_round_objective_memory:"):
+                    name = "Ada" if agent_key.endswith("Ada") else "Ben"
+                    return json.dumps(
+                        {
+                            "agent_id": "gm",
+                            "updates": [
+                                {
+                                    "character_name": name,
+                                    "recent": f"{name} completed the round.",
+                                    "objective_profile": f"{name} objective profile.",
+                                    "actor_profile": f"I am {name}.",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                actor_id = "character:Ada" if agent_key.endswith("Ada") else "character:Ben"
+                name = actor_id.split(":", 1)[1]
+                return json.dumps(
+                    {
+                        "agent_id": actor_id,
+                        "character_name": name,
+                        "long_term_memories": f"I remember the round as {name}.",
+                        "key_memories": [],
+                    },
+                    ensure_ascii=False,
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+        result = self.round_runtime._run_post_round_memory_jobs(
+            self.card,
+            self.root,
+            self.run_dir,
+            run_claude,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "complete")
+        self.assertGreater(max_active, 1)
 
 
 if __name__ == "__main__":

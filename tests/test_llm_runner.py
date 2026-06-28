@@ -16,13 +16,13 @@ class LlmRunnerTest(unittest.TestCase):
         sys.modules.pop("llm_runner", None)
         self.mod = importlib.import_module("llm_runner")
         self.original_read_settings = self.mod.llm_settings.read_effective_settings
-        self.original_resolve_model = self.mod.llm_settings.resolve_claude_code_model
+        self.original_resolve_model = self.mod.llm_settings.resolve_claude_code_model_tier
         self.original_auth_headers = self.mod.llm_settings.claude_code_auth_headers
         self.original_complete = self.mod.llm_provider.complete
 
     def tearDown(self):
         self.mod.llm_settings.read_effective_settings = self.original_read_settings
-        self.mod.llm_settings.resolve_claude_code_model = self.original_resolve_model
+        self.mod.llm_settings.resolve_claude_code_model_tier = self.original_resolve_model
         self.mod.llm_settings.claude_code_auth_headers = self.original_auth_headers
         self.mod.llm_provider.complete = self.original_complete
 
@@ -34,15 +34,28 @@ class LlmRunnerTest(unittest.TestCase):
             },
             "openai_compatible": {
                 "enabled": openai_enabled,
-                "base_url": "https://llm.example/v1",
-                "api_key": "openai-key",
-                "model": "chat-model",
+                "core": {
+                    "base_url": "https://core.example/v1",
+                    "api_key": "core-key",
+                    "model": "core-model",
+                },
+                "review": {
+                    "base_url": "https://review.example/v1",
+                    "api_key": "review-key",
+                    "model": "review-model",
+                },
+                "actor": {
+                    "base_url": "https://actor.example/v1",
+                    "api_key": "actor-key",
+                    "model": "actor-model",
+                },
             },
         }
 
-    def _patch_settings(self, settings, *, model="claude-sonnet", headers=None):
+    def _patch_settings(self, settings, *, models=None, headers=None):
+        model_by_tier = models or {"core": "claude-opus", "review": "claude-sonnet", "actor": "claude-haiku"}
         self.mod.llm_settings.read_effective_settings = lambda: settings
-        self.mod.llm_settings.resolve_claude_code_model = lambda: model
+        self.mod.llm_settings.resolve_claude_code_model_tier = lambda tier: model_by_tier.get(tier, "")
         self.mod.llm_settings.claude_code_auth_headers = lambda: dict(headers or {"x-api-key": "anthropic-key"})
 
     def test_prefers_cc_switch_when_both_providers_enabled(self):
@@ -66,10 +79,39 @@ class LlmRunnerTest(unittest.TestCase):
 
         self.assertEqual(text, "cc result")
         self.assertEqual([call[0] for call in calls], ["cc_switch"])
-        self.assertEqual(calls[0][3]["model"], "claude-sonnet")
+        self.assertEqual(calls[0][3]["model"], "claude-opus")
         self.assertEqual(calls[0][3]["headers"], {"x-api-key": "anthropic-key"})
         self.assertNotIn("api_key", calls[0][3])
         self.assertEqual(self.mod.get_last_result()["provider"], "cc_switch")
+
+    def test_cc_switch_selects_model_tier_by_agent_key(self):
+        self._patch_settings(self._settings(cc_enabled=True, openai_enabled=False))
+        calls = []
+
+        def fake_complete(provider, prompt, *, agent_key, config):
+            calls.append((agent_key, config["model"]))
+            return {
+                "text": "ok",
+                "provider": provider,
+                "model": config["model"],
+                "usage": {},
+                "raw_response": {},
+                "status": 200,
+            }
+
+        self.mod.llm_provider.complete = fake_complete
+
+        self.mod.run_llm_agent("gm", "prompt", ROOT)
+        self.mod.run_llm_agent("projection", "prompt", ROOT)
+        self.mod.run_llm_agent("player", "prompt", ROOT)
+        self.mod.run_llm_agent("character:苏黎", "prompt", ROOT)
+
+        self.assertEqual(calls, [
+            ("gm", "claude-opus"),
+            ("projection", "claude-sonnet"),
+            ("player", "claude-haiku"),
+            ("character:苏黎", "claude-haiku"),
+        ])
 
     def test_falls_back_to_openai_compatible_when_cc_switch_fails(self):
         self._patch_settings(self._settings(cc_enabled=True, openai_enabled=True))
@@ -116,7 +158,37 @@ class LlmRunnerTest(unittest.TestCase):
         text = self.mod.run_llm_agent("critic", "prompt", ROOT)
 
         self.assertEqual(text, "openai only")
-        self.assertEqual(calls, [("openai_compatible", self._settings(cc_enabled=False, openai_enabled=True)["openai_compatible"])])
+        self.assertEqual(calls, [("openai_compatible", self._settings(cc_enabled=False, openai_enabled=True)["openai_compatible"]["core"])])
+
+    def test_openai_compatible_selects_model_tier_by_agent_key(self):
+        self._patch_settings(self._settings(cc_enabled=False, openai_enabled=True))
+        calls = []
+
+        def fake_complete(provider, prompt, *, agent_key, config):
+            calls.append((agent_key, config["base_url"], config["api_key"], config["model"]))
+            return {
+                "text": "ok",
+                "provider": provider,
+                "model": config["model"],
+                "usage": {},
+                "raw_response": {},
+                "status": 200,
+            }
+
+        self.mod.llm_provider.complete = fake_complete
+
+        self.mod.run_llm_agent("gm", "prompt", ROOT)
+        self.mod.run_llm_agent("projection", "prompt", ROOT)
+        self.mod.run_llm_agent("player", "prompt", ROOT)
+        self.mod.run_llm_agent("character:苏黎", "prompt", ROOT)
+
+        self.assertEqual(calls, [
+            ("gm", "https://core.example/v1", "core-key", "core-model"),
+            ("projection", "https://review.example/v1", "review-key", "review-model"),
+            ("player", "https://actor.example/v1", "actor-key", "actor-model"),
+            ("character:苏黎", "https://actor.example/v1", "actor-key", "actor-model"),
+        ])
+
 
     def test_raises_when_no_provider_is_enabled(self):
         self._patch_settings(self._settings(cc_enabled=False, openai_enabled=False))
@@ -125,14 +197,14 @@ class LlmRunnerTest(unittest.TestCase):
             self.mod.run_llm_agent("gm", "prompt", ROOT)
 
     def test_raises_when_enabled_cc_switch_has_no_claude_code_model(self):
-        self._patch_settings(self._settings(cc_enabled=True, openai_enabled=False), model="")
+        self._patch_settings(self._settings(cc_enabled=True, openai_enabled=False), models={"core": ""})
 
         with self.assertRaisesRegex(self.mod.LlmRunnerError, "cc_switch.*model"):
             self.mod.run_llm_agent("gm", "prompt", ROOT)
 
     def test_raises_when_openai_compatible_is_enabled_without_model(self):
         settings = self._settings(cc_enabled=False, openai_enabled=True)
-        settings["openai_compatible"]["model"] = ""
+        settings["openai_compatible"]["core"]["model"] = ""
         self._patch_settings(settings)
 
         with self.assertRaisesRegex(self.mod.LlmRunnerError, "openai_compatible.*model"):
@@ -140,7 +212,7 @@ class LlmRunnerTest(unittest.TestCase):
 
     def test_dual_provider_failure_redacts_secrets_from_runner_error(self):
         settings = self._settings(cc_enabled=True, openai_enabled=True)
-        settings["openai_compatible"]["api_key"] = "openai-secret"
+        settings["openai_compatible"]["core"]["api_key"] = "openai-secret"
         self._patch_settings(
             settings,
             headers={
@@ -195,7 +267,7 @@ class LlmRunnerTest(unittest.TestCase):
         self.mod.llm_provider.complete = lambda provider, prompt, *, agent_key, config: {
             "text": "ok",
             "provider": provider,
-            "model": "chat-model",
+            "model": config["model"],
             "usage": {},
             "raw_response": {},
             "status": 200,

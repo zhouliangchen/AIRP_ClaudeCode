@@ -46,6 +46,27 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertEqual(normalized["intent_type"], "assets_task")
         self.assertEqual(normalized["status"], "recognized")
 
+    def test_normalizes_assets_capability_name_used_as_target(self):
+        request = {
+            "id": "cap-assets-alias",
+            "requested_by": "input_analyst",
+            "target": "assets.generate_image",
+            "capability": "assets.generate_image",
+            "summary": "Create a classroom illustration.",
+            "reason": "User requested a story image.",
+            "source_channel": "user_instruction",
+            "risk": "low",
+            "authorization_gate": "none",
+            "payload": {"asset_requirement": {"scene_illustration_each_round": True}},
+            "evidence": {"raw_excerpt": "每一轮必须提供一张剧情插图"},
+        }
+
+        normalized = self.registry.normalize_capability_request(request)
+
+        self.assertEqual(normalized["target"], "assets-ui")
+        self.assertEqual(normalized["status"], "recognized")
+        self.assertEqual(normalized["intent_type"], "assets_task")
+
     def test_character_rename_capability_allows_input_analyst_and_gm(self):
         base = {
             "id": "rename-player",

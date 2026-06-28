@@ -166,6 +166,32 @@ class AgentTurnLoopTest(unittest.TestCase):
             ],
         )
 
+    def test_normalize_player_character_actor_calls_maps_current_player_name_to_player(self):
+        card = self.run_dir.parent
+        player_mapping = card / "characters" / "player.md"
+        player_mapping.parent.mkdir(parents=True, exist_ok=True)
+        player_mapping.write_text("name: Yumeng\npath: characters/Yumeng\n", encoding="utf-8")
+        gm_output = {
+            "actor_calls": [
+                {
+                    "actor_id": "character:Yumeng",
+                    "prompt": "What do you do?",
+                    "visibility_basis": {
+                        "mode": "direct",
+                        "summary": "Yumeng is directly addressed.",
+                        "target_actor": "character:Yumeng",
+                    },
+                }
+            ]
+        }
+
+        normalized = self.agent_turn_loop._normalize_player_character_actor_calls(gm_output, self.run_dir)
+
+        self.assertEqual(normalized["actor_calls"][0]["actor_id"], "player")
+        self.assertEqual(normalized["actor_calls"][0]["visibility_basis"]["target_actor"], "player")
+        self.assertEqual(normalized["actor_calls"][0]["visibility_basis"]["visible_to"], ["player"])
+        self.assertEqual(normalized["actor_calls"][0]["metadata"]["original_actor_id"], "character:Yumeng")
+
     def promote_loop_outputs_to_artifacts(self):
         artifacts = self.run_dir / "artifacts"
         self.agent_run.write_json(
@@ -439,6 +465,63 @@ class AgentTurnLoopTest(unittest.TestCase):
         )
         self.assertNotIn("有人对我说：", short_term)
         self.assertNotIn("我回应：", short_term)
+
+    def test_projection_needs_rewrite_returns_feedback_to_gm_without_actor_dispatch(self):
+        gm_calls = {"count": 0}
+        actor_called = {"player": False}
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                gm_calls["count"] += 1
+                if gm_calls["count"] == 1:
+                    return {
+                        "agent": "gm",
+                        "scene_beats": [],
+                        "events": [],
+                        "actor_calls": [{
+                            "call_id": "call-player-1",
+                            "actor_id": "player",
+                            "prompt": "You know the hallway is empty.",
+                            "reason": "test projection rejection",
+                            "visibility_basis": visibility_basis("player"),
+                        }],
+                        "parallel_groups": [],
+                        "world_state_delta": [],
+                        "decision_point": None,
+                        "stop_reason": "continue",
+                    }
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "complete",
+                }
+            if agent_key == "projection":
+                return {
+                    "decision": "needs_rewrite",
+                    "target_actor_id": "player",
+                    "source_call_id": "call-player-1",
+                    "feedback": "Use only subjective sensory details.",
+                }
+            if agent_key == "player":
+                actor_called["player"] = True
+                raise AssertionError("player actor should not receive rejected projection")
+            raise AssertionError(agent_key)
+
+        dispatch.handles_projection = True
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(gm_calls["count"], 2)
+        self.assertFalse(actor_called["player"])
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        feedback_events = actor_outputs["player"][0]["events"]
+        self.assertEqual(feedback_events[0]["type"], "projection_feedback")
+        self.assertIn("subjective sensory", feedback_events[0]["content"])
 
     def test_initial_role_action_enters_player_short_term_without_narrative_guidance(self):
         card = self.run_dir.parent
@@ -3088,6 +3171,27 @@ class AgentTurnLoopTest(unittest.TestCase):
         state = self.agent_run.read_json(self.run_dir / "side_threads" / "side_suli" / "state.json")
         self.assertEqual(state["allowed_characters"], [normalized_actor])
         self.assertEqual(gm_output["subgm_commands"][0]["allowed_characters"], [normalized_actor])
+
+    def test_gm_loop_filters_assets_image_requests_from_subgm_commands(self):
+        gm_output = {
+            "subgm_commands": [{
+                "action": "start",
+                "thread_id": "illustration-request",
+                "title": "image request",
+                "outline": "Generate a scene illustration.",
+                "time_window": "current_scene",
+                "location": "classroom",
+                "objective": "Generate image URL.",
+                "allowed_characters": [],
+                "forbidden_characters": [],
+                "message": "Generate an illustration.",
+                "metadata": {"capability": "assets.generate_image"},
+            }],
+        }
+
+        self.agent_turn_loop._normalize_subgm_command_actor_ids(gm_output, {})
+
+        self.assertEqual(gm_output["subgm_commands"], [])
 
     def test_gm_loop_rejects_same_output_start_reservation_collision_before_writes(self):
         self.register_characters("SuLi")

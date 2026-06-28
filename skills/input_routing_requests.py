@@ -194,8 +194,10 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
         passthrough_keys = (
             "asset_requirement",
             "characters",
+            "character_appearances",
             "reference_policy",
             "reference_candidates",
+            "art_style",
             "planner_hints",
             "ui_schema",
             "postprocess_contract",
@@ -203,6 +205,15 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
         for key in passthrough_keys:
             if key in payload:
                 intent_payload[key] = payload[key]
+        if (
+            payload.get("scene_illustration_each_round") is True
+            and not isinstance(intent_payload.get("asset_requirement"), dict)
+        ):
+            intent_payload["asset_requirement"] = {
+                "scene_illustration_each_round": True,
+                "reason": str(request.get("reason") or request.get("summary") or ""),
+                "prompt": str(payload.get("prompt") or request.get("summary") or ""),
+            }
         return intent_payload
 
     if capability == "source.change_request":

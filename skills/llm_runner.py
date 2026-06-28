@@ -38,6 +38,14 @@ def _require_model(provider: str, config: Mapping[str, Any]) -> None:
         raise LlmRunnerError(f"{provider}: missing required model")
 
 
+def model_tier_for_agent(agent_key: str) -> str:
+    if agent_key == "projection":
+        return "review"
+    if agent_key == "player" or agent_key.startswith("character:"):
+        return "actor"
+    return "core"
+
+
 def _secret_values(*configs: Mapping[str, Any]) -> list[str]:
     values: list[str] = []
     for config in configs:
@@ -78,15 +86,20 @@ def _complete(provider: str, prompt: str, *, agent_key: str, config: Mapping[str
     return text
 
 
-def _cc_switch_config(settings: Mapping[str, Any]) -> dict[str, Any]:
+def _cc_switch_config(settings: Mapping[str, Any], agent_key: str) -> dict[str, Any]:
     config = dict(settings.get("cc_switch") or {})
-    config["model"] = llm_settings.resolve_claude_code_model()
+    tier = model_tier_for_agent(agent_key)
+    config["model"] = llm_settings.resolve_claude_code_model_tier(tier)
     config["headers"] = llm_settings.claude_code_auth_headers()
     return config
 
 
-def _openai_compatible_config(settings: Mapping[str, Any]) -> dict[str, Any]:
-    return dict(settings.get("openai_compatible") or {})
+def _openai_compatible_config(settings: Mapping[str, Any], agent_key: str) -> dict[str, Any]:
+    openai = settings.get("openai_compatible") or {}
+    tier = model_tier_for_agent(agent_key)
+    tier_config = openai.get(tier) if isinstance(openai, Mapping) else None
+    config = dict(tier_config if isinstance(tier_config, Mapping) else {})
+    return config
 
 
 def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
@@ -101,9 +114,9 @@ def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
     if not cc_enabled and not openai_enabled:
         raise LlmRunnerError("No enabled LLM provider is available.")
 
-    openai_config = _openai_compatible_config(settings)
+    openai_config = _openai_compatible_config(settings, agent_key)
     if cc_enabled:
-        cc_config = _cc_switch_config(settings)
+        cc_config = _cc_switch_config(settings, agent_key)
         try:
             _require_model("cc_switch", cc_config)
             return _complete("cc_switch", prompt, agent_key=agent_key, config=cc_config)

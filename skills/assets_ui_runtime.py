@@ -129,6 +129,11 @@ def process_persistent_requirements(
             "kind": "scene_illustration",
             "target": "scene_illustration",
             "prompt": _text(scene_requirement.get("prompt")) or _default_persistent_prompt(card, Path(run_dir)),
+            "characters": _as_list(scene_requirement.get("characters"))
+            or _infer_current_scene_characters(card, Path(run_dir)),
+            "character_appearances": _as_list(scene_requirement.get("character_appearances")),
+            "reference_policy": _text(scene_requirement.get("reference_policy")),
+            "art_style": _text(scene_requirement.get("art_style")),
             "asset_requirement": {
                 "scene_illustration_each_round": True,
                 "reason": _text(scene_requirement.get("reason")),
@@ -171,13 +176,16 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     card = Path(context["card_path"])
     run_dir = Path(context["run_dir"])
     job_id = _text(payload.get("job_id")) or f"scene-{run_dir.name}"
-    characters = _safe_character_names(payload.get("characters"))
+    requested_characters = _safe_character_names(payload.get("characters"))
+    appearance_specs = _character_appearance_specs(payload, requested_characters)
+    characters = _appearance_character_names(appearance_specs)
     reference_candidates = _as_string_list(payload.get("reference_candidates"))
     using_default_references = False
-    if not reference_candidates and characters:
-        reference_candidates = [f"characters/{name}/{name}.png" for name in characters]
+    if not reference_candidates and appearance_specs:
+        reference_candidates = [spec["reference_path"] for spec in appearance_specs]
         using_default_references = True
-    reference_policy = _text(payload.get("reference_policy")) or "optional"
+    reference_policy = _default_reference_policy(payload, characters)
+    prompt = _scene_illustration_prompt(context, payload, card, run_dir, characters, reference_candidates)
     plan: dict[str, Any] = {
         "schema_version": 1,
         "scene_jobs": [
@@ -185,27 +193,32 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
                 "job_id": job_id,
                 "kind": _text(payload.get("kind")) or "scene_illustration",
                 "target": _text(payload.get("target")) or "scene_illustration",
-                "prompt": _text(payload.get("prompt")) or _default_persistent_prompt(card, run_dir),
+                "prompt": prompt,
                 "characters": characters,
+                "art_style": _text(payload.get("art_style")),
                 "reference_policy": reference_policy,
                 "reference_candidates": reference_candidates,
+                "character_appearances": appearance_specs,
             }
         ],
     }
     if reference_policy == "required" and using_default_references:
         reference_jobs = []
         profiles = context.get("character_profiles") if isinstance(context.get("character_profiles"), dict) else {}
-        for name in characters:
-            target_path = f"characters/{name}/{name}.png"
+        for spec in appearance_specs:
+            name = spec["name"]
+            target_path = spec["reference_path"]
             if (card / Path(target_path)).exists():
                 continue
             profile = _text(profiles.get(name))
             reference_jobs.append(
                 {
-                    "job_id": f"character-{agent_run.safe_name(name)}-reference",
+                    "job_id": _character_reference_job_id(spec),
                     "character_name": name,
+                    "appearance_state": spec.get("appearance_state", ""),
+                    "appearance_description": spec.get("description", ""),
                     "target_path": target_path,
-                    "prompt": profile or f"character reference portrait for {name}",
+                    "prompt": _character_reference_prompt(spec, profile),
                 }
             )
         if reference_jobs:
@@ -214,6 +227,58 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     if requirement:
         plan["asset_requirement_update"] = requirement
     return plan
+
+
+def _default_reference_policy(payload: dict[str, Any], characters: list[str]) -> str:
+    policy = _text(payload.get("reference_policy"))
+    if policy == "optional":
+        return "optional"
+    if policy in {"required", "reuse"}:
+        return "required"
+    if characters:
+        return "required"
+    return "optional"
+
+
+def _scene_illustration_prompt(
+    context: dict[str, Any],
+    payload: dict[str, Any],
+    card: Path,
+    run_dir: Path,
+    characters: list[str],
+    reference_candidates: list[str],
+) -> str:
+    parts: list[str] = []
+    hints = _text(payload.get("planner_hints"))
+    if hints:
+        parts.append(f"本轮画面重点：{hints}")
+    art_style = _text(payload.get("art_style"))
+    if art_style:
+        parts.append(f"用户指定画风：{art_style}")
+    elif not _has_available_reference_images(card, context, reference_candidates):
+        parts.append(
+            "画风策略：当前存档没有可用参考图片；请根据剧情题材、时代、情绪、场景和角色状态智能匹配画风，"
+            "并在后续同一存档中保持一致。"
+        )
+    story = context.get("story_output") if isinstance(context.get("story_output"), dict) else {}
+    story_text = _text(story.get("content")) or _default_persistent_prompt(card, run_dir)
+    if story_text:
+        parts.append(f"剧情依据：{_trim_text(story_text, 900)}")
+    summary = _text(payload.get("summary")) or _text(payload.get("prompt"))
+    if summary:
+        parts.append(f"需求来源：{summary}")
+    profiles = context.get("character_profiles") if isinstance(context.get("character_profiles"), dict) else {}
+    profile_lines = []
+    for name in characters:
+        profile = _trim_text(_text(profiles.get(name)), 180)
+        if profile:
+            profile_lines.append(f"{name}：{profile}")
+    if profile_lines:
+        parts.append("角色形象参考：" + "；".join(profile_lines))
+    if characters:
+        parts.append("画面必须包含角色：" + "、".join(characters))
+    parts.append("生成一张剧情插图，强调当前场景、角色关系、动作和情绪；保持小说插画质感，避免文字、对白气泡、UI和水印。")
+    return "\n".join(part for part in parts if part).strip()
 
 
 def _materialize_character_reference_job(
@@ -230,6 +295,8 @@ def _materialize_character_reference_job(
         "job_id": job_id,
         "kind": "character_reference",
         "character_name": _text(job.get("character_name")),
+        "appearance_state": _text(job.get("appearance_state")),
+        "appearance_description": _text(job.get("appearance_description")),
         "target_path": target_path,
         "prompt": _text(job.get("prompt")),
         "status": "deferred",
@@ -244,6 +311,8 @@ def _materialize_character_reference_job(
             target_path,
             [],
             run_command,
+            output_path=target_path,
+            characters=[payload["character_name"]] if payload["character_name"] else [],
         )
         if payload["command"]["returncode"] == 0:
             payload["status"] = "queued"
@@ -278,6 +347,8 @@ def _materialize_scene_job(
         "target": _text(job.get("target")) or "scene_illustration",
         "prompt": _text(job.get("prompt")),
         "characters": _safe_character_names(job.get("characters")),
+        "art_style": _text(job.get("art_style")),
+        "character_appearances": _normalize_job_appearances(job.get("character_appearances")),
         "reference_policy": _text(job.get("reference_policy")) or "optional",
         "reference_candidates": references,
         "resolved_references": existing_references,
@@ -299,6 +370,7 @@ def _materialize_scene_job(
             payload["target"],
             worker_references,
             run_command,
+            characters=payload["characters"],
         )
         _apply_worker_result(payload, payload["command"])
     _write_job(card, run_dir, job_id, payload)
@@ -342,6 +414,9 @@ def _run_job_command(
     target: str,
     references: list[str],
     run_command: Callable[..., Any],
+    *,
+    output_path: str = "",
+    characters: list[str] | None = None,
 ) -> dict[str, Any]:
     command = [
         sys.executable,
@@ -356,8 +431,12 @@ def _run_job_command(
         "--job-id",
         job_id,
     ]
+    if output_path:
+        command.extend(["--output-path", output_path])
     for reference in references:
         command.extend(["--reference", reference])
+    for character in characters or []:
+        command.extend(["--character", character])
     command.append("--async")
     result = run_command(
         command,
@@ -428,6 +507,13 @@ def _apply_asset_requirement_update(card: Path, payload: dict[str, Any], plan: d
         "enabled": True,
         "reason": _text(requested.get("reason")),
         "prompt": _text(requested.get("prompt")),
+        "characters": _safe_character_names(payload.get("characters")),
+        "character_appearances": _character_appearance_specs(
+            payload,
+            _safe_character_names(payload.get("characters")),
+        ),
+        "art_style": _text(payload.get("art_style")),
+        "reference_policy": _default_reference_policy(payload, _safe_character_names(payload.get("characters"))),
     }
     agent_run.write_json(card / "ui_manifest.json", manifest)
     return {"applied": True, "scene_illustration_each_round": True, "reason": _text(requested.get("reason"))}
@@ -455,13 +541,42 @@ def _load_run_json(run_dir: Path, name: str) -> dict[str, Any]:
 
 
 def _load_character_profiles(card: Path, payload: dict[str, Any]) -> dict[str, str]:
-    names = _safe_character_names(payload.get("characters"))
+    names = _payload_character_names(payload)
     profiles: dict[str, str] = {}
     for name in names:
         profile_path = card / "memory" / "characters" / name / "profile.md"
         if profile_path.exists():
             profiles[name] = profile_path.read_text(encoding="utf-8")
     return profiles
+
+
+def _has_available_reference_images(
+    card: Path,
+    context: dict[str, Any],
+    reference_candidates: list[str],
+) -> bool:
+    for item in reference_candidates:
+        try:
+            path = _normalize_relative_path(item)
+        except InvalidAssetPathError:
+            continue
+        if path and (card / Path(path)).exists():
+            return True
+
+    assets = context.get("card_assets") if isinstance(context.get("card_assets"), dict) else {}
+    for item in _as_list(assets.get("images") if isinstance(assets, dict) else None):
+        if not isinstance(item, dict):
+            continue
+        status = _text(item.get("status"))
+        if status and status != "completed":
+            continue
+        try:
+            path = _normalize_relative_path(item.get("path"))
+        except InvalidAssetPathError:
+            continue
+        if path and (card / Path(path)).exists():
+            return True
+    return False
 
 
 def _normalize_reference_list(value: Any) -> list[str]:
@@ -515,6 +630,175 @@ def _default_persistent_prompt(card: Path, run_dir: Path) -> str:
     return f"{card.name} current round scene illustration"
 
 
+def _infer_current_scene_characters(card: Path, run_dir: Path) -> list[str]:
+    names: list[str] = []
+
+    player_context = _load_run_json(run_dir, "player.context.json")
+    self_knowledge = player_context.get("self_knowledge") if isinstance(player_context, dict) else {}
+    if isinstance(self_knowledge, dict):
+        _append_unique_name(names, self_knowledge.get("name"))
+
+    actor_outputs = _load_run_json(run_dir, "actor.outputs.json")
+    if isinstance(actor_outputs, dict):
+        for actor_id, outputs in actor_outputs.items():
+            if isinstance(actor_id, str) and actor_id.startswith("character:"):
+                _append_unique_name(names, actor_id.removeprefix("character:"))
+            for item in _as_list(outputs):
+                if isinstance(item, dict):
+                    _append_unique_name(names, item.get("character_name"))
+                    item_agent_id = _text(item.get("agent_id"))
+                    if item_agent_id.startswith("character:"):
+                        _append_unique_name(names, item_agent_id.removeprefix("character:"))
+
+    story = _load_run_json(run_dir, "story.output.json")
+    content = _text(story.get("content")) if isinstance(story, dict) else ""
+    for item in _extract_character_dialogues(content):
+        if isinstance(item, dict):
+            _append_unique_name(names, item.get("character_name"))
+
+    profiles = _load_character_profiles(card, {"characters": names})
+    return [name for name in names if name in profiles or name]
+
+
+def _extract_character_dialogues(content: str) -> list[Any]:
+    start_tag = "<character_dialogues>"
+    end_tag = "</character_dialogues>"
+    start = content.find(start_tag)
+    end = content.find(end_tag, start + len(start_tag))
+    if start < 0 or end < 0:
+        return []
+    raw = content[start + len(start_tag) : end].strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _append_unique_name(names: list[str], value: Any) -> None:
+    name = _text(value)
+    if name and name not in names:
+        names.append(name)
+
+
+def _payload_character_names(payload: dict[str, Any]) -> list[str]:
+    names = _safe_character_names(payload.get("characters"))
+    for spec in _character_appearance_specs(payload, []):
+        _append_unique_name(names, spec.get("name"))
+    return names
+
+
+def _character_appearance_specs(payload: dict[str, Any], fallback_characters: list[str]) -> list[dict[str, str]]:
+    specs: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in _as_list(payload.get("character_appearances")):
+        if not isinstance(item, dict):
+            continue
+        name = _safe_character_name(
+            item.get("name")
+            or item.get("character_name")
+            or item.get("character")
+        )
+        if not name:
+            continue
+        appearance_state = _text(
+            item.get("appearance_state")
+            or item.get("state")
+            or item.get("form")
+        )
+        description = _text(
+            item.get("description")
+            or item.get("appearance_description")
+            or item.get("prompt")
+        )
+        reference_path = _text(item.get("reference_path") or item.get("target_path"))
+        if not reference_path:
+            reference_path = _default_character_reference_path(name, appearance_state)
+        key = (name, appearance_state, reference_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append(
+            {
+                "name": name,
+                "appearance_state": appearance_state,
+                "description": description,
+                "reference_path": reference_path,
+            }
+        )
+
+    for name in fallback_characters:
+        if any(spec["name"] == name for spec in specs):
+            continue
+        reference_path = _default_character_reference_path(name, "")
+        specs.append(
+            {
+                "name": name,
+                "appearance_state": "",
+                "description": "",
+                "reference_path": reference_path,
+            }
+        )
+    return specs
+
+
+def _appearance_character_names(specs: list[dict[str, str]]) -> list[str]:
+    names: list[str] = []
+    for spec in specs:
+        _append_unique_name(names, spec.get("name"))
+    return names
+
+
+def _default_character_reference_path(name: str, appearance_state: str) -> str:
+    if appearance_state:
+        suffix = agent_run.safe_name(appearance_state)
+        return f"characters/{name}/{name}-{suffix}.png"
+    return f"characters/{name}/{name}.png"
+
+
+def _character_reference_job_id(spec: dict[str, str]) -> str:
+    name = agent_run.safe_name(spec.get("name"))
+    state = agent_run.safe_name(spec.get("appearance_state")) if spec.get("appearance_state") else ""
+    if state:
+        return f"character-{name}-{state}-reference"
+    return f"character-{name}-reference"
+
+
+def _character_reference_prompt(spec: dict[str, str], profile: str) -> str:
+    parts = [f"为角色{spec['name']}生成专业人设图。"]
+    appearance_state = _text(spec.get("appearance_state"))
+    if appearance_state:
+        parts.append(f"外观状态：{appearance_state}。")
+    description = _text(spec.get("description"))
+    if description:
+        parts.append(f"本状态外观：{description}。")
+    if profile:
+        parts.append(f"角色档案：{_trim_text(profile, 500)}")
+    parts.append("包含正面、侧面、背面、表情和关键动作参考；干净背景；不要文字、水印或对白气泡。")
+    return "\n".join(parts)
+
+
+def _normalize_job_appearances(value: Any) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in _as_list(value):
+        if not isinstance(item, dict):
+            continue
+        name = _safe_character_name(item.get("name"))
+        if not name:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "appearance_state": _text(item.get("appearance_state")),
+                "description": _text(item.get("description")),
+                "reference_path": _text(item.get("reference_path")),
+            }
+        )
+    return normalized
+
+
 def _summarize_status(jobs: list[dict[str, Any]]) -> str:
     statuses = [_text(item.get("status")) for item in jobs if isinstance(item, dict)]
     if not statuses:
@@ -537,6 +821,12 @@ def _required_scene_requirement(payload: dict[str, Any]) -> dict[str, Any]:
             "scene_illustration_each_round": True,
             "reason": _text(requirement.get("reason")),
             "prompt": _text(requirement.get("prompt")),
+        }
+    if payload.get("scene_illustration_each_round") is True:
+        return {
+            "scene_illustration_each_round": True,
+            "reason": _text(payload.get("reason")) or _text(payload.get("summary")),
+            "prompt": _text(payload.get("prompt")) or _text(payload.get("summary")),
         }
     return {}
 
@@ -563,6 +853,12 @@ def _as_string_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _trim_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
 
 
 def _safe_character_names(value: Any) -> list[str]:

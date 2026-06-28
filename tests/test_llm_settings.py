@@ -16,6 +16,14 @@ class LlmSettingsTest(unittest.TestCase):
         import importlib
         self.mod = importlib.import_module("llm_settings")
 
+    def _openai_levels(self, *, enabled=False, core=None, review=None, actor=None):
+        return {
+            "enabled": enabled,
+            "core": core or {"base_url": "", "api_key": "", "model": ""},
+            "review": review or {"base_url": "", "api_key": "", "model": ""},
+            "actor": actor or {"base_url": "", "api_key": "", "model": ""},
+        }
+
     def _claude_settings(self, tmp: str, env: dict[str, str]) -> Path:
         path = Path(tmp) / "claude-settings.json"
         path.write_text(json.dumps({"env": env}, ensure_ascii=False), encoding="utf-8")
@@ -35,9 +43,9 @@ class LlmSettingsTest(unittest.TestCase):
         })
         self.assertEqual(result["openai_compatible"], {
             "enabled": False,
-            "base_url": "",
-            "api_key": "",
-            "model": "",
+            "core": {"base_url": "", "api_key": "", "model": ""},
+            "review": {"base_url": "", "api_key": "", "model": ""},
+            "actor": {"base_url": "", "api_key": "", "model": ""},
         })
         self.assertEqual(result["image_generation"], {
             "base_url": "",
@@ -88,9 +96,21 @@ class LlmSettingsTest(unittest.TestCase):
                 "cc_switch": {"enabled": True, "service_url": "http://127.0.0.1:17777", "api_key": "drop"},
                 "openai_compatible": {
                     "enabled": True,
-                    "base_url": "https://llm.example/v1",
-                    "api_key": "openai-secret",
-                    "model": "chat-model",
+                    "core": {
+                        "base_url": "https://core.example/v1",
+                        "api_key": "core-secret",
+                        "model": "core-model",
+                    },
+                    "review": {
+                        "base_url": "https://review.example/v1",
+                        "api_key": "review-secret",
+                        "model": "review-model",
+                    },
+                    "actor": {
+                        "base_url": "https://actor.example/v1",
+                        "api_key": "actor-secret",
+                        "model": "actor-model",
+                    },
                 },
                 "image_generation": {
                     "base_url": "https://image.example/v1",
@@ -111,27 +131,39 @@ class LlmSettingsTest(unittest.TestCase):
             "enabled": True,
             "service_url": "http://127.0.0.1:17777",
         })
-        self.assertEqual(redacted["openai_compatible"]["api_key"], "")
-        self.assertTrue(redacted["openai_compatible"]["api_key_set"])
+        self.assertEqual(redacted["openai_compatible"]["core"]["api_key"], "")
+        self.assertTrue(redacted["openai_compatible"]["core"]["api_key_set"])
+        self.assertEqual(redacted["openai_compatible"]["review"]["api_key"], "")
+        self.assertTrue(redacted["openai_compatible"]["review"]["api_key_set"])
+        self.assertEqual(redacted["openai_compatible"]["actor"]["api_key"], "")
+        self.assertTrue(redacted["openai_compatible"]["actor"]["api_key_set"])
         self.assertEqual(redacted["image_generation"]["api_key"], "")
         self.assertTrue(redacted["image_generation"]["api_key_set"])
 
-    def test_resolve_claude_code_model_prefers_default_sonnet_model(self):
+    def test_resolve_claude_code_model_tier_prefers_expected_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             claude_path = self._claude_settings(
                 tmp,
                 {
                     "ANTHROPIC_MODEL": "fallback-model",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-model",
                     "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-model",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-model",
                     "ANTHROPIC_API_KEY": "anthropic-key",
                     "ANTHROPIC_AUTH_TOKEN": "auth-token",
                 },
             )
 
-            model = self.mod.resolve_claude_code_model(claude_path)
+            core_model = self.mod.resolve_claude_code_model_tier("core", claude_path)
+            review_model = self.mod.resolve_claude_code_model_tier("review", claude_path)
+            actor_model = self.mod.resolve_claude_code_model_tier("actor", claude_path)
+            default_model = self.mod.resolve_claude_code_model(claude_path)
             headers = self.mod.claude_code_auth_headers(claude_path)
 
-        self.assertEqual(model, "sonnet-model")
+        self.assertEqual(core_model, "opus-model")
+        self.assertEqual(review_model, "sonnet-model")
+        self.assertEqual(actor_model, "haiku-model")
+        self.assertEqual(default_model, "opus-model")
         self.assertEqual(headers, {
             "x-api-key": "anthropic-key",
             "authorization": "Bearer auth-token",
@@ -147,9 +179,21 @@ class LlmSettingsTest(unittest.TestCase):
                         "cc_switch": {"enabled": True, "service_url": "http://local-switch"},
                         "openai_compatible": {
                             "enabled": False,
-                            "base_url": "https://local-openai/v1",
-                            "api_key": "local-openai-key",
-                            "model": "local-chat-model",
+                            "core": {
+                                "base_url": "https://local-core/v1",
+                                "api_key": "local-core-key",
+                                "model": "local-core-model",
+                            },
+                            "review": {
+                                "base_url": "https://local-review/v1",
+                                "api_key": "local-review-key",
+                                "model": "local-review-model",
+                            },
+                            "actor": {
+                                "base_url": "https://local-actor/v1",
+                                "api_key": "local-actor-key",
+                                "model": "local-actor-model",
+                            },
                         },
                         "image_generation": {
                             "base_url": "https://local-image/v1",
@@ -167,9 +211,16 @@ class LlmSettingsTest(unittest.TestCase):
                         "cc_switch": {"enabled": False, "service_url": "http://frontend-switch"},
                         "openai_compatible": {
                             "enabled": True,
-                            "base_url": "https://frontend-openai/v1",
-                            "api_key": "",
-                            "model": "frontend-chat-model",
+                            "core": {
+                                "base_url": "https://frontend-core/v1",
+                                "api_key": "",
+                                "model": "frontend-core-model",
+                            },
+                            "review": {
+                                "base_url": "",
+                                "api_key": "frontend-review-key",
+                                "model": "frontend-review-model",
+                            },
                         },
                         "image_generation": {
                             "base_url": "https://frontend-image/v1",
@@ -186,9 +237,15 @@ class LlmSettingsTest(unittest.TestCase):
                 "AIRP_CC_SWITCH_ENABLED": "true",
                 "AIRP_CC_SWITCH_SERVICE_URL": "http://env-switch",
                 "AIRP_OPENAI_COMPATIBLE_ENABLED": "false",
-                "AIRP_OPENAI_COMPATIBLE_BASE_URL": "https://env-openai/v1",
-                "AIRP_OPENAI_COMPATIBLE_API_KEY": "env-openai-key",
-                "AIRP_OPENAI_COMPATIBLE_MODEL": "env-chat-model",
+                "AIRP_OPENAI_COMPATIBLE_CORE_BASE_URL": "https://env-core/v1",
+                "AIRP_OPENAI_COMPATIBLE_CORE_API_KEY": "env-core-key",
+                "AIRP_OPENAI_COMPATIBLE_CORE_MODEL": "env-core-model",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_BASE_URL": "https://env-review/v1",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_API_KEY": "env-review-key",
+                "AIRP_OPENAI_COMPATIBLE_REVIEW_MODEL": "env-review-model",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_BASE_URL": "https://env-actor/v1",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_API_KEY": "env-actor-key",
+                "AIRP_OPENAI_COMPATIBLE_ACTOR_MODEL": "env-actor-model",
                 "AIRP_IMAGE_GENERATION_BASE_URL": "https://env-image/v1",
                 "AIRP_IMAGE_GENERATION_API_KEY": "env-image-key",
                 "AIRP_IMAGE_GENERATION_MODEL": "env-image-model",
@@ -207,9 +264,21 @@ class LlmSettingsTest(unittest.TestCase):
         })
         self.assertEqual(result["openai_compatible"], {
             "enabled": True,
-            "base_url": "https://frontend-openai/v1",
-            "api_key": "env-openai-key",
-            "model": "frontend-chat-model",
+            "core": {
+                "base_url": "https://frontend-core/v1",
+                "api_key": "env-core-key",
+                "model": "frontend-core-model",
+            },
+            "review": {
+                "base_url": "https://env-review/v1",
+                "api_key": "frontend-review-key",
+                "model": "frontend-review-model",
+            },
+            "actor": {
+                "base_url": "https://env-actor/v1",
+                "api_key": "env-actor-key",
+                "model": "env-actor-model",
+            },
         })
         self.assertEqual(result["image_generation"], {
             "base_url": "https://frontend-image/v1",
@@ -227,9 +296,21 @@ class LlmSettingsTest(unittest.TestCase):
                         "cc_switch": {"enabled": True, "service_url": "http://local-switch"},
                         "openai_compatible": {
                             "enabled": False,
-                            "base_url": "https://local-openai/v1",
-                            "api_key": "local-openai-key",
-                            "model": "local-chat-model",
+                            "core": {
+                                "base_url": "https://local-core/v1",
+                                "api_key": "local-core-key",
+                                "model": "local-core-model",
+                            },
+                            "review": {
+                                "base_url": "https://local-review/v1",
+                                "api_key": "local-review-key",
+                                "model": "local-review-model",
+                            },
+                            "actor": {
+                                "base_url": "https://local-actor/v1",
+                                "api_key": "local-actor-key",
+                                "model": "local-actor-model",
+                            },
                         },
                         "image_generation": {
                             "base_url": "https://local-image/v1",
@@ -249,9 +330,15 @@ class LlmSettingsTest(unittest.TestCase):
                     "AIRP_CC_SWITCH_ENABLED": "false",
                     "AIRP_CC_SWITCH_SERVICE_URL": "http://env-switch",
                     "AIRP_OPENAI_COMPATIBLE_ENABLED": "true",
-                    "AIRP_OPENAI_COMPATIBLE_BASE_URL": "https://env-openai/v1",
-                    "AIRP_OPENAI_COMPATIBLE_API_KEY": "env-openai-key",
-                    "AIRP_OPENAI_COMPATIBLE_MODEL": "env-chat-model",
+                    "AIRP_OPENAI_COMPATIBLE_CORE_BASE_URL": "https://env-core/v1",
+                    "AIRP_OPENAI_COMPATIBLE_CORE_API_KEY": "env-core-key",
+                    "AIRP_OPENAI_COMPATIBLE_CORE_MODEL": "env-core-model",
+                    "AIRP_OPENAI_COMPATIBLE_REVIEW_BASE_URL": "https://env-review/v1",
+                    "AIRP_OPENAI_COMPATIBLE_REVIEW_API_KEY": "env-review-key",
+                    "AIRP_OPENAI_COMPATIBLE_REVIEW_MODEL": "env-review-model",
+                    "AIRP_OPENAI_COMPATIBLE_ACTOR_BASE_URL": "https://env-actor/v1",
+                    "AIRP_OPENAI_COMPATIBLE_ACTOR_API_KEY": "env-actor-key",
+                    "AIRP_OPENAI_COMPATIBLE_ACTOR_MODEL": "env-actor-model",
                     "AIRP_IMAGE_GENERATION_BASE_URL": "https://env-image/v1",
                     "AIRP_IMAGE_GENERATION_API_KEY": "env-image-key",
                     "AIRP_IMAGE_GENERATION_MODEL": "env-image-model",
@@ -265,9 +352,21 @@ class LlmSettingsTest(unittest.TestCase):
         })
         self.assertEqual(result["openai_compatible"], {
             "enabled": True,
-            "base_url": "https://env-openai/v1",
-            "api_key": "env-openai-key",
-            "model": "env-chat-model",
+            "core": {
+                "base_url": "https://env-core/v1",
+                "api_key": "env-core-key",
+                "model": "env-core-model",
+            },
+            "review": {
+                "base_url": "https://env-review/v1",
+                "api_key": "env-review-key",
+                "model": "env-review-model",
+            },
+            "actor": {
+                "base_url": "https://env-actor/v1",
+                "api_key": "env-actor-key",
+                "model": "env-actor-model",
+            },
         })
         self.assertEqual(result["image_generation"], {
             "base_url": "https://env-image/v1",

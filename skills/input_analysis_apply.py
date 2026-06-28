@@ -489,6 +489,28 @@ def _normalize_legacy_semantic_units(
     return normalized_analysis, True
 
 
+def _normalize_source_integrity(
+    analysis: Dict[str, Any], raw_request: Dict[str, Any]
+) -> tuple[Dict[str, Any], bool]:
+    integrity = raw_request.get("source_integrity")
+    if not isinstance(integrity, dict):
+        return analysis, False
+    expected = {
+        key: integrity.get(key)
+        for key in (
+            "raw_text_sha256",
+            "role_text_sha256",
+            "user_instruction_text_sha256",
+            "raw_preserved",
+        )
+    }
+    if analysis.get("source_integrity") == expected:
+        return analysis, False
+    normalized = dict(analysis)
+    normalized["source_integrity"] = expected
+    return normalized, True
+
+
 def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
     normalized = dict(analysis)
     changed = False
@@ -534,6 +556,41 @@ def _normalize_routing_channel_aliases(analysis: Dict[str, Any]) -> tuple[Dict[s
     normalized_routing = dict(routing)
     normalized_routing["user_instruction_channel"] = alias
     normalized_routing.pop("user_instruction_text", None)
+    normalized = dict(analysis)
+    normalized["routing"] = normalized_routing
+    return normalized, True
+
+
+def _normalize_explicit_dual_channel_routing(
+    analysis: Dict[str, Any],
+    raw_request: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    payload = raw_request.get("explicit_payload")
+    if not (
+        isinstance(payload, dict)
+        and payload.get("input_schema") == "dual_channel_v1"
+    ):
+        return analysis, False
+    routing = analysis.get("routing")
+    if not isinstance(routing, dict):
+        return analysis, False
+
+    routed = input_analysis.analysis_to_routed_input(analysis, explicit_payload=payload)
+    normalized_routing = dict(routing)
+    changed = False
+    for key in (
+        "role_channel",
+        "role_action_channel",
+        "narrative_guidance_channel",
+        "user_instruction_channel",
+    ):
+        value = routed.get(key, "")
+        if normalized_routing.get(key) != value:
+            normalized_routing[key] = value
+            changed = True
+
+    if not changed:
+        return analysis, False
     normalized = dict(analysis)
     normalized["routing"] = normalized_routing
     return normalized, True
@@ -1008,8 +1065,13 @@ def apply_current_run(card_folder, root_dir=None):
     _assert_manifest_stage_allows_apply(run_dir)
     raw_request = _read_json_required(run_dir / "input.raw.json")
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
+    analysis, normalized_integrity = _normalize_source_integrity(analysis, raw_request)
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
     analysis, normalized_channel_aliases = _normalize_routing_channel_aliases(analysis)
+    analysis, normalized_explicit_routing = _normalize_explicit_dual_channel_routing(
+        analysis,
+        raw_request,
+    )
     analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
     analysis, normalized_capability_sources = _normalize_capability_request_source_channels(
         analysis,
@@ -1021,7 +1083,9 @@ def apply_current_run(card_folder, root_dir=None):
     )
     normalized = (
         normalized
+        or normalized_integrity
         or normalized_channel_aliases
+        or normalized_explicit_routing
         or normalized_routing_requests
         or normalized_capability_sources
         or normalized_replay_retcon

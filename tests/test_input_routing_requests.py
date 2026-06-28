@@ -90,6 +90,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
                 "characters": ["苏黎"],
                 "reference_policy": "required",
                 "reference_candidates": ["characters/苏黎/苏黎.png"],
+                "art_style": "水彩绘本画风",
                 "planner_hints": {"style": "consistent with previous scene"},
                 "ui_schema": {"postprocess_data_required": ["ui_extensions.scene"]},
                 "postprocess_contract": {
@@ -113,9 +114,54 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(payload["characters"], ["苏黎"])
         self.assertEqual(payload["reference_policy"], "required")
         self.assertEqual(payload["reference_candidates"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(payload["art_style"], "水彩绘本画风")
         self.assertEqual(payload["planner_hints"]["style"], "consistent with previous scene")
         self.assertIn("ui_schema", payload)
         self.assertIn("postprocess_contract", payload)
+
+    def test_assets_capability_normalizes_top_level_scene_requirement(self):
+        request = {
+            "id": "scene-image-each-round",
+            "requested_by": "input_analyst",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "用户指令要求每轮提供一张带角色的剧情插图。",
+            "reason": "用户要求从本轮开始持续生成插图。",
+            "source_channel": "user_instruction",
+            "risk": "medium",
+            "authorization_gate": "none",
+            "payload": {
+                "scene_illustration_each_round": True,
+                "characters": ["雨蒙", "苏黎"],
+                "character_appearances": [
+                    {
+                        "name": "苏黎",
+                        "appearance_state": "蝶化形态",
+                        "description": "银白长发，半透明蝶翼。",
+                    }
+                ],
+                "reference_policy": "reuse",
+                "planner_hints": "雨蒙回到教室并观察苏黎。",
+            },
+            "evidence": {"raw_excerpt": "本轮开始，每轮都需要提供一张带角色的剧情插图。"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={},
+            source_intent_id="input_analysis",
+        )
+
+        self.assertEqual(result["created_intents_count"], 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        payload = pending[0]["payload"]
+        self.assertEqual(payload["asset_requirement"]["scene_illustration_each_round"], True)
+        self.assertEqual(payload["asset_requirement"]["reason"], "用户要求从本轮开始持续生成插图。")
+        self.assertEqual(payload["characters"], ["雨蒙", "苏黎"])
+        self.assertEqual(payload["character_appearances"][0]["appearance_state"], "蝶化形态")
+        self.assertEqual(payload["reference_policy"], "reuse")
+        self.assertEqual(payload["planner_hints"], "雨蒙回到教室并观察苏黎。")
 
     def test_process_character_rename_capability_creates_rename_intent(self):
         request = {

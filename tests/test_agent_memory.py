@@ -1609,5 +1609,31 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertEqual(state["status"], "pending")
         self.assertIn("player", state["scheduled"])
 
+    def test_previous_post_round_memory_state_includes_objective_jobs(self):
+        run_dir = self.card / ".agent_runs" / "round-000002"
+        _write_json(
+            run_dir / "manifest.json",
+            {
+                "round_id": "round-000002",
+                "post_round_memory_jobs": {
+                    "status": "complete",
+                    "scheduled": {},
+                    "failed": {},
+                },
+                "post_round_objective_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {"character:Ada": {"output": "post_round_objective_memory_jobs/character_Ada.summary.json"}},
+                    "failed": {},
+                },
+            },
+        )
+
+        state = self.agent_memory.previous_post_round_memory_state(self.card)
+
+        self.assertEqual(state["previous_round_id"], "round-000002")
+        self.assertEqual(state["status"], "pending")
+        self.assertEqual(state["job_type"], "post_round_objective_memory_jobs")
+        self.assertIn("character:Ada", state["scheduled"])
+
 if __name__ == "__main__":
     unittest.main()

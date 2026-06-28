@@ -134,7 +134,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertEqual(input_pump["skipped"][0]["reason"], "phase_deferred")
         critic_pump = payload["runtime_pump"]["after_critic"]
         self.assertEqual(critic_pump["processed"][0]["type"], "assets_task")
-        self.assertIn(critic_pump["processed"][0]["outputs"]["status"], {"queued", "deferred"})
+        self.assertIn(critic_pump["processed"][0]["outputs"]["status"], {"started", "queued", "deferred"})
         if critic_pump["processed"][0]["outputs"]["status"] == "deferred":
             self.assertEqual(critic_pump["deferred"][0]["type"], "assets_task")
         self.assertEqual(

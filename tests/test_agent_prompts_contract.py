@@ -37,6 +37,8 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("asset_requirement", text)
         self.assertIn("reference_policy", text)
         self.assertIn("characters", text)
+        self.assertIn("character_appearances", text)
+        self.assertIn("art_style", text)
         self.assertIn("scene_illustration_each_round", text)
 
     def test_input_analyst_prompt_advertises_replay_capability_gates(self):

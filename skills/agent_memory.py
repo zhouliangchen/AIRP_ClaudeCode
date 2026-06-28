@@ -1143,20 +1143,22 @@ def previous_post_round_memory_state(card_folder: str | Path) -> Dict[str, Any]:
         manifest = _read_json(run_dir / "manifest.json", {})
         if not isinstance(manifest, dict):
             continue
-        jobs = manifest.get("post_round_memory_jobs", {})
-        if not isinstance(jobs, dict):
-            continue
-        status = jobs.get("status")
-        if status not in {"pending", "degraded_memory_state"}:
-            continue
-        scheduled = jobs.get("scheduled", {})
-        failed = jobs.get("failed", {})
-        return {
-            "previous_round_id": str(manifest.get("round_id") or run_dir.name),
-            "status": status,
-            "scheduled": scheduled if isinstance(scheduled, dict) else {},
-            "failed": failed if isinstance(failed, dict) else {},
-        }
+        for job_type in ("post_round_memory_jobs", "post_round_objective_memory_jobs"):
+            jobs = manifest.get(job_type, {})
+            if not isinstance(jobs, dict):
+                continue
+            status = jobs.get("status")
+            if status not in {"pending", "degraded_memory_state"}:
+                continue
+            scheduled = jobs.get("scheduled", {})
+            failed = jobs.get("failed", {})
+            return {
+                "previous_round_id": str(manifest.get("round_id") or run_dir.name),
+                "status": status,
+                "job_type": job_type,
+                "scheduled": scheduled if isinstance(scheduled, dict) else {},
+                "failed": failed if isinstance(failed, dict) else {},
+            }
     return {}
 
 

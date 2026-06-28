@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +110,53 @@ class AgentRuntimePumpTest(unittest.TestCase):
         self.assertEqual(completed["result"]["outputs"]["jobs"][0]["reason"], "asset_worker_not_configured")
         artifact = _read_json(self.run_dir / "artifacts" / "runtime_pump" / "after_critic.json")
         self.assertEqual(artifact["processed"][0]["intent_id"], created["id"])
+
+    def test_run_pending_intents_starts_assets_task_without_waiting_when_async_enabled(self):
+        created = self.intents.create_intent(
+            self.run_dir,
+            {
+                "requested_by": "input_analyst",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene",
+                    "target": "rain",
+                    "prompt": "rainy street",
+                },
+            },
+        )["intent"]
+        original_execute = self.pump.execute_intent
+
+        def slow_execute(*args, **kwargs):
+            time.sleep(0.2)
+            return {"status": "completed", "outputs": {"status": "deferred", "jobs": []}}
+
+        self.pump.execute_intent = slow_execute
+        try:
+            started_at = time.perf_counter()
+            result = self.pump.run_pending_intents(
+                self.card,
+                self.run_dir,
+                phase="after_critic",
+                async_asset_tasks=True,
+            )
+            elapsed = time.perf_counter() - started_at
+
+            self.assertLess(elapsed, 0.15)
+            self.assertEqual(result["processed"][0]["intent_id"], created["id"])
+            self.assertEqual(result["processed"][0]["status"], "started")
+            self.assertTrue(result["processed"][0]["outputs"]["nonblocking"])
+
+            deadline = time.time() + 2
+            completed = []
+            while time.time() < deadline:
+                completed = self.intents.list_intents(self.run_dir, "completed")
+                if completed:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(completed[0]["id"], created["id"])
+            self.assertEqual(completed[0]["result"]["outputs"]["status"], "deferred")
+        finally:
+            self.pump.execute_intent = original_execute
 
     def test_assets_task_executor_delegates_to_assets_ui_runtime(self):
         intent = {
