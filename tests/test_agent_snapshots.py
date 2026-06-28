@@ -65,6 +65,20 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertIn("memory", metadata["copied"])
         self.assertFalse(metadata["objective_world_included"])
 
+    def test_create_snapshot_accepts_replay_round_id(self):
+        self._write_card_state()
+
+        result = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001-replay-001",
+            reason="before_round_prepare",
+        )
+
+        self.assertTrue(result["ok"])
+        metadata = json.loads((Path(result["backup_dir"]) / "backup.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["round_id"], "round-000001-replay-001")
+        self.assertTrue(result["backup_id"].startswith("round-000001-replay-001-"))
+
     def test_create_snapshot_uses_backup_root_and_copies_entire_save_state(self):
         self._write_card_state()
         actor_dir = self.card / "characters" / "player"

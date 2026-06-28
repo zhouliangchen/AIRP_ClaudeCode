@@ -727,6 +727,25 @@ body {
 	  line-height: 1.4;
 	}
 	.generated-asset-caption b { color: var(--accent); }
+	.generated-asset-notice {
+	  margin: 10px 0 14px;
+	  padding: 9px 11px;
+	  background: var(--surface);
+	  border: 1px solid var(--border);
+	  border-left: 3px solid var(--color-ember);
+	  border-radius: var(--radius-sm);
+	  color: var(--muted);
+	  font-size: 0.78em;
+	  line-height: 1.55;
+	}
+	.generated-asset-notice b {
+	  color: var(--color-ember);
+	  font-weight: 700;
+	}
+	.generated-asset-notice-detail {
+	  margin-top: 3px;
+	  overflow-wrap: anywhere;
+	}
 
 /* ═══ DARK MODE OVERRIDES ═══ */
 [data-theme="dark"] .turn-ai .turn-text {
@@ -1748,11 +1767,12 @@ function render() {
     window.registerRegexScripts(regexScripts);
     newContent = window.getRegexedString(newContent, 2 /* AI_OUTPUT */, { isMarkdown: true });
   }
-  var assetSig = JSON.stringify((window.CARD_ASSETS && window.CARD_ASSETS.images) || []);
+  var assetSig = JSON.stringify(window.CARD_ASSETS || {});
   if (_prevContentHtml !== newContent || _prevAssetSig !== assetSig) {
     _prevContentHtml = newContent;
     _prevAssetSig = assetSig;
     contentEl.innerHTML = newContent;
+    renderGeneratedAssetNotices(contentEl);
     renderGeneratedAssets(contentEl);
     // Re-execute embedded <script> tags (innerHTML doesn't run them).
     // The _st_shims.js globals are already loaded, so card-author
@@ -1903,6 +1923,50 @@ function renderGeneratedAssets(contentEl) {
     strip.appendChild(card);
   });
   contentEl.appendChild(strip);
+}
+
+function assetJobFallbackMessage(job) {
+  var reason = job && job.reason;
+  if (reason === 'asset_worker_not_configured') return '图片生成暂缓：图片 API 尚未配置';
+  if (reason === 'image_generation_failed') return '图片生成暂缓：图片 API 调用失败';
+  if (reason === 'asset_worker_start_failed') return '图片生成暂缓：图片 worker 启动失败';
+  if (reason === 'reference_image_not_supported') return '图片生成暂缓：当前图片 API 不支持参考图';
+  if (reason === 'missing_character_reference') return '图片生成等待：缺少角色参考图';
+  if (reason === 'invalid_asset_path') return '图片生成失败：资源路径无效';
+  if (job && job.status === 'waiting_on_references') return '图片生成等待：缺少参考图';
+  if (job && job.status === 'failed') return '图片生成失败';
+  return '图片生成暂缓';
+}
+
+function renderGeneratedAssetNotices(contentEl) {
+  var jobs = (window.CARD_ASSETS && window.CARD_ASSETS.jobs) || [];
+  if (!contentEl || !jobs.length) return;
+  var display = jobs.filter(function(job) {
+    return job && ['deferred', 'failed', 'waiting_on_references'].indexOf(job.status) >= 0;
+  }).slice(-3);
+  if (!display.length) return;
+  display.forEach(function(job) {
+    var notice = document.createElement('div');
+    notice.className = 'generated-asset-notice';
+    var message = job.message || assetJobFallbackMessage(job);
+    var title = document.createElement('b');
+    title.textContent = message;
+    notice.appendChild(title);
+    var detailParts = [];
+    if (job.job_id) detailParts.push(job.job_id);
+    if (job.reason) detailParts.push(job.reason);
+    if (job.error) detailParts.push(job.error);
+    if (Array.isArray(job.missing_references) && job.missing_references.length) {
+      detailParts.push('missing: ' + job.missing_references.join(', '));
+    }
+    if (detailParts.length) {
+      var detail = document.createElement('div');
+      detail.className = 'generated-asset-notice-detail';
+      detail.textContent = detailParts.join(' · ');
+      notice.appendChild(detail);
+    }
+    contentEl.appendChild(notice);
+  });
 }
 
 function updateOpeningsCard(S) {

@@ -651,6 +651,23 @@ class AgentRunTest(unittest.TestCase):
         self.assertEqual(repeated_turn.name, "round-000004")
         self.assertTrue((self.card / ".agent_runs" / "current").read_text(encoding="utf-8").endswith("round-000004"))
 
+    def test_create_run_dir_uses_explicit_replay_round_id_without_advancing_normal_rounds(self):
+        self.agent_run.create_run_dir(self.card, turn_index=0)
+
+        replay = self.agent_run.create_run_dir(self.card, replay_round_id="round-000001-replay-001")
+        next_normal = self.agent_run.create_run_dir(self.card)
+
+        self.assertEqual(replay.name, "round-000001-replay-001")
+        self.assertEqual(next_normal.name, "round-000002")
+        self.assertTrue((self.card / ".agent_runs" / "round-000001-replay-001").exists())
+        self.assertTrue((self.card / ".agent_runs" / "current").read_text(encoding="utf-8").endswith("round-000002"))
+
+    def test_create_run_dir_rejects_unsafe_replay_round_id(self):
+        for value in ("../round-000001-replay-001", "round-000001", "round-000001-replay-x", "round-000001-replay-001/evil"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.agent_run.create_run_dir(self.card, replay_round_id=value)
+
     def test_current_run_dir_with_relative_card_path(self):
         relative_parent = Path(self.tmp.name) / "parent"
         relative_parent.mkdir()
@@ -813,6 +830,33 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(packet["role_channel_anchor"], "")
         self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
+
+    def test_prepare_agent_run_uses_replay_outline_round_id_for_run_directory(self):
+        result = self.agent_packets.prepare_agent_run(
+            card_folder=self.card,
+            user_text="replay input",
+            chat_log=[],
+            card_data={},
+            character_contexts={"characters": []},
+            turn_index=0,
+            input_payload={
+                "raw_text": "replay input",
+                "replay_outline": {
+                    "schema_version": 1,
+                    "session_id": "replay-001",
+                    "round_id": "round-000001-replay-001",
+                    "original_round_id": "round-000001",
+                    "replay_index": 1,
+                    "input_id": "input-1",
+                },
+            },
+        )
+
+        run_dir = Path(result["run_dir"])
+        self.assertEqual(run_dir.name, "round-000001-replay-001")
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        self.assertEqual(input_json["replay_outline"]["round_id"], "round-000001-replay-001")
+        self.assertEqual(input_json["replay_outline"]["original_round_id"], "round-000001")
 
     def test_prepare_agent_run_projects_actor_context_without_hidden_channels(self):
         hidden_text = "The archive hides a moon base under the floor."
@@ -2319,7 +2363,9 @@ class AgentPacketTest(unittest.TestCase):
         outline = {
             "schema_version": 1,
             "session_id": "replay-001",
-            "round_id": "round-000001",
+            "round_id": "round-000001-replay-001",
+            "original_round_id": "round-000001",
+            "replay_index": 1,
             "input_id": "input-replay-1",
             "bridge_goal": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL without exposing it to actors.",
             "current_input": {"input_id": "input-replay-1", "role_text": "I open the archive door."},
@@ -2682,7 +2728,9 @@ class AgentPacketTest(unittest.TestCase):
         outline = {
             "schema_version": 1,
             "session_id": "replay-001",
-            "round_id": "round-000001",
+            "round_id": "round-000001-replay-001",
+            "original_round_id": "round-000001",
+            "replay_index": 1,
             "input_id": "input-replay-1",
             "bridge_goal": "Reach the next preserved player turn.",
             "next_input": {"input_id": "input-replay-2", "role_text": "NEXT_PLAYER_INPUT_SENTINEL"},
@@ -2695,15 +2743,22 @@ class AgentPacketTest(unittest.TestCase):
 
         round_prepare = _load_round_prepare()
         called = {}
+        snapshots = []
 
         def stub_prepare_agent_run(**kwargs):
             called.update(kwargs)
             return {
-                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "run_dir": str(self.card / ".agent_runs" / "round-000001-replay-001"),
                 "routed_input": {"role_channel": "I open the archive door.", "user_instruction_channel": ""},
             }
 
+        def stub_create_snapshot(card_folder, round_id, *, reason):
+            snapshots.append({"round_id": round_id, "reason": reason})
+            return {"ok": True, "round_id": round_id, "backup_id": "backup-1"}
+
         round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        original_create_snapshot = round_prepare.agent_snapshots.create_snapshot
+        round_prepare.agent_snapshots.create_snapshot = stub_create_snapshot
         round_prepare.write_progress = lambda *args, **kwargs: None
         round_prepare.apply_injections = lambda card_folder: []
         round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
@@ -2716,11 +2771,13 @@ class AgentPacketTest(unittest.TestCase):
             with contextlib.redirect_stdout(stdout):
                 round_prepare.main()
         finally:
+            round_prepare.agent_snapshots.create_snapshot = original_create_snapshot
             sys.argv = old_argv
 
         self.assertEqual(called["input_payload"]["id"], "input-replay-1")
         self.assertIn("replay_outline", called["input_payload"])
         self.assertEqual(called["input_payload"]["replay_outline"], outline)
+        self.assertEqual(snapshots[0]["round_id"], "round-000001-replay-001")
 
     def test_round_prepare_passes_latest_single_channel_payload_to_agent_run(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()

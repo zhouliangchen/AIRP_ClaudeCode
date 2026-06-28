@@ -1585,5 +1585,25 @@ class AgentMemoryTest(unittest.TestCase):
 
         self.assertEqual(self.agent_memory.previous_post_round_memory_state(self.card), {})
 
+    def test_previous_post_round_memory_state_includes_replay_round_dirs(self):
+        replay_run = self.card / ".agent_runs" / "round-000001-replay-001"
+        _write_json(
+            replay_run / "manifest.json",
+            {
+                "round_id": "round-000001-replay-001",
+                "post_round_memory_jobs": {
+                    "status": "pending",
+                    "scheduled": {"player": {"output": "post_round_memory_jobs/player.summary.json"}},
+                    "failed": {},
+                },
+            },
+        )
+
+        state = self.agent_memory.previous_post_round_memory_state(self.card)
+
+        self.assertEqual(state["previous_round_id"], "round-000001-replay-001")
+        self.assertEqual(state["status"], "pending")
+        self.assertIn("player", state["scheduled"])
+
 if __name__ == "__main__":
     unittest.main()

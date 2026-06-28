@@ -217,10 +217,14 @@ def _build_outline(
     current: dict[str, Any],
     next_input: dict[str, Any],
 ) -> dict[str, Any]:
+    original_round_id = str(current.get("round_id") or "")
+    round_id = _replay_round_id(original_round_id, plan.get("replay_index"))
     return {
         "schema_version": 1,
         "session_id": session_id,
-        "round_id": str(current.get("round_id") or ""),
+        "round_id": round_id,
+        "original_round_id": original_round_id,
+        "replay_index": _replay_index(plan.get("replay_index")),
         "input_id": str(current.get("input_id") or ""),
         "current_input": _input_outline(current),
         "next_input": _input_outline(next_input) if next_input else {},
@@ -232,6 +236,16 @@ def _build_outline(
             "next_input": "gm_bridge_only" if next_input else "none",
         },
     }
+
+
+def _replay_index(value: Any) -> int:
+    return value if isinstance(value, int) and value > 0 else 1
+
+
+def _replay_round_id(original_round_id: str, replay_index: Any) -> str:
+    if re.fullmatch(r"round-[0-9]{6}", original_round_id or ""):
+        return f"{original_round_id}-replay-{_replay_index(replay_index):03d}"
+    return str(original_round_id or "")
 
 
 def _input_outline(item: dict[str, Any]) -> dict[str, str]:

@@ -19,7 +19,7 @@ CST = timezone(timedelta(hours=8))
 
 ACTOR_FORBIDDEN_MARKERS = agent_memory_model.ACTOR_FORBIDDEN_MARKERS
 POST_ROUND_FORBIDDEN_MARKERS = set(agent_visibility.HIDDEN_MARKERS) | set(ACTOR_FORBIDDEN_MARKERS)
-SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})$")
+SUMMARY_ROUND_RE = re.compile(r"^round-(\d{6})(?:-replay-(\d{3}))?$")
 ACTOR_MEMORY_EVENT_TYPES = {"memory_delta", "goal_update"}
 ACTOR_MEMORY_EVENT_KEYS = {"type", "target", "content", "metadata"}
 

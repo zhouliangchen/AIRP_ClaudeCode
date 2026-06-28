@@ -969,6 +969,15 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn('placeholder="https://api.openai.com/v1"', html)
         self.assertNotIn('placeholder="gpt-image-2"', html)
 
+    def test_frontend_renders_asset_generation_notices(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function renderGeneratedAssetNotices", html)
+        self.assertIn("generated-asset-notice", html)
+        self.assertIn("图片生成暂缓", html)
+        self.assertIn("asset_worker_not_configured", html)
+        self.assertIn("image_generation_failed", html)
+
     def test_frontend_renders_schema_v2_progress_detail_panel(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
@@ -2092,6 +2101,36 @@ round_total: 7
         self.assertEqual(image["source_job_id"], "scene-round-000004")
         self.assertEqual(image["status"], "completed")
         self.assertEqual(image["url"], "/api/card_asset/generated/images/scene-0001.png")
+
+    def test_card_assets_includes_deferred_jobs_for_frontend_notice(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        (jobs_dir / "scene-round-000004.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "job_id": "scene-round-000004",
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "status": "deferred",
+                    "reason": "image_generation_failed",
+                    "error": "HTTP 404: Images API is not supported",
+                    "prompt": "draw rainy classroom",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        self.assertEqual(len(assets["jobs"]), 1)
+        job = assets["jobs"][0]
+        self.assertEqual(job["job_id"], "scene-round-000004")
+        self.assertEqual(job["status"], "deferred")
+        self.assertEqual(job["reason"], "image_generation_failed")
+        self.assertEqual(job["message"], "图片生成暂缓：图片 API 调用失败")
+        self.assertNotIn("prompt", job)
 
     def test_append_turn_applies_postprocess_state_patch_quest(self):
         self._write_postprocess_output(

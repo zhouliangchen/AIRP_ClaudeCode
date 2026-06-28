@@ -656,12 +656,22 @@ def _input_analysis_request_reference(input_request: Dict[str, Any]) -> Dict[str
     }
 
 
-def _prepare_run_dir(card_folder, turn_index=None, expected_raw_text_hash: str = "") -> Path:
-    if turn_index is not None:
+def _prepare_run_dir(
+    card_folder,
+    turn_index=None,
+    expected_raw_text_hash: str = "",
+    replay_round_id: str = "",
+) -> Path:
+    if replay_round_id:
+        expected_name = replay_round_id
+    elif turn_index is not None:
         try:
             expected_name = f"round-{int(turn_index) + 1:06d}"
         except (TypeError, ValueError):
             expected_name = ""
+    else:
+        expected_name = ""
+    if expected_name:
         current = agent_run.current_run_dir(card_folder)
         manifest = agent_run.read_json(current / "manifest.json", {}) if current is not None else {}
         stage = str((manifest or {}).get("stage") or "")
@@ -676,7 +686,7 @@ def _prepare_run_dir(card_folder, turn_index=None, expected_raw_text_hash: str =
             and current_hash == expected_raw_text_hash
         ):
             return current
-    return agent_run.create_run_dir(card_folder, turn_index=turn_index)
+    return agent_run.create_run_dir(card_folder, turn_index=turn_index, replay_round_id=replay_round_id or None)
 
 
 def prepare_agent_run(
@@ -695,7 +705,13 @@ def prepare_agent_run(
     retcon_replay_payload = _retcon_replay_payload(input_payload)
     replay_outline_payload = _replay_outline_payload(input_payload)
     raw_text_hash = input_analysis.sha256_text(_source_raw_text(user_text, input_payload))
-    run_dir = _prepare_run_dir(card_folder, turn_index=turn_index, expected_raw_text_hash=raw_text_hash)
+    replay_round_id = str(replay_outline_payload.get("round_id") or "") if replay_outline_payload else ""
+    run_dir = _prepare_run_dir(
+        card_folder,
+        turn_index=turn_index,
+        expected_raw_text_hash=raw_text_hash,
+        replay_round_id=replay_round_id,
+    )
     hidden_setting_records = hidden_setting_records or []
     runtime_payload = runtime_settings.normalize_prompt_payload(runtime_settings_payload)
     safe_chat_log = _sanitize_recent_chat_for_packets(chat_log)

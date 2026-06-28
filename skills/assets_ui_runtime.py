@@ -315,7 +315,7 @@ def _apply_worker_result(payload: dict[str, Any], command: dict[str, Any]) -> No
     child_status = _text(child.get("status"))
     child_reason = _text(child.get("reason")) or _text(child.get("error"))
     if child_status in {"deferred", "failed"}:
-        payload["status"] = child_status
+        payload["status"] = "failed" if child_reason == "invalid_asset_path" else "deferred"
         payload["reason"] = child_reason or child_status
         if isinstance(child.get("references"), list):
             payload["worker_references"] = child.get("references")

@@ -367,7 +367,8 @@ def main():
             card,
             args.job_id,
             {
-                "status": "failed",
+                "status": "deferred",
+                "reason": "image_generation_failed",
                 "error": str(e),
                 "path": rel_path.as_posix(),
             },

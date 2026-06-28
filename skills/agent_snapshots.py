@@ -17,7 +17,7 @@ EXCLUDED_BACKUP_ROOT_ITEMS = {"debug", ".agent_runs", "backup"}
 BACKUP_METADATA_FILENAME = "backup.json"
 
 BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
-ROUND_DIR_RE = re.compile(r"^round-[0-9]{6}$")
+ROUND_DIR_RE = re.compile(r"^round-[0-9]{6}(?:-replay-[0-9]{3})?$")
 
 
 def _utc_now() -> str:

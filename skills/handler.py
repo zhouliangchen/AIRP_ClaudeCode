@@ -762,6 +762,62 @@ def _card_asset_url(path):
     return "/api/card_asset/" + path.lstrip("/")
 
 
+def _asset_job_message(status, reason):
+    reason_text = str(reason or "").strip()
+    if reason_text == "asset_worker_not_configured":
+        return "图片生成暂缓：图片 API 尚未配置"
+    if reason_text == "image_generation_failed":
+        return "图片生成暂缓：图片 API 调用失败"
+    if reason_text == "asset_worker_start_failed":
+        return "图片生成暂缓：图片 worker 启动失败"
+    if reason_text == "reference_image_not_supported":
+        return "图片生成暂缓：当前图片 API 不支持参考图"
+    if reason_text == "missing_character_reference":
+        return "图片生成等待：缺少角色参考图"
+    if reason_text == "invalid_asset_path":
+        return "图片生成失败：资源路径无效"
+    if status == "waiting_on_references":
+        return "图片生成等待：缺少参考图"
+    if status == "failed":
+        return "图片生成失败"
+    if status == "deferred":
+        return "图片生成暂缓"
+    return "图片生成任务未完成"
+
+
+def _load_asset_jobs(card_folder):
+    jobs_dir = Path(card_folder) / "generated" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    jobs = []
+    for path in sorted(jobs_dir.glob("*.json")):
+        payload = _read_json_file(path, {}) or {}
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "").strip()
+        if status not in {"deferred", "failed", "waiting_on_references"}:
+            continue
+        reason = str(payload.get("reason") or "").strip()
+        job = {
+            "job_id": str(payload.get("job_id") or path.stem).strip(),
+            "kind": str(payload.get("kind") or "").strip(),
+            "target": str(payload.get("target") or "").strip(),
+            "status": status,
+            "reason": reason,
+            "message": _asset_job_message(status, reason),
+        }
+        error = str(payload.get("error") or "").strip()
+        if error:
+            job["error"] = error[:240]
+        missing = payload.get("missing_references")
+        if isinstance(missing, list):
+            job["missing_references"] = [str(item) for item in missing if str(item).strip()]
+        jobs.append(job)
+        if len(jobs) >= 8:
+            break
+    return jobs
+
+
 def _load_card_assets(card_folder):
     assets = _read_json_file(Path(card_folder) / ".card_assets.json", {"images": []}) or {"images": []}
     if not isinstance(assets, dict):
@@ -774,6 +830,7 @@ def _load_card_assets(card_folder):
         copied["url"] = _card_asset_url(copied.get("path", ""))
         images.append(copied)
     assets["images"] = images
+    assets["jobs"] = _load_asset_jobs(card_folder)
     return assets
 
 

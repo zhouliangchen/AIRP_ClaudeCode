@@ -74,6 +74,8 @@ def materialize_replay_plan(agent_run: str | Path, plan: dict[str, Any]) -> dict
         session.mkdir(parents=True, exist_ok=False)
     except FileExistsError as exc:
         raise ReplayCapabilityError("replay session already exists") from exc
+    replay_index = _next_replay_index(card)
+    normalized["replay_index"] = replay_index
     _write_json(session / "plan.json", normalized)
     status = {
         "schema_version": 1,
@@ -85,6 +87,7 @@ def materialize_replay_plan(agent_run: str | Path, plan: dict[str, Any]) -> dict
         "last_error": "",
     }
     _write_json(session / "status.json", status)
+    _write_json(card / SESSION_ROOT / "replay_counter.json", {"last_replay_index": replay_index})
     _write_json(card / SESSION_ROOT / "active.json", {"session_id": normalized["plan_id"]})
     artifact_path = f"replay_plans/{normalized['plan_id']}.json"
     _write_artifact(Path(agent_run), artifact_path, normalized)
@@ -95,6 +98,22 @@ def materialize_replay_plan(agent_run: str | Path, plan: dict[str, Any]) -> dict
         "artifact_path": f"artifacts/{artifact_path}",
         "plan": normalized,
     }
+
+
+def _next_replay_index(card: Path) -> int:
+    counter = agent_run_io.read_json(card / SESSION_ROOT / "replay_counter.json", {})
+    value = counter.get("last_replay_index") if isinstance(counter, dict) else None
+    if isinstance(value, int) and value >= 0:
+        return value + 1
+    sessions_root = card / SESSION_ROOT / "sessions"
+    highest = 0
+    if sessions_root.exists():
+        for plan_path in sessions_root.glob("*/plan.json"):
+            payload = agent_run_io.read_json(plan_path, {})
+            index = payload.get("replay_index") if isinstance(payload, dict) else None
+            if isinstance(index, int) and index > highest:
+                highest = index
+    return highest + 1
 
 
 def _card_from_run_dir(run_dir: str | Path) -> Path:

@@ -526,7 +526,9 @@ def main():
     agent_run_error = None
     snapshot_result = None
     turn_index = len(chat_log)
-    round_id = f"round-{turn_index + 1:06d}" if isinstance(turn_index, int) else "round-current"
+    round_id = str(replay_outline.get("round_id") or "") if isinstance(replay_outline, dict) else ""
+    if not round_id:
+        round_id = f"round-{turn_index + 1:06d}" if isinstance(turn_index, int) else "round-current"
     snapshot_result = agent_snapshots.create_snapshot(
         card_folder,
         round_id,

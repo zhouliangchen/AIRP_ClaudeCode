@@ -448,6 +448,44 @@ class ImageGenerateConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):
             self.mod._call_openai_images("draw", "image-model", "1024x1024", {"api_key": "secret"})
 
+    def test_main_api_failure_defers_job_for_frontend_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            job_path = card / "generated" / "jobs" / "scene-round-000004.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--job-id",
+                "scene-round-000004",
+            ]
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_load_config",
+                    return_value={
+                        "base_url": "https://image.example/v1",
+                        "api_key": "secret",
+                        "model": "image-model",
+                    },
+                ):
+                    with mock.patch.object(
+                        self.mod,
+                        "_call_openai_images",
+                        side_effect=RuntimeError("HTTP 404: Images API is not supported"),
+                    ):
+                        with self.assertRaises(SystemExit) as exc:
+                            self.mod.main()
+
+            self.assertEqual(exc.exception.code, 1)
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "deferred")
+            self.assertEqual(payload["reason"], "image_generation_failed")
+            self.assertIn("Images API is not supported", payload["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

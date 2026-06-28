@@ -310,6 +310,29 @@ class ReplayCapabilitiesTest(unittest.TestCase):
             },
         )
 
+    def test_materialize_replay_plan_allocates_monotonic_save_replay_index(self):
+        backup_dir = self.run_dir.parent.parent / "backup" / self._valid_plan()["backup_id"]
+        backup_dir.mkdir(parents=True)
+        (backup_dir / "backup.json").write_text("{}", encoding="utf-8")
+        first_plan = self._valid_plan()
+        second_plan = self._valid_plan()
+        second_plan["plan_id"] = "replay-002"
+
+        first = self.mod.materialize_replay_plan(self.run_dir, first_plan)
+        second = self.mod.materialize_replay_plan(self.run_dir, second_plan)
+
+        card = self.run_dir.parent.parent
+        counter = json.loads((card / ".replay" / "replay_counter.json").read_text(encoding="utf-8"))
+        self.assertEqual(first["plan"]["replay_index"], 1)
+        self.assertEqual(second["plan"]["replay_index"], 2)
+        self.assertEqual(counter["last_replay_index"], 2)
+        self.assertEqual(
+            json.loads((card / ".replay" / "sessions" / "replay-002" / "plan.json").read_text(encoding="utf-8"))[
+                "replay_index"
+            ],
+            2,
+        )
+
     def test_materialize_replay_plan_requires_existing_backup(self):
         plan = self._valid_plan()
 

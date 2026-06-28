@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 CST = timezone(timedelta(hours=8))
+REPLAY_ROUND_RE = re.compile(r"^round-(\d{6})-replay-(\d{3})$")
 
 
 def safe_name(name):
@@ -42,10 +43,19 @@ def _existing_round_numbers(run_dir):
     return sorted(numbers)
 
 
-def create_run_dir(card_folder, turn_index=None):
+def create_run_dir(card_folder, turn_index=None, replay_round_id=None):
     """Create and return a run directory for the given turn index."""
     root = run_root(card_folder)
     root.mkdir(parents=True, exist_ok=True)
+    if replay_round_id is not None:
+        replay_name = str(replay_round_id or "").strip()
+        if not REPLAY_ROUND_RE.fullmatch(replay_name):
+            raise ValueError(f"invalid replay round id: {replay_round_id}")
+        run_dir = root / replay_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_root(card_folder).joinpath("current").write_text(str(run_dir.resolve()), encoding="utf-8")
+        return run_dir
+
     numbers = _existing_round_numbers(root)
 
     if turn_index is None:

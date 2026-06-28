@@ -233,6 +233,54 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         written = _read_json(self.card / "generated" / "jobs" / "scene-required-reference.json")
         self.assertEqual(written["reason"], "reference_image_not_supported")
 
+    def test_process_assets_task_defers_worker_image_generation_failure(self):
+        self._configure_image_settings()
+
+        def run_command(*args, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "image_generation_failed",
+                        "error": "HTTP 404: Images API is not supported",
+                    },
+                    ensure_ascii=False,
+                ),
+                stderr="",
+            )
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-image-api-failed",
+                "type": "assets_task",
+                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "scene"},
+            },
+            phase="after_critic",
+            run_command=run_command,
+            planner=lambda context: {
+                "schema_version": 1,
+                "scene_jobs": [
+                    {
+                        "job_id": "scene-image-api-failed",
+                        "kind": "scene_illustration",
+                        "target": "scene_illustration",
+                        "prompt": "scene",
+                    }
+                ],
+            },
+        )
+
+        job = result["outputs"]["jobs"][0]
+        self.assertEqual(result["outputs"]["status"], "deferred")
+        self.assertEqual(job["status"], "deferred")
+        self.assertEqual(job["reason"], "image_generation_failed")
+        written = _read_json(self.card / "generated" / "jobs" / "scene-image-api-failed.json")
+        self.assertEqual(written["status"], "deferred")
+
     def test_process_persistent_requirements_noops_without_requirement(self):
         result = self.mod.process_persistent_requirements(
             self.card,
