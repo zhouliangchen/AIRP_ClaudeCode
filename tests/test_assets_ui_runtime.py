@@ -285,12 +285,65 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["outputs"]["status"], "waiting_on_references")
-        self.assertEqual(result["outputs"]["jobs"][0]["status"], "waiting_on_references")
+        self.assertEqual(result["outputs"]["jobs"][0]["kind"], "character_reference")
+        self.assertEqual(result["outputs"]["jobs"][0]["status"], "deferred")
+        self.assertEqual(result["outputs"]["jobs"][0]["target_path"], result["outputs"]["jobs"][1]["missing_references"][0])
+        self.assertEqual(result["outputs"]["jobs"][1]["status"], "waiting_on_references")
         self.assertEqual(
-            result["outputs"]["jobs"][0]["reference_candidates"],
+            result["outputs"]["jobs"][1]["reference_candidates"],
             ["characters/苏黎/苏黎.png"],
         )
         self.assertEqual(
-            result["outputs"]["jobs"][0]["missing_references"],
+            result["outputs"]["jobs"][1]["missing_references"],
             ["characters/苏黎/苏黎.png"],
         )
+
+    def test_process_assets_task_resumes_waiting_scene_job_when_references_exist(self):
+        self._configure_image_settings()
+        waiting_payload = {
+            "schema_version": 1,
+            "job_id": "scene-waiting",
+            "kind": "scene_illustration",
+            "target": "scene_illustration",
+            "prompt": "scene after portrait arrives",
+            "characters": ["Ada"],
+            "reference_policy": "required",
+            "reference_candidates": ["characters/Ada/Ada.png"],
+            "resolved_references": [],
+            "missing_references": ["characters/Ada/Ada.png"],
+            "status": "waiting_on_references",
+            "reason": "missing_character_reference",
+        }
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        (jobs_dir / "scene-waiting.json").write_text(
+            json.dumps(waiting_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        reference = self.card / "characters" / "Ada" / "Ada.png"
+        reference.parent.mkdir(parents=True)
+        reference.write_bytes(b"png")
+        calls = []
+
+        def run_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-resume-waiting",
+                "type": "assets_task",
+                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
+            },
+            phase="after_critic",
+            run_command=run_command,
+            planner=lambda context: {"schema_version": 1, "scene_jobs": []},
+        )
+
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["job_id"], "scene-waiting")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "queued")
+        command = calls[0][0][0]
+        self.assertIn("--reference", command)
+        self.assertIn("characters/Ada/Ada.png", command)

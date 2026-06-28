@@ -44,6 +44,7 @@ def process_assets_task(
     asset_requirement_update = _apply_asset_requirement_update(card, payload, plan)
     settings = llm_settings.read_effective_settings()
     jobs: list[dict[str, Any]] = []
+    resumed_jobs: list[dict[str, Any]] = []
 
     for job in _as_list(plan.get("character_reference_jobs")):
         materialized = _materialize_job(
@@ -77,13 +78,15 @@ def process_assets_task(
         )
         jobs.append(materialized)
 
-    summary_status = _summarize_status(jobs)
+    resumed_jobs = _resume_waiting_scene_jobs(card, run_root, settings, run_command)
+    summary_status = _summarize_status(jobs + resumed_jobs)
     outputs = {
         "status": summary_status,
         "phase": phase,
         "postprocess_contract_update": postprocess_contract_update,
         "asset_requirement_update": asset_requirement_update,
         "jobs": jobs,
+        "resumed_jobs": resumed_jobs,
         "plan": plan,
     }
     audit = {
@@ -165,12 +168,16 @@ def _planner_context(
 
 def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     payload = context.get("payload") if isinstance(context.get("payload"), dict) else {}
+    card = Path(context["card_path"])
     run_dir = Path(context["run_dir"])
     job_id = _text(payload.get("job_id")) or f"scene-{run_dir.name}"
     characters = _safe_character_names(payload.get("characters"))
     reference_candidates = _as_string_list(payload.get("reference_candidates"))
+    using_default_references = False
     if not reference_candidates and characters:
         reference_candidates = [f"characters/{name}/{name}.png" for name in characters]
+        using_default_references = True
+    reference_policy = _text(payload.get("reference_policy")) or "optional"
     plan: dict[str, Any] = {
         "schema_version": 1,
         "scene_jobs": [
@@ -178,13 +185,31 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
                 "job_id": job_id,
                 "kind": _text(payload.get("kind")) or "scene_illustration",
                 "target": _text(payload.get("target")) or "scene_illustration",
-                "prompt": _text(payload.get("prompt")) or _default_persistent_prompt(Path(context["card_path"]), run_dir),
+                "prompt": _text(payload.get("prompt")) or _default_persistent_prompt(card, run_dir),
                 "characters": characters,
-                "reference_policy": _text(payload.get("reference_policy")) or "optional",
+                "reference_policy": reference_policy,
                 "reference_candidates": reference_candidates,
             }
         ],
     }
+    if reference_policy == "required" and using_default_references:
+        reference_jobs = []
+        profiles = context.get("character_profiles") if isinstance(context.get("character_profiles"), dict) else {}
+        for name in characters:
+            target_path = f"characters/{name}/{name}.png"
+            if (card / Path(target_path)).exists():
+                continue
+            profile = _text(profiles.get(name))
+            reference_jobs.append(
+                {
+                    "job_id": f"character-{agent_run.safe_name(name)}-reference",
+                    "character_name": name,
+                    "target_path": target_path,
+                    "prompt": profile or f"character reference portrait for {name}",
+                }
+            )
+        if reference_jobs:
+            plan["character_reference_jobs"] = reference_jobs
     requirement = _required_scene_requirement(payload) or _required_scene_requirement({})
     if requirement:
         plan["asset_requirement_update"] = requirement
@@ -321,6 +346,41 @@ def _run_job_command(
         "stdout": _text(getattr(result, "stdout", "")),
         "stderr": _text(getattr(result, "stderr", "")),
     }
+
+
+def _resume_waiting_scene_jobs(
+    card: Path,
+    run_dir: Path,
+    settings: dict[str, Any],
+    run_command: Callable[..., Any] | None,
+) -> list[dict[str, Any]]:
+    jobs_dir = card / "generated" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    resumed: list[dict[str, Any]] = []
+    for job_path in sorted(jobs_dir.glob("*.json")):
+        job = _read_json(job_path, {})
+        if not isinstance(job, dict) or job.get("status") != "waiting_on_references":
+            continue
+        try:
+            missing = _normalize_reference_list(job.get("missing_references"))
+            references = _normalize_reference_list(job.get("reference_candidates"))
+        except InvalidAssetPathError as exc:
+            failed = dict(job)
+            failed["status"] = "failed"
+            failed["reason"] = "invalid_asset_path"
+            failed["invalid_path"] = exc.path_text
+            _write_job(card, run_dir, _text(failed.get("job_id")) or job_path.stem, failed)
+            resumed.append(failed)
+            continue
+        if not missing or any(not (card / Path(item)).exists() for item in missing):
+            continue
+        resume_job = dict(job)
+        resume_job["reference_candidates"] = references or missing
+        resume_job.pop("missing_references", None)
+        resume_job.pop("reason", None)
+        resumed.append(_materialize_scene_job(card, run_dir, settings, resume_job, run_command))
+    return resumed
 
 
 def _apply_asset_requirement_update(card: Path, payload: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:

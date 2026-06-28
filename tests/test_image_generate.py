@@ -371,6 +371,35 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["reason"], "invalid_path")
 
+    def test_main_async_reference_defers_without_spawning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            reference = card / "characters" / "Ada" / "Ada.png"
+            reference.parent.mkdir(parents=True)
+            reference.write_bytes(b"png")
+            job_path = card / "generated" / "jobs" / "scene-round-000004.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--reference",
+                "characters/Ada/Ada.png",
+                "--job-id",
+                "scene-round-000004",
+                "--async",
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(self.mod.subprocess, "Popen") as popen:
+                    with self.assertRaises(SystemExit) as exc:
+                        self.mod.main()
+
+            self.assertEqual(exc.exception.code, 1)
+            popen.assert_not_called()
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "deferred")
+            self.assertEqual(payload["reason"], "reference_image_not_supported")
+
     def test_main_dry_run_custom_output_path_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"

@@ -319,6 +319,23 @@ def main():
         )
         _json_out({"ok": False, "error": str(exc)}, 2)
 
+    if references and not args.dry_run:
+        payload = {
+            "status": "deferred",
+            "reason": "reference_image_not_supported",
+            "references": references,
+        }
+        _write_job_status(card, args.job_id, payload)
+        _json_out(
+            {
+                "ok": False,
+                "error": "reference_image_not_supported",
+                "status": "deferred",
+                "references": references,
+            },
+            1,
+        )
+
     if args.async_job:
         _json_out(_spawn_async(args))
 
@@ -337,23 +354,6 @@ def main():
     rel_path = Path(output_path) if output_path else Path("generated") / "images" / f"{image_id}.png"
     out_path = card / rel_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if references and not args.dry_run:
-        payload = {
-            "status": "deferred",
-            "reason": "reference_image_not_supported",
-            "references": references,
-        }
-        _write_job_status(card, args.job_id, payload)
-        _json_out(
-            {
-                "ok": False,
-                "error": "reference_image_not_supported",
-                "status": "deferred",
-                "references": references,
-            },
-            1,
-        )
 
     try:
         if args.dry_run:
