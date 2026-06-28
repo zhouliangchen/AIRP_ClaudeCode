@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库运行一个由 Claude Code 作为入口和维护者、本地 Python runtime 直接调用 LLM API 的 RP 引擎。核心 Python 运行时代码位于 `skills/`：`server.py` 和 `start_server.py` 提供浏览器桥接服务，`import_prepare.py` 初始化卡片/故事文件夹，`round_prepare.py` 创建每轮上下文，`input_analysis_apply.py` 校验语义输入分析，`round_deliver.py` 对已批准输出进行交付门控。`llm_settings.py`、`llm_provider.py` 和 `llm_runner.py` 负责 cc_switch Claude Code 本地反代、OpenAI-compatible 文本 API 和图片生成 API 的统一配置与调用；运行时 input-analyst、GM、story、critic、postprocess、subGM、player、character、projection 和 assets-ui agent 不再依赖一次性 Claude CLI subprocess。多 agent 文件契约由 `agent_dispatcher.py`、`agent_actor_runtime.py`、`agent_messages.py`、`agent_intents.py`、`agent_snapshots.py`、`agent_prompts.py`、`agent_outputs.py`、`agent_interactions.py`、`agent_memory.py`、`agent_schemas.py`、`input_analysis.py` 和 `character_registry.py` 处理；input analyst 会为普通 GM/story 处理之外的 system/UI/replay/card/source 工作发出 agent 驱动的 `capability_requests[]`。运行时通过声明式 capability registry 映射这些请求；Python 负责强制执行授权、ACL、artifact、projection、snapshot 和 delivery 边界，但不从玩家文本中决定语义路由策略。`agent_dispatcher.py` 消费 pending intents，在默认 live path 中显式执行 projection、actor 和 subGM thread intents，把权威 artifacts 写入 `artifacts/`，并阻断不安全或停滞的运行；`agent_actor_runtime.py` 拥有共享 actor 协作 helper；`agent_messages.py`、`agent_intents.py` 和 `agent_snapshots.py` 实现消息运行时、可执行 intent 生命周期和回滚快照；旧的 broad GM loops 如仍保留，只作为 helper/regression-only 路径，而不是默认运行时。浏览器资产和生成的运行时文件位于 `skills/styles/`；请把 `content.js`、`state.js`、`.pending`、`round_context.txt`、`progress.json`、`llm_settings.frontend.json` 和 `llm_settings.local.json` 视为运行时 artifacts，其中两个 `llm_settings.*.json` 文件必须保持 gitignored。Claude Code prompts 和 slash commands 位于 `.claude/`。测试位于 `tests/`。
+本仓库运行一个由 Claude Code 作为入口和维护者、本地 Python runtime 直接调用 LLM API 的 RP 引擎。核心 Python 运行时代码位于 `skills/`：`server.py` 和 `start_server.py` 提供浏览器桥接服务，`import_prepare.py` 初始化卡片/故事文件夹，`round_prepare.py` 创建每轮上下文，`input_analysis_apply.py` 校验语义输入分析，`round_deliver.py` 对已批准输出进行交付门控。`llm_settings.py`、`llm_provider.py` 和 `llm_runner.py` 负责 cc_switch Claude Code 本地反代、OpenAI-compatible 文本 API 和图片生成 API 的统一配置与调用；`assets_ui_runtime.py` 负责 assets-ui 规划、任务状态与持久化资产需求；运行时 input-analyst、GM、story、critic、postprocess、subGM、player、character、projection 和 assets-ui agent 不再依赖一次性 Claude CLI subprocess。多 agent 文件契约由 `agent_dispatcher.py`、`agent_actor_runtime.py`、`agent_messages.py`、`agent_intents.py`、`agent_snapshots.py`、`agent_prompts.py`、`agent_outputs.py`、`agent_interactions.py`、`agent_memory.py`、`agent_schemas.py`、`input_analysis.py` 和 `character_registry.py` 处理；input analyst 会为普通 GM/story 处理之外的 system/UI/replay/card/source 工作发出 agent 驱动的 `capability_requests[]`。运行时通过声明式 capability registry 映射这些请求；Python 负责强制执行授权、ACL、artifact、projection、snapshot 和 delivery 边界，但不从玩家文本中决定语义路由策略。`agent_dispatcher.py` 消费 pending intents，在默认 live path 中显式执行 projection、actor 和 subGM thread intents，把权威 artifacts 写入 `artifacts/`，并阻断不安全或停滞的运行；`agent_actor_runtime.py` 拥有共享 actor 协作 helper；`agent_messages.py`、`agent_intents.py` 和 `agent_snapshots.py` 实现消息运行时、可执行 intent 生命周期和回滚快照；旧的 broad GM loops 如仍保留，只作为 helper/regression-only 路径，而不是默认运行时。浏览器资产和生成的运行时文件位于 `skills/styles/`；存档侧 `generated/jobs/`、`content.js`、`state.js`、`.pending`、`round_context.txt`、`progress.json`、`llm_settings.frontend.json` 和 `llm_settings.local.json` 也都视为运行时 artifacts，其中两个 `llm_settings.*.json` 文件必须保持 gitignored。Claude Code prompts 和 slash commands 位于 `.claude/`。测试位于 `tests/`。
 
 ## 构建、测试与开发命令
 
@@ -11,7 +11,7 @@
 - `python skills/round_prepare.py "<card_folder>" "."` 创建 `round_context.txt` 和 `.agent_runs/<round>/`。
 - `python skills/input_analysis_apply.py "<card_folder>" "."` 校验 `input_analysis.output.json`，持久化已批准的设置/重要角色，并重建已路由的 agent packets。
 - `python skills/round_deliver.py "<card_folder>" "."` 校验 agent artifacts，镜像已批准的 story 输出，并交付到前端。
-- `python skills/image_generate.py "<card_folder>" --prompt "..." --kind scene --target scene_illustration` 使用统一图片 API 配置生成 assets-ui 图片资产。
+- `python skills/image_generate.py "<card_folder>" --prompt "..." --kind scene --target scene_illustration [--job-id <id>] [--reference <path>] [--output-path <path>]` 使用统一图片 API 配置生成 assets-ui 图片资产，并可显式补充作业追踪、参考图与输出路径。
 - `python -m unittest discover -s tests -v` 运行完整测试套件。
 - `python skills/control_plane_smoke.py --repo .` 运行确定性、无 live model 的多 agent 控制面冒烟测试。
 - `python -m py_compile skills/<file>.py` 检查被修改的 Python 文件。
@@ -66,4 +66,4 @@ PowerShell 中运行 Python 并需要打印包含中文路径或中文 JSON 的 
 
 ## Commit指南
 
-为本仓库创建 git commits 时，commit messages 使用规范的简体中文提交格式。不要提交docs/下的文件，但允许本地修改、添加git追踪。
+为本仓库创建 git commits 时，commit messages 使用规范的简体中文提交格式。`docs/` 下文档用于维护者/使用者本地参考，要求随实现保持同步，但默认不纳入commit.
