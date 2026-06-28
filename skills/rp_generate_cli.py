@@ -1390,14 +1390,18 @@ def _force_retcon_derived_edit_revise(critic: Dict[str, Any]) -> Dict[str, Any]:
     normalized["repair_instruction"] = (
         instruction + "\n" + derived_instruction if instruction else derived_instruction
     )
-    if not isinstance(normalized.get("repair_routing"), dict):
-        normalized["repair_routing"] = {
+    routing = normalized.get("repair_routing")
+    routing = dict(routing) if isinstance(routing, dict) else {}
+    routing.update(
+        {
             "stage": "story_composition",
             "target_agents": ["story"],
             "rollback": "story_only",
             "can_auto_repair": True,
             "risk": "low",
         }
+    )
+    normalized["repair_routing"] = routing
     return normalized
 
 

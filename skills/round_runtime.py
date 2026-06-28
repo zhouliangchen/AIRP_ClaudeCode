@@ -69,14 +69,6 @@ def run_round(
     try:
         input_analysis_result = _ensure_input_analysis(card, root, run_dir, manifest, run_claude)
         stages.append("input_analysis")
-        if input_analysis_result.get("action") == "retcon_replay_prepared":
-            return {
-                "ok": False,
-                "action": "retcon_replay_prepared",
-                "run_dir": str(run_dir),
-                "runtime": {"mode": "thin", "stages": stages},
-                "input_analysis": input_analysis_result,
-            }
         runtime_pump = {
             "after_input_analysis": input_analysis_result.get("runtime_pump", {}).get(
                 "after_input_analysis",
@@ -325,16 +317,6 @@ def _ensure_input_analysis(
                 attempts=1,
                 initial_error=last_error,
             )
-        replay = retcon_replay.prepare_replay_from_current_run(card, run_dir)
-        if replay.get("action") == "retcon_replay_prepared":
-            return {
-                "ok": True,
-                "action": "retcon_replay_prepared",
-                "run_dir": str(run_dir),
-                "retcon_replay": replay,
-            }
-        if replay.get("ok") is False:
-            raise RoundRuntimeError(f"retcon replay preparation failed: {replay}")
         try:
             applied = input_analysis_apply.apply_current_run(card, root)
             break

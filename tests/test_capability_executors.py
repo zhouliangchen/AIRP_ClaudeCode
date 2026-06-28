@@ -31,6 +31,132 @@ class CapabilityExecutorsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_execute_replay_plan_materializes_nested_payload_without_confirmation(self):
+        backup_id = "round-000001-20260623T000000000000Z-abc123def456"
+        backup_dir = self.card / "backup" / backup_id
+        backup_dir.mkdir(parents=True)
+        (backup_dir / "backup.json").write_text("{}", encoding="utf-8")
+        intent = {
+            "id": "intent_replay_plan_1",
+            "type": "replay_plan",
+            "payload": {
+                "capability_request_id": "cap-replay",
+                "capability": "replay.plan",
+                "requested_by": "input_analyst",
+                "payload": {
+                    "schema_version": 1,
+                    "scope": "single_round",
+                    "plan_id": "replay-001",
+                    "backup_id": backup_id,
+                    "affected_inputs": [
+                        {
+                            "round_id": "round-000001",
+                            "input_id": "input-1",
+                            "role_text": "first role",
+                            "user_instruction_text": "",
+                        }
+                    ],
+                },
+                "policy": {
+                    "source_channel": "user_instruction",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                },
+            },
+        }
+
+        result = self.executors.execute_intent(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_input_analysis",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outputs"]["session_id"], "replay-001")
+        session = self.card / ".replay" / "sessions" / "replay-001"
+        self.assertTrue((session / "plan.json").is_file())
+        self.assertTrue((session / "status.json").is_file())
+        self.assertTrue((self.run_dir / "artifacts" / "replay_plans" / "replay-001.json").is_file())
+
+    def test_execute_replay_execute_calls_executor_with_default_wrappers(self):
+        intent = {
+            "id": "intent_replay_execute_1",
+            "type": "replay_execute",
+            "payload": {
+                "capability_request_id": "cap-replay-execute",
+                "capability": "replay.execute",
+                "requested_by": "input_analyst",
+                "payload": {"schema_version": 1, "plan_id": "replay-001", "resume": True},
+                "policy": {
+                    "source_channel": "user_instruction",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                },
+            },
+        }
+        calls = []
+        original_execute = self.executors.replay_executor.execute_replay_session
+
+        def fake_execute(card_folder, root_dir, plan_id, *, prepare_round, generate_round):
+            calls.append(
+                {
+                    "card_folder": Path(card_folder),
+                    "root_dir": Path(root_dir),
+                    "plan_id": plan_id,
+                    "prepare_round": prepare_round,
+                    "generate_round": generate_round,
+                }
+            )
+            return {"ok": True, "session_id": plan_id, "status": "complete"}
+
+        try:
+            self.executors.replay_executor.execute_replay_session = fake_execute
+            result = self.executors.execute_intent(
+                self.card,
+                self.run_dir,
+                intent,
+                phase="after_input_analysis",
+            )
+        finally:
+            self.executors.replay_executor.execute_replay_session = original_execute
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outputs"], {"ok": True, "session_id": "replay-001", "status": "complete"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["card_folder"], self.card)
+        self.assertEqual(calls[0]["plan_id"], "replay-001")
+        self.assertIs(calls[0]["prepare_round"], self.executors.replay_executor.prepare_round_default)
+        self.assertIs(calls[0]["generate_round"], self.executors.replay_executor.generate_round_default)
+
+    def test_execute_replay_execute_blocks_malformed_payload(self):
+        intent = {
+            "id": "intent_replay_execute_bad",
+            "type": "replay_execute",
+            "payload": {
+                "capability_request_id": "cap-replay-execute",
+                "capability": "replay.execute",
+                "requested_by": "input_analyst",
+                "payload": {"schema_version": 1},
+                "policy": {
+                    "source_channel": "user_instruction",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                },
+            },
+        }
+
+        result = self.executors.execute_intent(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_input_analysis",
+        )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reason"], "invalid_replay_execute_payload")
+        self.assertIn("plan_id", result["outputs"]["error"])
+
     def test_execute_character_rename_updates_storage_player_mapping_and_registry(self):
         paths = self.store.ensure_actor_files(self.card, "player")
         paths.short_term.write_text("记忆的回声：你听见有人叫你的真名。\n", encoding="utf-8")

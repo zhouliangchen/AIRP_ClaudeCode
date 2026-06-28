@@ -49,11 +49,13 @@ class AgentSnapshotsTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        snapshot_dir = Path(result["snapshot_dir"])
-        self.assertTrue((snapshot_dir / "chat_log.json").exists())
-        self.assertTrue((snapshot_dir / ".card_data.json").exists())
-        self.assertTrue((snapshot_dir / "memory" / "project.md").exists())
-        metadata = json.loads((snapshot_dir / "backup.json").read_text(encoding="utf-8"))
+        backup_dir = Path(result["backup_dir"])
+        self.assertEqual(result["backup_id"], result["snapshot_id"])
+        self.assertEqual(result["backup_dir"], result["snapshot_dir"])
+        self.assertTrue((backup_dir / "chat_log.json").exists())
+        self.assertTrue((backup_dir / ".card_data.json").exists())
+        self.assertTrue((backup_dir / "memory" / "project.md").exists())
+        metadata = json.loads((backup_dir / "backup.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["backup_id"], result["backup_id"])
         self.assertEqual(metadata["snapshot_id"], result["snapshot_id"])
         self.assertEqual(metadata["round_id"], "round-000001")
@@ -71,6 +73,8 @@ class AgentSnapshotsTest(unittest.TestCase):
         (self.card / ".player_inputs.jsonl").write_text('{"id":"input-1"}\n', encoding="utf-8")
         (self.card / "generated").mkdir()
         (self.card / "generated" / "scene.txt").write_text("scene asset", encoding="utf-8")
+        (self.card / ".replay").mkdir()
+        write_json(self.card / ".replay" / "active.json", {"session_id": "replay-001"})
         (self.card / "debug").mkdir()
         (self.card / "debug" / "trace.json").write_text("debug trace", encoding="utf-8")
         (self.card / ".agent_runs" / "round-000001").mkdir(parents=True)
@@ -84,20 +88,22 @@ class AgentSnapshotsTest(unittest.TestCase):
             reason="before_round_prepare",
         )
 
-        backup_dir = Path(result["snapshot_dir"])
+        backup_dir = Path(result["backup_dir"])
         self.assertEqual(backup_dir.parent, self.card / "backup")
         self.assertTrue((backup_dir / "chat_log.json").is_file())
         self.assertTrue((backup_dir / "characters" / "player" / "long_term_memories.md").is_file())
         self.assertTrue((backup_dir / ".player_inputs.jsonl").is_file())
         self.assertTrue((backup_dir / "generated" / "scene.txt").is_file())
+        self.assertTrue((backup_dir / ".replay" / "active.json").is_file())
         self.assertFalse((backup_dir / "debug").exists())
         self.assertFalse((backup_dir / ".agent_runs").exists())
         self.assertFalse((backup_dir / "backup").exists())
         metadata = json.loads((backup_dir / "backup.json").read_text(encoding="utf-8"))
-        self.assertEqual(metadata["backup_id"], result["snapshot_id"])
+        self.assertEqual(metadata["backup_id"], result["backup_id"])
         self.assertIn("characters", metadata["copied"])
         self.assertIn(".player_inputs.jsonl", metadata["copied"])
         self.assertIn("generated", metadata["copied"])
+        self.assertIn(".replay", metadata["copied"])
 
     def test_create_snapshot_records_and_copies_objective_world_archive(self):
         self._write_card_state()
@@ -121,13 +127,13 @@ class AgentSnapshotsTest(unittest.TestCase):
             reason="before_input",
         )
 
-        snapshot_dir = Path(result["snapshot_dir"])
-        metadata = json.loads((snapshot_dir / "backup.json").read_text(encoding="utf-8"))
-        copied_payload = json.loads((snapshot_dir / "memory" / "objective_world.json").read_text(encoding="utf-8"))
+        backup_dir = Path(result["backup_dir"])
+        metadata = json.loads((backup_dir / "backup.json").read_text(encoding="utf-8"))
+        copied_payload = json.loads((backup_dir / "memory" / "objective_world.json").read_text(encoding="utf-8"))
         self.assertTrue(metadata["objective_world_included"])
         self.assertEqual(copied_payload["facts"][0]["fact"], "The locked door leads to a moon base.")
 
-    def test_snapshot_restores_subjective_character_memory(self):
+    def test_backup_restores_subjective_character_memory(self):
         self._write_card_state()
         actor_dir = self.card / "characters" / "player"
         actor_dir.mkdir(parents=True)
@@ -142,11 +148,14 @@ class AgentSnapshotsTest(unittest.TestCase):
 
         restored = self.snapshots.restore_snapshot(
             self.card,
-            created["snapshot_id"],
+            created["backup_id"],
             mode="round_runtime_failed",
         )
 
         self.assertTrue(restored["ok"])
+        self.assertEqual(restored["backup_id"], created["backup_id"])
+        self.assertEqual(restored["backup_dir"], created["backup_dir"])
+        self.assertEqual(restored["snapshot_id"], created["backup_id"])
         self.assertIn("characters", restored["restored"])
         self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "old memory\n")
 
@@ -228,9 +237,11 @@ class AgentSnapshotsTest(unittest.TestCase):
 
         self.assertTrue(first["ok"])
         self.assertTrue(second["ok"])
-        self.assertNotEqual(first["snapshot_id"], second["snapshot_id"])
-        self.assertTrue(Path(first["snapshot_dir"]).exists())
-        self.assertTrue(Path(second["snapshot_dir"]).exists())
+        self.assertNotEqual(first["backup_id"], second["backup_id"])
+        self.assertTrue(Path(first["backup_dir"]).exists())
+        self.assertTrue(Path(second["backup_dir"]).exists())
+        self.assertEqual(first["snapshot_id"], first["backup_id"])
+        self.assertEqual(second["snapshot_dir"], second["backup_dir"])
 
     def test_restore_snapshot_reports_missing_snapshot(self):
         result = self.snapshots.restore_snapshot(

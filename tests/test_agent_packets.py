@@ -2144,6 +2144,26 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("梦境破碎", skill)
         self.assertIn("醒来", skill)
 
+    def test_input_analyst_skill_advertises_replay_execute_capability(self):
+        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+
+        self.assertIn("`replay.execute`", skill)
+        self.assertIn("`replay.execute -> replay`", skill)
+        self.assertIn('Use `authorization_gate: "none"` for `replay.plan` and `replay.execute`', skill)
+        self.assertIn("continuity retcon / rollback replay", skill)
+        self.assertIn(
+            "must not rely only on `narrative_directives.rewrite_previous_output`",
+            skill,
+        )
+        self.assertIn("emit `replay.plan`", skill)
+        self.assertIn("paired `replay.execute`", skill)
+        self.assertIn("same `plan_id`", skill)
+        self.assertIn("`backup_id`, `affected_inputs`, and `plan_id`", skill)
+        self.assertIn("`replay.plan` materializes a `.replay` session", skill)
+        self.assertIn("`replay.execute` executes or resumes", skill)
+        self.assertIn("`retcon.consult` remains consultation-only", skill)
+        self.assertNotIn("blocked/not-wired", skill)
+
     def test_input_analyst_skill_keeps_important_character_hidden_identity_private(self):
         skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
 
@@ -2294,6 +2314,57 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn(objective_fact, json.dumps(character_packet, ensure_ascii=False))
         self.assertNotIn(objective_fact, player_prompt)
         self.assertNotIn(objective_fact, character_prompt)
+
+    def test_prepare_agent_run_includes_replay_outline_only_for_gm(self):
+        outline = {
+            "schema_version": 1,
+            "session_id": "replay-001",
+            "round_id": "round-000001",
+            "input_id": "input-replay-1",
+            "bridge_goal": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL without exposing it to actors.",
+            "current_input": {"input_id": "input-replay-1", "role_text": "I open the archive door."},
+            "next_input": {"input_id": "input-replay-2", "role_text": "NEXT_PLAYER_INPUT_SENTINEL"},
+            "visibility": {"next_input": "gm_bridge_only"},
+        }
+        input_payload = {
+            "id": "input-replay-1",
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I open the archive door.",
+            "role_text": "I open the archive door.",
+            "user_instruction_text": "",
+            "replay_outline": outline,
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="I open the archive door.",
+            chat_log=[],
+            card_data={"title": "Replay Outline Packet Test"},
+            character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
+            turn_index=0,
+            input_payload=input_payload,
+        )
+
+        run_dir = Path(result["run_dir"])
+        safe_name = self.agent_run.safe_name("Ada")
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+        character_packet = json.loads((run_dir / "characters" / f"{safe_name}.context.json").read_text(encoding="utf-8"))
+        gm_prompt = (run_dir / "prompts" / "gm.prompt.md").read_text(encoding="utf-8")
+        player_prompt = (run_dir / "prompts" / "player.prompt.md").read_text(encoding="utf-8")
+        character_prompt = (run_dir / "prompts" / "characters" / f"{safe_name}.prompt.md").read_text(encoding="utf-8")
+
+        self.assertEqual(input_json["replay_outline"], outline)
+        self.assertIn("replay_outline", gm_packet)
+        self.assertEqual(gm_packet["replay_outline"], outline)
+        self.assertIn("NEXT_PLAYER_INPUT_SENTINEL", gm_prompt)
+        self.assertNotIn("replay_outline", player_packet)
+        self.assertNotIn("replay_outline", character_packet)
+        self.assertNotIn("NEXT_PLAYER_INPUT_SENTINEL", json.dumps(player_packet, ensure_ascii=False))
+        self.assertNotIn("NEXT_PLAYER_INPUT_SENTINEL", json.dumps(character_packet, ensure_ascii=False))
+        self.assertNotIn("NEXT_PLAYER_INPUT_SENTINEL", player_prompt)
+        self.assertNotIn("NEXT_PLAYER_INPUT_SENTINEL", character_prompt)
 
     def test_rebuild_agent_run_from_analysis_refreshes_objective_world_for_gm_only(self):
         initial_fact = "The old archive map is incomplete."
@@ -2595,6 +2666,61 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         self.assertEqual(called["input_payload"], explicit_payload)
+
+    def test_round_prepare_injects_active_replay_outline_for_matching_pending_input(self):
+        temp_root, _styles_dir = self._make_round_prepare_fixture()
+        pending = {
+            "id": "input-replay-1",
+            "created_at": "2026-06-26T00:00:00Z",
+            "source": "player",
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I open the archive door.",
+            "display_text": "I open the archive door.",
+            "role_text": "I open the archive door.",
+            "user_instruction_text": "",
+        }
+        outline = {
+            "schema_version": 1,
+            "session_id": "replay-001",
+            "round_id": "round-000001",
+            "input_id": "input-replay-1",
+            "bridge_goal": "Reach the next preserved player turn.",
+            "next_input": {"input_id": "input-replay-2", "role_text": "NEXT_PLAYER_INPUT_SENTINEL"},
+            "visibility": {"next_input": "gm_bridge_only"},
+        }
+        _write_json(self.card / ".pending_user_turn.json", pending)
+        _write_json(self.card / ".replay" / "active.json", {"session_id": "replay-001", "status": "active"})
+        _write_json(self.card / ".replay" / "sessions" / "replay-001" / "status.json", {"active_round_index": 1})
+        _write_json(self.card / ".replay" / "sessions" / "replay-001" / "rounds" / "000001" / "outline.json", outline)
+
+        round_prepare = _load_round_prepare()
+        called = {}
+
+        def stub_prepare_agent_run(**kwargs):
+            called.update(kwargs)
+            return {
+                "run_dir": str(self.card / ".agent_runs" / "round-000001"),
+                "routed_input": {"role_channel": "I open the archive door.", "user_instruction_channel": ""},
+            }
+
+        round_prepare.agent_packets.prepare_agent_run = stub_prepare_agent_run
+        round_prepare.write_progress = lambda *args, **kwargs: None
+        round_prepare.apply_injections = lambda card_folder: []
+        round_prepare.match_worldbook.match_worldbook = lambda card_folder: []
+        round_prepare.mvu_check.generate_checklist = lambda card_folder: None
+
+        old_argv = sys.argv
+        stdout = io.StringIO()
+        try:
+            sys.argv = ["round_prepare.py", str(self.card), str(temp_root)]
+            with contextlib.redirect_stdout(stdout):
+                round_prepare.main()
+        finally:
+            sys.argv = old_argv
+
+        self.assertEqual(called["input_payload"]["id"], "input-replay-1")
+        self.assertIn("replay_outline", called["input_payload"])
+        self.assertEqual(called["input_payload"]["replay_outline"], outline)
 
     def test_round_prepare_passes_latest_single_channel_payload_to_agent_run(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()

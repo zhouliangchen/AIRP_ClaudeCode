@@ -12,6 +12,7 @@ import character_registry
 import llm_settings
 import postprocess_outputs
 import replay_capabilities
+import replay_executor
 
 
 class CapabilityExecutorError(RuntimeError):
@@ -38,6 +39,13 @@ def execute_intent(
         )
     if intent_type == "replay_plan":
         return execute_replay_plan(run_dir, intent)
+    if intent_type == "replay_execute":
+        return execute_replay_execute(
+            card_folder,
+            Path(__file__).resolve().parent.parent,
+            run_dir,
+            intent,
+        )
     if intent_type == "system_request":
         return execute_system_request(run_dir, intent, runtime_settings=runtime_settings)
     if intent_type == "character_rename":
@@ -110,15 +118,40 @@ def execute_assets_task(
 
 
 def execute_replay_plan(run_dir: str | Path, intent: dict[str, Any]) -> dict[str, Any]:
-    payload = _payload(intent)
-    if payload.get("confirmed") is not True:
-        return {
-            "status": "blocked",
-            "reason": "manual_confirmation_required",
-            "outputs": {"requires_manual_confirmation": True},
-        }
+    payload = _nested_capability_payload(intent)
     materialized = replay_capabilities.materialize_replay_plan(run_dir, payload)
     return {"status": "completed", "outputs": materialized}
+
+
+def execute_replay_execute(
+    card_folder: str | Path,
+    root_dir: str | Path,
+    run_dir: str | Path,
+    intent: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _nested_capability_payload(intent)
+    try:
+        normalized = replay_capabilities.validate_replay_execute(payload)
+    except replay_capabilities.ReplayCapabilityError as exc:
+        return {
+            "status": "blocked",
+            "reason": "invalid_replay_execute_payload",
+            "outputs": {"error": str(exc)},
+        }
+    result = replay_executor.execute_replay_session(
+        card_folder,
+        root_dir,
+        normalized["plan_id"],
+        prepare_round=replay_executor.prepare_round_default,
+        generate_round=replay_executor.generate_round_default,
+    )
+    if result.get("ok") is True:
+        return {"status": "completed", "outputs": result}
+    return {
+        "status": "blocked",
+        "reason": _text(result.get("reason")) or "replay_execute_failed",
+        "outputs": result,
+    }
 
 
 def execute_system_request(
@@ -210,6 +243,14 @@ def _payload(intent: dict[str, Any]) -> dict[str, Any]:
     payload = intent.get("payload")
     if not isinstance(payload, dict):
         raise CapabilityExecutorError("intent payload must be an object")
+    return payload
+
+
+def _nested_capability_payload(intent: dict[str, Any]) -> dict[str, Any]:
+    payload = _payload(intent)
+    nested = payload.get("payload")
+    if isinstance(nested, dict):
+        return nested
     return payload
 
 

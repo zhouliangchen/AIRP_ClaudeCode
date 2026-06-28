@@ -51,6 +51,51 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         self.assertNotIn("burns identity", text)
         self.assertIn("[redacted]", text)
 
+    def test_replay_outline_next_input_is_hidden_from_actor_call_prompt(self):
+        input_payload = {
+            "replay_outline": {
+                "schema_version": 1,
+                "session_id": "replay-001",
+                "round_id": "round-000001",
+                "input_id": "input-replay-1",
+                "current_input": {
+                    "input_id": "input-replay-1",
+                    "role_text": "I open the archive door.",
+                },
+                "next_input": {
+                    "input_id": "input-replay-2",
+                    "role_text": "NEXT_PLAYER_INPUT_SENTINEL",
+                },
+                "bridge_goal": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL.",
+                "must_change": ["Keep continuity before NEXT_PLAYER_INPUT_SENTINEL."],
+            },
+        }
+        gm_output = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [{
+                "call_id": "call-character-Ada-1",
+                "actor_id": "character:Ada",
+                "prompt": "Tell Ada about NEXT_PLAYER_INPUT_SENTINEL.",
+                "reason": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL.",
+                "metadata": {"note": "NEXT_PLAYER_INPUT_SENTINEL"},
+            }],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "decision_point": None,
+            "stop_reason": "continue",
+        }
+
+        phrases = self.guard.hidden_phrases(input_payload)
+        sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
+        text = repr(sanitized)
+
+        self.assertIn("NEXT_PLAYER_INPUT_SENTINEL", phrases)
+        self.assertNotIn("NEXT_PLAYER_INPUT_SENTINEL", text)
+        self.assertIn("[redacted]", text)
+        self.assertNotIn("I open the archive door.", phrases)
+
     def test_sanitize_gm_output_redacts_visibility_basis(self):
         sanitized = self.guard.sanitize_gm_output(
             {

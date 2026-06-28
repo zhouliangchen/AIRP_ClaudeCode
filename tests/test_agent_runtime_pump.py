@@ -189,20 +189,39 @@ class AgentRuntimePumpTest(unittest.TestCase):
         self.assertEqual(result["outputs"]["reason"], "asset_worker_not_configured")
         self.assertEqual(calls, [])
 
-    def test_run_pending_intents_blocks_replay_plan_without_confirmation(self):
+    def test_run_pending_intents_materializes_replay_plan_without_confirmation(self):
+        backup_id = "round-000001-20260623T000000000000Z-abc123def456"
+        backup_dir = self.card / "backup" / backup_id
+        backup_dir.mkdir(parents=True)
+        (backup_dir / "backup.json").write_text("{}", encoding="utf-8")
         created = self.intents.create_intent(
             self.run_dir,
             {
                 "requested_by": "input_analyst",
                 "type": "replay_plan",
                 "payload": {
-                    "schema_version": 1,
-                    "plan_id": "plan-1",
-                    "snapshot_id": "round-000001-20260623T000000000000Z-abc123def456",
-                    "affected_rounds": ["round-000001"],
-                    "requires_manual_confirmation": True,
-                    "reason": "Retcon needs replay.",
-                    "summary": "Replay one round.",
+                    "capability_request_id": "cap-replay",
+                    "capability": "replay.plan",
+                    "requested_by": "input_analyst",
+                    "payload": {
+                        "schema_version": 1,
+                        "scope": "single_round",
+                        "plan_id": "replay-001",
+                        "backup_id": backup_id,
+                        "affected_inputs": [
+                            {
+                                "round_id": "round-000001",
+                                "input_id": "input-1",
+                                "role_text": "first role",
+                                "user_instruction_text": "",
+                            }
+                        ],
+                    },
+                    "policy": {
+                        "source_channel": "user_instruction",
+                        "risk": "high",
+                        "authorization_gate": "none",
+                    },
                 },
             },
         )["intent"]
@@ -213,9 +232,12 @@ class AgentRuntimePumpTest(unittest.TestCase):
             phase="after_input_analysis",
         )
 
-        self.assertEqual(result["blocked"][0]["intent_id"], created["id"])
-        blocked = self.intents.list_intents(self.run_dir, "blocked")[0]
-        self.assertEqual(blocked["result"]["reason"], "manual_confirmation_required")
+        self.assertEqual([item["intent_id"] for item in result["processed"]], [created["id"]])
+        self.assertEqual([item["status"] for item in result["processed"]], ["completed"])
+        completed = self.intents.list_intents(self.run_dir, "completed")[0]
+        self.assertEqual(completed["result"]["outputs"]["session_id"], "replay-001")
+        self.assertTrue((self.card / ".replay" / "sessions" / "replay-001" / "plan.json").exists())
+        self.assertTrue((self.card / ".replay" / "sessions" / "replay-001" / "status.json").exists())
 
     def test_run_pending_intents_blocks_system_request_without_authorization(self):
         created = self.intents.create_intent(

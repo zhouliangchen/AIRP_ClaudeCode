@@ -1196,6 +1196,44 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("derived_content_edits", "\n".join(normalized["hard_failures"]))
         self.assertIn("complete replacement", normalized["repair_instruction"])
 
+    def test_normalize_critic_report_forces_auto_repair_for_retcon_missing_derived_edits(self):
+        critic = {
+            "decision": "revise",
+            "hard_failures": ["missing derived_content_edits"],
+            "soft_issues": [],
+            "repair_instruction": "Add missing edits.",
+            "repair_routing": {
+                "stage": "system_code",
+                "target_agents": ["critic"],
+                "rollback": "full_round",
+                "can_auto_repair": False,
+                "risk": "high",
+            },
+        }
+        story = {
+            "content": "<content>Current scene without derived edits.</content>",
+            "character_dialogues": [],
+            "metadata": {"retcon_applied": True},
+        }
+        story_input = {
+            "player_inputs": {
+                "input_analysis": {
+                    "narrative_directives": {"rewrite_previous_output": True},
+                    "world_updates": {"retcon_requests": [{"id": "r1", "text": "dream"}]},
+                }
+            }
+        }
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertEqual(normalized["repair_routing"]["stage"], "story_composition")
+        self.assertEqual(normalized["repair_routing"]["target_agents"], ["story"])
+        self.assertEqual(normalized["repair_routing"]["rollback"], "story_only")
+        self.assertTrue(normalized["repair_routing"]["can_auto_repair"])
+        self.assertEqual(normalized["repair_routing"]["risk"], "low")
+        self.assertIn("complete replacement", normalized["repair_instruction"])
+
     def test_normalize_critic_report_does_not_require_derived_edits_during_active_replay(self):
         critic = {
             "decision": "pass",

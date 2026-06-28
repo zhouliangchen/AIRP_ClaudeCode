@@ -262,16 +262,6 @@ def _maybe_write_initial_player_mapping(
     )
 
 
-def _source_input_id(raw_request: Dict[str, Any]) -> str:
-    explicit_payload = raw_request.get("explicit_payload")
-    if isinstance(explicit_payload, dict):
-        value = explicit_payload.get("id")
-        if value:
-            return str(value)
-    value = raw_request.get("source_input_id") or raw_request.get("id")
-    return "" if value is None else str(value)
-
-
 def _clean_routed_character_names(routed_input: Dict[str, Any]) -> list[str]:
     names = []
     for value in routed_input.get("characters", []) if isinstance(routed_input, dict) else []:
@@ -577,6 +567,12 @@ _CAPABILITY_AUTHORIZATION_GATE_ALIASES = {
     "automated": "none",
 }
 
+_CAPABILITY_ALIASES = {
+    "retcon.replay": "replay.plan",
+    "story.replay": "replay.plan",
+    "replay": "replay.plan",
+}
+
 
 def _capability_request_source_channel(
     request: Dict[str, Any],
@@ -640,6 +636,12 @@ def _normalize_capability_request_source_channels(
             normalized["requested_by"] = target_requester
             changed = True
 
+        capability = str(normalized.get("capability") or "").strip()
+        target_capability = _CAPABILITY_ALIASES.get(capability, capability)
+        if target_capability != capability:
+            normalized["capability"] = target_capability
+            changed = True
+
         gate = str(normalized.get("authorization_gate") or "").strip()
         target_gate = _CAPABILITY_AUTHORIZATION_GATE_ALIASES.get(gate, gate)
         definition = capability_registry.CAPABILITIES.get(
@@ -663,6 +665,183 @@ def _normalize_capability_request_source_channels(
     normalized_analysis = dict(analysis)
     normalized_analysis["capability_requests"] = normalized_requests
     return normalized_analysis, True
+
+
+def _has_replay_capability(capability_requests: Any) -> bool:
+    if not isinstance(capability_requests, list):
+        return False
+    for request in capability_requests:
+        if not isinstance(request, dict):
+            continue
+        capability = str(request.get("capability") or "").strip()
+        if capability in {"replay.plan", "replay.execute"}:
+            return True
+    return False
+
+
+def _structured_retcon_requested(analysis: Dict[str, Any]) -> bool:
+    directives = analysis.get("narrative_directives")
+    if isinstance(directives, dict) and directives.get("rewrite_previous_output") is True:
+        return True
+    world_updates = analysis.get("world_updates")
+    retcons = world_updates.get("retcon_requests") if isinstance(world_updates, dict) else None
+    return isinstance(retcons, list) and any(isinstance(item, dict) for item in retcons)
+
+
+def _is_replay_round(raw_request: Dict[str, Any]) -> bool:
+    payload = raw_request.get("explicit_payload")
+    if not isinstance(payload, dict):
+        return False
+    return isinstance(payload.get("replay_outline"), dict) or isinstance(
+        payload.get("retcon_replay"),
+        dict,
+    )
+
+
+def _snapshot_backup_id(raw_request: Dict[str, Any]) -> str:
+    payload = raw_request.get("explicit_payload")
+    snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+    if not isinstance(snapshot, dict):
+        return ""
+    return str(snapshot.get("backup_id") or snapshot.get("snapshot_id") or "").strip()
+
+
+def _retcon_evidence_excerpt(analysis: Dict[str, Any], raw_request: Dict[str, Any]) -> str:
+    world_updates = analysis.get("world_updates")
+    retcons = world_updates.get("retcon_requests") if isinstance(world_updates, dict) else None
+    if isinstance(retcons, list):
+        for item in retcons:
+            if not isinstance(item, dict):
+                continue
+            for key in ("text", "summary", "raw_excerpt"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()[:500]
+    for unit in analysis.get("semantic_units", []) if isinstance(analysis.get("semantic_units"), list) else []:
+        if not isinstance(unit, dict):
+            continue
+        if str(unit.get("type") or "").strip() == "edit_request":
+            value = str(unit.get("raw_excerpt") or unit.get("derived_summary") or "").strip()
+            if value:
+                return value[:500]
+    return str(raw_request.get("role_text") or raw_request.get("raw_text") or "").strip()[:500]
+
+
+def _source_channel_for_retcon(raw_request: Dict[str, Any]) -> str:
+    if str(raw_request.get("role_text") or "").strip():
+        return "role_input"
+    if str(raw_request.get("user_instruction_text") or "").strip():
+        return "user_instruction"
+    return "raw_input"
+
+
+def _source_input_id(raw_request: Dict[str, Any]) -> str:
+    payload = raw_request.get("explicit_payload")
+    if isinstance(payload, dict):
+        value = payload.get("id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = raw_request.get("input_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    integrity = raw_request.get("source_integrity")
+    if isinstance(integrity, dict):
+        digest = str(integrity.get("raw_text_sha256") or "").strip()
+        if digest:
+            return digest[:16]
+    return "current-input"
+
+
+def _normalize_replay_capability_for_structured_retcon(
+    analysis: Dict[str, Any],
+    raw_request: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    if not _structured_retcon_requested(analysis):
+        return analysis, False
+    if _is_replay_round(raw_request):
+        return analysis, False
+    existing_requests = analysis.get("capability_requests")
+    if _has_replay_capability(existing_requests):
+        return analysis, False
+
+    backup_id = _snapshot_backup_id(raw_request)
+    if not backup_id:
+        return analysis, False
+
+    round_id = str(raw_request.get("round_id") or analysis.get("round_id") or "").strip()
+    input_id = _source_input_id(raw_request)
+    plan_id = f"{round_id or 'round-current'}-retcon-replay-{input_id[:12]}"
+    source_channel = _source_channel_for_retcon(raw_request)
+    evidence_excerpt = _retcon_evidence_excerpt(analysis, raw_request)
+    plan_payload = {
+        "schema_version": 1,
+        "scope": "single_round",
+        "plan_id": plan_id,
+        "backup_id": backup_id,
+        "affected_inputs": [
+            {
+                "round_id": round_id or "round-000001",
+                "input_id": input_id,
+                "role_text": str(raw_request.get("role_text") or ""),
+                "user_instruction_text": str(raw_request.get("user_instruction_text") or ""),
+            }
+        ],
+        "requires_manual_confirmation": False,
+        "reason": "structured_retcon_requires_replay",
+        "requested_by": "input_analyst",
+    }
+    replay_requests = [
+        {
+            "id": f"auto-replay-plan-{round_id or 'round-current'}",
+            "requested_by": "input_analyst",
+            "target": "replay",
+            "capability": "replay.plan",
+            "summary": "Plan rollback replay for structured retcon.",
+            "reason": "input_analysis declared rewrite_previous_output or retcon_requests.",
+            "source_channel": source_channel,
+            "risk": "high",
+            "authorization_gate": "none",
+            "payload": plan_payload,
+            "evidence": {"raw_excerpt": evidence_excerpt or "structured retcon"},
+        },
+        {
+            "id": f"auto-replay-execute-{round_id or 'round-current'}",
+            "requested_by": "input_analyst",
+            "target": "replay",
+            "capability": "replay.execute",
+            "summary": "Execute rollback replay for structured retcon.",
+            "reason": "input_analysis declared rewrite_previous_output or retcon_requests.",
+            "source_channel": source_channel,
+            "risk": "high",
+            "authorization_gate": "none",
+            "payload": {
+                "schema_version": 1,
+                "plan_id": plan_id,
+                "resume": True,
+            },
+            "evidence": {"raw_excerpt": evidence_excerpt or "structured retcon"},
+        },
+    ]
+    normalized = dict(analysis)
+    normalized["capability_requests"] = list(existing_requests or []) + replay_requests
+    return normalized, True
+
+
+def _validate_structured_retcon_has_replay_or_replay_context(
+    analysis: Dict[str, Any],
+    raw_request: Dict[str, Any],
+) -> None:
+    if not _structured_retcon_requested(analysis):
+        return
+    if _is_replay_round(raw_request):
+        return
+    if _has_replay_capability(analysis.get("capability_requests")):
+        return
+    raise input_analysis.InputAnalysisError(
+        "narrative_directives.rewrite_previous_output requires replay.plan "
+        "or replay.execute capability_request; do not use rewrite_previous_output "
+        "as an implicit rollback path"
+    )
 
 
 def _known_card_character_names(card_data: Dict[str, Any]) -> set[str]:
@@ -836,12 +1015,18 @@ def apply_current_run(card_folder, root_dir=None):
         analysis,
         raw_request,
     )
+    analysis, normalized_replay_retcon = _normalize_replay_capability_for_structured_retcon(
+        analysis,
+        raw_request,
+    )
     normalized = (
         normalized
         or normalized_channel_aliases
         or normalized_routing_requests
         or normalized_capability_sources
+        or normalized_replay_retcon
     )
+    _validate_structured_retcon_has_replay_or_replay_context(analysis, raw_request)
     input_analysis.validate_input_analysis(
         analysis,
         raw_text=str(raw_request.get("raw_text") or ""),

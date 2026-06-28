@@ -42,11 +42,19 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "replay.plan": {
         "target": "replay",
-        "action": "intent",
+        "allowed_requesters": ("input_analyst", "gm"),
         "intent_type": "replay_plan",
-        "allowed_requesters": ("input_analyst", "story", "gm", "main_agent"),
-        "authorization_gate": "manual_confirmation",
-        "max_risk": "critical",
+        "max_risk": "high",
+        "authorization_gate": "none",
+        "action": "intent",
+    },
+    "replay.execute": {
+        "target": "replay",
+        "allowed_requesters": ("input_analyst", "gm", "main_agent"),
+        "intent_type": "replay_execute",
+        "max_risk": "high",
+        "authorization_gate": "none",
+        "action": "intent",
     },
     "card.patch_data": {
         "target": "card-data",

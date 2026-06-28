@@ -28,6 +28,35 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("capability: \"character.rename\"", text)
         self.assertIn("from_name: \"player\"", text)
 
+    def test_input_analyst_prompt_advertises_replay_capability_gates(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts._input_analyst_prompt({})
+
+        self.assertIn("`replay.execute`", text)
+        self.assertIn("`replay.execute -> replay`", text)
+        self.assertIn(
+            "`replay.plan` and `replay.execute` must use `authorization_gate: \"none\"`",
+            text,
+        )
+        self.assertIn("continuity retcon / rollback replay", text)
+        self.assertIn(
+            "must not rely only on `narrative_directives.rewrite_previous_output`",
+            text,
+        )
+        self.assertIn("emit `replay.plan`", text)
+        self.assertIn("paired `replay.execute`", text)
+        self.assertIn("same `plan_id`", text)
+        self.assertIn("`backup_id`, `affected_inputs`, and `plan_id`", text)
+        self.assertIn("`replay.plan` materializes a `.replay` session", text)
+        self.assertIn("`replay.execute` executes or resumes", text)
+        self.assertIn("`retcon.consult` remains consultation-only", text)
+        self.assertNotIn("blocked/not-wired", text)
+        self.assertNotIn(
+            "`replay.plan` and `card.patch_data` require `manual_confirmation`",
+            text,
+        )
+
     def test_story_prompt_contract_requires_derived_content_edits_for_retcon(self):
         prompts = _load_module("agent_prompts")
 
