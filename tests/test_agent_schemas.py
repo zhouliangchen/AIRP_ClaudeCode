@@ -164,6 +164,36 @@ class AgentSchemaTest(unittest.TestCase):
         self.assertIsNone(normalized["decision_point"])
         self.assertEqual(normalized["stop_reason"], "continue")
 
+    def test_validate_gm_output_accepts_asset_requests(self):
+        payload = {
+            "agent": "gm",
+            "scene_beats": [],
+            "events": [],
+            "actor_calls": [],
+            "parallel_groups": [],
+            "world_state_delta": [],
+            "asset_requests": [
+                {
+                    "action": "create",
+                    "summary": "Create a highlight scene image.",
+                    "payload": {"kind": "scene", "prompt": "classroom light"},
+                },
+                {
+                    "action": "modify",
+                    "summary": "Update the current scene requirement.",
+                    "payload": {"asset_requirement_key": "scene_illustration_each_round"},
+                },
+            ],
+            "decision_point": None,
+            "stop_reason": "complete",
+        }
+
+        normalized = self.agent_schemas.validate_gm_output(payload)
+
+        self.assertEqual(len(normalized["asset_requests"]), 2)
+        self.assertEqual(normalized["asset_requests"][0]["action"], "create")
+        self.assertEqual(normalized["asset_requests"][1]["action"], "modify")
+
     def test_validate_gm_output_rejects_invalid_stop_reason(self):
         payload = {
             "agent": "gm",
@@ -703,6 +733,29 @@ class AgentSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(self.agent_schemas.ValidationError, "visibility_basis"):
             self.agent_schemas.validate_subgm_output(payload)
 
+    def test_validate_subgm_output_accepts_create_asset_request(self):
+        payload = minimal_subgm_output(actor_call=None)
+        payload["asset_requests"] = [
+            {
+                "action": "create",
+                "summary": "Create a side-thread character portrait.",
+                "payload": {"kind": "character_reference", "characters": ["SuLi"]},
+            }
+        ]
+
+        normalized = self.agent_schemas.validate_subgm_output(payload)
+
+        self.assertEqual(normalized["asset_requests"][0]["action"], "create")
+
+    def test_validate_subgm_output_rejects_modify_or_delete_asset_request(self):
+        for action in ("modify", "delete"):
+            payload = minimal_subgm_output(actor_call=None)
+            payload["asset_requests"] = [{"action": action, "summary": "Not allowed."}]
+
+            with self.subTest(action=action):
+                with self.assertRaisesRegex(self.agent_schemas.ValidationError, "subGM.*asset_requests"):
+                    self.agent_schemas.validate_subgm_output(payload)
+
     def test_validate_subgm_output_rejects_actor_call_visibility_basis_without_mode(self):
         payload = minimal_subgm_output(
             {
@@ -1167,6 +1220,25 @@ class AgentSchemaTest(unittest.TestCase):
 
         self.assertEqual(normalized["derived_content_edits"], payload["derived_content_edits"])
 
+    def test_valid_story_output_preserves_asset_requests(self):
+        payload = {
+            "content": "Ada lifted the lantern and the hallway opened.",
+            "character_dialogues": [],
+            "derived_content_edits": [],
+            "metadata": {"round_id": "round-000001"},
+            "asset_requests": [
+                {
+                    "action": "create",
+                    "summary": "Create an illustration for the lantern reveal.",
+                    "payload": {"kind": "scene", "prompt": "lantern reveal"},
+                }
+            ],
+        }
+
+        normalized = self.agent_schemas.validate_story_output(payload)
+
+        self.assertEqual(normalized["asset_requests"][0]["action"], "create")
+
     def test_valid_critic_report_supports_all_decisions(self):
         for decision in ("pass", "revise", "block"):
             with self.subTest(decision=decision):
@@ -1183,6 +1255,27 @@ class AgentSchemaTest(unittest.TestCase):
                 self.assertEqual(normalized["decision"], decision)
                 self.assertEqual(normalized["hard_failures"], [])
                 self.assertEqual(normalized["system_iteration_suggestion"], "Tighten critic retry prompts.")
+
+    def test_valid_critic_report_preserves_asset_requests(self):
+        payload = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+            "quality_checks": {},
+            "asset_requests": [
+                {
+                    "action": "delete",
+                    "summary": "Remove the stale scene illustration requirement.",
+                    "payload": {"asset_requirement_key": "scene_illustration_each_round"},
+                }
+            ],
+        }
+
+        normalized = self.agent_schemas.validate_critic_report(payload)
+
+        self.assertEqual(normalized["asset_requests"][0]["action"], "delete")
 
     def test_load_json_checked_applies_validator(self):
         with tempfile.TemporaryDirectory() as tmp:

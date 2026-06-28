@@ -12,6 +12,7 @@ from typing import Any, Callable
 import agent_interactions
 import agent_lifecycle
 import agent_projection
+import input_routing_requests
 import agent_run
 import agent_schemas
 import agent_visibility
@@ -178,6 +179,47 @@ def _load_state(side_dir: Path) -> dict:
     if not isinstance(state, dict):
         raise SubgmTurnLoopError(f"{side_dir}: missing state.json")
     return state
+
+
+def _runtime_settings_from_run(run_dir: Path, input_payload: dict) -> dict:
+    manifest = _dict(input_payload.get("manifest"))
+    settings = _dict(manifest.get("runtime_settings"))
+    if settings:
+        return settings
+    manifest = agent_run.read_json(run_dir / "manifest.json", {}) or {}
+    return _dict(_dict(manifest).get("runtime_settings"))
+
+
+def _subgm_asset_evidence(output: dict) -> str:
+    for key in ("scene_beats", "events", "notes_for_story"):
+        for item in _list(output.get(key)):
+            if isinstance(item, dict):
+                text = str(item.get("content") or item.get("note") or "").strip()
+            else:
+                text = str(item or "").strip()
+            if text:
+                return text
+    return "subGM assets-ui request"
+
+
+def _process_subgm_asset_requests(
+    run_dir: Path,
+    input_payload: dict,
+    output: dict,
+    source_intent_id: str,
+) -> dict:
+    requests = output.get("asset_requests")
+    if not isinstance(requests, list) or not requests:
+        return {"ok": True, "processed_count": 0}
+    return input_routing_requests.process_asset_requests(
+        run_dir,
+        requests,
+        requested_by="subgm",
+        source_channel="subgm_output",
+        runtime_settings=_runtime_settings_from_run(run_dir, input_payload),
+        source_intent_id=source_intent_id,
+        evidence_text=_subgm_asset_evidence(output),
+    )
 
 
 def _validate_subgm_output(thread_id: str, payload: Any) -> dict:
@@ -617,6 +659,12 @@ def run_side_thread(
                 hidden_phrases,
             )
             _append_subgm_messages(root, safe_id, state_before, output)
+            output["asset_requests_result"] = _process_subgm_asset_requests(
+                root,
+                input_payload,
+                output,
+                f"subgm_{safe_id}_step_{step_index + 1}",
+            )
         except Exception:
             _restore_snapshots(step_snapshots)
             called_actors[:] = [

@@ -413,6 +413,35 @@ def _runtime_settings_from_applied(applied: dict[str, Any]) -> dict[str, Any]:
     return settings
 
 
+def _runtime_settings_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    settings = manifest.get("runtime_settings") if isinstance(manifest.get("runtime_settings"), dict) else {}
+    return settings
+
+
+def _process_agent_asset_requests(
+    run_dir: Path,
+    output: dict[str, Any],
+    *,
+    requested_by: str,
+    source_channel: str,
+    source_intent_id: str,
+    runtime_settings: dict[str, Any],
+    evidence_text: str,
+) -> dict[str, Any]:
+    requests = output.get("asset_requests") if isinstance(output, dict) else None
+    if not isinstance(requests, list) or not requests:
+        return {"ok": True, "processed_count": 0}
+    return input_routing_requests.process_asset_requests(
+        run_dir,
+        requests,
+        requested_by=requested_by,
+        source_channel=source_channel,
+        runtime_settings=runtime_settings,
+        source_intent_id=source_intent_id,
+        evidence_text=evidence_text,
+    )
+
+
 def _append_message_once(run_dir: Path, message_type: str, payload: dict[str, Any]) -> None:
     for message in agent_messages.read_messages(run_dir):
         if isinstance(message, dict) and message.get("type") == message_type:
@@ -472,6 +501,15 @@ def _run_story(
     story_output = rp_generate_cli._normalize_story_output(story_output, story_context)
     agent_run.write_json(run_dir / "story.output.json", story_output)
     _write_artifact(run_dir, "story.output.json", story_output)
+    story_output["asset_requests_result"] = _process_agent_asset_requests(
+        run_dir,
+        story_output,
+        requested_by="story",
+        source_channel="story_output",
+        source_intent_id="story",
+        runtime_settings=_runtime_settings_from_manifest(manifest),
+        evidence_text=str(story_output.get("content") or ""),
+    )
     return story_output
 
 
@@ -501,6 +539,15 @@ def _run_critic(
     critic = rp_generate_cli._normalize_critic_report_for_story(critic, story_output, story_context)
     agent_run.write_json(run_dir / "critic.report.json", critic)
     _write_artifact(run_dir, "critic.report.json", critic)
+    critic["asset_requests_result"] = _process_agent_asset_requests(
+        run_dir,
+        critic,
+        requested_by="critic",
+        source_channel="critic_report",
+        source_intent_id="critic",
+        runtime_settings=_runtime_settings_from_manifest(manifest),
+        evidence_text=str(critic.get("repair_instruction") or critic.get("system_iteration_suggestion") or "critic report"),
+    )
     return critic
 
 

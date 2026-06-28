@@ -173,6 +173,17 @@ def _planner_context(
 
 def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     payload = context.get("payload") if isinstance(context.get("payload"), dict) else {}
+    action = _text(payload.get("action") or payload.get("operation")).lower()
+    if action in {"modify", "delete"}:
+        update = dict(payload)
+        update["action"] = action
+        update.setdefault("asset_requirement_key", "scene_illustration_each_round")
+        return {
+            "schema_version": 1,
+            "asset_requirement_update": update,
+            "scene_jobs": [],
+            "character_reference_jobs": [],
+        }
     card = Path(context["card_path"])
     run_dir = Path(context["run_dir"])
     job_id = _text(payload.get("job_id")) or f"scene-{run_dir.name}"
@@ -494,10 +505,48 @@ def _apply_asset_requirement_update(card: Path, payload: dict[str, Any], plan: d
         if isinstance(plan.get("asset_requirement_update"), dict)
         else {}
     )
+    payload_action = _text(payload.get("action") or payload.get("operation")).lower()
+    if not requested and payload_action in {"modify", "delete"}:
+        requested = {"action": payload_action}
+    if payload_action and "action" not in requested:
+        requested = dict(requested)
+        requested["action"] = payload_action
+    if "asset_requirement_key" in payload and "asset_requirement_key" not in requested:
+        requested = dict(requested)
+        requested["asset_requirement_key"] = payload.get("asset_requirement_key")
     if requested.get("scene_illustration_each_round") is not True:
         payload_requirement = payload.get("asset_requirement")
         if isinstance(payload_requirement, dict) and payload_requirement.get("scene_illustration_each_round") is True:
             requested = dict(payload_requirement)
+    action = _text(requested.get("action")).lower() or "create"
+    key = _text(requested.get("asset_requirement_key") or "scene_illustration_each_round")
+    if action in {"delete", "modify"}:
+        manifest = _load_ui_manifest(card)
+        requirements = manifest.setdefault("asset_requirements", {})
+        if not isinstance(requirements, dict):
+            requirements = {}
+            manifest["asset_requirements"] = requirements
+        if action == "delete":
+            existed = key in requirements
+            requirements.pop(key, None)
+            agent_run.write_json(card / "ui_manifest.json", manifest)
+            return {"applied": existed, "action": "delete", "asset_requirement_key": key}
+        existing = requirements.get(key) if isinstance(requirements.get(key), dict) else {}
+        updated = dict(existing)
+        updated["enabled"] = requested.get("enabled") is not False
+        for field in ("reason", "prompt"):
+            if field in requested or field in payload:
+                updated[field] = _text(requested.get(field) or payload.get(field))
+        characters = _safe_character_names(payload.get("characters"))
+        if characters:
+            updated["characters"] = characters
+            updated["character_appearances"] = _character_appearance_specs(payload, characters)
+            updated["reference_policy"] = _default_reference_policy(payload, characters)
+        if "art_style" in payload:
+            updated["art_style"] = _text(payload.get("art_style"))
+        requirements[key] = updated
+        agent_run.write_json(card / "ui_manifest.json", manifest)
+        return {"applied": True, "action": "modify", "asset_requirement_key": key}
     if requested.get("scene_illustration_each_round") is not True:
         return {"applied": False}
 

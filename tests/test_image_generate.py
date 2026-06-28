@@ -307,6 +307,56 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["status"], "completed")
             self.assertEqual(payload["path"], "generated/images/scene-0001.png")
 
+    def test_reconcile_manifest_restores_completed_job_assets_lost_by_parallel_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            jobs = card / "generated" / "jobs"
+            jobs.mkdir(parents=True)
+            manifest_path = card / ".card_assets.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "images": [
+                            {
+                                "id": "character-苏黎-reference",
+                                "kind": "character_reference",
+                                "path": "characters/苏黎/苏黎.png",
+                                "status": "completed",
+                                "source_job_id": "character-苏黎-reference",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (jobs / "scene-round-000003.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "path": "generated/images/scene-0001.png",
+                        "asset": {
+                            "id": "scene-0001",
+                            "kind": "scene",
+                            "path": "generated/images/scene-0001.png",
+                            "status": "completed",
+                            "source_job_id": "scene-round-000003",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            self.mod._reconcile_manifest_with_completed_jobs(card)
+            self.mod._reconcile_manifest_with_completed_jobs(card)
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            ids = [item["id"] for item in manifest["images"]]
+            self.assertEqual(ids.count("scene-0001"), 1)
+            self.assertIn("character-苏黎-reference", ids)
+            self.assertIn("scene-0001", ids)
+
     def test_spawn_async_propagates_reference_output_path_job_id_and_character(self):
         args = SimpleNamespace(
             card_folder="card-folder",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-DECISION_LABEL_FIELDS = ("required_label", "content", "summary", "reason")
+DECISION_LABEL_FIELDS = ("required_label", "content", "summary", "reason", "prompt")
 
 
 def _clean_text(value: Any) -> str:

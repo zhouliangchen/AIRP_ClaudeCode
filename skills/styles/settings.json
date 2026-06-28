@@ -2,7 +2,7 @@
   "style": "轻松活泼",
   "wordCount": 1200,
   "nsfw": "舒缓",
-  "selfRepairMode": "full",
+  "selfRepairMode": "analysis_only",
   "allowSourceCodeSelfRepair": false,
   "modelDebugMode": true
 }

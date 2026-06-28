@@ -119,6 +119,47 @@ class AgentSnapshotsTest(unittest.TestCase):
         self.assertIn("generated", metadata["copied"])
         self.assertIn(".replay", metadata["copied"])
 
+    def test_create_snapshot_excludes_transient_image_worker_logs(self):
+        self._write_card_state()
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        write_json(jobs_dir / "scene-round-000001.json", {"status": "queued"})
+        (jobs_dir / "image-job-123.log").write_text("worker output", encoding="utf-8")
+
+        result = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_round_runtime",
+        )
+
+        backup_dir = Path(result["backup_dir"])
+        self.assertTrue((backup_dir / "generated" / "jobs" / "scene-round-000001.json").is_file())
+        self.assertFalse((backup_dir / "generated" / "jobs" / "image-job-123.log").exists())
+
+    def test_restore_snapshot_preserves_transient_image_worker_logs(self):
+        self._write_card_state()
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        write_json(jobs_dir / "scene-round-000001.json", {"status": "queued"})
+        created = self.snapshots.create_snapshot(
+            self.card,
+            "round-000001",
+            reason="before_round_runtime",
+        )
+        write_json(jobs_dir / "stale-scene.json", {"status": "stale"})
+        (jobs_dir / "image-job-locked.log").write_text("still held by worker", encoding="utf-8")
+
+        restored = self.snapshots.restore_snapshot(
+            self.card,
+            created["snapshot_id"],
+            mode="round_runtime_error",
+        )
+
+        self.assertTrue(restored["ok"])
+        self.assertTrue((jobs_dir / "scene-round-000001.json").is_file())
+        self.assertFalse((jobs_dir / "stale-scene.json").exists())
+        self.assertTrue((jobs_dir / "image-job-locked.log").is_file())
+
     def test_create_snapshot_records_and_copies_objective_world_archive(self):
         self._write_card_state()
         write_json(

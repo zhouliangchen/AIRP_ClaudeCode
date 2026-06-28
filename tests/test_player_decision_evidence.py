@@ -62,6 +62,25 @@ class PlayerDecisionEvidenceTest(unittest.TestCase):
         self.assertEqual(result["label"], "Open the sealed door.")
         self.assertIs(result["decision_point"], decision_point)
 
+    def test_accepts_decision_prompt_as_label_after_player_reply(self):
+        decision_point = {
+            "id": "gm-decision-prompt",
+            "prompt": "The bell is ringing. What do you do now?",
+            "options_visible": ["close the notebook", "read one more page"],
+        }
+
+        result = self.mod.valid_gm_player_decision(
+            {
+                "stop_reason": "player_decision",
+                "actor_calls": [],
+                "decision_point": decision_point,
+            },
+            player_participated_before_gm=True,
+        )
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["label"], "The bell is ringing. What do you do now?")
+
     def test_extracts_evidence_only_when_player_replied_using_latest_natural_reply(self):
         story_input = {
             "loop_outputs": {

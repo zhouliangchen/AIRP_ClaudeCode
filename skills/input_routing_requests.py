@@ -85,6 +85,100 @@ def process_routing_requests(
     )
 
 
+def process_asset_requests(
+    run_dir: str | Path,
+    asset_requests: list[dict[str, Any]],
+    *,
+    requested_by: str,
+    source_channel: str,
+    runtime_settings: dict[str, Any] | None = None,
+    source_intent_id: str = "",
+    evidence_text: str = "",
+) -> dict[str, Any]:
+    """Normalize agent `asset_requests[]` into capability requests and process them."""
+
+    requests = asset_requests_to_capability_requests(
+        asset_requests,
+        requested_by=requested_by,
+        source_channel=source_channel,
+        source_intent_id=source_intent_id,
+        evidence_text=evidence_text,
+    )
+    return process_capability_requests(
+        run_dir,
+        requests,
+        runtime_settings=runtime_settings,
+        source_intent_id=source_intent_id,
+    )
+
+
+def asset_requests_to_capability_requests(
+    asset_requests: list[dict[str, Any]],
+    *,
+    requested_by: str,
+    source_channel: str,
+    source_intent_id: str = "",
+    evidence_text: str = "",
+) -> list[dict[str, Any]]:
+    """Convert agent-authored assets-ui requests into the capability request contract."""
+
+    converted: list[dict[str, Any]] = []
+    requester = str(requested_by or "").strip()
+    channel = str(source_channel or "").strip()
+    prefix = str(source_intent_id or requester or "agent").strip() or "agent"
+    excerpt = str(evidence_text or "").strip() or "Agent assets-ui request"
+    for index, item in enumerate(asset_requests or [], start=1):
+        if not isinstance(item, dict):
+            converted.append(item)
+            continue
+        payload = dict(item.get("payload") if isinstance(item.get("payload"), dict) else {})
+        action = str(item.get("action") or payload.get("action") or "create").strip().lower() or "create"
+        payload.setdefault("action", action)
+        for key in (
+            "kind",
+            "target",
+            "prompt",
+            "asset_requirement",
+            "asset_requirement_key",
+            "characters",
+            "character_appearances",
+            "reference_policy",
+            "reference_candidates",
+            "art_style",
+            "planner_hints",
+            "ui_schema",
+            "postprocess_contract",
+        ):
+            if key in item and key not in payload:
+                payload[key] = item[key]
+        summary = str(
+            item.get("summary")
+            or payload.get("prompt")
+            or f"{requester or 'agent'} assets-ui {action} request"
+        ).strip()
+        reason = str(item.get("reason") or summary).strip()
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        if not str(evidence.get("raw_excerpt") or "").strip():
+            evidence = dict(evidence)
+            evidence["raw_excerpt"] = excerpt
+        converted.append(
+            {
+                "id": str(item.get("id") or f"{prefix}-asset_{index}").strip(),
+                "requested_by": requester,
+                "target": "assets-ui",
+                "capability": "assets.generate_image",
+                "summary": summary,
+                "reason": reason,
+                "source_channel": channel,
+                "risk": str(item.get("risk") or "medium").strip(),
+                "authorization_gate": str(item.get("authorization_gate") or "none").strip(),
+                "payload": payload,
+                "evidence": evidence,
+            }
+        )
+    return converted
+
+
 def _process_capability_request(context: dict[str, Any]) -> dict[str, Any]:
     request = context["request"]
     artifact_rel = f"artifacts/{CAPABILITY_ARTIFACT_DIR}/{context['safe_id']}.json"
@@ -166,7 +260,7 @@ def _create_capability_intent(context: dict[str, Any], request: dict[str, Any]) 
     created = agent_intents.create_intent(
         context["run_dir"],
         {
-            "requested_by": REQUESTED_BY,
+            "requested_by": str(request.get("requested_by") or REQUESTED_BY),
             "type": intent_type,
             "payload": _intent_payload_for_request(request),
             "policy": _policy(context),
@@ -192,6 +286,9 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
             },
         }
         passthrough_keys = (
+            "action",
+            "operation",
+            "asset_requirement_key",
             "asset_requirement",
             "characters",
             "character_appearances",

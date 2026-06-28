@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -34,6 +35,40 @@ RUNTIME_CONTRACT_TAGS = (
     "polished_input",
 )
 PREPARE_REUSE_STAGES = {"", "prepared", "prompts_ready", "awaiting_input_analysis", "awaiting_agent_outputs"}
+DELIVERED_STAGES = {"delivered"}
+
+
+def _clear_stale_run_outputs(run_dir: Path) -> None:
+    for rel in (
+        "input_analysis.output.json",
+        "gm.output.json",
+        "actor.outputs.json",
+        "story.input.json",
+        "story.output.json",
+        "postprocess.input.json",
+        "postprocess.output.json",
+        "interaction.trace.json",
+        "messages.jsonl",
+    ):
+        try:
+            (run_dir / rel).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+    for rel in (
+        "artifacts",
+        "intents",
+        "post_round_memory_jobs",
+        "post_round_objective_memory_jobs",
+        "side_threads",
+    ):
+        path = run_dir / rel
+        if path.exists():
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                pass
 
 
 def _strip_runtime_contract_tags(value: Any) -> str:
@@ -686,6 +721,17 @@ def _prepare_run_dir(
             and current_hash == expected_raw_text_hash
         ):
             return current
+        expected_dir = agent_run.run_root(card_folder) / expected_name
+        if expected_dir.exists() and expected_dir.is_dir():
+            expected_manifest = agent_run.read_json(expected_dir / "manifest.json", {}) or {}
+            expected_stage = str(expected_manifest.get("stage") or "")
+            if expected_stage not in DELIVERED_STAGES:
+                _clear_stale_run_outputs(expected_dir)
+                agent_run.run_root(card_folder).joinpath("current").write_text(
+                    str(expected_dir.resolve()),
+                    encoding="utf-8",
+                )
+                return expected_dir
     return agent_run.create_run_dir(card_folder, turn_index=turn_index, replay_round_id=replay_round_id or None)
 
 

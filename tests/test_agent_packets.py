@@ -1959,7 +1959,42 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotEqual(repeated["run_dir"], result["run_dir"])
         self.assertEqual(Path(repeated["run_dir"]).name, "round-000003")
 
-    def test_prepare_agent_run_does_not_reuse_current_round_for_changed_input_hash(self):
+    def test_prepare_agent_run_reuses_blocked_expected_round_and_clears_old_outputs(self):
+        input_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "I step into the archive.",
+            "role_text": "I step into the archive.",
+            "user_instruction_text": "",
+        }
+        kwargs = {
+            "user_text": "fallback should not win",
+            "chat_log": [],
+            "card_data": {"title": "Blocked Reprepare Test"},
+            "character_contexts": {"characters": []},
+            "turn_index": 3,
+            "input_payload": input_payload,
+        }
+        result = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+        run_dir = Path(result["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["stage"] = "blocked"
+        _write_json(run_dir / "manifest.json", manifest)
+        for rel in ("gm.output.json", "story.output.json", "postprocess.output.json"):
+            _write_json(run_dir / rel, {"stale": True})
+        artifacts = run_dir / "artifacts"
+        artifacts.mkdir()
+        _write_json(artifacts / "gm.output.json", {"stale": True})
+
+        repeated = self.agent_packets.prepare_agent_run(self.card, **kwargs)
+
+        self.assertEqual(repeated["run_dir"], result["run_dir"])
+        self.assertEqual(Path(repeated["run_dir"]).name, "round-000004")
+        self.assertFalse((run_dir / "gm.output.json").exists())
+        self.assertFalse((run_dir / "story.output.json").exists())
+        self.assertFalse((run_dir / "postprocess.output.json").exists())
+        self.assertFalse(artifacts.exists())
+
+    def test_prepare_agent_run_reuses_unfinished_current_round_for_changed_input_hash(self):
         input_payload = {
             "input_schema": "dual_channel_v1",
             "raw_text": "I step into the archive.\n\n[USER_INSTRUCTION]\nKeep the sealed door hidden.",
@@ -1984,8 +2019,8 @@ class AgentPacketTest(unittest.TestCase):
             **dict(kwargs, input_payload=changed_payload),
         )
 
-        self.assertNotEqual(repeated["run_dir"], result["run_dir"])
-        self.assertEqual(Path(repeated["run_dir"]).name, "round-000003")
+        self.assertEqual(repeated["run_dir"], result["run_dir"])
+        self.assertEqual(Path(repeated["run_dir"]).name, "round-000002")
 
     def test_prepare_agent_run_fails_when_message_runtime_initialization_fails(self):
         original_append_message = self.agent_packets.agent_messages.append_message

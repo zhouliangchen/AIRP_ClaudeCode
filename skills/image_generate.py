@@ -109,6 +109,69 @@ def _write_job_status(card: Path, job_id: str | None, payload: dict) -> None:
     _write_json(job_path, body)
 
 
+def _manifest_image_keys(item: dict) -> set[str]:
+    keys: set[str] = set()
+    for field in ("source_job_id", "path", "id"):
+        value = str(item.get(field) or "").strip()
+        if value:
+            keys.add(f"{field}:{value}")
+    return keys
+
+
+def _merge_manifest_image(images: list, item: dict) -> None:
+    if not isinstance(item, dict):
+        return
+    incoming_keys = _manifest_image_keys(item)
+    for index, current in enumerate(images):
+        if not isinstance(current, dict):
+            continue
+        if incoming_keys and (_manifest_image_keys(current) & incoming_keys):
+            merged = dict(current)
+            merged.update(item)
+            images[index] = merged
+            return
+    images.append(dict(item))
+
+
+def _completed_job_assets(card: Path) -> list[dict]:
+    jobs_dir = card / "generated" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    assets: list[dict] = []
+    for path in sorted(jobs_dir.glob("*.json")):
+        payload = _load_json(path, {})
+        if not isinstance(payload, dict) or payload.get("status") != "completed":
+            continue
+        asset = payload.get("asset")
+        if isinstance(asset, dict):
+            item = dict(asset)
+            item.setdefault("status", "completed")
+            item.setdefault("source_job_id", str(payload.get("job_id") or path.stem))
+            assets.append(item)
+    return assets
+
+
+def _reconcile_manifest_with_completed_jobs(card: Path, manifest: dict | None = None) -> dict:
+    manifest_path = card / ".card_assets.json"
+    if manifest is None:
+        manifest = _load_json(manifest_path, {"images": []})
+    if not isinstance(manifest, dict):
+        manifest = {"images": []}
+    images = manifest.get("images")
+    if not isinstance(images, list):
+        images = []
+    manifest["images"] = images
+    changed = False
+    before = [dict(item) if isinstance(item, dict) else item for item in images]
+    for item in _completed_job_assets(card):
+        _merge_manifest_image(images, item)
+    if before != images:
+        changed = True
+    if changed:
+        _write_json(manifest_path, manifest)
+    return manifest
+
+
 def _build_manifest_item(
     *,
     image_id: str,
@@ -272,6 +335,7 @@ def _refresh_frontend_assets(card: Path) -> dict:
     """Rebuild frontend data so polling browsers see new image assets."""
     result = {"content_js": False, "error": None}
     try:
+        _reconcile_manifest_with_completed_jobs(card)
         skills_dir = Path(__file__).resolve().parent
         if str(skills_dir) not in sys.path:
             sys.path.insert(0, str(skills_dir))
@@ -349,6 +413,7 @@ def main():
     if not isinstance(manifest, dict):
         manifest = {"images": []}
     manifest.setdefault("images", [])
+    manifest = _reconcile_manifest_with_completed_jobs(card, manifest)
 
     image_id = _safe_slug(args.job_id) if output_path and args.job_id else _next_id(manifest, args.kind)
     rel_path = Path(output_path) if output_path else Path("generated") / "images" / f"{image_id}.png"
@@ -392,9 +457,8 @@ def main():
         job_id=args.job_id,
         characters=args.character,
     )
-    manifest["images"].append(item)
+    _merge_manifest_image(manifest["images"], item)
     _write_json(manifest_path, manifest)
-    frontend = _refresh_frontend_assets(card)
     _write_job_status(
         card,
         args.job_id,
@@ -404,6 +468,7 @@ def main():
             "asset": item,
         },
     )
+    frontend = _refresh_frontend_assets(card)
 
     _json_out({
         "ok": True,

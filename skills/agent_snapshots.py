@@ -51,16 +51,67 @@ def _new_backup_id(root: Path, round_id: str) -> str:
 def _copy_item(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.is_dir():
-        shutil.copytree(source, target)
+        shutil.copytree(source, target, ignore=_copytree_ignore, dirs_exist_ok=target.exists())
     else:
         shutil.copy2(source, target)
 
 
 def _remove_existing(path: Path) -> None:
     if path.is_dir():
-        shutil.rmtree(path)
+        if path.name == "generated":
+            _remove_generated_tree_for_restore(path)
+        else:
+            shutil.rmtree(path)
     elif path.exists():
         path.unlink()
+
+
+def _copytree_ignore(directory: str, names: list[str]) -> set[str]:
+    current = Path(directory)
+    if current.name == "jobs" and current.parent.name == "generated":
+        return {name for name in names if _is_transient_image_worker_log(current / name)}
+    return set()
+
+
+def _is_transient_image_worker_log(path: Path) -> bool:
+    return (
+        path.name.startswith("image-job-")
+        and path.suffix == ".log"
+        and path.parent.name == "jobs"
+        and path.parent.parent.name == "generated"
+    )
+
+
+def _contains_only_transient_image_worker_logs(path: Path) -> bool:
+    if not path.exists():
+        return True
+    if path.is_file():
+        return _is_transient_image_worker_log(path)
+    for item in path.rglob("*"):
+        if item.is_file() and not _is_transient_image_worker_log(item):
+            return False
+    return True
+
+
+def _remove_generated_tree_for_restore(path: Path) -> None:
+    for item in sorted(path.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if item.is_file():
+            if _is_transient_image_worker_log(item):
+                continue
+            item.unlink()
+            continue
+        if item.is_dir():
+            try:
+                item.rmdir()
+            except OSError:
+                if _contains_only_transient_image_worker_logs(item):
+                    continue
+                raise
+    try:
+        path.rmdir()
+    except OSError:
+        if not _contains_only_transient_image_worker_logs(path):
+            raise
 
 
 def _read_json(path: Path) -> Dict[str, Any]:

@@ -46,6 +46,7 @@ GM_STOP_REASONS = {"continue", "player_decision", "word_target", "complete", "ma
 CRITIC_DECISIONS = {"pass", "revise", "block"}
 CRITIC_QUALITY_STATUSES = {"pass", "revise", "block", "not_checked"}
 CRITIC_LENGTH_STATUSES = CRITIC_QUALITY_STATUSES | {"exempt"}
+ASSET_REQUEST_ACTIONS = {"create", "modify", "delete"}
 
 SUBGM_COMMAND_ACTIONS = {"start", "message", "accelerate", "pause", "resume", "merge", "close"}
 SUBGM_OUTPUT_STATUSES = {"running", "paused", "completed", "blocked", "needs_gm"}
@@ -64,6 +65,7 @@ SUBGM_OUTPUT_KEYS = [
     "boundary_requests",
     "notes_for_story",
     "next_resume_point",
+    "asset_requests",
 ]
 
 
@@ -378,6 +380,37 @@ def _normalize_dict_item(item: Any, path: str) -> Dict[str, Any]:
     return _require_dict(item, path)
 
 
+def _normalize_asset_request(
+    item: Any,
+    path: str,
+    *,
+    allowed_actions: set[str] | None = None,
+    owner: str = "",
+) -> Dict[str, Any]:
+    data = _require_dict(item, path)
+    action = str(data.get("action") or "create").strip().lower()
+    if action not in ASSET_REQUEST_ACTIONS:
+        allowed_text = ", ".join(sorted(ASSET_REQUEST_ACTIONS))
+        raise ValidationError(f"{_path(path, 'action')} must be one of: {allowed_text}")
+    if allowed_actions is not None and action not in allowed_actions:
+        owner_text = f"{owner} " if owner else ""
+        allowed_text = ", ".join(sorted(allowed_actions))
+        raise ValidationError(f"{owner_text}asset_requests may only use action: {allowed_text}")
+    normalized = dict(data)
+    normalized["action"] = action
+    if "payload" in normalized and not isinstance(normalized["payload"], dict):
+        raise ValidationError(f"{_path(path, 'payload')} must be an object")
+    return normalized
+
+
+def _normalize_asset_request_item(item: Any, path: str) -> Dict[str, Any]:
+    return _normalize_asset_request(item, path)
+
+
+def _normalize_subgm_asset_request_item(item: Any, path: str) -> Dict[str, Any]:
+    return _normalize_asset_request(item, path, allowed_actions={"create"}, owner="subGM")
+
+
 def _normalize_nonempty_str_item(item: Any, path: str) -> str:
     if not isinstance(item, str):
         raise ValidationError(f"{path} must be a string")
@@ -532,6 +565,11 @@ def validate_gm_output(payload: Any) -> Dict[str, Any]:
             "gm_output.capability_requests",
             _normalize_dict_item,
         ),
+        "asset_requests": _normalize_list_items(
+            _optional_list(data, "asset_requests", "gm_output"),
+            "gm_output.asset_requests",
+            _normalize_asset_request_item,
+        ),
         "character_promotions": _normalize_list_items(
             _optional_list(data, "character_promotions", "gm_output"),
             "gm_output.character_promotions",
@@ -610,6 +648,11 @@ def validate_subgm_output(payload: Any) -> Dict[str, Any]:
             _normalize_nonempty_str_item,
         ),
         "next_resume_point": _optional_str(data, "next_resume_point", "", "subgm_output"),
+        "asset_requests": _normalize_list_items(
+            _optional_list(data, "asset_requests", "subgm_output"),
+            "subgm_output.asset_requests",
+            _normalize_subgm_asset_request_item,
+        ),
     }
     return {key: normalized[key] for key in SUBGM_OUTPUT_KEYS}
 
@@ -665,6 +708,11 @@ def validate_story_output(payload: Any) -> Dict[str, Any]:
         "character_dialogues": _optional_list(data, "character_dialogues", "story_output"),
         "derived_content_edits": _optional_list(data, "derived_content_edits", "story_output"),
         "metadata": _optional_dict(data, "metadata", "story_output"),
+        "asset_requests": _normalize_list_items(
+            _optional_list(data, "asset_requests", "story_output"),
+            "story_output.asset_requests",
+            _normalize_asset_request_item,
+        ),
     }
 
 
@@ -775,6 +823,11 @@ def validate_critic_report(payload: Any) -> Dict[str, Any]:
         "repair_instruction": _optional_str(data, "repair_instruction", path="critic_report"),
         "system_iteration_suggestion": _optional_str(data, "system_iteration_suggestion", path="critic_report"),
         "quality_checks": _normalize_critic_quality_checks(data),
+        "asset_requests": _normalize_list_items(
+            _optional_list(data, "asset_requests", "critic_report"),
+            "critic_report.asset_requests",
+            _normalize_asset_request_item,
+        ),
     }
     if "repair_routing" in data:
         normalized["repair_routing"] = _optional_dict(data, "repair_routing", "critic_report")

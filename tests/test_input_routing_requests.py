@@ -68,6 +68,41 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(artifact["capability"], "assets.generate_image")
         self.assertEqual(artifact["status"], "queued")
 
+    def test_process_agent_asset_request_preserves_requester_and_operation_payload(self):
+        request = {
+            "id": "story-asset-update",
+            "requested_by": "story",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "Update the ongoing scene illustration requirement.",
+            "reason": "Story found a better visual focus for the round.",
+            "source_channel": "story_output",
+            "risk": "medium",
+            "authorization_gate": "none",
+            "payload": {
+                "action": "modify",
+                "kind": "scene",
+                "target": "scene_illustration",
+                "prompt": "focus on the lamp and threshold",
+                "asset_requirement_key": "scene_illustration_each_round",
+            },
+            "evidence": {"raw_excerpt": "The lamp reveal is the visual focus."},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={},
+            source_intent_id="story",
+        )
+
+        self.assertEqual(result["created_intents_count"], 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["requested_by"], "story")
+        self.assertEqual(pending[0]["type"], "assets_task")
+        self.assertEqual(pending[0]["payload"]["action"], "modify")
+        self.assertEqual(pending[0]["payload"]["asset_requirement_key"], "scene_illustration_each_round")
+
     def test_assets_capability_preserves_planning_payload_fields(self):
         request = {
             "id": "scene-image-rich",

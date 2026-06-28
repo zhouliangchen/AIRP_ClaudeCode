@@ -12,14 +12,22 @@ class CapabilityRegistryError(ValueError):
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 VALID_AUTHORIZATION_GATES = {"none", "manual_confirmation", "allowSourceCodeSelfRepair"}
-VALID_SOURCE_CHANNELS = {"user_instruction", "role_input", "raw_input", "gm_output"}
+VALID_SOURCE_CHANNELS = {
+    "user_instruction",
+    "role_input",
+    "raw_input",
+    "gm_output",
+    "story_output",
+    "critic_report",
+    "subgm_output",
+}
 
 CAPABILITIES: dict[str, dict[str, Any]] = {
     "assets.generate_image": {
         "target": "assets-ui",
         "action": "intent",
         "intent_type": "assets_task",
-        "allowed_requesters": ("input_analyst", "gm", "story", "critic", "main_agent"),
+        "allowed_requesters": ("input_analyst", "gm", "subgm", "story", "critic", "main_agent"),
         "authorization_gate": "none",
         "max_risk": "medium",
     },

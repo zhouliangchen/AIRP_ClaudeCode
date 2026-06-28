@@ -244,6 +244,7 @@ class SubgmSchemasTest(unittest.TestCase):
             "boundary_requests",
             "notes_for_story",
             "next_resume_point",
+            "asset_requests",
         ])
         self.assertNotIn("extra_key", normalized)
 

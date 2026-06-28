@@ -173,6 +173,73 @@ class RoundRuntimeTest(unittest.TestCase):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
 
+    def test_story_and_critic_asset_requests_are_routed_to_pending_intents(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        story_input = {
+            "input_analysis": {},
+            "loop_outputs": {"actors": {}},
+            "interaction_trace": {"visible_events": []},
+        }
+
+        def run_claude(agent_key, prompt, cwd):
+            if agent_key == "story":
+                return json.dumps(
+                    {
+                        "content": "Ada lifts the lamp.",
+                        "character_dialogues": [],
+                        "metadata": {},
+                        "asset_requests": [
+                            {
+                                "action": "create",
+                                "summary": "Create a lamp reveal illustration.",
+                                "payload": {"kind": "scene", "prompt": "lamp reveal"},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            if agent_key == "critic":
+                return json.dumps(
+                    {
+                        "decision": "pass",
+                        "hard_failures": [],
+                        "soft_issues": [],
+                        "repair_instruction": "",
+                        "system_iteration_suggestion": "",
+                        "quality_checks": {},
+                        "asset_requests": [
+                            {
+                                "action": "delete",
+                                "summary": "Remove stale persistent scene requirement.",
+                                "payload": {"asset_requirement_key": "scene_illustration_each_round"},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            raise AssertionError(agent_key)
+
+        story_output = self.round_runtime._run_story(
+            self.root,
+            self.run_dir,
+            manifest,
+            run_claude,
+            story_input,
+        )
+        self.round_runtime._run_critic(
+            self.root,
+            self.run_dir,
+            manifest,
+            run_claude,
+            story_input,
+            story_output,
+        )
+
+        agent_intents = _load_module("agent_intents")
+        pending = [intent for intent in agent_intents.list_intents(self.run_dir, "pending") if intent.get("type") == "assets_task"]
+        self.assertEqual([intent["requested_by"] for intent in pending], ["story", "critic"])
+        self.assertEqual([intent["payload"]["action"] for intent in pending], ["create", "delete"])
+
     def test_run_round_refreshes_current_run_after_replay_switch(self):
         replay_dir = self.card / ".agent_runs" / "round-000002-replay-001"
         replay_dir.mkdir(parents=True)

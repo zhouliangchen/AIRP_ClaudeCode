@@ -957,6 +957,34 @@ class SubgmTurnLoopTest(unittest.TestCase):
         self.assertEqual(messages[-1]["status"], "completed")
         self.assertEqual(messages[-1]["content"], "")
 
+    def test_run_side_thread_processes_create_asset_requests(self):
+        agent_intents = load_module("agent_intents")
+
+        def dispatch(agent_key, packet):
+            return subgm_output(
+                messages_to_gm=[],
+                asset_requests=[
+                    {
+                        "action": "create",
+                        "summary": "Create a rooftop clue illustration.",
+                        "payload": {
+                            "kind": "scene",
+                            "target": "scene_illustration",
+                            "prompt": "chalk dust beside a rooftop vent",
+                        },
+                    }
+                ],
+            )
+
+        result = self.subgm_turn_loop.run_side_thread(self.run_dir, "side_suli_rooftop", dispatch)
+
+        self.assertEqual(result["status"], "completed")
+        pending = agent_intents.list_intents(self.run_dir, "pending")
+        assets = [intent for intent in pending if intent.get("type") == "assets_task"]
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["requested_by"], "subgm")
+        self.assertEqual(assets[0]["payload"]["action"], "create")
+
     def test_paused_thread_is_not_dispatched(self):
         self.subgm_threads.apply_gm_commands(
             self.run_dir,

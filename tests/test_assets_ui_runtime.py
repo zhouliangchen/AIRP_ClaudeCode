@@ -603,6 +603,53 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
         )
 
+    def test_asset_requirement_delete_removes_existing_requirement_without_jobs(self):
+        manifest = {
+            "version": 1,
+            "mode": "autonomous",
+            "generated_assets": [],
+            "asset_requirements": {
+                "scene_illustration_each_round": {
+                    "enabled": True,
+                    "reason": "old requirement",
+                    "prompt": "old scene",
+                }
+            },
+        }
+        (self.card / "ui_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        intent = {
+            "id": "delete-scene-requirement",
+            "type": "assets_task",
+            "payload": {
+                "action": "delete",
+                "asset_requirement_key": "scene_illustration_each_round",
+            },
+        }
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_critic",
+            planner=lambda _context: {
+                "asset_requirement_update": {
+                    "action": "delete",
+                    "asset_requirement_key": "scene_illustration_each_round",
+                },
+                "scene_jobs": [],
+                "character_reference_jobs": [],
+            },
+        )
+
+        updated = json.loads((self.card / "ui_manifest.json").read_text(encoding="utf-8"))
+        self.assertNotIn("scene_illustration_each_round", updated["asset_requirements"])
+        self.assertEqual(result["outputs"]["asset_requirement_update"]["action"], "delete")
+        self.assertEqual(result["outputs"]["asset_requirement_update"]["applied"], True)
+        self.assertEqual(result["outputs"]["jobs"], [])
+
     def test_persistent_requirement_infers_current_scene_characters_for_references(self):
         (self.card / "memory" / "characters" / "雨蒙").mkdir(parents=True)
         (self.card / "memory" / "characters" / "雨蒙" / "profile.md").write_text(

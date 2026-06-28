@@ -183,15 +183,46 @@ def _runtime_settings(input_payload: dict) -> dict:
 
 def _process_gm_capability_requests(root: Path, input_payload: dict, gm_output: dict, source_intent_id: str) -> dict:
     requests = gm_output.get("capability_requests")
-    if not isinstance(requests, list) or not requests:
-        return {"ok": True, "processed_count": 0}
-    requests = _normalize_gm_capability_requests(requests, gm_output, source_intent_id)
-    return input_routing_requests.process_capability_requests(
-        root,
-        requests,
-        runtime_settings=_runtime_settings(input_payload),
-        source_intent_id=source_intent_id,
-    )
+    settings = _runtime_settings(input_payload)
+    result = {
+        "ok": True,
+        "processed_count": 0,
+        "created_intents": [],
+        "created_messages": [],
+        "artifacts": [],
+        "results": [],
+    }
+    if isinstance(requests, list) and requests:
+        capability_result = input_routing_requests.process_capability_requests(
+            root,
+            _normalize_gm_capability_requests(requests, gm_output, source_intent_id),
+            runtime_settings=settings,
+            source_intent_id=source_intent_id,
+        )
+        _merge_capability_result(result, capability_result)
+    asset_requests = gm_output.get("asset_requests")
+    if isinstance(asset_requests, list) and asset_requests:
+        asset_result = input_routing_requests.process_asset_requests(
+            root,
+            asset_requests,
+            requested_by="gm",
+            source_channel="gm_output",
+            runtime_settings=settings,
+            source_intent_id=source_intent_id,
+            evidence_text=_gm_capability_evidence_text(gm_output),
+        )
+        _merge_capability_result(result, asset_result)
+    result["created_intents_count"] = len(result["created_intents"])
+    result["created_messages_count"] = len(result["created_messages"])
+    return result
+
+
+def _merge_capability_result(target: dict, source: dict) -> None:
+    target["processed_count"] += int(source.get("processed_count", 0) or 0)
+    target["created_intents"].extend(source.get("created_intents", []) or [])
+    target["created_messages"].extend(source.get("created_messages", []) or [])
+    target["artifacts"].extend(source.get("artifacts", []) or [])
+    target["results"].extend(source.get("results", []) or [])
 
 
 def _gm_capability_evidence_text(gm_output: dict) -> str:

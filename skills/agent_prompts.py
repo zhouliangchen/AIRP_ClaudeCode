@@ -535,6 +535,13 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
                 "metadata": {},
             }
         ],
+        "asset_requests": [
+            {
+                "action": "create",
+                "summary": "optional assets-ui task request",
+                "payload": {"kind": "scene", "prompt": "visual focus"},
+            }
+        ],
         "decision_point": None,
         "stop_reason": "continue",
     })
@@ -558,6 +565,14 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "`authorization_gate: \"none\"`, and payload `from_name`/`to_name` plus optional `actor_id`. "
         "Use it when plot development reveals or changes a protagonist or important character name; "
         "this preserves the same identity and is not protagonist switching.\n"
+        "\nAssets-ui authority: GM may emit top-level `asset_requests[]` to create, modify, "
+        "or delete assets-ui task requirements when the scene would benefit from visual support. "
+        "Each item uses `action: \"create\"`, `\"modify\"`, or `\"delete\"`, a short `summary`, "
+        "and an object `payload`; creation payloads may include `kind`, `target`, `prompt`, "
+        "`characters`, `character_appearances`, `reference_policy`, `reference_candidates`, "
+        "`art_style`, and `asset_requirement`. A round may emit multiple asset requests, but "
+        "normally keep it to no more than two images. Scene illustrations may cover the whole "
+        "round, a highlight beat, or a character-focused visual study; choose by aesthetic judgment.\n"
         "\nEvery `actor_calls[]` item must include valid per-call "
         "`visibility_basis.mode` and `visibility_basis.summary`; keep the proof "
         "actor-visible, targeted to the same actor, and free of GM-only causes.\n"
@@ -683,6 +698,13 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
         "boundary_requests": [],
         "notes_for_story": ["GM/story-facing note after main GM merge"],
         "next_resume_point": "",
+        "asset_requests": [
+            {
+                "action": "create",
+                "summary": "optional side-thread assets-ui proposal",
+                "payload": {"kind": "scene", "prompt": "side-thread visual focus"},
+            }
+        ],
     })
     return _base_prompt(
         "subGM Side-Thread Prompt",
@@ -701,6 +723,11 @@ def _subgm_prompt(context: Dict[str, Any]) -> str:
         "no direct boundary mutation; no important-character creation or promotion. "
         "Only advance the assigned side-thread boundary and request main GM decisions through "
         "`messages_to_gm`, `promotion_requests`, or `boundary_requests`.\n"
+        "\nAssets-ui authority: subGM may emit top-level `asset_requests[]` only with "
+        "`action: \"create\"` to propose new assets-ui tasks for the side-thread scene. "
+        "subGM must not modify or delete existing assets-ui task requirements. A round may "
+        "contain multiple requests, but normally keep it to no more than two images; choose "
+        "whole-scene, highlight beat, or a character-focused visual study by aesthetic judgment.\n"
         "\nSpecial scene memory disclosure: unless the assigned side thread explicitly requires "
         "mind infiltration or direct mental perception, subGM temporarily portrays every important "
         "character appearing in a flashback, memory, dream, symbolic, or retcon recap scene instead "
@@ -722,6 +749,7 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "content": "final prose to deliver",
         "character_dialogues": [],
         "derived_content_edits": [],
+        "asset_requests": [],
         "metadata": {},
     })
     return _base_prompt(
@@ -758,6 +786,11 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         "\n\nUse Runtime Input `story_input.interaction_trace` when present. "
         "Preserve `visible_events`; do not use private trace content directly. "
         "The raw `story.input.json` artifact is for audit, critic, and memory boundaries, not for story-agent prompt recovery.\n"
+        "\nAssets-ui authority: story may emit top-level `asset_requests[]` to create, modify, "
+        "or delete assets-ui task requirements after judging the final prose. Use it when an "
+        "illustration should cover the whole delivered round, a highlight beat, or a "
+        "character-focused visual study. A round may contain multiple requests, but normally "
+        "keep it to no more than two images.\n"
     )
 
 
@@ -791,6 +824,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
             "can_auto_repair": False,
             "risk": "low",
         },
+        "asset_requests": [],
     })
     return _base_prompt(
         "Critic Agent Prompt",
@@ -808,6 +842,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- `story.output.json` does not require `<summary>` or `<options>`; hard-failing their absence is incorrect because postprocess owns `core.summary` and `core.options` after critic pass.\n"
         "- Treat unsupported direct dialogue, voluntary actions, private thoughts, or long-term choices for the player or registered important characters as a hard failure that requires story revision, not a soft issue. Actor-source support must come from `story_input.loop_outputs.actors` or side-thread `actor_outputs`; GM scene beats, GM events, and GM actor-call prompts are not actor sources. Incidental, unregistered minor NPC dialogue in ordinary prose is not an actor-source hard failure unless that NPC has already been registered or declared as an important character; judge it as continuity/style risk instead.\n"
         "- For explicit flashback/memory/dream/symbolic/retcon recap scenes, temporary GM/subGM portrayal is valid only inside that special scene. Check that dream-forgotten or another-character dream content is not treated as known by a character unless GM/subGM explicitly disclosed it to that target character in-world.\n"
+        "- Critic may emit top-level `asset_requests[]` to create, modify, or delete assets-ui task requirements when visual planning should be corrected after review. A round may contain multiple requests, but normally keep it to no more than two images; scene illustrations may cover the whole round, a highlight beat, or a character-focused visual study.\n"
         "- If all failures can be repaired by rewriting only `story.output.json`, set `repair_routing.stage` to `story_composition`, `target_agents` to `[\"story\"]`, `rollback` to `story_only`, and `can_auto_repair` to true.\n"
         "\nRead `story.input.json.interaction_trace` when present. Preserve `visible_events`; do not use private trace content directly.\n"
     )

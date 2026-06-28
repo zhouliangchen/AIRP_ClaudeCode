@@ -365,6 +365,48 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.assertEqual(audit["request"]["id"], "gm_step_1-capability_1")
         self.assertEqual(audit["request"]["risk"], "medium")
 
+    def test_gm_asset_requests_create_multiple_pending_assets_intents(self):
+        def dispatch(agent_key, packet):
+            self.assertEqual(agent_key, "gm")
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The light catches on the wet threshold."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "asset_requests": [
+                    {
+                        "action": "create",
+                        "summary": "Create a scene illustration for the threshold reveal.",
+                        "payload": {
+                            "kind": "scene",
+                            "target": "scene_illustration",
+                            "prompt": "wet threshold and lamp light",
+                        },
+                    },
+                    {
+                        "action": "modify",
+                        "summary": "Update the persistent scene illustration focus.",
+                        "payload": {
+                            "asset_requirement_key": "scene_illustration_each_round",
+                            "prompt": "focus on the lamp and threshold",
+                        },
+                    },
+                ],
+                "decision_point": None,
+                "stop_reason": "complete",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        pending = self.agent_intents.list_intents(self.run_dir, "pending")
+        assets = [intent for intent in pending if intent.get("type") == "assets_task"]
+        self.assertEqual(len(assets), 2)
+        self.assertEqual([intent["requested_by"] for intent in assets], ["gm", "gm"])
+        self.assertEqual([intent["payload"]["action"] for intent in assets], ["create", "modify"])
+
     def test_actor_natural_language_reply_is_wrapped_for_internal_artifacts(self):
         self.register_characters("Ada")
         reply = "我把门轻轻合上，低声说：先听听外面的脚步。"

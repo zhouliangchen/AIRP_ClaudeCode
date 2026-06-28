@@ -118,6 +118,26 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("Special scene memory disclosure", subgm_text)
         self.assertIn("report disclosure recommendations to GM", subgm_text)
         self.assertIn("special-scene temporary GM/subGM portrayal is an allowed source", story_text)
+
+    def test_gm_subgm_story_critic_prompts_describe_asset_requests_authority(self):
+        prompts = _load_module("agent_prompts")
+
+        gm_text = prompts._gm_prompt({})
+        subgm_text = prompts._subgm_prompt({})
+        story_text = prompts._story_prompt({"story_input": {}})
+        critic_text = prompts._critic_prompt({"story_input": {}, "story_output": {"content": ""}})
+
+        for text in (gm_text, subgm_text, story_text, critic_text):
+            self.assertIn("asset_requests[]", text)
+            self.assertIn("normally keep it to no more than two images", text)
+            self.assertIn("highlight beat", text)
+            self.assertIn("character-focused visual study", text)
+
+        self.assertIn("create, modify, or delete assets-ui task requirements", gm_text)
+        self.assertIn("create, modify, or delete assets-ui task requirements", story_text)
+        self.assertIn("create, modify, or delete assets-ui task requirements", critic_text)
+        self.assertIn("subGM may emit top-level `asset_requests[]` only with", subgm_text)
+        self.assertIn("subGM must not modify or delete", subgm_text)
         self.assertIn("outside that special scene", story_text)
         self.assertIn("dream-forgotten or another-character dream content", critic_text)
 
