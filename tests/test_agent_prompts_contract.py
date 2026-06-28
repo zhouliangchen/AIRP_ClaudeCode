@@ -91,6 +91,7 @@ class AgentPromptsContractTest(unittest.TestCase):
         prompts = _load_module("agent_prompts")
 
         gm_text = prompts._gm_prompt({})
+        subgm_text = prompts._subgm_prompt({})
         story_text = prompts._story_prompt({"story_input": {"loop_outputs": {"actors": {}}}})
         critic_text = prompts._critic_prompt({
             "story_input": {"loop_outputs": {"actors": {}}},
@@ -99,12 +100,24 @@ class AgentPromptsContractTest(unittest.TestCase):
 
         self.assertIn("Important actor authority", gm_text)
         self.assertIn("must not compose direct dialogue", gm_text)
-        self.assertIn("complete second-person recap through `actor_calls[].prompt`", gm_text)
+        self.assertIn("Use `actor_calls[].prompt` only for the selected second-person disclosure", gm_text)
         self.assertIn("source-backed by `story_input.loop_outputs.actors`", story_text)
         self.assertIn("GM `scene_beats`, GM `events`, and GM actor-call prompts are not actor sources", story_text)
         self.assertIn("Unsupported important-actor dialogue/action must be omitted", story_text)
         self.assertIn("hard failure that requires story revision", critic_text)
         self.assertIn("not a soft issue", critic_text)
+
+        self.assertIn("Special scene memory disclosure", gm_text)
+        self.assertIn("GM temporarily portrays every important character appearing in the special scene", gm_text)
+        self.assertIn("unless the plot explicitly requires mind infiltration or direct mental perception", gm_text)
+        self.assertIn("judge each appearing important character separately", gm_text)
+        self.assertIn("clear memory, vague impression, or no disclosure", gm_text)
+        self.assertIn("other person's dream", gm_text)
+        self.assertIn("Special scene memory disclosure", subgm_text)
+        self.assertIn("report disclosure recommendations to GM", subgm_text)
+        self.assertIn("special-scene temporary GM/subGM portrayal is an allowed source", story_text)
+        self.assertIn("outside that special scene", story_text)
+        self.assertIn("dream-forgotten or another-character dream content", critic_text)
 
 
 if __name__ == "__main__":
