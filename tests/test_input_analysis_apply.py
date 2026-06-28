@@ -21,6 +21,205 @@ def _load_module(name):
 
 
 class InputAnalysisApplyTest(unittest.TestCase):
+    def test_rewrite_previous_output_requires_explicit_replay_capability(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        role_text = "The previous scene was actually a dream. I wake up before school."
+        instruction_text = "Keep the pendant setting hidden for long-term plot guidance."
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        integrity = {
+            "raw_text_sha256": input_analysis.sha256_text(raw_text),
+            "role_text_sha256": input_analysis.sha256_text(role_text),
+            "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+            "raw_preserved": True,
+        }
+        analysis = {
+            "schema_version": 1,
+            "round_id": "round-000002",
+            "analysis_mode": "fixture",
+            "source_integrity": integrity,
+            "semantic_units": [
+                {
+                    "id": "su-001",
+                    "type": "edit_request",
+                    "visibility": "gm_only",
+                    "raw_excerpt": "The previous scene was actually a dream.",
+                    "derived_summary": "Previous output must be retconned into a dream.",
+                    "source_channel": "role_input",
+                    "confidence": 0.8,
+                    "persist": False,
+                }
+            ],
+            "world_updates": {
+                "hidden_facts": [],
+                "public_facts": [],
+                "important_characters": [],
+                "retcon_requests": [],
+            },
+            "narrative_directives": {
+                "rewrite_previous_output": True,
+                "expand_synopsis_before_continue": True,
+                "continue_after_player_action": True,
+            },
+            "routing": {
+                "role_channel": role_text,
+                "role_action_channel": "",
+                "narrative_guidance_channel": role_text,
+                "user_instruction_channel": instruction_text,
+                "gm": True,
+                "player": True,
+                "characters": [],
+            },
+            "routing_requests": [],
+            "capability_requests": [],
+            "risks": [],
+        }
+
+        with self.assertRaisesRegex(
+            input_analysis.InputAnalysisError,
+            "rewrite_previous_output requires replay.plan",
+        ):
+            mod._validate_structured_retcon_has_replay_or_replay_context(
+                analysis,
+                {"explicit_payload": {}},
+            )
+
+    def test_structured_retcon_adds_replay_plan_and_execute_from_round_backup(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        agent_run = _load_module("agent_run")
+        role_text = "The previous classroom scene was a dream. I wake up before school."
+        instruction_text = "Keep the pendant transformation setting hidden."
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        backup_id = "round-000002-20260628T010203040506Z-abcdef123456"
+        input_id = "input-retcon-001"
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            (card / ".card_data.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "blank_bootstrap",
+                        "source_type": "blank",
+                        "name": "雨蒙",
+                        "data": {"name": "雨蒙"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (card / "chat_log.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "index": 1,
+                            "user": "I am 雨蒙.",
+                            "ai": "Classroom scene.",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            run_dir = agent_run.create_run_dir(card, turn_index=1)
+            integrity = {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(role_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+                "raw_preserved": True,
+            }
+            (run_dir / "input.raw.json").write_text(
+                json.dumps(
+                    {
+                        "round_id": "round-000002",
+                        "raw_text": raw_text,
+                        "role_text": role_text,
+                        "user_instruction_text": instruction_text,
+                        "source_integrity": integrity,
+                        "explicit_payload": {
+                            "id": input_id,
+                            "input_schema": "dual_channel_v1",
+                            "role_text": role_text,
+                            "user_instruction_text": instruction_text,
+                            "snapshot": {
+                                "ok": True,
+                                "backup_id": backup_id,
+                                "round_id": "round-000002",
+                                "reason": "before_round_prepare",
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "input_analysis.output.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "round_id": "round-000002",
+                        "analysis_mode": "fixture",
+                        "source_integrity": integrity,
+                        "semantic_units": [
+                            {
+                                "id": "su-001",
+                                "type": "edit_request",
+                                "visibility": "gm_only",
+                                "raw_excerpt": "previous classroom scene was a dream",
+                                "derived_summary": "Previous AI output must be treated as a dream.",
+                                "source_channel": "role_input",
+                                "confidence": 0.9,
+                                "persist": False,
+                            }
+                        ],
+                        "world_updates": {
+                            "hidden_facts": [],
+                            "public_facts": [],
+                            "important_characters": [],
+                            "retcon_requests": [
+                                {
+                                    "id": "rr-001",
+                                    "text": "Previous AI output must be treated as a dream.",
+                                    "visibility": "gm_only",
+                                    "status": "active",
+                                }
+                            ],
+                        },
+                        "narrative_directives": {
+                            "rewrite_previous_output": True,
+                            "expand_synopsis_before_continue": True,
+                            "continue_after_player_action": True,
+                        },
+                        "routing": {
+                            "role_channel": role_text,
+                            "role_action_channel": "",
+                            "narrative_guidance_channel": role_text,
+                            "user_instruction_channel": instruction_text,
+                            "gm": True,
+                            "player": True,
+                            "characters": [],
+                        },
+                        "routing_requests": [],
+                        "capability_requests": [],
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.apply_current_run(card, ROOT)
+
+            capabilities = result["capability_requests"]
+            self.assertEqual(
+                [item["capability"] for item in capabilities],
+                ["replay.plan", "replay.execute"],
+            )
+            plan = capabilities[0]["payload"]
+            self.assertEqual(plan["backup_id"], backup_id)
+            self.assertEqual(plan["affected_inputs"][0]["input_id"], input_id)
+            self.assertEqual(capabilities[1]["payload"]["plan_id"], plan["plan_id"])
+
     def test_blank_player_character_declaration_updates_player_mapping(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis
@@ -432,6 +631,72 @@ class InputAnalysisApplyTest(unittest.TestCase):
             raw_text=raw_text,
             role_text=role_text,
             user_instruction_text="",
+        )
+
+    def test_legacy_replay_capability_aliases_normalize_to_replay_plan(self):
+        mod = _load_module("input_analysis_apply")
+        raw_request = {
+            "raw_text": "Please handle the explicit capability request.",
+            "role_text": "Please handle the explicit capability request.",
+            "user_instruction_text": "",
+        }
+        analysis = {
+            "capability_requests": [
+                {
+                    "id": "cap-retcon",
+                    "requested_by": "input_analyst",
+                    "target": "replay",
+                    "capability": "retcon.replay",
+                    "summary": "Plan replay.",
+                    "reason": "Model used a legacy replay alias.",
+                    "source_channel": "role_input",
+                    "risk": "high",
+                    "authorization_gate": "manual_confirmation",
+                    "payload": {},
+                    "evidence": {"raw_excerpt": "explicit capability request"},
+                },
+                {
+                    "id": "cap-story",
+                    "requested_by": "input_analyst",
+                    "target": "replay",
+                    "capability": "story.replay",
+                    "summary": "Plan replay.",
+                    "reason": "Model used a legacy replay alias.",
+                    "source_channel": "role_input",
+                    "risk": "high",
+                    "authorization_gate": "automatic",
+                    "payload": {},
+                    "evidence": {"raw_excerpt": "explicit capability request"},
+                },
+                {
+                    "id": "cap-short",
+                    "requested_by": "input_analyst",
+                    "target": "replay",
+                    "capability": "replay",
+                    "summary": "Plan replay.",
+                    "reason": "Model used a legacy replay alias.",
+                    "source_channel": "role_input",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                    "payload": {},
+                    "evidence": {"raw_excerpt": "explicit capability request"},
+                },
+            ],
+        }
+
+        normalized, changed = mod._normalize_capability_request_source_channels(
+            copy.deepcopy(analysis),
+            raw_request,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            [request["capability"] for request in normalized["capability_requests"]],
+            ["replay.plan", "replay.plan", "replay.plan"],
+        )
+        self.assertEqual(
+            [request["authorization_gate"] for request in normalized["capability_requests"]],
+            ["none", "none", "none"],
         )
 
     def test_live_input_analysis_schema_aliases_are_normalized(self):

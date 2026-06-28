@@ -616,6 +616,7 @@ def _build_story_prompt_context(
         "style_guidance",
         "story_output_guidance",
         "critic_style_guidance",
+        "replay_outline",
     ):
         if field in story_input:
             context[field] = story_input[field]
@@ -1535,6 +1536,9 @@ def build_relaxed_story_input(run_dir: str | Path) -> Dict[str, Any]:
     retcon_replay = input_payload.get("retcon_replay") if isinstance(input_payload, dict) else {}
     if isinstance(retcon_replay, dict) and retcon_replay:
         story_input["retcon_replay"] = retcon_replay
+    replay_outline = input_payload.get("replay_outline") if isinstance(input_payload, dict) else {}
+    if isinstance(replay_outline, dict) and replay_outline:
+        story_input["replay_outline"] = replay_outline
     story_input["story_prompt_context"] = {
         key: value
         for key, value in story_input.items()
@@ -1622,6 +1626,9 @@ def build_story_input(run_dir: str | Path) -> Dict[str, Any]:
             "warning": style_profile.get("warning", ""),
         },
     }
+    replay_outline = input_payload.get("replay_outline") if isinstance(input_payload, dict) else {}
+    if isinstance(replay_outline, dict) and replay_outline:
+        story_input["replay_outline"] = replay_outline
     story_input["story_prompt_context"] = _build_story_prompt_context(
         story_input,
         story_hidden_phrases,

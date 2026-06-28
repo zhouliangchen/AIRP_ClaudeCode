@@ -226,7 +226,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
             artifact = _read_json(Path(self.run_dir) / item["artifact"])
             self.assertEqual(artifact["status"], item["status"])
 
-    def test_replay_plan_requires_manual_confirmation_and_does_not_create_intent_without_it(self):
+    def test_replay_plan_with_none_gate_creates_replay_plan_intent(self):
         request = {
             "id": "cap-replay",
             "requested_by": "input_analyst",
@@ -236,12 +236,13 @@ class InputRoutingRequestsTest(unittest.TestCase):
             "reason": "Player reframed the previous answer as a dream.",
             "source_channel": "user_instruction",
             "risk": "high",
-            "authorization_gate": "manual_confirmation",
+            "authorization_gate": "none",
             "payload": {
+                "schema_version": 1,
+                "scope": "single_round",
+                "plan_id": "replay-001",
                 "snapshot_id": "round-000001-20260623T000000000000Z-abc123def456",
                 "affected_rounds": ["round-000001"],
-                "preserved_player_input_ids": ["input-1"],
-                "discard_ai_artifacts": ["gm.output.json", "story.input.json"],
             },
             "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "previous scene was a dream"},
         }
@@ -253,18 +254,74 @@ class InputRoutingRequestsTest(unittest.TestCase):
             source_intent_id="intent_000001",
         )
 
-        self.assertEqual(result["created_intents_count"], 0)
+        self.assertEqual(result["created_intents_count"], 1)
         self.assertEqual(result["created_messages_count"], 1)
-        self.assertEqual(result["results"][0]["status"], "authorization_required")
-        self.assertEqual(self.intents.list_intents(self.run_dir, "pending"), [])
+        self.assertEqual(result["results"][0]["status"], "queued")
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "replay_plan")
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "capability_request_id": "cap-replay",
+                "capability": "replay.plan",
+                "requested_by": "input_analyst",
+                "payload": request["payload"],
+                "policy": {
+                    "source_channel": "user_instruction",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                },
+            },
+        )
         messages = self.messages.read_messages(self.run_dir)
-        self.assertEqual(messages[0]["type"], "authorization_required")
+        self.assertEqual(messages[0]["type"], "capability_request")
         self.assertEqual(messages[0]["payload"]["capability"], "replay.plan")
         artifact = _read_first_audit(self.run_dir, result)
-        self.assertEqual(artifact["status"], "authorization_required")
-        self.assertEqual(artifact["authorization"]["authorization_gate"], "manual_confirmation")
-        self.assertEqual(artifact["created_intent_ids"], [])
+        self.assertEqual(artifact["status"], "queued")
+        self.assertEqual(artifact["authorization"]["authorization_gate"], "none")
+        self.assertEqual(artifact["created_intent_ids"], [pending[0]["id"]])
         self.assertEqual(artifact["created_message_ids"], [messages[0]["id"]])
+
+    def test_replay_execute_with_none_gate_creates_replay_execute_intent(self):
+        request = {
+            "id": "cap-replay-execute",
+            "requested_by": "input_analyst",
+            "target": "replay",
+            "capability": "replay.execute",
+            "summary": "Execute the planned replay.",
+            "reason": "The replay plan has already been materialized.",
+            "source_channel": "user_instruction",
+            "risk": "high",
+            "authorization_gate": "none",
+            "payload": {"schema_version": 1, "plan_id": "replay-001", "resume": True},
+            "evidence": {"semantic_unit_ids": ["u2"], "raw_excerpt": "run the replay"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={},
+            source_intent_id="intent_000001",
+        )
+
+        self.assertEqual(result["created_intents_count"], 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        self.assertEqual(pending[0]["type"], "replay_execute")
+        self.assertEqual(
+            pending[0]["payload"],
+            {
+                "capability_request_id": "cap-replay-execute",
+                "capability": "replay.execute",
+                "requested_by": "input_analyst",
+                "payload": request["payload"],
+                "policy": {
+                    "source_channel": "user_instruction",
+                    "risk": "high",
+                    "authorization_gate": "none",
+                },
+            },
+        )
+        self.assertEqual(result["results"][0]["status"], "queued")
 
     def test_process_assets_ui_task_creates_assets_intent_and_audit_artifact(self):
         request = {

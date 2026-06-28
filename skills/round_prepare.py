@@ -153,6 +153,72 @@ def _merge_pending_with_player_record(pending_user_turn, player_input_history):
     return merged
 
 
+def _safe_replay_session_dir(card_folder, session_id):
+    text = _text(session_id).strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        return None
+    if Path(text).is_absolute() or not re.fullmatch(r"[A-Za-z0-9_.-]+", text):
+        return None
+    sessions_root = (Path(card_folder) / ".replay" / "sessions").resolve()
+    candidate = (sessions_root / text).resolve()
+    if candidate == sessions_root or sessions_root not in candidate.parents:
+        return None
+    return candidate
+
+
+def _outline_input_id(outline):
+    if not isinstance(outline, dict):
+        return ""
+    current_input = outline.get("current_input")
+    if isinstance(current_input, dict) and _text(current_input.get("input_id")).strip():
+        return _text(current_input.get("input_id")).strip()
+    return _text(outline.get("input_id")).strip()
+
+
+def _candidate_replay_outline_paths(session_dir, status):
+    rounds_dir = session_dir / "rounds"
+    candidates = []
+    active_index = status.get("active_round_index") if isinstance(status, dict) else None
+    if isinstance(active_index, int) and active_index >= 0:
+        candidates.extend(
+            [
+                rounds_dir / str(active_index) / "outline.json",
+                rounds_dir / f"{active_index:06d}" / "outline.json",
+            ]
+        )
+    if rounds_dir.exists():
+        candidates.extend(sorted(rounds_dir.glob("*/outline.json")))
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield path
+
+
+def _active_replay_outline_for_pending(card_folder, pending_user_turn):
+    if not isinstance(pending_user_turn, dict):
+        return {}
+    pending_id = _text(pending_user_turn.get("id")).strip()
+    if not pending_id:
+        return {}
+    active = read_json(Path(card_folder) / ".replay" / "active.json")
+    if not isinstance(active, dict):
+        return {}
+    if _text(active.get("status")).strip() == "complete":
+        return {}
+    session_dir = _safe_replay_session_dir(card_folder, active.get("session_id"))
+    if session_dir is None or not session_dir.exists():
+        return {}
+    status = read_json(session_dir / "status.json")
+    for outline_path in _candidate_replay_outline_paths(session_dir, status if isinstance(status, dict) else {}):
+        outline = read_json(outline_path)
+        if isinstance(outline, dict) and _outline_input_id(outline) == pending_id:
+            return outline
+    return {}
+
+
 def _matching_player_payload(player_input_history, current_user_text):
     latest_player_input = player_input_history[-1] if player_input_history else {}
     explicit_input_payload = {}
@@ -259,6 +325,48 @@ def build_character_contexts(card_folder, card_data, card_structure, chat_log, u
             "task_for_subagent": "站在该角色自身立场，给出本轮私有反应、意图、可选行动/台词、变量变化建议与记忆增量。不要代写最终叙事。",
         })
     return {"characters": packets, "minor_policy": orchestration.get("minor_policy", "main_agent")}
+
+
+def prepare_round(card_folder, root_dir):
+    """Run round preparation in-process and return the final JSON payload."""
+
+    import contextlib
+    import io
+
+    old_argv = list(sys.argv)
+    stdout = io.StringIO()
+    try:
+        sys.argv = [str(Path(__file__)), str(card_folder), str(root_dir)]
+        with contextlib.redirect_stdout(stdout):
+            try:
+                result = main()
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+                if code not in (0, None):
+                    return {
+                        "ok": False,
+                        "reason": f"round_prepare_exit_{code}",
+                        "stdout": stdout.getvalue(),
+                    }
+                result = None
+        if isinstance(result, dict):
+            return result
+        output = stdout.getvalue().strip()
+        for line in reversed(output.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {"ok": False, "reason": "round_prepare_no_json_output", "stdout": output}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc) or exc.__class__.__name__}
+    finally:
+        sys.argv = old_argv
 
 
 def main():
@@ -383,6 +491,7 @@ def main():
     chat_log = read_json(chat_log_path) or []
     player_input_history = _load_player_input_history(card_folder)
     player_input_edits = _load_player_input_edits(card_folder, processed=False)
+    pending_user_turn = read_pending_user_turn(card_folder)
     user_text, explicit_input_payload, input_source = _select_authoritative_input(
         card_folder,
         input_path,
@@ -396,6 +505,11 @@ def main():
     if replay_constraint:
         payload = dict(explicit_input_payload) if isinstance(explicit_input_payload, dict) else {}
         payload["retcon_replay"] = replay_constraint
+        explicit_input_payload = payload
+    replay_outline = _active_replay_outline_for_pending(card_folder, pending_user_turn)
+    if replay_outline:
+        payload = dict(explicit_input_payload) if isinstance(explicit_input_payload, dict) else {}
+        payload["replay_outline"] = replay_outline
         explicit_input_payload = payload
     try:
         hidden_setting_records = hidden_settings.load_hidden_settings(card_folder)
@@ -430,6 +544,22 @@ def main():
             hidden_setting_records=hidden_setting_records,
             runtime_settings_payload=runtime_settings_payload,
         )
+        if isinstance(snapshot_result, dict) and snapshot_result.get("ok") is True:
+            run_dir = Path(str(agent_run_info.get("run_dir") or ""))
+            raw_path = run_dir / "input.raw.json"
+            raw_payload = read_json(raw_path, {})
+            if isinstance(raw_payload, dict):
+                explicit_payload = raw_payload.get("explicit_payload")
+                if not isinstance(explicit_payload, dict):
+                    explicit_payload = {}
+                explicit_payload = dict(explicit_payload)
+                explicit_payload["snapshot"] = snapshot_result
+                raw_payload["explicit_payload"] = explicit_payload
+                raw_path.write_text(
+                    json.dumps(raw_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                    newline="\n",
+                )
     except Exception as exc:
         agent_run_error = str(exc)
         agent_run_info = None

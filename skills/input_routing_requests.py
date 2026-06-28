@@ -230,6 +230,19 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
             "evidence": request.get("evidence") if isinstance(request.get("evidence"), dict) else {},
         }
 
+    if capability in {"replay.plan", "replay.execute"}:
+        return {
+            "capability_request_id": request["id"],
+            "capability": capability,
+            "requested_by": request["requested_by"],
+            "payload": request.get("payload") or {},
+            "policy": {
+                "source_channel": request["source_channel"],
+                "risk": request["risk"],
+                "authorization_gate": request["authorization_gate"],
+            },
+        }
+
     return {
         "source": CAPABILITY_SOURCE_NAME,
         "capability_request_id": request["id"],

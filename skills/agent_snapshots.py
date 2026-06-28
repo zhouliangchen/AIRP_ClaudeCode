@@ -16,7 +16,7 @@ import actor_memory_store
 EXCLUDED_BACKUP_ROOT_ITEMS = {"debug", ".agent_runs", "backup"}
 BACKUP_METADATA_FILENAME = "backup.json"
 
-SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
+BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+-[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$")
 ROUND_DIR_RE = re.compile(r"^round-[0-9]{6}$")
 
 
@@ -24,7 +24,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _snapshot_root(card_folder: str | Path) -> Path:
+def _backup_root(card_folder: str | Path) -> Path:
     return Path(card_folder) / "backup"
 
 
@@ -35,17 +35,17 @@ def _safe_component(value: str) -> str:
             safe.append(ch)
         else:
             safe.append("-")
-    return "".join(safe).strip("-") or "snapshot"
+    return "".join(safe).strip("-") or "backup"
 
 
-def _new_snapshot_id(root: Path, round_id: str) -> str:
+def _new_backup_id(root: Path, round_id: str) -> str:
     safe_round = _safe_component(str(round_id))
     for _ in range(100):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        snapshot_id = f"{safe_round}-{stamp}-{uuid.uuid4().hex[:12]}"
-        if not (root / snapshot_id).exists():
-            return snapshot_id
-    raise RuntimeError("unable to allocate unique snapshot id")
+        backup_id = f"{safe_round}-{stamp}-{uuid.uuid4().hex[:12]}"
+        if not (root / backup_id).exists():
+            return backup_id
+    raise RuntimeError("unable to allocate unique backup id")
 
 
 def _copy_item(source: Path, target: Path) -> None:
@@ -72,8 +72,8 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
 
 
-def _is_direct_snapshot_id(snapshot_id: str) -> bool:
-    return bool(SNAPSHOT_ID_RE.fullmatch(snapshot_id))
+def _is_direct_backup_id(backup_id: str) -> bool:
+    return bool(BACKUP_ID_RE.fullmatch(backup_id))
 
 
 def _read_agent_runs_current(card: Path) -> str:
@@ -155,20 +155,20 @@ def _backup_items(card: Path) -> list[Path]:
 def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> Dict[str, Any]:
     card = Path(card_folder)
     actor_memory_store.cleanup_stale_player_placeholder_dirs(card)
-    root = _snapshot_root(card)
+    root = _backup_root(card)
     root.mkdir(parents=True, exist_ok=True)
-    snapshot_id = _new_snapshot_id(root, round_id)
-    snapshot_dir = root / snapshot_id
-    snapshot_dir.mkdir()
+    backup_id = _new_backup_id(root, round_id)
+    backup_dir = root / backup_id
+    backup_dir.mkdir()
 
     copied = []
     for source in _backup_items(card):
-        _copy_item(source, snapshot_dir / source.name)
+        _copy_item(source, backup_dir / source.name)
         copied.append(source.name)
 
     metadata = {
-        "backup_id": snapshot_id,
-        "snapshot_id": snapshot_id,
+        "backup_id": backup_id,
+        "snapshot_id": backup_id,
         "round_id": str(round_id),
         "reason": reason,
         "created_at": _utc_now(),
@@ -177,14 +177,14 @@ def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> D
         "agent_runs_current": _read_agent_runs_current(card),
         "objective_world_included": (card / objective_world.OBJECTIVE_WORLD_REL_PATH).is_file(),
     }
-    _write_json(snapshot_dir / BACKUP_METADATA_FILENAME, metadata)
+    _write_json(backup_dir / BACKUP_METADATA_FILENAME, metadata)
 
     return {
         "ok": True,
-        "backup_id": snapshot_id,
-        "backup_dir": str(snapshot_dir),
-        "snapshot_id": snapshot_id,
-        "snapshot_dir": str(snapshot_dir),
+        "backup_id": backup_id,
+        "backup_dir": str(backup_dir),
+        "snapshot_id": backup_id,
+        "snapshot_dir": str(backup_dir),
         "round_id": str(round_id),
         "reason": reason,
         "copied": copied,
@@ -193,18 +193,19 @@ def create_snapshot(card_folder: str | Path, round_id: str, *, reason: str) -> D
 
 def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) -> Dict[str, Any]:
     card = Path(card_folder)
-    if not _is_direct_snapshot_id(str(snapshot_id)):
-        return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}
+    backup_id = str(snapshot_id)
+    if not _is_direct_backup_id(backup_id):
+        return {"ok": False, "reason": "snapshot_missing", "backup_id": backup_id, "snapshot_id": backup_id}
 
-    snapshot_root = _snapshot_root(card).resolve()
-    snapshot_dir = snapshot_root / str(snapshot_id)
-    resolved_snapshot_dir = snapshot_dir.resolve()
-    if resolved_snapshot_dir == snapshot_root or snapshot_root not in resolved_snapshot_dir.parents:
-        return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}
+    backup_root = _backup_root(card).resolve()
+    backup_dir = backup_root / backup_id
+    resolved_backup_dir = backup_dir.resolve()
+    if resolved_backup_dir == backup_root or backup_root not in resolved_backup_dir.parents:
+        return {"ok": False, "reason": "snapshot_missing", "backup_id": backup_id, "snapshot_id": backup_id}
 
-    metadata_path = snapshot_dir / BACKUP_METADATA_FILENAME
-    if not snapshot_dir.is_dir() or not metadata_path.is_file():
-        return {"ok": False, "reason": "snapshot_missing", "snapshot_id": str(snapshot_id)}
+    metadata_path = backup_dir / BACKUP_METADATA_FILENAME
+    if not backup_dir.is_dir() or not metadata_path.is_file():
+        return {"ok": False, "reason": "snapshot_missing", "backup_id": backup_id, "snapshot_id": backup_id}
 
     metadata = _read_json(metadata_path)
     copied = metadata.get("copied", [])
@@ -220,7 +221,7 @@ def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) ->
         if item.name not in copied_set:
             removed.append(item.name)
     for rel in sorted(copied_set):
-        source = snapshot_dir / rel
+        source = backup_dir / rel
         if not source.exists():
             continue
         target = card / rel
@@ -233,8 +234,10 @@ def restore_snapshot(card_folder: str | Path, snapshot_id: str, *, mode: str) ->
 
     return {
         "ok": True,
-        "backup_id": str(snapshot_id),
-        "snapshot_id": str(snapshot_id),
+        "backup_id": backup_id,
+        "backup_dir": str(backup_dir),
+        "snapshot_id": backup_id,
+        "snapshot_dir": str(backup_dir),
         "mode": mode,
         "round_id": metadata.get("round_id"),
         "reason": metadata.get("reason"),

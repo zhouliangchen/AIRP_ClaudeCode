@@ -90,9 +90,15 @@ Use `capability_requests[]` only when the player explicitly asks for system/UI/i
 
 Each request must include `id`, `requested_by`, `target`, `capability`, `summary`, `reason`, `source_channel`, `risk`, `authorization_gate`, object `payload`, and object `evidence` with a non-empty player-authored `raw_excerpt`.
 
-Current registered capabilities include `assets.generate_image`, `source.change_request`, `retcon.consult`, `replay.plan`, and `card.patch_data`. Unknown capability names may be emitted only when semantically justified by explicit player input; the registry will keep them audit-only rather than executing them.
+Current registered capabilities include `assets.generate_image`, `source.change_request`, `retcon.consult`, `replay.plan`, `replay.execute`, and `card.patch_data`. Unknown capability names may be emitted only when semantically justified by explicit player input; the registry will keep them audit-only rather than executing them.
 
-Use these canonical targets for registered capabilities: `assets.generate_image -> assets-ui`, `source.change_request -> main-agent`, `retcon.consult -> story`, `replay.plan -> replay`, and `card.patch_data -> card-data`.
+Use these canonical targets for registered capabilities: `assets.generate_image -> assets-ui`, `source.change_request -> main-agent`, `retcon.consult -> story`, `replay.plan -> replay`, `replay.execute -> replay`, and `card.patch_data -> card-data`.
+
+Use `authorization_gate: "none"` for `replay.plan` and `replay.execute`.
+
+For a continuity retcon / rollback replay, you must not rely only on `narrative_directives.rewrite_previous_output`; that flag is only a story lightweight derived edit signal and must not trigger implicit rollback. The analyst must emit `replay.plan` with payload fields including `backup_id`, `affected_inputs`, and `plan_id`; when the replay should start immediately, also emit a paired `replay.execute` request that points to the same `plan_id`. `replay.plan` materializes a `.replay` session and audit artifact; `replay.execute` executes or resumes that session.
+
+`retcon.consult` remains consultation-only and is not the same as executing replay.
 
 Keep legacy `routing_requests[]` as a migration compatibility field for older route names such as `assets_ui_task` and `source_feature_request`. Prefer `capability_requests[]` for new work and leave both arrays empty when no out-of-band capability is requested.
 

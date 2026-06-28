@@ -254,6 +254,17 @@ def _recent_chat_hidden_texts(input_payload: dict) -> list[str]:
     return texts
 
 
+def _replay_outline_hidden_texts(input_payload: dict) -> list[str]:
+    outline = _dict(input_payload.get("replay_outline"))
+    if not outline:
+        return []
+    texts = []
+    texts.extend(_string_leaves(outline.get("next_input")))
+    texts.extend(_string_leaves(outline.get("bridge_goal")))
+    texts.extend(_string_leaves(outline.get("must_change")))
+    return texts
+
+
 def hidden_phrases(input_payload: dict) -> list[str]:
     """Return hidden source phrases that must not reach actor-facing GM fields."""
     routed = _dict(input_payload.get("routed_input"))
@@ -267,6 +278,7 @@ def hidden_phrases(input_payload: dict) -> list[str]:
     hidden_sources.extend(_string_leaves(input_payload.get("hidden_recent_chat")))
     hidden_sources.extend(_string_leaves(input_payload.get("private_recent_chat")))
     hidden_sources.extend(_recent_chat_hidden_texts(input_payload))
+    hidden_sources.extend(_replay_outline_hidden_texts(input_payload))
 
     phrases = set()
     for text in hidden_sources:

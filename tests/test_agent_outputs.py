@@ -354,6 +354,50 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(manifest["stage"], "story_ready")
         self.assertIn("story_ready", [item["stage"] for item in manifest["status"]])
 
+    def test_build_story_input_includes_replay_outline_for_story_and_critic(self):
+        outline = {
+            "schema_version": 1,
+            "session_id": "replay-001",
+            "round_id": "round-000001",
+            "input_id": "input-replay-1",
+            "bridge_goal": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL.",
+            "next_input": {"input_id": "input-replay-2", "role_text": "NEXT_PLAYER_INPUT_SENTINEL"},
+            "visibility": {"next_input": "gm_bridge_only"},
+        }
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["replay_outline"] = outline
+        _write_json(self.run_dir / "input.json", input_payload)
+
+        story_input = self.agent_outputs.build_story_input(self.run_dir)
+
+        self.assertIn("replay_outline", story_input)
+        self.assertEqual(story_input["replay_outline"], outline)
+        self.assertEqual(story_input["story_prompt_context"]["replay_outline"], outline)
+        persisted = json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted["replay_outline"], outline)
+
+    def test_build_relaxed_story_input_includes_replay_outline_for_story_and_critic(self):
+        outline = {
+            "schema_version": 1,
+            "session_id": "replay-001",
+            "round_id": "round-relaxed",
+            "input_id": "input-replay-1",
+            "bridge_goal": "Bridge toward NEXT_PLAYER_INPUT_SENTINEL.",
+            "next_input": {"input_id": "input-replay-2", "role_text": "NEXT_PLAYER_INPUT_SENTINEL"},
+            "visibility": {"next_input": "gm_bridge_only"},
+        }
+        input_payload = json.loads((self.run_dir / "input.json").read_text(encoding="utf-8"))
+        input_payload["replay_outline"] = outline
+        _write_json(self.run_dir / "input.json", input_payload)
+
+        story_input = self.agent_outputs.build_relaxed_story_input(self.run_dir)
+
+        self.assertIn("replay_outline", story_input)
+        self.assertEqual(story_input["replay_outline"], outline)
+        self.assertEqual(story_input["story_prompt_context"]["replay_outline"], outline)
+        persisted = json.loads((self.run_dir / "artifacts" / "story.input.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted["replay_outline"], outline)
+
     def test_story_prompt_context_filters_private_artifact_material(self):
         hidden_record = {
             "id": "hidden-1",

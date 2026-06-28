@@ -408,6 +408,55 @@ class RoundRuntimeTest(unittest.TestCase):
         written = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
         self.assertEqual(written["attempt"], 2)
 
+    def test_rewrite_previous_output_without_capability_request_applies_current_run(self):
+        _write_json(
+            self.run_dir / "input_analysis.output.json",
+            {
+                "schema_version": 1,
+                "round_id": "round-000001",
+                "analysis_mode": "fixture",
+                "source_integrity": {},
+                "semantic_units": [{"type": "edit_request"}],
+                "routed_input": {"role_channel": "That previous output should be rewritten."},
+                "world_updates": {},
+                "narrative_directives": {"rewrite_previous_output": True},
+                "routing_requests": [],
+                "capability_requests": [],
+                "risks": [],
+            },
+        )
+        calls = {"apply": 0}
+
+        def apply_current_run(*_args, **_kwargs):
+            calls["apply"] += 1
+            return {
+                "ok": True,
+                "action": "applied",
+                "capability_requests": [],
+                "manifest": {
+                    "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                    "style_profile": {},
+                },
+            }
+
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        self.round_runtime.input_analysis_apply.apply_current_run = apply_current_run
+        try:
+            result = self.round_runtime._ensure_input_analysis(
+                self.card,
+                self.root,
+                self.run_dir,
+                json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8")),
+                _fake_run_claude,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "applied")
+        self.assertNotEqual(result.get("action"), "retcon_replay_prepared")
+        self.assertEqual(calls["apply"], 1)
+
     def test_existing_input_analysis_is_reused_after_apply_stage(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["stage"] = "story_ready"
