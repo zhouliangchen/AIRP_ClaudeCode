@@ -191,8 +191,17 @@ def _intent_payload_for_request(request: dict[str, Any]) -> dict[str, Any]:
                 "capability": capability,
             },
         }
-        for key in ("ui_schema", "postprocess_contract"):
-            if isinstance(payload.get(key), dict):
+        passthrough_keys = (
+            "asset_requirement",
+            "characters",
+            "reference_policy",
+            "reference_candidates",
+            "planner_hints",
+            "ui_schema",
+            "postprocess_contract",
+        )
+        for key in passthrough_keys:
+            if key in payload:
                 intent_payload[key] = payload[key]
         return intent_payload
 

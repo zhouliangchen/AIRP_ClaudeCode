@@ -68,6 +68,55 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(artifact["capability"], "assets.generate_image")
         self.assertEqual(artifact["status"], "queued")
 
+    def test_assets_capability_preserves_planning_payload_fields(self):
+        request = {
+            "id": "scene-image-rich",
+            "requested_by": "input_analyst",
+            "target": "assets-ui",
+            "capability": "assets.generate_image",
+            "summary": "Create a scene image with Su Li.",
+            "reason": "The user requested persistent scene illustrations.",
+            "source_channel": "user_instruction",
+            "risk": "medium",
+            "authorization_gate": "none",
+            "payload": {
+                "kind": "scene_illustration",
+                "target": "scene_illustration",
+                "prompt": "rainy classroom, Su Li near the window",
+                "asset_requirement": {
+                    "scene_illustration_each_round": True,
+                    "reason": "从本轮开始每轮必须提供剧情插图",
+                },
+                "characters": ["苏黎"],
+                "reference_policy": "required",
+                "reference_candidates": ["characters/苏黎/苏黎.png"],
+                "planner_hints": {"style": "consistent with previous scene"},
+                "ui_schema": {"postprocess_data_required": ["ui_extensions.scene"]},
+                "postprocess_contract": {
+                    "ui_extensions": {"scene": {"type": "object", "required": ["caption"]}}
+                },
+            },
+            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "每轮必须提供剧情插图"},
+        }
+
+        result = self.mod.process_capability_requests(
+            self.run_dir,
+            [request],
+            runtime_settings={},
+            source_intent_id="input_analysis",
+        )
+
+        self.assertEqual(len(result["created_intents"]), 1)
+        pending = self.intents.list_intents(self.run_dir, "pending")
+        payload = pending[0]["payload"]
+        self.assertEqual(payload["asset_requirement"]["scene_illustration_each_round"], True)
+        self.assertEqual(payload["characters"], ["苏黎"])
+        self.assertEqual(payload["reference_policy"], "required")
+        self.assertEqual(payload["reference_candidates"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(payload["planner_hints"]["style"], "consistent with previous scene")
+        self.assertIn("ui_schema", payload)
+        self.assertIn("postprocess_contract", payload)
+
     def test_process_character_rename_capability_creates_rename_intent(self):
         request = {
             "id": "rename-player",

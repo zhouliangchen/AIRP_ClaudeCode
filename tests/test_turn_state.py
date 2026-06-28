@@ -2062,6 +2062,37 @@ round_total: 7
             },
         )
 
+    def test_card_assets_preserves_extended_image_fields(self):
+        (self.card / ".card_assets.json").write_text(
+            json.dumps(
+                {
+                    "images": [
+                        {
+                            "id": "scene-0001",
+                            "kind": "scene_illustration",
+                            "target": "scene_illustration",
+                            "path": "generated/images/scene-0001.png",
+                            "references": ["characters/苏黎/苏黎.png"],
+                            "characters": ["苏黎"],
+                            "source_job_id": "scene-round-000004",
+                            "status": "completed",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        image = assets["images"][0]
+        self.assertEqual(image["references"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(image["characters"], ["苏黎"])
+        self.assertEqual(image["source_job_id"], "scene-round-000004")
+        self.assertEqual(image["status"], "completed")
+        self.assertEqual(image["url"], "/api/card_asset/generated/images/scene-0001.png")
+
     def test_append_turn_applies_postprocess_state_patch_quest(self):
         self._write_postprocess_output(
             core={

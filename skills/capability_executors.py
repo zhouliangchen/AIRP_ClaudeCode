@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
+import assets_ui_runtime
 import agent_run
 import actor_memory_store
 import character_registry
-import llm_settings
-import postprocess_outputs
 import replay_capabilities
 
 
@@ -57,56 +55,13 @@ def execute_assets_task(
     phase: str,
     run_command: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    card = Path(card_folder)
-    payload = _payload(intent)
-    prompt = _required_text(payload, "prompt")
-    kind = _text(payload.get("kind")) or "scene"
-    target = _text(payload.get("target")) or _text(intent.get("id")) or "asset"
-
-    contract_update = postprocess_outputs.apply_ui_schema_contract_update(card, payload)
-    outputs: dict[str, Any] = {
-        "status": "deferred",
-        "reason": "asset_worker_not_configured",
-        "kind": kind,
-        "target": target,
-        "prompt": prompt,
-        "phase": phase,
-        "postprocess_contract_update": contract_update,
-    }
-    if _can_start_image_job(card) and run_command is not None:
-        command_result = run_command(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parent / "image_generate.py"),
-                str(card),
-                "--prompt",
-                prompt,
-                "--kind",
-                kind,
-                "--target",
-                target,
-                "--async",
-            ],
-            cwd=str(Path(__file__).resolve().parent.parent),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        returncode = getattr(command_result, "returncode", 1)
-        outputs["image_job"] = {
-            "returncode": returncode,
-            "stdout": _text(getattr(command_result, "stdout", "")),
-            "stderr": _text(getattr(command_result, "stderr", "")),
-        }
-        if returncode == 0:
-            outputs["status"] = "queued"
-            outputs.pop("reason", None)
-        else:
-            outputs["status"] = "deferred"
-            outputs["reason"] = "asset_worker_start_failed"
-
-    _write_executor_artifact(run_dir, "assets_tasks", intent, outputs)
-    return {"status": "completed", "outputs": outputs}
+    return assets_ui_runtime.process_assets_task(
+        card_folder,
+        run_dir,
+        intent,
+        phase=phase,
+        run_command=run_command,
+    )
 
 
 def execute_replay_plan(run_dir: str | Path, intent: dict[str, Any]) -> dict[str, Any]:
@@ -222,12 +177,6 @@ def _required_text(payload: dict[str, Any], key: str) -> str:
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
-
-
-def _can_start_image_job(card: Path) -> bool:
-    settings = llm_settings.read_effective_settings()
-    image_generation = settings.get("image_generation", {})
-    return bool(isinstance(image_generation, dict) and image_generation.get("api_key"))
 
 
 def _write_executor_artifact(
