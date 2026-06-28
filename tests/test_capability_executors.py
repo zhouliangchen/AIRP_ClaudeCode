@@ -207,11 +207,11 @@ class CapabilityExecutorsTest(unittest.TestCase):
         self.assertTrue(artifact.exists())
 
     def test_execute_character_rename_is_idempotent_when_target_already_current_player(self):
-        target = "\u96e8\u8499"
+        target = "雨蒙"
         paths = self.store.ensure_actor_files(self.card, target)
-        paths.long_term.write_text("\u6211\u5df2\u7ecf\u8bb0\u5f97\u81ea\u5df1\u53eb\u96e8\u8499\u3002", encoding="utf-8")
+        paths.long_term.write_text("我已经记得自己叫雨蒙。", encoding="utf-8")
         (self.card / "characters" / "player.md").write_text(
-            "name: \u96e8\u8499\npath: characters/\u96e8\u8499\n",
+            "name: 雨蒙\npath: characters/雨蒙\n",
             encoding="utf-8",
         )
         intent = {
@@ -221,7 +221,7 @@ class CapabilityExecutorsTest(unittest.TestCase):
                 "from_name": "player",
                 "to_name": target,
                 "actor_id": "player",
-                "reason": "\u91cd\u590d\u7684\u81ea\u6211\u58f0\u660e\u66f4\u540d\u8bf7\u6c42\u3002",
+                "reason": "重复的自我声明更名请求。",
             },
         }
 
@@ -236,7 +236,7 @@ class CapabilityExecutorsTest(unittest.TestCase):
         self.assertTrue(result["outputs"]["idempotent"])
         self.assertEqual(result["outputs"]["from_name"], "player")
         self.assertEqual(result["outputs"]["to_name"], target)
-        self.assertEqual(paths.long_term.read_text(encoding="utf-8"), "\u6211\u5df2\u7ecf\u8bb0\u5f97\u81ea\u5df1\u53eb\u96e8\u8499\u3002")
+        self.assertEqual(paths.long_term.read_text(encoding="utf-8"), "我已经记得自己叫雨蒙。")
         artifact = self.run_dir / "artifacts" / "runtime_pump" / "character_renames" / "intent_000002.json"
         self.assertTrue(artifact.exists())
 

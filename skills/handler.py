@@ -45,6 +45,7 @@ except Exception:
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
 _PROGRESS_WRITE_LOCK = threading.RLock()
+CJK_UNIFIED_RANGE = f"{chr(0x4E00)}-{chr(0x9FFF)}"
 
 
 # ═══ File I/O ═══
@@ -1566,7 +1567,7 @@ def _derive_blank_identity_from_user_text(user_text):
     if match:
         name = match.group(1).strip()
     if not name:
-        match = re.search(r"(?:我叫|我是)([\u4e00-\u9fffA-Za-z0-9_·]{1,24})", text)
+        match = re.search(rf"(?:我叫|我是)([{CJK_UNIFIED_RANGE}A-Za-z0-9_·]{{1,24}})", text)
         if match:
             name = match.group(1).strip()
 
@@ -1848,17 +1849,17 @@ def _looks_like_prior_reframe(edit):
         "old",
         "reframe",
         "dream",
-        "\u4e0a\u4e00\u8f6e",
-        "\u5148\u524d",
-        "\u4e4b\u524d",
-        "\u524d\u6587",
-        "\u65e7",
-        "\u68a6",
-        "\u68a6\u5883",
-        "\u6539\u5b9a",
-        "\u4fee\u6b63",
-        "\u91cd\u5199",
-        "\u56de\u62e8",
+        "上一轮",
+        "先前",
+        "之前",
+        "前文",
+        "旧",
+        "梦",
+        "梦境",
+        "改定",
+        "修正",
+        "重写",
+        "回拨",
     )
     return any(cue in probe for cue in cues)
 

@@ -32,6 +32,9 @@ except Exception:
     def write_progress(stage, label, percent=None, detail=None):
         return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}
 
+CJK_EXT_A_START = chr(0x3400)
+CJK_UNIFIED_END = chr(0x9FFF)
+
 
 def _write_progress_safe(stage, label, percent=None, detail=None):
     try:
@@ -338,7 +341,7 @@ def _raw_story_word_limit(input_payload: dict) -> int:
 
 def _count_raw_story_units(text: str) -> int:
     clean = re.sub(r"<[^>]+>", "", str(text or ""))
-    cjk_count = sum(1 for ch in clean if "\u3400" <= ch <= "\u9fff")
+    cjk_count = sum(1 for ch in clean if CJK_EXT_A_START <= ch <= CJK_UNIFIED_END)
     latin_words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", clean)
     return cjk_count + len(latin_words)
 

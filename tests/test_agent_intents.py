@@ -211,7 +211,7 @@ class AgentIntentsTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in listed], [first["id"], second["id"]])
 
     def test_intent_json_is_utf8_without_ascii_escaping(self):
-        text = "\u4f60\u597d"
+        text = "你好"
         created = self.mod.create_intent(
             self.run_dir,
             {"requested_by": "gm", "type": "project_message", "payload": {"text": text}},

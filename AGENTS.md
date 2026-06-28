@@ -48,15 +48,17 @@
 
 默认用简体中文编写skill和文档，可以保留英文技术术语。编辑已有英文文档时，先将其直译为简体中文。
 
+仓库文件中不要使用 Unicode 转义来表示中文正文、中文关键词或中文测试样例；应直接写中文原文，保证 `rg` 等关键词搜索能匹配。反斜杠 u 加四位十六进制的写法只允许用于正则字符范围、协议必要转义或临时终端脚本中的编码规避，不应用来保存可读中文内容。
+
 若发生文件/终端乱码问题，请在解决问题后，把解决方案记录到AGENTS.md，即本文件。
 
 Do not rewrite UTF-8 source files that contain Chinese with PowerShell Get-Content + Set-Content; it can add a BOM or corrupt characters under the active console code page. Prefer apply_patch for edits, and use byte-level scripts only for mechanical fixes such as removing a UTF-8 BOM.
 
-PowerShell 中用 here-string 管道给 `python -` 传递包含中文的内联脚本时，中文字面量可能被当前控制台编码替换成 `?`。需要做字符串断言时，优先在 Python 代码里使用 `\uXXXX` Unicode 转义，或先显式切换 `$OutputEncoding` 和 `[Console]::OutputEncoding` 为 UTF-8 后再传输中文脚本。
+PowerShell 中用 here-string 管道给 `python -` 传递包含中文的内联脚本时，中文字面量可能被当前控制台编码替换成 `?`。需要做字符串断言时，可在临时内联脚本里使用 Unicode 转义规避传输编码问题，或先显式切换 `$OutputEncoding` 和 `[Console]::OutputEncoding` 为 UTF-8 后再传输中文脚本；但写入仓库文件的内容仍必须使用中文原文。
 
 PowerShell 中运行 Python 并需要打印包含中文路径或中文 JSON 的 stdout 时，优先临时设置 `$env:PYTHONIOENCODING='utf-8'`，避免 Python 按当前控制台代码页输出导致终端显示乱码；这不影响文件本身的 UTF-8 内容。
 
-若需要在 PowerShell 自动化脚本中提交中文测试样例，优先让 Python 直接以 UTF-8 读取仓库内的样例文档，并用 `\uXXXX` 转义拼出中文文件名或标签名；不要把大段中文样例作为 here-string 管道传给 `python -`。
+若需要在 PowerShell 自动化脚本中提交中文测试样例，优先让 Python 直接以 UTF-8 读取仓库内的样例文档，或仅在临时命令中用 Unicode 转义拼出中文文件名/标签名；不要把大段中文样例作为 here-string 管道传给 `python -`，也不要把转义形式保存进源码、测试或文档。
 
 在大规模重构时，在有临时备份的准备后，优先进行激进的删除、重构，而不是兼容修改迁移。跑通流程后，删除临时备份。
 

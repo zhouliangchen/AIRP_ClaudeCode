@@ -529,7 +529,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
     def test_capability_request_source_channel_aliases_are_normalized(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis
-        role_text = "\u6211\u53eb\u96e8\u8499"
+        role_text = "我叫雨蒙"
         raw_text = role_text
         raw_request = {
             "raw_text": raw_text,
@@ -552,7 +552,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
                     "source_channel": "role_input",
                     "type": "character_declaration",
                     "raw_excerpt": role_text,
-                    "derived_summary": "\u4e3b\u89d2\u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "derived_summary": "主角声明自己叫雨蒙。",
                     "confidence": 0.9,
                     "visibility": "public_world",
                     "persist": True,
@@ -583,14 +583,14 @@ class InputAnalysisApplyTest(unittest.TestCase):
                     "requested_by": "input_analyst",
                     "target": "memory",
                     "capability": "character.rename",
-                    "summary": "\u5c06\u5360\u4f4d\u540d\u6539\u4e3a\u96e8\u8499",
-                    "reason": "\u73a9\u5bb6\u5728 role channel \u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "summary": "将占位名改为雨蒙",
+                    "reason": "玩家在 role channel 声明自己叫雨蒙。",
                     "source_channel": "role_text",
                     "risk": "low",
                     "authorization_gate": "none",
                     "payload": {
                         "from_name": "player",
-                        "to_name": "\u96e8\u8499",
+                        "to_name": "雨蒙",
                         "actor_id": "player",
                     },
                     "evidence": {"raw_excerpt": role_text},
@@ -600,14 +600,14 @@ class InputAnalysisApplyTest(unittest.TestCase):
                     "requested_by": "input_analyst",
                     "target": "memory",
                     "capability": "character.rename",
-                    "summary": "\u5c06\u5360\u4f4d\u540d\u6539\u4e3a\u96e8\u8499",
-                    "reason": "\u73a9\u5bb6\u5728 role channel \u58f0\u660e\u81ea\u5df1\u53eb\u96e8\u8499\u3002",
+                    "summary": "将占位名改为雨蒙",
+                    "reason": "玩家在 role channel 声明自己叫雨蒙。",
                     "source_channel": "role",
                     "risk": "low",
                     "authorization_gate": "none",
                     "payload": {
-                        "from_name": "\u672a\u547d\u540d\u89d2\u8272",
-                        "to_name": "\u96e8\u8499",
+                        "from_name": "未命名角色",
+                        "to_name": "雨蒙",
                         "actor_id": "player",
                     },
                     "evidence": {"raw_excerpt": role_text},
@@ -702,7 +702,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
     def test_live_input_analysis_schema_aliases_are_normalized(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis
-        role_text = "\u6211\u53eb\u96e8\u8499\uff0c\u5929\u7a7a\u51fa\u73b0\u8be1\u5f02\u7684\u7c89\u8272\u4e91\u5f69\u3002"
+        role_text = "我叫雨蒙，天空出现诡异的粉色云彩。"
         raw_text = role_text
         raw_request = {
             "raw_text": raw_text,
@@ -723,8 +723,8 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 {
                     "id": "su-001",
                     "type": "hidden_fact",
-                    "raw_excerpt": "\u5929\u7a7a\u51fa\u73b0\u8be1\u5f02\u7684\u7c89\u8272\u4e91\u5f69",
-                    "derived_summary": "\u7c89\u8272\u4e91\u5f69\u662f\u9700\u8981GM\u8ddf\u8e2a\u7684\u9690\u85cf\u4e8b\u5b9e\u3002",
+                    "raw_excerpt": "天空出现诡异的粉色云彩",
+                    "derived_summary": "粉色云彩是需要GM跟踪的隐藏事实。",
                     "confidence": 0.8,
                     "visibility": "gm_only",
                     "persist": True,
@@ -755,34 +755,34 @@ class InputAnalysisApplyTest(unittest.TestCase):
                     "requested_by": "player",
                     "target": "memory",
                     "capability": "character.rename",
-                    "summary": "\u5c06\u4e3b\u89d2\u5360\u4f4d\u540d\u91cd\u547d\u540d\u4e3a\u96e8\u8499",
-                    "reason": "\u73a9\u5bb6\u5728\u89d2\u8272\u901a\u9053\u4e2d\u81ea\u6211\u4ecb\u7ecd\u4e3a\u96e8\u8499\u3002",
+                    "summary": "将主角占位名重命名为雨蒙",
+                    "reason": "玩家在角色通道中自我介绍为雨蒙。",
                     "source_channel": "role",
                     "risk": "low",
                     "authorization_gate": "manual_confirmation",
                     "payload": {
-                        "from_name": "\u672a\u547d\u540d\u89d2\u8272",
-                        "to_name": "\u96e8\u8499",
+                        "from_name": "未命名角色",
+                        "to_name": "雨蒙",
                         "actor_id": "player",
                     },
-                    "evidence": {"raw_excerpt": "\u6211\u53eb\u96e8\u8499"},
+                    "evidence": {"raw_excerpt": "我叫雨蒙"},
                 },
                 {
                     "id": "cap-002",
                     "requested_by": "input_analyst",
                     "target": "memory",
                     "capability": "character.rename",
-                    "summary": "\u5c06\u4e3b\u89d2\u5360\u4f4d\u540d\u91cd\u547d\u540d\u4e3a\u96e8\u8499",
-                    "reason": "\u73a9\u5bb6\u5728\u89d2\u8272\u901a\u9053\u4e2d\u81ea\u6211\u4ecb\u7ecd\u4e3a\u96e8\u8499\u3002",
+                    "summary": "将主角占位名重命名为雨蒙",
+                    "reason": "玩家在角色通道中自我介绍为雨蒙。",
                     "source_channel": "role_text",
                     "risk": "low",
                     "authorization_gate": "automatic",
                     "payload": {
                         "from_name": "player",
-                        "to_name": "\u96e8\u8499",
+                        "to_name": "雨蒙",
                         "actor_id": "player",
                     },
-                    "evidence": {"raw_excerpt": "\u6211\u53eb\u96e8\u8499"},
+                    "evidence": {"raw_excerpt": "我叫雨蒙"},
                 },
             ],
             "risks": [],

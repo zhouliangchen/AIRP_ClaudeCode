@@ -33,6 +33,16 @@ ENGLISH_FUZZY_SEPARATOR_RE = r"[^a-z0-9]+"
 CJK_CLAUSE_SPLIT_RE = re.compile(r"[\r\n。！？；;，、,]+")
 HIDDEN_PHRASE_MAX_CHARS = 160
 CJK_HIDDEN_PHRASE_MIN_CHARS = 4
+CJK_EXT_A_START = chr(0x3400)
+CJK_EXT_A_END = chr(0x4DBF)
+CJK_UNIFIED_START = chr(0x4E00)
+CJK_UNIFIED_END = chr(0x9FFF)
+CJK_COMPAT_START = chr(0xF900)
+CJK_COMPAT_END = chr(0xFAFF)
+HIRAGANA_START = chr(0x3040)
+KATAKANA_END = chr(0x30FF)
+HANGUL_START = chr(0xAC00)
+HANGUL_END = chr(0xD7AF)
 CJK_FUZZY_HIDDEN_PHRASE_MAX_UNITS = 32
 CJK_INSTRUCTION_SUFFIXES = (
     "不要",
@@ -99,11 +109,11 @@ def _has_non_ascii_text(value: str) -> bool:
 
 def _is_cjk_char(char: str) -> bool:
     return (
-        "\u3400" <= char <= "\u4dbf"
-        or "\u4e00" <= char <= "\u9fff"
-        or "\uf900" <= char <= "\ufaff"
-        or "\u3040" <= char <= "\u30ff"
-        or "\uac00" <= char <= "\ud7af"
+        CJK_EXT_A_START <= char <= CJK_EXT_A_END
+        or CJK_UNIFIED_START <= char <= CJK_UNIFIED_END
+        or CJK_COMPAT_START <= char <= CJK_COMPAT_END
+        or HIRAGANA_START <= char <= KATAKANA_END
+        or HANGUL_START <= char <= HANGUL_END
     )
 
 

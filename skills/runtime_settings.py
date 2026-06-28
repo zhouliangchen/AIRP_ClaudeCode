@@ -33,6 +33,12 @@ DEFAULT_SETTINGS = {
     "allowSourceCodeSelfRepair": False,
 }
 
+CJK_UNIFIED_START = chr(0x4E00)
+CJK_UNIFIED_END = chr(0x9FFF)
+CJK_WORD_RE = re.compile(
+    f"[{CJK_UNIFIED_START}-{CJK_UNIFIED_END}]|[A-Za-z0-9]+(?:[._'-][A-Za-z0-9]+)*"
+)
+
 SELF_REPAIR_MODES = {"off", "analysis_only", "limited", "full"}
 NSFW_VALUES = {"直白", "舒缓", "关闭"}
 
@@ -188,13 +194,13 @@ def extract_tag(text: str, tag: str) -> str:
 def count_chinese_chars(text: str) -> int:
     if not isinstance(text, str):
         return 0
-    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    return sum(1 for char in text if CJK_UNIFIED_START <= char <= CJK_UNIFIED_END)
 
 
 def count_words(text: str) -> int:
     if not isinstance(text, str):
         return 0
-    tokens = re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9]+(?:[._'-][A-Za-z0-9]+)*", text)
+    tokens = CJK_WORD_RE.findall(text)
     return len(tokens)
 
 

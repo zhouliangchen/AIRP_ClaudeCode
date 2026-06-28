@@ -8,25 +8,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SELF_PROFILE = "\u6211\u8bb0\u5f97\u81ea\u5df1\u7684\u540d\u5b57\u3002"
-SU = "\u82cf"
-LI = "\u9ece"
+SELF_PROFILE = "我记得自己的名字。"
+SU = "苏"
+LI = "黎"
 SULI = SU + LI
-SULI_PROFILE = SULI + "\u7684\u4eba\u8bbe"
-GM_LINE = "\u4f60\u542c\u89c1\u65e7\u95e8\u8f74\u5728\u54cd\u3002"
-SELF_LINE = "\u6211\u505c\u5728\u95e8\u53e3\u3002"
-GM_MEMORY_LINE = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a" + GM_LINE
-SELF_MEMORY_LINE = "\u6211\uff1a" + SELF_LINE
-CONTROL_PLANE_LINE = "\u5f00\u5c40\u5df2\u9001\u8fbe\u524d\u7aef -> http://localhost:8765\uff0c\u53ef\u4ee5\u5728\u6d4f\u89c8\u5668\u4e2d\u8f93\u5165\u4e0b\u4e00\u6b65\u884c\u52a8\u3002"
-OLD_ARCHIVE = "\u65e7\u6863\u6848\u5ba4"
-KEY_SUMMARY = "\u6211\u66fe\u5728\u65e7\u6863\u6848\u5ba4\u53d1\u73b0\u5c01\u5b58\u540d\u518c\u3002"
-KEY_DETAIL = "\u90a3\u672c\u540d\u518c\u8bb0\u5f55\u4e86\u82cf\u9ece\u5931\u8e2a\u524d\u6700\u540e\u4e00\u6b21\u767b\u8bb0\u3002"
-RECALL_FULLWIDTH = "\u6211\u60f3\u56de\u5fc6\uff1a" + OLD_ARCHIVE
-RECALL_ASCII = "\u6211\u60f3\u56de\u5fc6: " + OLD_ARCHIVE
-OLD_SHORT_TERM = "\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a\u65e7\u77ed\u671f\u8bb0\u5fc6\u3002\n"
-LONG_TERM_UPDATE = "\u6211\u957f\u671f\u8bb0\u5f97\u6863\u6848\u5ba4\u7684\u6f6e\u6e7f\u6c14\u5473\u3002"
-KEY_UPDATE_SUMMARY = "\u6211\u53d1\u73b0\u5c01\u5b58\u540d\u518c\u3002"
-KEY_UPDATE_DETAIL = "\u540d\u518c\u91cc\u6709\u82cf\u9ece\u6700\u540e\u4e00\u6b21\u767b\u8bb0\u3002"
+SULI_PROFILE = SULI + "的人设"
+GM_LINE = "你听见旧门轴在响。"
+SELF_LINE = "我停在门口。"
+GM_MEMORY_LINE = "记忆的回声：" + GM_LINE
+SELF_MEMORY_LINE = "我：" + SELF_LINE
+CONTROL_PLANE_LINE = "开局已送达前端 -> http://localhost:8765，可以在浏览器中输入下一步行动。"
+OLD_ARCHIVE = "旧档案室"
+KEY_SUMMARY = "我曾在旧档案室发现封存名册。"
+KEY_DETAIL = "那本名册记录了苏黎失踪前最后一次登记。"
+RECALL_FULLWIDTH = "我想回忆：" + OLD_ARCHIVE
+RECALL_ASCII = "我想回忆: " + OLD_ARCHIVE
+OLD_SHORT_TERM = "有人对我说：旧短期记忆。\n"
+LONG_TERM_UPDATE = "我长期记得档案室的潮湿气味。"
+KEY_UPDATE_SUMMARY = "我发现封存名册。"
+KEY_UPDATE_DETAIL = "名册里有苏黎最后一次登记。"
 
 
 def _load_actor_memory_store():
@@ -315,8 +315,8 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertIn(GM_MEMORY_LINE, text)
         self.assertIn(SELF_MEMORY_LINE, text)
         self.assertIn(GM_MEMORY_LINE + "\n\n" + SELF_MEMORY_LINE + "\n", text)
-        self.assertNotIn("\u6709\u4eba\u5bf9\u6211\u8bf4\uff1a", text)
-        self.assertNotIn("\u6211\u56de\u5e94\uff1a", text)
+        self.assertNotIn("有人对我说：", text)
+        self.assertNotIn("我回应：", text)
         self.assertFalse(self.store.append_short_term_dialogue(self.card, "player", "gm", "", source_id="empty"))
 
     def test_append_short_term_dialogue_rejects_control_plane_delivery_prose(self):
@@ -352,7 +352,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
         self.assertIn(GM_MEMORY_LINE, text)
         self.assertIn(SELF_MEMORY_LINE, text)
         self.assertNotIn("localhost:8765", text)
-        self.assertNotIn("\u9001\u8fbe\u524d\u7aef", text)
+        self.assertNotIn("送达前端", text)
 
     def test_recall_key_memory_matches_natural_query_with_fullwidth_and_ascii_colons(self):
         self.store.ensure_actor_files(self.card, "player")
@@ -379,8 +379,8 @@ class ActorMemoryStoreTest(unittest.TestCase):
         plain_query = self.store.recall_key_memory(self.card, "player", OLD_ARCHIVE)
 
         self.assertEqual(fullwidth["tag"], OLD_ARCHIVE)
-        self.assertIn("\u5c01\u5b58\u540d\u518c", fullwidth["summary"])
-        self.assertIn("\u6700\u540e\u4e00\u6b21\u767b\u8bb0", fullwidth["detail"])
+        self.assertIn("封存名册", fullwidth["summary"])
+        self.assertIn("最后一次登记", fullwidth["detail"])
         self.assertEqual(ascii_colon, fullwidth)
         self.assertEqual(plain_query, fullwidth)
 
@@ -394,16 +394,16 @@ class ActorMemoryStoreTest(unittest.TestCase):
 
     def test_source_files_do_not_contain_mojibake_protocol_text(self):
         mojibake_markers = (
-            "\u93b4",
-            "\u6d63",
-            "\u93c8",
-            "\u93c3",
-            "\u947b",
-            "\u699b",
-            "\u704f",
-            "\u935a",
-            "\u97ea",
-            "\u20ac",
+            chr(0x93B4),
+            chr(0x6D63),
+            chr(0x93C8),
+            chr(0x93C3),
+            chr(0x947B),
+            chr(0x699B),
+            chr(0x704F),
+            chr(0x935A),
+            chr(0x97EA),
+            chr(0x20AC),
         )
         for relative_path in ("skills/actor_memory_store.py", "tests/test_actor_memory_store.py"):
             with self.subTest(relative_path=relative_path):

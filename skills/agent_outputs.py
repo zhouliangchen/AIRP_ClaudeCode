@@ -28,7 +28,16 @@ ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
 FORBIDDEN_ACTOR_MARKERS = set(agent_schemas.FORBIDDEN_ACTOR_KEYS) | set(agent_visibility.HIDDEN_MARKERS)
 STORY_PROMPT_ACTOR_EVENT_TYPES = {"reply"}
-STORY_GUARD_CJK_TERM_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+CJK_EXT_A_START = chr(0x3400)
+CJK_EXT_A_END = chr(0x4DBF)
+CJK_UNIFIED_START = chr(0x4E00)
+CJK_UNIFIED_END = chr(0x9FFF)
+CJK_COMPAT_START = chr(0xF900)
+CJK_COMPAT_END = chr(0xFAFF)
+STORY_GUARD_CJK_TERM_RE = re.compile(
+    f"[{CJK_EXT_A_START}-{CJK_EXT_A_END}{CJK_UNIFIED_START}-{CJK_UNIFIED_END}"
+    f"{CJK_COMPAT_START}-{CJK_COMPAT_END}]+"
+)
 STORY_GUARD_YEAR_TERM_RE = re.compile(r"([0-9零〇一二两三四五六七八九十百千万]+年)(?:前|后)?")
 STORY_GUARD_CJK_MIN_CHARS = 3
 STORY_GUARD_CJK_MAX_CHARS = 6
@@ -280,7 +289,9 @@ def _story_guard_text_key(text: str) -> str:
     return "".join(
         char
         for char in str(text or "")
-        if char.isalnum() or ("\u3400" <= char <= "\u4dbf") or ("\u4e00" <= char <= "\u9fff")
+        if char.isalnum()
+        or (CJK_EXT_A_START <= char <= CJK_EXT_A_END)
+        or (CJK_UNIFIED_START <= char <= CJK_UNIFIED_END)
     ).casefold()
 
 

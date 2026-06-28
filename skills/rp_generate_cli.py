@@ -49,6 +49,10 @@ _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
     "awaiting_agent_outputs",
     "analysis_applied",
 }
+CJK_EXT_A_START = chr(0x3400)
+CJK_EXT_A_END = chr(0x4DBF)
+CJK_UNIFIED_START = chr(0x4E00)
+CJK_UNIFIED_END = chr(0x9FFF)
 
 
 def _text_from_blocks(blocks: Any) -> str:
@@ -1028,7 +1032,12 @@ def _strip_tag_ci(text: str, tag: str) -> str:
 
 def _count_chinese_chars(text: str) -> int:
     clean = re.sub(r"<[^>]+>", "", str(text or ""))
-    return sum(1 for ch in clean if "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf")
+    return sum(
+        1
+        for ch in clean
+        if CJK_UNIFIED_START <= ch <= CJK_UNIFIED_END
+        or CJK_EXT_A_START <= ch <= CJK_EXT_A_END
+    )
 
 
 def _normalize_update_variable_analysis(content: str) -> str:
@@ -1041,7 +1050,7 @@ def _normalize_update_variable_analysis(content: str) -> str:
     def replace(match: re.Match[str]) -> str:
         body = match.group(1).strip()
         word_count = len(re.findall(r"\b[\w'-]+\b", body))
-        has_cjk = any("\u3400" <= ch <= "\u9fff" for ch in body)
+        has_cjk = any(CJK_EXT_A_START <= ch <= CJK_UNIFIED_END for ch in body)
         if body and not has_cjk and word_count <= 80:
             return match.group(0)
         return f"<Analysis>{fallback}</Analysis>"

@@ -755,7 +755,7 @@ class AgentPacketTest(unittest.TestCase):
         return temp_root, styles_dir
 
     def test_route_player_input_does_not_split_omniscient_setting_keywords(self):
-        text = "\u6211\u63a8\u5f00\u95e8\u8d70\u8fdb\u53bb\u3002\n\uff08\u4e0a\u5e1d\u89c6\u89d2\u8bbe\u5b9a\uff1a\u95e8\u540e\u5176\u5b9e\u662f\u68a6\u5883\u6d78\u54cd\u3002\uff09"
+        text = "我推开门走进去。\n（上帝视角设定：门后其实是梦境浸响。）"
         routed = self.agent_packets.route_player_input(text)
 
         self.assertEqual(routed["role_channel"], text)
@@ -771,12 +771,12 @@ class AgentPacketTest(unittest.TestCase):
 
     def test_route_player_input_does_not_split_inline_chinese_setting_keyword(self):
         routed = self.agent_packets.route_player_input(
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002"
+            "我走进房间。设定：门后是梦境。"
         )
 
         self.assertEqual(
             routed["role_channel"],
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            "我走进房间。设定：门后是梦境。",
         )
         self.assertEqual(routed["user_instruction_channel"], "")
 
@@ -785,13 +785,13 @@ class AgentPacketTest(unittest.TestCase):
             "fallback should not be interpreted",
             {
                 "input_schema": "dual_channel_v1",
-                "role_text": "\u6211\u8d70\u8fdb\u623f\u95f4\u3002",
-                "user_instruction_text": "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+                "role_text": "我走进房间。",
+                "user_instruction_text": "设定：门后是梦境。",
             },
         )
 
-        self.assertEqual(routed["role_channel"], "\u6211\u8d70\u8fdb\u623f\u95f4\u3002")
-        self.assertEqual(routed["user_instruction_channel"], "\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002")
+        self.assertEqual(routed["role_channel"], "我走进房间。")
+        self.assertEqual(routed["user_instruction_channel"], "设定：门后是梦境。")
         self.assertEqual(routed["input_schema"], "dual_channel_v1")
 
     def test_route_player_input_keeps_parenthesized_action_as_role(self):
@@ -809,27 +809,27 @@ class AgentPacketTest(unittest.TestCase):
             "",
             {
                 "input_schema": "dual_channel_v1",
-                "role_text": "\u6211\u62ab\u51fa\u77ed\u5251\u3002",
-                "user_instruction_text": "\u5c06\u57ce\u5821\u8bbe\u5b9a\u4e3a\u88ab\u9057\u5fd8\u7684\u6708\u9762\u57fa\u5730\u3002",
+                "role_text": "我披出短剑。",
+                "user_instruction_text": "将城堡设定为被遗忘的月面基地。",
             },
         )
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
         self.assertEqual(packet["visibility"], "first_person_player")
-        self.assertIn("\u62ab\u51fa\u77ed\u5251", packet["role_channel_anchor"])
-        self.assertNotIn("\u6708\u9762\u57fa\u5730", json.dumps(packet, ensure_ascii=False))
+        self.assertIn("披出短剑", packet["role_channel_anchor"])
+        self.assertNotIn("月面基地", json.dumps(packet, ensure_ascii=False))
         self.assertNotIn("user_instruction_channel", packet)
         self.assertEqual(packet["agent"], "player")
 
     def test_build_player_packet_holds_unanalysed_single_channel_input(self):
         routed = self.agent_packets.route_input_payload(
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            "我走进房间。设定：门后是梦境。",
             None,
         )
         packet = self.agent_packets.build_player_packet(self.card, routed, [])
 
         self.assertEqual(packet["role_channel_anchor"], "")
-        self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
+        self.assertNotIn("门后是梦境", json.dumps(packet, ensure_ascii=False))
 
     def test_prepare_agent_run_uses_replay_outline_round_id_for_run_directory(self):
         result = self.agent_packets.prepare_agent_run(
@@ -1240,9 +1240,9 @@ class AgentPacketTest(unittest.TestCase):
         )
 
     def test_prepare_agent_run_builds_expected_context_files(self):
-        user_text = "\u6211\u524d\u5f80\u6708\u9762\u57fa\u5730\uff0c\u5bfb\u627e\u65b0\u7684\u7ebf\u7d22\u3002"
-        chat_log = [{"index": 3, "summary": "\u5f00\u542f\u7b2c\u4e00\u8f6e"}]
-        card_data = {"title": "\u6d4b\u8bd5\u5361"}
+        user_text = "我前往月面基地，寻找新的线索。"
+        chat_log = [{"index": 3, "summary": "开启第一轮"}]
+        card_data = {"title": "测试卡"}
         character_contexts = {
             "characters": [
                 {
@@ -2286,16 +2286,16 @@ class AgentPacketTest(unittest.TestCase):
 
     def test_prepare_agent_run_includes_gm_only_hidden_settings_without_actor_leak(self):
         hidden_text = (
-            "\u7528\u4e8e\u957f\u671f\u5267\u60c5\u5f15\u5bfc\u7684\u63d0\u793a\uff0c"
-            "\u4e0d\u9700\u8981\u7acb\u523b\u5728\u5267\u60c5\u4e2d\u4f53\u73b0\uff1a"
-            "\u540a\u5760\u4e3a\u53d8\u8eab\u5668\uff0c\u4ee3\u4ef7\u662f\u71c3\u70e7\u8eab\u4efd\u3002"
+            "用于长期剧情引导的提示，"
+            "不需要立刻在剧情中体现："
+            "吊坠为变身器，代价是燃烧身份。"
         )
 
         result = self.agent_packets.prepare_agent_run(
             self.card,
-            user_text="\u6211\u5c1d\u8bd5\u5c06\u540a\u5760\u6254\u6389\u3002",
+            user_text="我尝试将吊坠扔掉。",
             chat_log=[],
-            card_data={"title": "\u9690\u85cf\u8bbe\u5b9a\u6d4b\u8bd5"},
+            card_data={"title": "隐藏设定测试"},
             character_contexts={"characters": [{"name": "Ada", "profile_summary": "Ada is cautious."}]},
             turn_index=0,
             hidden_setting_records=[
@@ -2473,7 +2473,7 @@ class AgentPacketTest(unittest.TestCase):
             self.card,
             user_text=user_text,
             chat_log=[],
-            card_data={"title": "\u6d4b\u8bd5\u5361"},
+            card_data={"title": "测试卡"},
             character_contexts={"meta": {"version": 1}},
             turn_index=0,
         )
@@ -2498,7 +2498,7 @@ class AgentPacketTest(unittest.TestCase):
 
     def test_build_character_packet_excludes_inline_chinese_instruction_text(self):
         routed = self.agent_packets.route_input_payload(
-            "\u6211\u8d70\u8fdb\u623f\u95f4\u3002\u8bbe\u5b9a\uff1a\u95e8\u540e\u662f\u68a6\u5883\u3002",
+            "我走进房间。设定：门后是梦境。",
             None,
         )
         packet = self.agent_packets.build_character_packet(
@@ -2510,7 +2510,7 @@ class AgentPacketTest(unittest.TestCase):
 
         self.assertEqual(packet["role_channel_anchor"], "")
         self.assertNotIn("user_instruction_channel", packet)
-        self.assertNotIn("\u95e8\u540e\u662f\u68a6\u5883", json.dumps(packet, ensure_ascii=False))
+        self.assertNotIn("门后是梦境", json.dumps(packet, ensure_ascii=False))
 
     def test_round_prepare_writes_agent_run_packets_and_reports_path(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
@@ -2982,11 +2982,11 @@ class AgentPacketTest(unittest.TestCase):
     def test_round_prepare_does_not_persist_hidden_settings_before_analysis_apply(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
         hidden_text = (
-            "\u7528\u4e8e\u957f\u671f\u5267\u60c5\u5f15\u5bfc\u7684\u63d0\u793a\uff0c"
-            "\u4e0d\u9700\u8981\u7acb\u523b\u5728\u5267\u60c5\u4e2d\u4f53\u73b0\uff1a"
-            "\u540a\u5760\u4e3a\u53d8\u8eab\u5668\uff0c\u4ee3\u4ef7\u662f\u71c3\u70e7\u8eab\u4efd\u3002"
+            "用于长期剧情引导的提示，"
+            "不需要立刻在剧情中体现："
+            "吊坠为变身器，代价是燃烧身份。"
         )
-        role_text = "\u6211\u5c1d\u8bd5\u5c06\u540a\u5760\u6254\u6389\u3002"
+        role_text = "我尝试将吊坠扔掉。"
         raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + hidden_text
         styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
         (self.card / ".card_data.json").write_text(
@@ -3044,11 +3044,11 @@ class AgentPacketTest(unittest.TestCase):
 
     def test_round_prepare_does_not_promote_important_character_before_analysis_apply(self):
         temp_root, styles_dir = self._make_round_prepare_fixture()
-        role_text = "\u6211\u7559\u610f\u73ed\u4e0a\u6709\u6ca1\u6709\u4eba\u770b\u5411\u540a\u5760\u3002"
+        role_text = "我留意班上有没有人看向吊坠。"
         important_text = (
-            "\u8bbe\u5b9a\u91cd\u8981\u89d2\u8272\uff1a\u201c\u82cf\u9ece\u201d\uff0c"
-            "\u73ed\u4e0a\u4e00\u4f4d\u5bf9\u795e\u79d8\u5b66\u9887\u6709\u7814\u7a76\u7684\u5973\u540c\u5b66\u3002"
-            "\u771f\u5b9e\u8eab\u4efd\u662f\u524d\u9b54\u6cd5\u5c11\u5973\u3002"
+            "设定重要角色：“苏黎”，"
+            "班上一位对神秘学颇有研究的女同学。"
+            "真实身份是前魔法少女。"
         )
         raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + important_text
         styles_dir.joinpath("input.txt").write_text(raw_text, encoding="utf-8")
@@ -3088,9 +3088,9 @@ class AgentPacketTest(unittest.TestCase):
             sys.argv = old_argv
 
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
-        profile_json = self.card / "memory" / "characters" / "\u82cf\u9ece" / "profile.json"
+        profile_json = self.card / "memory" / "characters" / "苏黎" / "profile.json"
 
-        self.assertNotIn("\u82cf\u9ece", card_data.get("character_orchestration", {}).get("major", []))
+        self.assertNotIn("苏黎", card_data.get("character_orchestration", {}).get("major", []))
         self.assertFalse(profile_json.exists())
 
     def test_round_prepare_continues_when_agent_run_packet_generation_fails(self):

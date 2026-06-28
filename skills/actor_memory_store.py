@@ -18,9 +18,9 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
-RECALL_PREFIX = "\u6211\u60f3\u56de\u5fc6"
-GM_SAID_PREFIX = "\u8bb0\u5fc6\u7684\u56de\u58f0\uff1a"
-SELF_REPLIED_PREFIX = "\u6211\uff1a"
+RECALL_PREFIX = "我想回忆"
+GM_SAID_PREFIX = "记忆的回声："
+SELF_REPLIED_PREFIX = "我："
 PLAYER_MAPPING_FILE = "player.md"
 CONTROL_PLANE_MEMORY_PHRASES = (
     "http://localhost",
@@ -29,10 +29,10 @@ CONTROL_PLANE_MEMORY_PHRASES = (
     "http://127.0.0.1",
     "https://127.0.0.1",
     "127.0.0.1:",
-    "\u524d\u7aef\u5730\u5740",
-    "\u9001\u8fbe\u524d\u7aef",
-    "\u6d4f\u89c8\u5668\u4e2d\u8f93\u5165\u4e0b\u4e00\u6b65\u884c\u52a8",
-    "\u5c40\u57df\u7f51\u8bbe\u5907",
+    "前端地址",
+    "送达前端",
+    "浏览器中输入下一步行动",
+    "局域网设备",
     "Claude Code",
     "AGENTS.md",
     "CLAUDE.md",
@@ -554,7 +554,7 @@ def _normalize_recall_query(text: Any) -> str:
     if not query.startswith(RECALL_PREFIX):
         return query
     rest = query[len(RECALL_PREFIX):].lstrip()
-    if rest.startswith(("\uff1a", ":")):
+    if rest.startswith(("：", ":")):
         return rest[1:].strip()
     return query
 

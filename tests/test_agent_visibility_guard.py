@@ -137,21 +137,21 @@ class AgentVisibilityGuardTest(unittest.TestCase):
     def test_hidden_phrases_exclude_structured_important_character_names(self):
         input_payload = {
             "routed_input": {
-                "user_instruction_channel": "设定重要角色：“\u82cf\u9ece”，真实身份是前魔法少女。",
+                "user_instruction_channel": "设定重要角色：“苏黎”，真实身份是前魔法少女。",
             },
             "gm_only_hidden_settings": [
                 {
-                    "text": "\u82cf\u9ece真实身份为前魔法少女，保留过去记忆与部分本源。",
+                    "text": "苏黎真实身份为前魔法少女，保留过去记忆与部分本源。",
                     "visibility": "gm_only",
                 }
             ],
             "input_analysis": {
                 "world_updates": {
                     "important_characters": [
-                        {"name": "\u82cf\u9ece", "status": "active"},
+                        {"name": "苏黎", "status": "active"},
                     ],
                     "hidden_facts": [
-                        {"text": "\u82cf\u9ece真实身份为前魔法少女。", "visibility": "gm_only"},
+                        {"text": "苏黎真实身份为前魔法少女。", "visibility": "gm_only"},
                     ],
                 },
             },
@@ -162,13 +162,13 @@ class AgentVisibilityGuardTest(unittest.TestCase):
             "events": [],
                 "actor_calls": [{
                 "call_id": "call-suli-1",
-                "actor_id": "character:\u82cf\u9ece",
+                "actor_id": "character:苏黎",
                 "prompt": "你察觉到熟悉的本源波动。",
-                "reason": "\u82cf\u9ece需要独立反应。",
+                "reason": "苏黎需要独立反应。",
                 "visibility_basis": {
                     "mode": "direct",
-                    "summary": "\u82cf\u9ece亲自感知到异常波动。",
-                    "target_actor": "character:\u82cf\u9ece",
+                    "summary": "苏黎亲自感知到异常波动。",
+                    "target_actor": "character:苏黎",
                 },
             }],
             "parallel_groups": [],
@@ -180,13 +180,13 @@ class AgentVisibilityGuardTest(unittest.TestCase):
         phrases = self.guard.hidden_phrases(input_payload)
         sanitized = self.guard.sanitize_gm_output(gm_output, input_payload)
 
-        self.assertNotIn("\u82cf\u9ece", phrases)
-        self.assertEqual(sanitized["actor_calls"][0]["actor_id"], "character:\u82cf\u9ece")
+        self.assertNotIn("苏黎", phrases)
+        self.assertEqual(sanitized["actor_calls"][0]["actor_id"], "character:苏黎")
         self.assertEqual(
             sanitized["actor_calls"][0]["visibility_basis"]["target_actor"],
-            "character:\u82cf\u9ece",
+            "character:苏黎",
         )
-        self.assertIn("\u82cf\u9ece", sanitized["actor_calls"][0]["visibility_basis"]["summary"])
+        self.assertIn("苏黎", sanitized["actor_calls"][0]["visibility_basis"]["summary"])
 
     def test_sanitize_gm_output_redacts_compact_hidden_markers(self):
         sanitized = self.guard.sanitize_gm_output(

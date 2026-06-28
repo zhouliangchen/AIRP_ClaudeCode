@@ -644,10 +644,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("雨夜", result["long_term_memories"])
 
     def test_stdout_json_is_ascii_safe_for_windows_console(self):
-        text = self.module._stdout_json({"ok": True, "text": "中文\ufffd"})
+        text = self.module._stdout_json({"ok": True, "text": "中文�"})
 
         self.assertTrue(all(ord(ch) < 128 for ch in text))
-        self.assertEqual(json.loads(text)["text"], "中文\ufffd")
+        self.assertEqual(json.loads(text)["text"], "中文�")
 
     def test_dispatch_agent_payload_retries_claude_process_failure(self):
         payload = _critic_pass()
@@ -1489,22 +1489,22 @@ class RpGenerateCliTest(unittest.TestCase):
             "loop_outputs": {
                 "actors": {
                     "player": [_player_output("ignore self")],
-                    "character:\u82cf\u9ece": [
+                    "character:苏黎": [
                         {
                             "agent": "character",
-                            "agent_id": "character:\u82cf\u9ece",
-                            "character_name": "\u82cf\u9ece",
+                            "agent_id": "character:苏黎",
+                            "character_name": "苏黎",
                             "events": [
                                 {
                                     "type": "reply",
                                     "target": "player",
-                                    "content": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                                    "content": "你果然会在这个时候问。",
                                     "metadata": {},
                                 },
                                 {
                                     "type": "memory_delta",
                                     "target": "self",
-                                    "content": "\u6211\u8bb0\u4f4f\u4e86\u8fd9\u4ef6\u4e8b\u4e0d\u80fd\u544a\u8bc9\u4ed6\u3002",
+                                    "content": "我记住了这件事不能告诉他。",
                                     "metadata": {},
                                 },
                             ],
@@ -1519,16 +1519,16 @@ class RpGenerateCliTest(unittest.TestCase):
 
         self.assertEqual(normalized["character_dialogues"], [
             {
-                "name": "\u82cf\u9ece",
+                "name": "苏黎",
                 "source": "subagent",
-                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
+                "line": "你果然会在这个时候问。",
             }
         ])
         self.assertIn(
             '"source": "subagent"',
             normalized["content"],
         )
-        self.assertNotIn("\u4e0d\u80fd\u544a\u8bc9\u4ed6", normalized["content"])
+        self.assertNotIn("不能告诉他", normalized["content"])
 
     def test_normalize_story_output_does_not_expose_private_actor_events_as_dialogue_aside(self):
         story = {

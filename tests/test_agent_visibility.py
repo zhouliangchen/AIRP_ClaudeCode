@@ -104,14 +104,14 @@ class AgentVisibilityTest(unittest.TestCase):
         event = {
             "type": "scene",
             "content": "The classroom projector hums.",
-            "visibility_basis": basis("location", location="\u6559\u5ba4"),
+            "visibility_basis": basis("location", location="教室"),
         }
 
         self.assertTrue(
             self.visibility.event_visible_to_actor(
                 event,
                 "character:Ada",
-                {"location": "\u6559\u5ba4"},
+                {"location": "教室"},
             )
         )
 
@@ -119,14 +119,14 @@ class AgentVisibilityTest(unittest.TestCase):
         event = {
             "type": "scene",
             "content": "The classroom projector hums.",
-            "visibility_basis": basis("location", location="\u6559\u5ba4"),
+            "visibility_basis": basis("location", location="教室"),
         }
 
         self.assertFalse(
             self.visibility.event_visible_to_actor(
                 event,
                 "character:Ada",
-                {"location": "\u8d70\u5eca"},
+                {"location": "走廊"},
             )
         )
 
@@ -134,14 +134,14 @@ class AgentVisibilityTest(unittest.TestCase):
         event = {
             "type": "scene",
             "content": "The classroom projector hums.",
-            "visibility_basis": basis("location", location="room:\u6559\u5ba4"),
+            "visibility_basis": basis("location", location="room:教室"),
         }
 
         self.assertFalse(
             self.visibility.event_visible_to_actor(
                 event,
                 "character:Ada",
-                {"location": "room:\u8d70\u5eca"},
+                {"location": "room:走廊"},
             )
         )
 
@@ -149,26 +149,26 @@ class AgentVisibilityTest(unittest.TestCase):
         event = {
             "type": "scene",
             "content": "The classroom projector hums.",
-            "visibility_basis": basis("location", scene_id="\u6559\u5ba4"),
+            "visibility_basis": basis("location", scene_id="教室"),
         }
         mixed_event = {
             "type": "scene",
             "content": "The classroom projector hums.",
-            "visibility_basis": basis("location", scene_id="room:\u6559\u5ba4"),
+            "visibility_basis": basis("location", scene_id="room:教室"),
         }
 
         self.assertTrue(
             self.visibility.event_visible_to_actor(
                 event,
                 "character:Ada",
-                {"scene_id": "\u6559\u5ba4"},
+                {"scene_id": "教室"},
             )
         )
         self.assertFalse(
             self.visibility.event_visible_to_actor(
                 mixed_event,
                 "character:Ada",
-                {"scene_id": "room:\u8d70\u5eca"},
+                {"scene_id": "room:走廊"},
             )
         )
 
@@ -178,8 +178,8 @@ class AgentVisibilityTest(unittest.TestCase):
             "content": "A red light flashes in the classroom.",
             "visibility_basis": basis(
                 "location",
-                location="\u6559\u5ba4",
-                sensory_channels=["\u89c6\u89c9"],
+                location="教室",
+                sensory_channels=["视觉"],
             ),
         }
 
@@ -188,8 +188,8 @@ class AgentVisibilityTest(unittest.TestCase):
                 event,
                 "character:Ada",
                 {
-                    "location": "\u6559\u5ba4",
-                    "sensory_channels": ["\u542c\u89c9"],
+                    "location": "教室",
+                    "sensory_channels": ["听觉"],
                 },
             )
         )
@@ -200,8 +200,8 @@ class AgentVisibilityTest(unittest.TestCase):
             "content": "A red light flashes in the classroom.",
             "visibility_basis": basis(
                 "location",
-                location="\u6559\u5ba4",
-                sensory_channels=["\u89c6\u89c9"],
+                location="教室",
+                sensory_channels=["视觉"],
             ),
         }
 
@@ -210,8 +210,8 @@ class AgentVisibilityTest(unittest.TestCase):
                 event,
                 "character:Ada",
                 {
-                    "location": "\u6559\u5ba4",
-                    "sensory_channels": ["\u89c6\u89c9"],
+                    "location": "教室",
+                    "sensory_channels": ["视觉"],
                 },
             )
         )

@@ -64,6 +64,30 @@ def _load_server():
 
 class TurnStateTest(unittest.TestCase):
 
+    def test_source_files_use_literal_chinese_instead_of_unicode_escapes(self):
+        pattern = re.compile(r"\\" + "u" + r"([0-9A-Fa-f]{4})")
+        source_roots = [ROOT / "skills", ROOT / "tests", ROOT / "docs", ROOT / ".claude"]
+        source_files = []
+        for root in source_roots:
+            if root.exists():
+                source_files.extend(
+                    path
+                    for path in root.rglob("*")
+                    if path.suffix.lower() in {".py", ".md", ".html", ".js", ".json"}
+                    and not path.is_relative_to(ROOT / "skills" / "styles" / "lib")
+                    and not path.is_relative_to(ROOT / "skills" / "node_modules")
+                )
+        source_files.extend(path for path in [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / "AGENTS.md"] if path.exists())
+
+        offenders = []
+        for path in source_files:
+            text = path.read_text(encoding="utf-8")
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line):
+                    offenders.append(f"{path.relative_to(ROOT)}:{line_no}:{line.strip()}")
+
+        self.assertEqual(offenders, [])
+
     def test_rp_skill_is_split_into_stage_skills(self):
         skills_dir = ROOT / ".claude" / "skills"
         expected = [
@@ -1887,11 +1911,11 @@ round_total: 7
     def test_append_turn_accepts_character_agent_dialogue_marker(self):
         dialogues = [
             {
-                "name": "\u82cf\u9ece",
+                "name": "苏黎",
                 "agent": "character",
-                "agent_id": "character:\u82cf\u9ece",
-                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
-                "aside": "\u51b7\u9759",
+                "agent_id": "character:苏黎",
+                "line": "你果然会在这个时候问。",
+                "aside": "冷静",
             }
         ]
 
@@ -1905,10 +1929,10 @@ round_total: 7
         log = json.loads((self.card / "chat_log.json").read_text(encoding="utf-8"))
         self.assertEqual(log[0]["character_dialogues"], [
             {
-                "name": "\u82cf\u9ece",
+                "name": "苏黎",
                 "source": "subagent",
-                "line": "\u4f60\u679c\u7136\u4f1a\u5728\u8fd9\u4e2a\u65f6\u5019\u95ee\u3002",
-                "aside": "\u51b7\u9759",
+                "line": "你果然会在这个时候问。",
+                "aside": "冷静",
             }
         ])
 
