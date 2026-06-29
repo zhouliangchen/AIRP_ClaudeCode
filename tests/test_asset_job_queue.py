@@ -714,6 +714,99 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["status"], "deferred")
         self.assertEqual(job["reason"], "reference_image_not_supported")
 
+    def test_worker_image_generation_failed_stdout_remains_resumable(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "status": "failed",
+                        "reason": "image_generation_failed",
+                    }
+                ),
+                stderr="",
+            )
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-image-generation-failed",
+                    "round_id": "round-000003",
+                    "prompt": "Rainy theater",
+                    "important_characters": [],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(len(commands), 1)
+        job = _read_json(self.card / "generated" / "jobs" / "scene-image-generation-failed.json")
+        self.assertEqual(job["status"], "deferred")
+        self.assertEqual(job["reason"], "image_generation_failed")
+
+    def test_worker_completed_job_file_is_not_overwritten_by_parent_queue_state(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            completed = {
+                "schema_version": 1,
+                "queue_type": "scene_illustration",
+                "job_id": "scene-worker-race",
+                "agent_plan_id": "assets-round-000003",
+                "status": "completed",
+                "output_path": "generated/images/scene-worker-race.png",
+            }
+            job_path = self.card / "generated" / "jobs" / "scene-worker-race.json"
+            job_path.parent.mkdir(parents=True)
+            job_path.write_text(json.dumps(completed), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-worker-race",
+                    "round_id": "round-000003",
+                    "prompt": "Rainy theater",
+                    "important_characters": [],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(commands), 1)
+        job = _read_json(self.card / "generated" / "jobs" / "scene-worker-race.json")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["output_path"], "generated/images/scene-worker-race.png")
+        mirror = _read_json(self.run_dir / "artifacts" / "assets_ui" / "jobs" / "scene-worker-race.json")
+        self.assertEqual(mirror["status"], "completed")
+        self.assertEqual(mirror["output_path"], "generated/images/scene-worker-race.png")
+
     def test_punctuation_job_id_uses_worker_compatible_filename_slug(self):
         plan = {
             "schema_version": 1,

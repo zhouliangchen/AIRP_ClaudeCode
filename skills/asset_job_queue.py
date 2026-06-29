@@ -25,6 +25,8 @@ NON_IMAGE_QUEUE_WAIT_STATES = {
     "ui_patch_request": ("deferred", "ui_patch_requires_claude_code"),
 }
 
+CHILD_WRITTEN_JOB_STATUSES = {"completed", "deferred", "failed"}
+
 
 def _job_filename_slug(text: str) -> str:
     keep = []
@@ -56,7 +58,7 @@ def apply_plan(
         job = _normalize_job(raw_job, plan, index)
         _dedupe_job_id(job, used_safe_ids)
         job = _evaluate_and_submit(card, job, image_settings_ready=image_settings_ready, run_command=run_command)
-        _write_job(card, run_root, job)
+        job = _write_job(card, run_root, job)
         jobs.append(job)
     return {"status": _summarize(jobs), "jobs": jobs, "plan_id": str(plan.get("plan_id") or "")}
 
@@ -342,7 +344,7 @@ def _apply_worker_failure(job: dict[str, Any]) -> None:
     error = details.get("error")
     semantic_reason = reason or str(error or "")
     if status in {"deferred", "failed"}:
-        job["status"] = "failed" if status == "failed" or semantic_reason == "invalid_asset_path" else "deferred"
+        job["status"] = "failed" if semantic_reason == "invalid_asset_path" else "deferred"
         if semantic_reason:
             job["reason"] = semantic_reason
         else:
@@ -383,10 +385,29 @@ def _character_target_path(job: dict[str, Any]) -> str:
     return f"generated/characters/{name}/{name}.png"
 
 
-def _write_job(card: Path, run_dir: Path, job: dict[str, Any]) -> None:
+def _write_job(card: Path, run_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
     safe_id = _job_filename_slug(str(job.get("job_id") or ""))
-    agent_run.write_json(card / "generated" / "jobs" / f"{safe_id}.json", job)
-    agent_run.write_json(run_dir / "artifacts" / "assets_ui" / "jobs" / f"{safe_id}.json", job)
+    job_path = card / "generated" / "jobs" / f"{safe_id}.json"
+    final_job = _merge_child_written_job(job_path, job)
+    agent_run.write_json(job_path, final_job)
+    agent_run.write_json(run_dir / "artifacts" / "assets_ui" / "jobs" / f"{safe_id}.json", final_job)
+    return final_job
+
+
+def _merge_child_written_job(job_path: Path, job: dict[str, Any]) -> dict[str, Any]:
+    if str(job.get("status") or "") != "queued":
+        return job
+    try:
+        existing = json.loads(job_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return job
+    if not isinstance(existing, dict):
+        return job
+    if str(existing.get("status") or "") not in CHILD_WRITTEN_JOB_STATUSES:
+        return job
+    merged = dict(job)
+    merged.update(existing)
+    return merged
 
 
 def _summarize(jobs: list[dict[str, Any]]) -> str:
