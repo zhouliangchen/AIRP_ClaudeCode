@@ -849,6 +849,60 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(selection["final_target_path"], "generated/characters/Ada/Ada.png")
         self.assertEqual(selection["critic_report"]["notes"], "candidate 2 has the cleanest character reference")
 
+    def test_critic_selection_resumes_after_winner_was_already_moved(self):
+        batch_id = "character-ada-reference-candidates"
+        for index in range(1, 4):
+            self._write_completed_candidate(batch_id, index)
+        winner_source = self.card / "generated" / "tmp" / batch_id / "candidate-2.png"
+        final_path = self.card / "generated" / "characters" / "Ada" / "Ada.png"
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_bytes(winner_source.read_bytes())
+        winner_source.unlink()
+
+        def fake_critic(payload):
+            return {"winner_candidate_id": f"{batch_id}-candidate-2"}
+
+        result = self.mod.resume_waiting_jobs(self.card, self.run_dir, critic_runner=fake_critic)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(final_path.read_bytes(), b"candidate-2")
+        rejected_dir = self.card / "generated" / "tmp" / batch_id / "rejected"
+        self.assertEqual((rejected_dir / "candidate-1.png").read_bytes(), b"candidate-1")
+        self.assertEqual((rejected_dir / "candidate-3.png").read_bytes(), b"candidate-3")
+        self.assertFalse((self.card / "generated" / "tmp" / batch_id / "candidate-1.png").exists())
+        self.assertFalse((self.card / "generated" / "tmp" / batch_id / "candidate-2.png").exists())
+        self.assertFalse((self.card / "generated" / "tmp" / batch_id / "candidate-3.png").exists())
+        selection = _read_json(self.card / "generated" / "jobs" / f"{batch_id}-selection.json")
+        self.assertEqual(selection["status"], "completed")
+        self.assertEqual(selection["winner_candidate_id"], f"{batch_id}-candidate-2")
+        self.assertEqual(selection["final_target_path"], "generated/characters/Ada/Ada.png")
+
+    def test_critic_selection_records_missing_rejected_candidate_without_blocking(self):
+        batch_id = "character-ada-reference-candidates"
+        for index in range(1, 4):
+            self._write_completed_candidate(batch_id, index)
+        rejected_source = self.card / "generated" / "tmp" / batch_id / "candidate-1.png"
+        rejected_source.unlink()
+
+        def fake_critic(payload):
+            return {"winner_candidate_id": f"{batch_id}-candidate-2"}
+
+        result = self.mod.resume_waiting_jobs(self.card, self.run_dir, critic_runner=fake_critic)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual((self.card / "generated" / "characters" / "Ada" / "Ada.png").read_bytes(), b"candidate-2")
+        self.assertFalse((self.card / "generated" / "tmp" / batch_id / "rejected" / "candidate-1.png").exists())
+        self.assertEqual(
+            (self.card / "generated" / "tmp" / batch_id / "rejected" / "candidate-3.png").read_bytes(),
+            b"candidate-3",
+        )
+        selection = _read_json(self.card / "generated" / "jobs" / f"{batch_id}-selection.json")
+        self.assertEqual(selection["status"], "completed")
+        self.assertEqual(
+            selection["missing_rejected_paths"],
+            [f"generated/tmp/{batch_id}/candidate-1.png"],
+        )
+
     def test_completed_critic_selection_is_not_overwritten_on_resume(self):
         batch_id = "character-ada-reference-candidates"
         for index in range(1, 4):

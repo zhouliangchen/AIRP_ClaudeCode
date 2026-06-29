@@ -192,13 +192,16 @@ def _run_character_reference_selection(
         selection["winner_candidate_id"] = winner_id
         return selection
 
+    final_abs = card / Path(normalized_final)
     winner_source = _candidate_output_path(winner)
     if winner_source is None:
         selection["status"] = "waiting_on_critic"
         selection["reason"] = "invalid_winner_candidate_path"
         selection["winner_candidate_id"] = winner_id
         return selection
-    if not (card / Path(winner_source)).is_file():
+    winner_source_abs = card / Path(winner_source)
+    winner_already_moved = final_abs.is_file()
+    if not winner_source_abs.is_file() and not winner_already_moved:
         selection["status"] = "waiting_on_critic"
         selection["reason"] = "winner_candidate_file_missing"
         selection["winner_candidate_id"] = winner_id
@@ -225,15 +228,18 @@ def _run_character_reference_selection(
             return selection
         rejected_moves.append((source, rejected))
 
+    missing_rejected_paths = []
     try:
-        final_abs = card / Path(normalized_final)
         final_abs.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(card / Path(winner_source)), str(final_abs))
+        if not winner_already_moved:
+            shutil.move(str(winner_source_abs), str(final_abs))
         for source, rejected in rejected_moves:
             source_abs = card / Path(source)
-            if not source_abs.exists():
-                continue
             rejected_abs = card / Path(rejected)
+            if not source_abs.exists():
+                if not rejected_abs.exists():
+                    missing_rejected_paths.append(source)
+                continue
             rejected_abs.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source_abs), str(rejected_abs))
     except Exception as exc:
@@ -249,6 +255,8 @@ def _run_character_reference_selection(
     selection["winner_candidate_id"] = winner_id
     selection["final_target_path"] = normalized_final
     selection["rejected_paths"] = [rejected for _, rejected in rejected_moves]
+    if missing_rejected_paths:
+        selection["missing_rejected_paths"] = missing_rejected_paths
     return selection
 
 
