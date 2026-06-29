@@ -261,6 +261,58 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["reason"], "missing_character_reference")
         self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
 
+    def test_required_scene_directory_reference_waits(self):
+        directory_ref = self.card / "generated" / "characters" / "Ada" / "Ada.png"
+        directory_ref.mkdir(parents=True)
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-directory-candidate-ref",
+                    "round_id": "round-000003",
+                    "prompt": "Ada 站在舞台中央",
+                    "reference_policy": "required",
+                    "reference_candidates": [
+                        {
+                            "path": "generated/characters/Ada/Ada.png",
+                            "purpose": "character_reference",
+                        }
+                    ],
+                },
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-directory-resolved-ref",
+                    "round_id": "round-000003",
+                    "prompt": "Ada 走向后台",
+                    "reference_policy": "required",
+                    "resolved_references": ["generated/characters/Ada/Ada.png"],
+                },
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "waiting_on_references")
+        self.assertEqual(commands, [])
+        for job_id in ("scene-directory-candidate-ref", "scene-directory-resolved-ref"):
+            job = _read_json(self.card / "generated" / "jobs" / f"{job_id}.json")
+            self.assertEqual(job["status"], "waiting_on_references")
+            self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
+
     def test_worker_structured_deferred_stdout_preserves_reason(self):
         commands = []
 

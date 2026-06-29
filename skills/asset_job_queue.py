@@ -136,7 +136,7 @@ def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
         if normalized is None:
             return str(item)
         if normalized:
-            if required and not (card / Path(normalized)).exists():
+            if required and not (card / Path(normalized)).is_file():
                 required_missing.append(normalized)
             else:
                 resolved.append(normalized)
@@ -148,7 +148,7 @@ def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
                 return str(item)
             if not normalized:
                 continue
-            if (card / Path(normalized)).exists():
+            if (card / Path(normalized)).is_file():
                 resolved.append(normalized)
             else:
                 required_missing.append(normalized)
@@ -195,7 +195,7 @@ def _missing_dependencies(card: Path, job: dict[str, Any]) -> list[str]:
         explicit.append(path)
     missing = []
     for rel in explicit:
-        if rel and not (card / Path(rel)).exists():
+        if rel and not (card / Path(rel)).is_file():
             missing.append(rel)
     return missing
 
