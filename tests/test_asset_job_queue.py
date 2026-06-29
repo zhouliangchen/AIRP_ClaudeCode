@@ -726,6 +726,47 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual([job["queue_type"] for job in result["jobs"]], ["character_reference", "character_reference"])
         self.assertEqual(len(commands), 2)
 
+    def test_character_candidate_batch_uses_safe_batch_path(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "style_state": {"has_style_reference": False, "style_reference_paths": []},
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character:suli/reference",
+                    "character_name": "Suli",
+                    "prompt": "Create Suli reference",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 3)
+        for index, job in enumerate(result["jobs"], start=1):
+            self.assertEqual(job["batch_id"], "character-suli-reference-candidates")
+            self.assertEqual(
+                job["target_path"],
+                f"generated/tmp/character-suli-reference-candidates/candidate-{index}.png",
+            )
+            self.assertNotIn(":", job["target_path"])
+            self.assertNotIn("\\", job["target_path"])
+            self.assertNotIn("..", Path(job["target_path"]).parts)
+
     def test_preset_waiting_job_persists_without_worker_submission(self):
         commands = []
 
@@ -761,6 +802,45 @@ class AssetJobQueueTest(unittest.TestCase):
         job = _read_json(self.card / "generated" / "jobs" / "character-ben-reference.json")
         self.assertEqual(job["status"], "waiting_on_style_reference")
         self.assertEqual(job["reason"], "style_reference_not_selected")
+        self.assertNotIn("command", job)
+
+    def test_preset_waiting_job_invalid_path_fails_before_persistence(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-invalid-waiting-reference",
+                    "character_name": "Ben",
+                    "target_path": "../escape.png",
+                    "prompt": "Create Ben reference",
+                    "status": "waiting_on_style_reference",
+                    "reason": "style_reference_not_selected",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "character-invalid-waiting-reference.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "invalid_asset_path")
+        self.assertEqual(job["invalid_path"], "../escape.png")
         self.assertNotIn("command", job)
 
     def test_optional_scene_invalid_reference_candidate_path_fails_before_worker(self):

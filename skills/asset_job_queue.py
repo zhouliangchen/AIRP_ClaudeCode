@@ -128,7 +128,7 @@ def _style_reference_paths(plan: dict[str, Any]) -> list[str]:
 
 def _candidate_jobs_for_first_character_reference(raw_job: dict[str, Any]) -> list[dict[str, Any]]:
     first_job_id = str(raw_job.get("job_id") or raw_job.get("id") or "character-reference")
-    batch_id = f"{first_job_id}-candidates"
+    batch_id = f"{_path_component_slug(first_job_id)}-candidates"
     candidates = []
     for index in range(1, 4):
         candidate = dict(raw_job)
@@ -140,6 +140,19 @@ def _candidate_jobs_for_first_character_reference(raw_job: dict[str, Any]) -> li
         candidate["display_policy"] = "hidden_reference"
         candidates.append(candidate)
     return candidates
+
+
+def _path_component_slug(text: str) -> str:
+    keep = []
+    for ch in text.lower():
+        if ch.isalnum():
+            keep.append(ch)
+        else:
+            keep.append("-")
+    slug = "".join(keep).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug[:48] or "image"
 
 
 def _raw_queue_type(raw_job: dict[str, Any]) -> str:
@@ -219,13 +232,15 @@ def _evaluate_and_submit(
 ) -> dict[str, Any]:
     if job.get("status") == "failed":
         return job
-    if _is_waiting_status(job.get("status")):
-        return job
+    waiting = _is_waiting_status(job.get("status"))
     invalid = _prepare_asset_paths(card, job)
     if invalid:
         job["status"] = "failed"
         job["reason"] = "invalid_asset_path"
         job["invalid_path"] = invalid
+        return job
+    if waiting:
+        job.pop("_required_missing_references", None)
         return job
     missing = _missing_dependencies(card, job)
     required_missing = job.pop("_required_missing_references", [])
