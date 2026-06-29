@@ -56,18 +56,17 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         raise AssetsUiAgentError("invalid_plan", "assets-ui plan must be an object")
     if int(plan.get("schema_version") or 0) != 1:
         raise AssetsUiAgentError("invalid_schema_version")
-    plan.setdefault("jobs", [])
-    plan.setdefault("ui_patch_requests", [])
-    plan.setdefault("rename_operations", [])
-    if not isinstance(plan["jobs"], list):
+    if "jobs" not in plan or not isinstance(plan["jobs"], list):
         raise AssetsUiAgentError("invalid_jobs")
+    if "ui_patch_requests" not in plan or not isinstance(plan["ui_patch_requests"], list):
+        raise AssetsUiAgentError("invalid_ui_patch_requests")
+    if "rename_operations" not in plan or not isinstance(plan["rename_operations"], list):
+        raise AssetsUiAgentError("invalid_rename_operations")
     for job in plan["jobs"]:
         _validate_job(job)
     for request in plan["ui_patch_requests"]:
         if not isinstance(request, dict) or request.get("scope") != "card_only":
             raise AssetsUiAgentError("ui_patch_scope")
-    if not isinstance(plan["rename_operations"], list):
-        raise AssetsUiAgentError("invalid_rename_operations")
     return plan
 
 
@@ -93,9 +92,11 @@ def _validate_job(job: Any) -> None:
             "third_person_camera",
         }:
             raise AssetsUiAgentError("invalid_camera_perspective")
-    if queue_type in {"character_reference", "character_reference_candidate"}:
+    if queue_type in {"character_reference", "character_reference_candidate", "character_reference_selection"}:
         if job.get("display_policy") not in {"hidden_reference", None, ""}:
             raise AssetsUiAgentError("invalid_display_policy")
+    if queue_type == "ui_patch_request" and job.get("scope") != "card_only":
+        raise AssetsUiAgentError("ui_patch_scope")
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:

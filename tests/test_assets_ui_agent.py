@@ -112,3 +112,39 @@ class AssetsUiAgentTest(unittest.TestCase):
                 context,
                 llm_run=lambda agent_key, prompt, cwd: json.dumps(payload, ensure_ascii=False),
             )
+
+    def test_validate_plan_rejects_missing_required_top_level_lists(self):
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_jobs"):
+            self.mod.validate_plan({"schema_version": 1})
+
+    def test_validate_plan_rejects_character_reference_selection_story_inline(self):
+        payload = {
+            "schema_version": 1,
+            "jobs": [
+                {
+                    "queue_type": "character_reference_selection",
+                    "display_policy": "story_inline",
+                }
+            ],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_display_policy"):
+            self.mod.validate_plan(payload)
+
+    def test_validate_plan_rejects_ui_patch_job_outside_card_scope(self):
+        payload = {
+            "schema_version": 1,
+            "jobs": [
+                {
+                    "queue_type": "ui_patch_request",
+                    "scope": "global",
+                }
+            ],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "ui_patch_scope"):
+            self.mod.validate_plan(payload)
