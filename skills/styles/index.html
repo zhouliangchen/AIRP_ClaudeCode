@@ -81,54 +81,9 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
-#reply-progress {
-  display: none;
-  min-width: 190px;
-  max-width: 260px;
-  color: var(--muted);
-  font-size: 0.78em;
-}
-#reply-progress.show { display: block; }
-#reply-progress summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  cursor: pointer;
-  list-style: none;
-}
-#reply-progress summary::-webkit-details-marker { display: none; }
-#reply-progress-detail {
-  display: block;
-  margin-top: 3px;
-  max-width: 260px;
-  color: var(--muted);
-  font-size: 0.72em;
+#agent-status-current,
+#asset-pending-count {
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#reply-progress-bar {
-  width: 92px;
-  height: 5px;
-  background: var(--border);
-  border-radius: 999px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-#reply-progress-fill {
-  width: 0%;
-  height: 100%;
-  background: var(--accent2);
-  border-radius: 999px;
-  transition: width 0.25s ease;
-}
-#reply-progress.indeterminate #reply-progress-fill {
-  width: 45%;
-  animation: progress-slide 1.2s ease-in-out infinite;
-}
-@keyframes progress-slide {
-  0% { transform: translateX(-110%); }
-  100% { transform: translateX(240%); }
 }
 #mobile-settings-toggle {
   display: none;
@@ -596,13 +551,6 @@ body {
     padding: 6px 48px 6px 10px;
     line-height: 1.35;
   }
-  #reply-progress {
-    min-width: 86px;
-    max-width: 120px;
-    gap: 5px;
-  }
-  #reply-progress-bar { width: 46px; }
-  #reply-progress-text { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #topbar .spacer { display: none; }
   #topbar .sep { display: none; }
   #theme-toggle {
@@ -736,25 +684,6 @@ body {
 	  line-height: 1.4;
 	}
 	.generated-asset-caption b { color: var(--accent); }
-	.generated-asset-notice {
-	  margin: 10px 0 14px;
-	  padding: 9px 11px;
-	  background: var(--surface);
-	  border: 1px solid var(--border);
-	  border-left: 3px solid var(--color-ember);
-	  border-radius: var(--radius-sm);
-	  color: var(--muted);
-	  font-size: 0.78em;
-	  line-height: 1.55;
-	}
-	.generated-asset-notice b {
-	  color: var(--color-ember);
-	  font-weight: 700;
-	}
-	.generated-asset-notice-detail {
-	  margin-top: 3px;
-	  overflow-wrap: anywhere;
-	}
 
 /* ═══ DARK MODE OVERRIDES ═══ */
 [data-theme="dark"] .turn-ai .turn-text {
@@ -1361,13 +1290,10 @@ body {
   <span class="dim" id="tb-time">—</span>
   <span class="sep">|</span>
   <span class="dim" id="tb-location">—</span>
-  <details id="reply-progress" aria-live="polite">
-    <summary>
-      <span id="reply-progress-text">等待中</span>
-      <span id="reply-progress-bar"><span id="reply-progress-fill"></span></span>
-    </summary>
-    <span id="reply-progress-detail"></span>
-  </details>
+  <span class="sep">|</span>
+  <span class="dim" id="agent-status-current" aria-live="polite">当前: idle</span>
+  <span class="sep">|</span>
+  <span class="dim" id="asset-pending-count">待生成图片: 0</span>
   <span class="spacer"></span>
   <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
@@ -1798,7 +1724,6 @@ function render() {
     _prevContentHtml = newContent;
     _prevAssetSig = assetSig;
     contentEl.innerHTML = newContent;
-    renderGeneratedAssetNotices(contentEl);
     renderGeneratedAssets(contentEl);
     // Re-execute embedded <script> tags (innerHTML doesn't run them).
     // The _st_shims.js globals are already loaded, so card-author
@@ -1914,11 +1839,19 @@ function render() {
   }
 }
 
+function getCurrentRoundId() {
+  if (window.CURRENT_ROUND_ID) return window.CURRENT_ROUND_ID;
+  if (window.CONTENT_ROUND_ID) return window.CONTENT_ROUND_ID;
+  var state = window.STATE || {};
+  return state.round_id || state.roundId || state.current_round_id || state.currentRoundId || '';
+}
+
 function renderGeneratedAssets(contentEl) {
   var assets = (window.CARD_ASSETS && window.CARD_ASSETS.images) || [];
   if (!contentEl || !assets.length) return;
+  var roundId = getCurrentRoundId();
   var display = assets.filter(function(a) {
-    return a && a.url && (a.kind === 'scene' || a.kind === 'scene_illustration' || a.target === 'scene_illustration');
+    return a && a.url && roundId && a.display_policy === 'story_inline' && a.round_id === roundId;
   }).slice(-3);
   if (!display.length) return;
   var strip = document.createElement('div');
@@ -1938,50 +1871,6 @@ function renderGeneratedAssets(contentEl) {
     strip.appendChild(card);
   });
   contentEl.appendChild(strip);
-}
-
-function assetJobFallbackMessage(job) {
-  var reason = job && job.reason;
-  if (reason === 'asset_worker_not_configured') return '图片生成暂缓：图片 API 尚未配置';
-  if (reason === 'image_generation_failed') return '图片生成暂缓：图片 API 调用失败';
-  if (reason === 'asset_worker_start_failed') return '图片生成暂缓：图片 worker 启动失败';
-  if (reason === 'reference_image_not_supported') return '图片生成暂缓：当前图片 API 不支持参考图';
-  if (reason === 'missing_character_reference') return '图片生成等待：缺少角色参考图';
-  if (reason === 'invalid_asset_path') return '图片生成失败：资源路径无效';
-  if (job && job.status === 'waiting_on_references') return '图片生成等待：缺少参考图';
-  if (job && job.status === 'failed') return '图片生成失败';
-  return '图片生成暂缓';
-}
-
-function renderGeneratedAssetNotices(contentEl) {
-  var jobs = (window.CARD_ASSETS && window.CARD_ASSETS.jobs) || [];
-  if (!contentEl || !jobs.length) return;
-  var display = jobs.filter(function(job) {
-    return job && ['deferred', 'failed', 'waiting_on_references'].indexOf(job.status) >= 0;
-  }).slice(-3);
-  if (!display.length) return;
-  display.forEach(function(job) {
-    var notice = document.createElement('div');
-    notice.className = 'generated-asset-notice';
-    var message = job.message || assetJobFallbackMessage(job);
-    var title = document.createElement('b');
-    title.textContent = message;
-    notice.appendChild(title);
-    var detailParts = [];
-    if (job.job_id) detailParts.push(job.job_id);
-    if (job.reason) detailParts.push(job.reason);
-    if (job.error) detailParts.push(job.error);
-    if (Array.isArray(job.missing_references) && job.missing_references.length) {
-      detailParts.push('missing: ' + job.missing_references.join(', '));
-    }
-    if (detailParts.length) {
-      var detail = document.createElement('div');
-      detail.className = 'generated-asset-notice-detail';
-      detail.textContent = detailParts.join(' · ');
-      notice.appendChild(detail);
-    }
-    contentEl.appendChild(notice);
-  });
 }
 
 function updateOpeningsCard(S) {
@@ -2121,7 +2010,6 @@ function renderOptions(container, opts) {
 
 const BRIDGE = window.location.origin;
 let bridgeOk = false;
-let progressHideTimer = null;
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
 // 卡内嵌脚本使用 SillyTavern 标准元素 ID:
@@ -2302,70 +2190,29 @@ async function checkBridge() {
   document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请运行 python skills/server.py';
 }
 
-function formatProgressDetail(progress) {
-  if (!progress || progress.schema_version !== 2) return '';
-  const parts = [];
-  if (progress.state) parts.push(progress.state);
-  const detail = progress.detail && typeof progress.detail === 'object' ? progress.detail : {};
-  if (detail.agent) parts.push('agent=' + detail.agent);
-  if (detail.subgm_thread_id) parts.push('subGM=' + detail.subgm_thread_id);
-  if (detail.actor_call_id) parts.push('call=' + detail.actor_call_id);
-  if (detail.batch_id) parts.push('batch=' + detail.batch_id);
-  if (detail.attempt) {
-    const max = detail.max_attempts ? '/' + detail.max_attempts : '';
-    parts.push('attempt=' + detail.attempt + max);
+function countPendingAssets() {
+  const assets = window.CARD_ASSETS || {};
+  if (Number.isFinite(assets.pending_job_count)) {
+    return assets.pending_job_count;
   }
-  if (detail.reason) parts.push('reason=' + detail.reason);
-  return parts.join(' · ');
+  const jobs = assets.jobs || [];
+  const pendingStatuses = ['planned', 'waiting_on_style_reference', 'waiting_on_references', 'waiting_on_critic', 'queued', 'deferred'];
+  return jobs.filter(function(job) {
+    return job && pendingStatuses.indexOf(job.status) >= 0;
+  }).length;
 }
 
 function setProgressVisible(progress) {
-  const box = document.getElementById('reply-progress');
-  const text = document.getElementById('reply-progress-text');
-  const fill = document.getElementById('reply-progress-fill');
-  const detailBox = document.getElementById('reply-progress-detail');
-  if (!box || !text || !fill) return;
+  const current = document.getElementById('agent-status-current');
+  const pending = document.getElementById('asset-pending-count');
+  if (!current || !pending) return;
 
   const isV2 = progress && progress.schema_version === 2;
-  const stage = isV2 ? progress.state : progress && progress.stage;
-  const legacyTerminalStages = ['complete', 'done', 'blocked', 'error'];
-  const legacyCompletionStages = ['complete', 'done'];
-  const terminal = isV2 ? !!progress.terminal : legacyTerminalStages.indexOf(stage) >= 0;
-  const activeStages = ['received', 'preparing', 'generating', 'delivering', 'finalizing', 'retry', 'error'];
-  const isActive = isV2 ? !!stage && stage !== 'idle' : activeStages.indexOf(stage) >= 0;
-  const isComplete = isV2 ? stage === 'complete' : legacyCompletionStages.indexOf(stage) >= 0;
-  if (progressHideTimer) {
-    clearTimeout(progressHideTimer);
-    progressHideTimer = null;
-  }
-
-  if (!isActive && !isComplete && !terminal) {
-    box.classList.remove('show', 'indeterminate');
-    if (detailBox) detailBox.textContent = '';
-    return;
-  }
-
-  text.textContent = progress.label || '处理中';
-  const detail = formatProgressDetail(progress);
-  if (detailBox) {
-    detailBox.textContent = detail;
-    detailBox.hidden = !detail;
-  }
-  const pct = Number(progress.percent);
-  if (Number.isFinite(pct)) {
-    box.classList.remove('indeterminate');
-    fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
-  } else {
-    box.classList.add('indeterminate');
-    fill.style.width = '';
-  }
-  box.classList.add('show');
-
-  if (isComplete) {
-    progressHideTimer = setTimeout(function() {
-      box.classList.remove('show', 'indeterminate');
-    }, 2200);
-  }
+  const detail = progress && progress.detail && typeof progress.detail === 'object' ? progress.detail : {};
+  const agent = isV2 ? (detail.agent || progress.agent || 'agent') : (progress && progress.agent) || 'agent';
+  const status = isV2 ? (progress.state || progress.status || 'idle') : (progress && (progress.status || progress.stage)) || 'idle';
+  current.textContent = '当前: ' + agent + ' / ' + status;
+  pending.textContent = '待生成图片: ' + countPendingAssets();
 }
 
 async function loadProgress() {

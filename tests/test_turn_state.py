@@ -605,7 +605,8 @@ class TurnStateTest(unittest.TestCase):
     def test_frontend_polls_progress_and_refreshes_after_submit(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="reply-progress"', html)
+        self.assertIn('id="agent-status-current"', html)
+        self.assertIn('id="asset-pending-count"', html)
         self.assertIn("BRIDGE + '/api/progress'", html)
         self.assertIn("setInterval(loadProgress", html)
         self.assertIn("reloadData();", html)
@@ -1014,32 +1015,31 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn('placeholder="https://api.openai.com/v1"', html)
         self.assertNotIn('placeholder="gpt-image-2"', html)
 
-    def test_frontend_renders_asset_generation_notices(self):
+    def test_frontend_keeps_asset_job_status_out_of_story_body(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("function renderGeneratedAssetNotices", html)
-        self.assertIn("generated-asset-notice", html)
-        self.assertIn("图片生成暂缓", html)
-        self.assertIn("asset_worker_not_configured", html)
-        self.assertIn("image_generation_failed", html)
+        self.assertNotIn("function renderGeneratedAssetNotices", html)
+        self.assertNotIn("renderGeneratedAssetNotices(contentEl)", html)
+        self.assertNotIn("generated-asset-notice", html)
+        self.assertIn("function renderGeneratedAssets", html)
+        self.assertIn("a.display_policy === 'story_inline'", html)
 
-    def test_frontend_renders_schema_v2_progress_detail_panel(self):
+    def test_frontend_renders_compact_schema_v2_progress_status(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="reply-progress-detail"', html)
+        self.assertIn('id="agent-status-current"', html)
+        self.assertIn('id="asset-pending-count"', html)
         self.assertIn("progress.schema_version === 2", html)
-        self.assertIn("formatProgressDetail", html)
+        self.assertIn("detail.agent", html)
         self.assertIn("progress.state", html)
-        self.assertIn("progress.detail", html)
+        self.assertIn("countPendingAssets", html)
 
-    def test_frontend_keeps_legacy_terminal_progress_aliases_visible(self):
+    def test_frontend_keeps_legacy_progress_stage_alias_visible(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("legacyTerminalStages", html)
-        self.assertIn("'done'", html)
-        self.assertIn("'blocked'", html)
-        self.assertIn("legacyCompletionStages", html)
-        self.assertIn("legacyCompletionStages.indexOf(stage) >= 0", html)
+        self.assertIn("progress && (progress.status || progress.stage)", html)
+        self.assertIn("current.textContent", html)
+        self.assertIn("pending.textContent", html)
 
     def test_frontend_dual_channel_submit_and_bridge_contract(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
@@ -2441,6 +2441,72 @@ round_total: 7
         self.assertEqual(job["reason"], "image_generation_failed")
         self.assertEqual(job["message"], "图片生成暂缓：图片 API 调用失败")
         self.assertNotIn("prompt", job)
+
+    def test_card_assets_exposes_pending_asset_queue_statuses(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        statuses = [
+            "queued",
+            "waiting_on_style_reference",
+            "waiting_on_critic",
+            "completed",
+        ]
+        for status in statuses:
+            (jobs_dir / f"{status}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": f"job-{status}",
+                        "queue_type": "scene_illustration",
+                        "target": "scene_illustration",
+                        "status": status,
+                        "reason": status,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        exposed_statuses = {job["status"] for job in assets["jobs"]}
+        self.assertIn("queued", exposed_statuses)
+        self.assertIn("waiting_on_style_reference", exposed_statuses)
+        self.assertIn("waiting_on_critic", exposed_statuses)
+        self.assertNotIn("completed", exposed_statuses)
+        self.assertEqual(assets["pending_job_count"], 3)
+
+    def test_card_assets_pending_job_count_is_not_limited_by_job_preview(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        for index in range(9):
+            (jobs_dir / f"queued-{index}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": f"job-queued-{index}",
+                        "queue_type": "scene_illustration",
+                        "target": "scene_illustration",
+                        "status": "queued",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        self.assertEqual(len(assets["jobs"]), 8)
+        self.assertEqual(assets["pending_job_count"], 9)
+
+    def test_content_js_exposes_current_round_id_for_story_inline_assets(self):
+        run_dir = self.card / ".agent_runs" / "round-000004"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+
+        self.handler.write_content_js(str(self.card))
+
+        self.assertEqual(self._content_window_var("CURRENT_ROUND_ID"), "round-000004")
 
     def test_append_turn_applies_postprocess_state_patch_quest(self):
         self._write_postprocess_output(

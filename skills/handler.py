@@ -786,6 +786,18 @@ def _asset_job_message(status, reason):
     return "图片生成任务未完成"
 
 
+ASSET_JOB_VISIBLE_STATUSES = {
+    "planned",
+    "queued",
+    "deferred",
+    "failed",
+    "waiting_on_style_reference",
+    "waiting_on_references",
+    "waiting_on_critic",
+}
+ASSET_JOB_PENDING_STATUSES = ASSET_JOB_VISIBLE_STATUSES - {"failed"}
+
+
 def _load_asset_jobs(card_folder):
     jobs_dir = Path(card_folder) / "generated" / "jobs"
     if not jobs_dir.exists():
@@ -796,7 +808,7 @@ def _load_asset_jobs(card_folder):
         if not isinstance(payload, dict):
             continue
         status = str(payload.get("status") or "").strip()
-        if status not in {"deferred", "failed", "waiting_on_references"}:
+        if status not in ASSET_JOB_VISIBLE_STATUSES:
             continue
         reason = str(payload.get("reason") or "").strip()
         job = {
@@ -819,6 +831,31 @@ def _load_asset_jobs(card_folder):
     return jobs
 
 
+def _count_pending_asset_jobs(card_folder):
+    jobs_dir = Path(card_folder) / "generated" / "jobs"
+    if not jobs_dir.exists():
+        return 0
+    count = 0
+    for path in sorted(jobs_dir.glob("*.json")):
+        payload = _read_json_file(path, {}) or {}
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "").strip()
+        if status in ASSET_JOB_PENDING_STATUSES:
+            count += 1
+    return count
+
+
+def _current_round_id(card_folder):
+    if agent_run is None:
+        return ""
+    try:
+        run_dir = agent_run.current_run_dir(card_folder)
+    except Exception:
+        return ""
+    return run_dir.name if run_dir is not None else ""
+
+
 def _load_card_assets(card_folder):
     assets = _read_json_file(Path(card_folder) / ".card_assets.json", {"images": []}) or {"images": []}
     if not isinstance(assets, dict):
@@ -832,6 +869,7 @@ def _load_card_assets(card_folder):
         images.append(copied)
     assets["images"] = images
     assets["jobs"] = _load_asset_jobs(card_folder)
+    assets["pending_job_count"] = _count_pending_asset_jobs(card_folder)
     return assets
 
 
@@ -1403,6 +1441,7 @@ def write_content_js(card_folder):
     # Load per-card UI manifest and generated assets for autonomous UI evolution.
     ui_manifest = _load_ui_manifest(card_folder)
     card_assets = _load_card_assets(card_folder)
+    current_round_id = _current_round_id(card_folder)
     postprocess_ui = (
         postprocess.get("ui_extensions", {})
         if isinstance(postprocess, dict) and isinstance(postprocess.get("ui_extensions"), dict)
@@ -1425,6 +1464,7 @@ def write_content_js(card_folder):
         "window.REGEX_SCRIPTS = " + json.dumps(regex_scripts, ensure_ascii=False) + ";\n"
         "window.UI_MANIFEST = " + json.dumps(ui_manifest, ensure_ascii=False) + ";\n"
         "window.CARD_ASSETS = " + json.dumps(card_assets, ensure_ascii=False) + ";\n"
+        "window.CURRENT_ROUND_ID = " + json.dumps(current_round_id, ensure_ascii=False) + ";\n"
     )
 
     path = STYLES / "content.js"
