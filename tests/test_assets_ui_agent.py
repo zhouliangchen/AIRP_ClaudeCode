@@ -40,6 +40,14 @@ class AssetsUiAgentTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _plan(self, jobs):
+        return {
+            "schema_version": 1,
+            "jobs": jobs,
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
     def test_plan_assets_task_calls_assets_ui_agent_and_validates_scene_job(self):
         calls = []
 
@@ -87,6 +95,17 @@ class AssetsUiAgentTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "assets-ui")
         self.assertIn("严格 JSON", calls[0][1])
         self.assertIn("generated/characters", calls[0][1])
+        self.assertIn("card_only", calls[0][1])
+        self.assertIn("story_inline", calls[0][1])
+        self.assertIn("hidden_reference", calls[0][1])
+        self.assertIn("protagonist_first_person", calls[0][1])
+        self.assertIn("other_character_first_person", calls[0][1])
+        self.assertIn("third_person_camera", calls[0][1])
+        self.assertIn("story_scene", calls[0][1])
+        self.assertIn("atmosphere_only", calls[0][1])
+        self.assertIn("dream", calls[0][1])
+        self.assertIn("雨夜剧院", calls[0][1])
+        self.assertIn("银灰短发", calls[0][1])
         self.assertEqual(plan["jobs"][0]["queue_type"], "scene_illustration")
         self.assertEqual(plan["jobs"][0]["display_policy"], "story_inline")
 
@@ -145,6 +164,9 @@ class AssetsUiAgentTest(unittest.TestCase):
             "jobs": [
                 {
                     "queue_type": "character_reference_selection",
+                    "job_id": "select-1",
+                    "prompt": "select reference",
+                    "final_target_path": "generated/characters/Ada/Ada.png",
                     "display_policy": "story_inline",
                 }
             ],
@@ -161,6 +183,7 @@ class AssetsUiAgentTest(unittest.TestCase):
             "jobs": [
                 {
                     "queue_type": "ui_patch_request",
+                    "job_id": "ui-patch-1",
                     "scope": "global",
                 }
             ],
@@ -170,3 +193,97 @@ class AssetsUiAgentTest(unittest.TestCase):
 
         with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "ui_patch_scope"):
             self.mod.validate_plan(payload)
+
+    def test_parse_json_object_accepts_uppercase_spaced_json_fence(self):
+        raw = """``` JSON
+{"schema_version": 1, "jobs": [], "ui_patch_requests": [], "rename_operations": []}
+```"""
+
+        plan = self.mod.plan_assets_task(
+            {"run_dir": self.run_dir, "payload": {}},
+            llm_run=lambda agent_key, prompt, cwd: raw,
+        )
+
+        self.assertEqual(plan["schema_version"], 1)
+
+    def test_validate_plan_rejects_non_string_queue_type(self):
+        class FakeQueueType:
+            def __str__(self):
+                return "scene_illustration"
+
+        job = {
+            "queue_type": FakeQueueType(),
+            "job_id": "scene-1",
+            "prompt": "scene prompt",
+            "display_policy": "story_inline",
+            "camera_perspective": "third_person_camera",
+            "scene_mode": "story_scene",
+        }
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_queue_type"):
+            self.mod.validate_plan(self._plan([job]))
+
+    def test_validate_plan_rejects_invalid_scene_illustration_fields(self):
+        valid_scene = {
+            "queue_type": "scene_illustration",
+            "job_id": "scene-1",
+            "prompt": "scene prompt",
+            "display_policy": "story_inline",
+            "camera_perspective": "third_person_camera",
+            "scene_mode": "story_scene",
+        }
+        cases = [
+            ({"job_id": ""}, "invalid_job_id"),
+            ({"prompt": " "}, "invalid_prompt"),
+            ({"scene_mode": "global_scene"}, "invalid_scene_mode"),
+            ({"reference_candidates": "generated/characters/Ada/Ada.png"}, "invalid_reference_candidates"),
+        ]
+
+        for override, reason in cases:
+            job = dict(valid_scene)
+            job.update(override)
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(self.mod.AssetsUiAgentError, reason):
+                    self.mod.validate_plan(self._plan([job]))
+
+    def test_validate_plan_rejects_invalid_character_reference_fields(self):
+        valid_reference = {
+            "queue_type": "character_reference",
+            "job_id": "ref-1",
+            "prompt": "reference prompt",
+            "display_policy": "hidden_reference",
+            "target_path": "generated/characters/Ada/Ada.png",
+        }
+        cases = [
+            ({"job_id": ""}, "invalid_job_id"),
+            ({"prompt": ""}, "invalid_prompt"),
+            ({"target_path": ""}, "invalid_target_path"),
+            (
+                {"queue_type": "character_reference_candidate", "target_path": "", "final_target_path": ""},
+                "invalid_target_path",
+            ),
+        ]
+
+        for override, reason in cases:
+            job = dict(valid_reference)
+            job.update(override)
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(self.mod.AssetsUiAgentError, reason):
+                    self.mod.validate_plan(self._plan([job]))
+
+    def test_validate_plan_rejects_invalid_asset_rename_fields(self):
+        cases = [
+            ({"queue_type": "asset_rename", "job_id": ""}, "invalid_job_id"),
+            ({"queue_type": "asset_rename", "job_id": "rename-1", "replacements": "old->new"}, "invalid_replacements"),
+        ]
+
+        for job, reason in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(self.mod.AssetsUiAgentError, reason):
+                    self.mod.validate_plan(self._plan([job]))
+
+    def test_validate_plan_rejects_ui_patch_job_missing_job_id(self):
+        job = {"queue_type": "ui_patch_request", "job_id": "", "scope": "card_only"}
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_job_id"):
+            self.mod.validate_plan(self._plan([job]))

@@ -10,6 +10,37 @@ from typing import Any, Callable
 import llm_runner
 
 
+VALID_QUEUE_TYPES = {
+    "character_reference",
+    "character_reference_candidate",
+    "character_reference_selection",
+    "scene_illustration",
+    "ui_patch_request",
+    "asset_rename",
+}
+
+VALID_CAMERA_PERSPECTIVES = {
+    "protagonist_first_person",
+    "other_character_first_person",
+    "third_person_camera",
+}
+
+VALID_SCENE_MODES = {
+    "story_scene",
+    "atmosphere_only",
+    "dream",
+    "memory",
+    "flashback",
+    "transition",
+}
+
+REFERENCE_QUEUE_TYPES = {
+    "character_reference",
+    "character_reference_candidate",
+    "character_reference_selection",
+}
+
+
 class AssetsUiAgentError(RuntimeError):
     def __init__(self, reason: str, message: str = ""):
         self.reason = reason
@@ -74,36 +105,51 @@ def validate_plan(plan: Any) -> dict[str, Any]:
 def _validate_job(job: Any) -> None:
     if not isinstance(job, dict):
         raise AssetsUiAgentError("invalid_job")
-    queue_type = str(job.get("queue_type") or "")
-    if queue_type not in {
-        "character_reference",
-        "character_reference_candidate",
-        "character_reference_selection",
-        "scene_illustration",
-        "ui_patch_request",
-        "asset_rename",
-    }:
+    queue_type = job.get("queue_type")
+    if not isinstance(queue_type, str) or queue_type not in VALID_QUEUE_TYPES:
         raise AssetsUiAgentError("invalid_queue_type")
     if queue_type == "scene_illustration":
+        _require_non_empty_string(job, "job_id", "invalid_job_id")
+        _require_non_empty_string(job, "prompt", "invalid_prompt")
         if job.get("display_policy") != "story_inline":
             raise AssetsUiAgentError("invalid_display_policy")
-        if job.get("camera_perspective") not in {
-            "protagonist_first_person",
-            "other_character_first_person",
-            "third_person_camera",
-        }:
+        if job.get("camera_perspective") not in VALID_CAMERA_PERSPECTIVES:
             raise AssetsUiAgentError("invalid_camera_perspective")
-    if queue_type in {"character_reference", "character_reference_candidate", "character_reference_selection"}:
+        if job.get("scene_mode") not in VALID_SCENE_MODES:
+            raise AssetsUiAgentError("invalid_scene_mode")
+        if "reference_candidates" in job and not isinstance(job["reference_candidates"], list):
+            raise AssetsUiAgentError("invalid_reference_candidates")
+    if queue_type in REFERENCE_QUEUE_TYPES:
+        _require_non_empty_string(job, "job_id", "invalid_job_id")
+        _require_non_empty_string(job, "prompt", "invalid_prompt")
         if job.get("display_policy") not in {"hidden_reference", None, ""}:
             raise AssetsUiAgentError("invalid_display_policy")
-    if queue_type == "ui_patch_request" and job.get("scope") != "card_only":
-        raise AssetsUiAgentError("ui_patch_scope")
+        if not _has_non_empty_string(job, "target_path") and not _has_non_empty_string(job, "final_target_path"):
+            raise AssetsUiAgentError("invalid_target_path")
+    if queue_type == "ui_patch_request":
+        _require_non_empty_string(job, "job_id", "invalid_job_id")
+        if job.get("scope") != "card_only":
+            raise AssetsUiAgentError("ui_patch_scope")
+    if queue_type == "asset_rename":
+        _require_non_empty_string(job, "job_id", "invalid_job_id")
+        if "replacements" in job and not isinstance(job["replacements"], list):
+            raise AssetsUiAgentError("invalid_replacements")
+
+
+def _has_non_empty_string(data: dict[str, Any], key: str) -> bool:
+    value = data.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _require_non_empty_string(data: dict[str, Any], key: str, reason: str) -> None:
+    if not _has_non_empty_string(data, key):
+        raise AssetsUiAgentError(reason)
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"^```\s*(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
     try:
         parsed = json.loads(text)
