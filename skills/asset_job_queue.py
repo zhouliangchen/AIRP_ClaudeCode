@@ -53,7 +53,7 @@ def apply_plan(
     run_root = Path(run_dir)
     jobs = []
     used_safe_ids: set[str] = set()
-    raw_jobs = _plan_jobs(plan)
+    raw_jobs = _expand_character_reference_candidate_batch(_plan_jobs(plan), plan)
     for index, raw_job in enumerate(raw_jobs, start=1):
         job = _normalize_job(raw_job, plan, index)
         _dedupe_job_id(job, used_safe_ids)
@@ -78,6 +78,76 @@ def _plan_jobs(plan: dict[str, Any]) -> list[Any]:
             "raw_jobs_type": type(raw_jobs).__name__,
         }
     ]
+
+
+def _expand_character_reference_candidate_batch(raw_jobs: list[Any], plan: dict[str, Any]) -> list[Any]:
+    if not _needs_style_reference_candidate_batch(plan):
+        return raw_jobs
+
+    expanded = []
+    first_character_reference_seen = False
+    for raw_job in raw_jobs:
+        if not isinstance(raw_job, dict) or _raw_queue_type(raw_job) != "character_reference":
+            expanded.append(raw_job)
+            continue
+
+        if _is_waiting_status(raw_job.get("status")):
+            expanded.append(raw_job)
+            continue
+
+        if not first_character_reference_seen:
+            first_character_reference_seen = True
+            expanded.extend(_candidate_jobs_for_first_character_reference(raw_job))
+            continue
+
+        blocked = dict(raw_job)
+        blocked["status"] = "waiting_on_style_reference"
+        blocked["reason"] = "style_reference_not_selected"
+        expanded.append(blocked)
+
+    return expanded
+
+
+def _needs_style_reference_candidate_batch(plan: dict[str, Any]) -> bool:
+    style_state = plan.get("style_state")
+    if not isinstance(style_state, dict):
+        return False
+    if style_state.get("has_style_reference") is not False:
+        return False
+    return not _style_reference_paths(plan)
+
+
+def _style_reference_paths(plan: dict[str, Any]) -> list[str]:
+    paths = []
+    style_state = plan.get("style_state")
+    if isinstance(style_state, dict):
+        paths.extend(style_state.get("style_reference_paths") or [])
+    paths.extend(plan.get("style_reference_paths") or [])
+    return [str(path) for path in paths if str(path or "").strip()]
+
+
+def _candidate_jobs_for_first_character_reference(raw_job: dict[str, Any]) -> list[dict[str, Any]]:
+    first_job_id = str(raw_job.get("job_id") or raw_job.get("id") or "character-reference")
+    batch_id = f"{first_job_id}-candidates"
+    candidates = []
+    for index in range(1, 4):
+        candidate = dict(raw_job)
+        candidate["queue_type"] = "character_reference_candidate"
+        candidate.pop("kind", None)
+        candidate["job_id"] = f"{first_job_id}-candidate-{index}"
+        candidate["batch_id"] = batch_id
+        candidate["target_path"] = f"generated/tmp/{batch_id}/candidate-{index}.png"
+        candidate["display_policy"] = "hidden_reference"
+        candidates.append(candidate)
+    return candidates
+
+
+def _raw_queue_type(raw_job: dict[str, Any]) -> str:
+    return str(raw_job.get("queue_type") or raw_job.get("kind") or "")
+
+
+def _is_waiting_status(status: Any) -> bool:
+    return str(status or "").startswith("waiting_on_")
 
 
 def _normalize_job(raw_job: Any, plan: dict[str, Any], index: int) -> dict[str, Any]:
@@ -148,6 +218,8 @@ def _evaluate_and_submit(
     run_command: Callable[..., Any] | None,
 ) -> dict[str, Any]:
     if job.get("status") == "failed":
+        return job
+    if _is_waiting_status(job.get("status")):
         return job
     invalid = _prepare_asset_paths(card, job)
     if invalid:

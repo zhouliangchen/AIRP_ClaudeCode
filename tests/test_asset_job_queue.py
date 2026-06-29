@@ -548,6 +548,221 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["status"], "waiting_on_references")
         self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
 
+    def test_scene_waits_only_for_important_character_references(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-important-and-minor",
+                    "round_id": "round-000003",
+                    "prompt": "Ada and a passerby cross the market",
+                    "characters": ["Ada", "Passerby"],
+                    "important_characters": ["Ada"],
+                    "reference_policy": "required",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "waiting_on_references")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "scene-important-and-minor.json")
+        self.assertEqual(job["status"], "waiting_on_references")
+        self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
+
+    def test_scene_with_existing_important_reference_ignores_minor_character_reference(self):
+        ref = self.card / "generated" / "characters" / "Ada" / "Ada.png"
+        ref.parent.mkdir(parents=True)
+        ref.write_bytes(b"fake image")
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-existing-important",
+                    "round_id": "round-000003",
+                    "prompt": "Ada and a passerby cross the market",
+                    "characters": ["Ada", "Passerby"],
+                    "important_characters": ["Ada"],
+                    "reference_policy": "required",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 1)
+        job = _read_json(self.card / "generated" / "jobs" / "scene-existing-important.json")
+        self.assertEqual(job["status"], "queued")
+        self.assertNotIn("missing_references", job)
+
+    def test_first_character_reference_without_style_creates_candidate_batch_and_blocks_others(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "style_state": {"has_style_reference": False, "style_reference_paths": []},
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-ada-reference",
+                    "character_name": "Ada",
+                    "prompt": "Create Ada reference",
+                },
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-ben-reference",
+                    "character_name": "Ben",
+                    "prompt": "Create Ben reference",
+                },
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(result["jobs"]), 4)
+        self.assertEqual(len(commands), 3)
+        candidate_ids = [job["job_id"] for job in result["jobs"][:3]]
+        self.assertEqual(
+            candidate_ids,
+            [
+                "character-ada-reference-candidate-1",
+                "character-ada-reference-candidate-2",
+                "character-ada-reference-candidate-3",
+            ],
+        )
+        for index, job in enumerate(result["jobs"][:3], start=1):
+            self.assertEqual(job["queue_type"], "character_reference_candidate")
+            self.assertEqual(job["batch_id"], "character-ada-reference-candidates")
+            self.assertEqual(job["display_policy"], "hidden_reference")
+            self.assertEqual(
+                job["target_path"],
+                f"generated/tmp/character-ada-reference-candidates/candidate-{index}.png",
+            )
+            self.assertEqual(job["status"], "queued")
+        blocked = result["jobs"][3]
+        self.assertEqual(blocked["job_id"], "character-ben-reference")
+        self.assertEqual(blocked["status"], "waiting_on_style_reference")
+        self.assertEqual(blocked["reason"], "style_reference_not_selected")
+        self.assertNotIn("command", blocked)
+
+    def test_character_reference_with_existing_style_does_not_create_candidate_batch(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "style_state": {"has_style_reference": True, "style_reference_paths": []},
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-ada-reference",
+                    "character_name": "Ada",
+                    "prompt": "Create Ada reference",
+                },
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-ben-reference",
+                    "character_name": "Ben",
+                    "prompt": "Create Ben reference",
+                },
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual([job["queue_type"] for job in result["jobs"]], ["character_reference", "character_reference"])
+        self.assertEqual(len(commands), 2)
+
+    def test_preset_waiting_job_persists_without_worker_submission(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-ben-reference",
+                    "character_name": "Ben",
+                    "prompt": "Create Ben reference",
+                    "status": "waiting_on_style_reference",
+                    "reason": "style_reference_not_selected",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "waiting_on_style_reference")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "character-ben-reference.json")
+        self.assertEqual(job["status"], "waiting_on_style_reference")
+        self.assertEqual(job["reason"], "style_reference_not_selected")
+        self.assertNotIn("command", job)
+
     def test_optional_scene_invalid_reference_candidate_path_fails_before_worker(self):
         commands = []
 
