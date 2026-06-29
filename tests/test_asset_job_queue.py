@@ -313,6 +313,84 @@ class AssetJobQueueTest(unittest.TestCase):
             self.assertEqual(job["status"], "waiting_on_references")
             self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
 
+    def test_optional_scene_resolved_references_do_not_pass_worker_references(self):
+        ref = self.card / "generated" / "characters" / "Ada" / "Ada.png"
+        ref.parent.mkdir(parents=True)
+        ref.write_bytes(b"fake image")
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-optional-ref",
+                    "round_id": "round-000003",
+                    "prompt": "Ada 站在舞台中央",
+                    "reference_policy": "optional",
+                    "resolved_references": ["generated/characters/Ada/Ada.png"],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("--reference", commands[0])
+        job = _read_json(self.card / "generated" / "jobs" / "scene-optional-ref.json")
+        self.assertEqual(job["resolved_references"], ["generated/characters/Ada/Ada.png"])
+
+    def test_required_scene_resolved_references_pass_worker_references(self):
+        ref = self.card / "generated" / "characters" / "Ada" / "Ada.png"
+        ref.parent.mkdir(parents=True)
+        ref.write_bytes(b"fake image")
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-required-ref",
+                    "round_id": "round-000003",
+                    "prompt": "Ada 走向后台",
+                    "reference_policy": "required",
+                    "resolved_references": ["generated/characters/Ada/Ada.png"],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--reference", commands[0])
+        ref_index = commands[0].index("--reference")
+        self.assertEqual(commands[0][ref_index + 1], "generated/characters/Ada/Ada.png")
+
     def test_worker_structured_deferred_stdout_preserves_reason(self):
         commands = []
 

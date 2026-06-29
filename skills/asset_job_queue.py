@@ -219,7 +219,7 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
     ]
     if job.get("target_path"):
         command.extend(["--output-path", str(job["target_path"])])
-    for ref in job.get("resolved_references") or []:
+    for ref in _worker_references(job):
         command.extend(["--reference", str(ref)])
     command.append("--async")
     result = run_command(
@@ -235,6 +235,12 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
         "stdout": str(getattr(result, "stdout", "") or ""),
         "stderr": str(getattr(result, "stderr", "") or ""),
     }
+
+
+def _worker_references(job: dict[str, Any]) -> list[str]:
+    if job.get("reference_policy") != "required":
+        return []
+    return [str(ref) for ref in job.get("resolved_references") or [] if str(ref)]
 
 
 def _apply_worker_failure(job: dict[str, Any]) -> None:
