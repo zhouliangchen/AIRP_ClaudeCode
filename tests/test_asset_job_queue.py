@@ -202,7 +202,6 @@ class AssetJobQueueTest(unittest.TestCase):
 
     def test_control_queue_types_wait_without_image_worker(self):
         cases = [
-            ("asset_rename", "deferred", "asset_rename_executor_not_ready"),
             ("character_reference_selection", "waiting_on_critic", "critic_vision_not_available"),
             ("ui_patch_request", "deferred", "ui_patch_requires_claude_code"),
         ]
@@ -241,6 +240,180 @@ class AssetJobQueueTest(unittest.TestCase):
                 self.assertEqual(job["status"], expected_status)
                 self.assertEqual(job["reason"], expected_reason)
                 self.assertNotIn("command", job)
+
+    def test_asset_rename_updates_character_assets_and_job_references(self):
+        old_path = "generated/characters/无名少女/无名少女.png"
+        new_path = "generated/characters/苏黎/苏黎.png"
+        old_file = self.card / old_path
+        old_file.parent.mkdir(parents=True)
+        old_file.write_bytes(b"old portrait")
+        old_scene_job = {
+            "schema_version": 1,
+            "queue_type": "scene_illustration",
+            "job_id": "scene-with-old-reference",
+            "status": "waiting_on_references",
+            "reference_candidates": [{"path": old_path, "purpose": "character_reference"}],
+            "resolved_references": [old_path],
+            "missing_references": [old_path],
+        }
+        job_path = self.card / "generated" / "jobs" / "scene-with-old-reference.json"
+        job_path.parent.mkdir(parents=True)
+        job_path.write_text(json.dumps(old_scene_job, ensure_ascii=False), encoding="utf-8")
+        mirror_path = self.run_dir / "artifacts" / "assets_ui" / "jobs" / "scene-with-old-reference.json"
+        mirror_path.parent.mkdir(parents=True)
+        mirror_path.write_text(json.dumps(old_scene_job, ensure_ascii=False), encoding="utf-8")
+        (self.card / ".card_assets.json").write_text(
+            json.dumps(
+                {
+                    "images": [
+                        {
+                            "path": old_path,
+                            "source_job_id": "character-old-reference",
+                            "references": [old_path],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (self.card / "ui_manifest.json").write_text(
+            json.dumps(
+                {
+                    "asset_requirements": {
+                        "scene_illustration_each_round": {
+                            "reference_candidates": [{"path": old_path}],
+                            "characters": ["无名少女"],
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-unnamed-girl",
+                    "from_path": "generated/characters/无名少女",
+                    "to_path": "generated/characters/苏黎",
+                    "replacements": [{"from": old_path, "to": new_path}],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue((self.card / new_path).is_file())
+        self.assertFalse(old_file.exists())
+        self.assertFalse((self.card / "generated" / "characters" / "无名少女").exists())
+        self.assertFalse((self.card / "generated" / "characters" / "苏黎" / "无名少女.png").exists())
+
+        persisted = _read_json(self.card / "generated" / "jobs" / "rename-unnamed-girl.json")
+        self.assertEqual(persisted["status"], "completed")
+        self.assertEqual(persisted["applied_replacements"], [{"from": old_path, "to": new_path}])
+        self.assertNotIn("reason", persisted)
+
+        updated_card_assets = _read_json(self.card / ".card_assets.json")
+        self.assertEqual(updated_card_assets["images"][0]["path"], new_path)
+        self.assertEqual(updated_card_assets["images"][0]["references"], [new_path])
+        updated_manifest = _read_json(self.card / "ui_manifest.json")
+        self.assertEqual(
+            updated_manifest["asset_requirements"]["scene_illustration_each_round"]["reference_candidates"][0]["path"],
+            new_path,
+        )
+        updated_job = _read_json(job_path)
+        self.assertEqual(updated_job["reference_candidates"][0]["path"], new_path)
+        self.assertEqual(updated_job["resolved_references"], [new_path])
+        self.assertEqual(updated_job["missing_references"], [new_path])
+        updated_mirror = _read_json(mirror_path)
+        self.assertEqual(updated_mirror["reference_candidates"][0]["path"], new_path)
+
+    def test_asset_rename_rejects_unsafe_replacement_path_without_moving_source(self):
+        old_path = "generated/characters/无名少女/无名少女.png"
+        old_file = self.card / old_path
+        old_file.parent.mkdir(parents=True)
+        old_file.write_bytes(b"old portrait")
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-unsafe",
+                    "from_path": "generated/characters/无名少女",
+                    "to_path": "generated/characters/苏黎",
+                    "replacements": [{"from": old_path, "to": "../escape.png"}],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(old_file.is_file())
+        self.assertFalse((self.card / "generated" / "characters" / "苏黎").exists())
+        job = _read_json(self.card / "generated" / "jobs" / "rename-unsafe.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "invalid_asset_path")
+        self.assertEqual(job["invalid_path"], "../escape.png")
+        self.assertNotIn("applied_replacements", job)
+
+    def test_asset_rename_rejects_empty_source_path(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-empty-source",
+                    "from_path": "",
+                    "to_path": "generated/characters/苏黎",
+                    "replacements": [
+                        {
+                            "from": "generated/characters/无名少女/无名少女.png",
+                            "to": "generated/characters/苏黎/苏黎.png",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        job = _read_json(self.card / "generated" / "jobs" / "rename-empty-source.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "invalid_asset_path")
+        self.assertEqual(job["invalid_path"], "")
+
+    def test_asset_rename_missing_source_fails_without_creating_target(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-missing-source",
+                    "from_path": "generated/characters/不存在",
+                    "to_path": "generated/characters/苏黎",
+                    "replacements": [],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        job = _read_json(self.card / "generated" / "jobs" / "rename-missing-source.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "source_asset_missing")
+        self.assertFalse((self.card / "generated" / "characters" / "苏黎").exists())
 
     def test_required_scene_reference_waits_and_resolves_existing_references(self):
         existing = self.card / "generated" / "characters" / "苏黎" / "苏黎.png"

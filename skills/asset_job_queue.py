@@ -21,7 +21,6 @@ SUPPORTED_QUEUE_TYPES = {
 }
 
 NON_IMAGE_QUEUE_WAIT_STATES = {
-    "asset_rename": ("deferred", "asset_rename_executor_not_ready"),
     "character_reference_selection": ("waiting_on_critic", "critic_vision_not_available"),
     "ui_patch_request": ("deferred", "ui_patch_requires_claude_code"),
 }
@@ -58,7 +57,13 @@ def apply_plan(
     for index, raw_job in enumerate(raw_jobs, start=1):
         job = _normalize_job(raw_job, plan, index)
         _dedupe_job_id(job, used_safe_ids)
-        job = _evaluate_and_submit(card, job, image_settings_ready=image_settings_ready, run_command=run_command)
+        job = _evaluate_and_submit(
+            card,
+            run_root,
+            job,
+            image_settings_ready=image_settings_ready,
+            run_command=run_command,
+        )
         job = _write_job(card, run_root, job)
         jobs.append(job)
     return {"status": _summarize(jobs), "jobs": jobs, "plan_id": str(plan.get("plan_id") or "")}
@@ -434,6 +439,7 @@ def _dedupe_job_id(job: dict[str, Any], used_safe_ids: set[str]) -> None:
 
 def _evaluate_and_submit(
     card: Path,
+    run_dir: Path,
     job: dict[str, Any],
     *,
     image_settings_ready: bool,
@@ -448,6 +454,8 @@ def _evaluate_and_submit(
         job["reason"] = "invalid_asset_path"
         job["invalid_path"] = invalid
         return job
+    if job.get("queue_type") == "asset_rename":
+        return _apply_asset_rename(card, run_dir, job)
     if waiting:
         job.pop("_required_missing_references", None)
         return job
@@ -482,6 +490,155 @@ def _evaluate_and_submit(
     else:
         _apply_worker_failure(job)
     return job
+
+
+def _apply_asset_rename(card: Path, run_dir: Path, job: dict[str, Any]) -> dict[str, Any]:
+    rename = _normalized_asset_rename(job)
+    if rename.get("error") == "invalid_asset_path":
+        job["status"] = "failed"
+        job["reason"] = "invalid_asset_path"
+        job["invalid_path"] = rename["invalid_path"]
+        return job
+
+    from_path = str(rename["from_path"])
+    to_path = str(rename["to_path"])
+    source = card / Path(from_path)
+    target = card / Path(to_path)
+    if not source.exists():
+        job["status"] = "failed"
+        job["reason"] = "source_asset_missing"
+        job["missing_path"] = from_path
+        return job
+
+    replacements = rename["replacements"]
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            shutil.move(str(source), str(target))
+        _apply_internal_renamed_files(card, from_path, to_path, replacements)
+        _rewrite_asset_reference_files(card, run_dir, replacements)
+    except Exception as exc:
+        job["status"] = "failed"
+        job["reason"] = "asset_rename_failed"
+        job["error"] = str(exc)
+        job["exception_type"] = type(exc).__name__
+        return job
+
+    job["from_path"] = from_path
+    job["to_path"] = to_path
+    job["applied_replacements"] = replacements
+    job["status"] = "completed"
+    job.pop("reason", None)
+    return job
+
+
+def _normalized_asset_rename(job: dict[str, Any]) -> dict[str, Any]:
+    raw_from = job.get("from_path") or job.get("source_path") or ""
+    raw_to = job.get("to_path") or job.get("target_path") or ""
+    from_path = _normalize_asset_path(raw_from)
+    if from_path is None:
+        return {"error": "invalid_asset_path", "invalid_path": str(raw_from)}
+    if not from_path:
+        return {"error": "invalid_asset_path", "invalid_path": str(raw_from)}
+    to_path = _normalize_asset_path(raw_to)
+    if to_path is None:
+        return {"error": "invalid_asset_path", "invalid_path": str(raw_to)}
+    if not to_path:
+        return {"error": "invalid_asset_path", "invalid_path": str(raw_to)}
+
+    replacements = []
+    for item in job.get("replacements") or []:
+        if not isinstance(item, dict):
+            return {"error": "invalid_asset_path", "invalid_path": str(item)}
+        raw_old = item.get("from")
+        raw_new = item.get("to")
+        old = _normalize_asset_path(raw_old)
+        if old is None:
+            return {"error": "invalid_asset_path", "invalid_path": str(raw_old)}
+        if not old:
+            return {"error": "invalid_asset_path", "invalid_path": str(raw_old)}
+        new = _normalize_asset_path(raw_new)
+        if new is None:
+            return {"error": "invalid_asset_path", "invalid_path": str(raw_new)}
+        if not new:
+            return {"error": "invalid_asset_path", "invalid_path": str(raw_new)}
+        replacements.append({"from": old, "to": new})
+    if not replacements and from_path and to_path:
+        replacements.append({"from": from_path, "to": to_path})
+    return {"from_path": from_path, "to_path": to_path, "replacements": replacements}
+
+
+def _apply_internal_renamed_files(
+    card: Path,
+    from_path: str,
+    to_path: str,
+    replacements: list[dict[str, str]],
+) -> None:
+    for replacement in replacements:
+        old = replacement["from"]
+        new = replacement["to"]
+        if old == from_path or new == to_path:
+            continue
+        moved_old = _path_after_parent_rename(old, from_path, to_path)
+        if moved_old is None or moved_old == new:
+            continue
+        moved_old_abs = card / Path(moved_old)
+        new_abs = card / Path(new)
+        if not moved_old_abs.exists() or new_abs.exists():
+            continue
+        new_abs.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(moved_old_abs), str(new_abs))
+
+
+def _path_after_parent_rename(path: str, old_parent: str, new_parent: str) -> str | None:
+    if path == old_parent:
+        return new_parent
+    prefix = f"{old_parent}/"
+    if not path.startswith(prefix):
+        return None
+    return f"{new_parent}/{path[len(prefix):]}"
+
+
+def _rewrite_asset_reference_files(card: Path, run_dir: Path, replacements: list[dict[str, str]]) -> None:
+    files = [
+        card / ".card_assets.json",
+        card / "ui_manifest.json",
+    ]
+    files.extend(sorted((card / "generated" / "jobs").glob("*.json")))
+    files.extend(sorted((run_dir / "artifacts" / "assets_ui" / "jobs").glob("*.json")))
+    seen: set[Path] = set()
+    for path in files:
+        if path in seen:
+            continue
+        seen.add(path)
+        _rewrite_json_file_paths(path, replacements)
+
+
+def _rewrite_json_file_paths(path: Path, replacements: list[dict[str, str]]) -> None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return
+    rewritten = _replace_asset_path_strings(data, replacements)
+    agent_run.write_json(path, rewritten)
+
+
+def _replace_asset_path_strings(value: Any, replacements: list[dict[str, str]]) -> Any:
+    if isinstance(value, dict):
+        return {key: _replace_asset_path_strings(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_asset_path_strings(item, replacements) for item in value]
+    if isinstance(value, str):
+        updated = value
+        for replacement in replacements:
+            updated = updated.replace(replacement["from"], replacement["to"])
+        return updated
+    return value
 
 
 def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
