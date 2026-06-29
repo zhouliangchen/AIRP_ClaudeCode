@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
@@ -61,6 +62,206 @@ def apply_plan(
         job = _write_job(card, run_root, job)
         jobs.append(job)
     return {"status": _summarize(jobs), "jobs": jobs, "plan_id": str(plan.get("plan_id") or "")}
+
+
+def resume_waiting_jobs(
+    card_folder: str | Path,
+    run_dir: str | Path,
+    critic_runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    card = Path(card_folder)
+    run_root = Path(run_dir)
+    jobs = []
+    for batch_id, candidates in _completed_candidate_batches(card).items():
+        if len(candidates) < 3:
+            continue
+        existing_selection = _read_selection_job(card, batch_id)
+        if existing_selection and existing_selection.get("status") == "completed":
+            jobs.append(_write_job(card, run_root, existing_selection))
+            continue
+        selection = _selection_job_for_candidates(batch_id, candidates)
+        if critic_runner is None:
+            selection["status"] = "waiting_on_critic"
+            selection["reason"] = "critic_vision_not_available"
+        else:
+            selection = _run_character_reference_selection(card, selection, critic_runner)
+        jobs.append(_write_job(card, run_root, selection))
+    return {"status": _summarize(jobs), "jobs": jobs}
+
+
+def _read_selection_job(card: Path, batch_id: str) -> dict[str, Any] | None:
+    safe_id = _job_filename_slug(f"{batch_id}-selection")
+    path = card / "generated" / "jobs" / f"{safe_id}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _completed_candidate_batches(card: Path) -> dict[str, list[dict[str, Any]]]:
+    batches: dict[str, list[dict[str, Any]]] = {}
+    jobs_dir = card / "generated" / "jobs"
+    for path in sorted(jobs_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("queue_type") != "character_reference_candidate":
+            continue
+        if data.get("status") != "completed":
+            continue
+        batch_id = str(data.get("batch_id") or "").strip()
+        if not batch_id:
+            continue
+        batches.setdefault(batch_id, []).append(data)
+    for candidates in batches.values():
+        candidates.sort(key=lambda item: str(item.get("job_id") or ""))
+    return batches
+
+
+def _selection_job_for_candidates(batch_id: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    first = candidates[0]
+    final_target = str(first.get("final_target_path") or "").strip()
+    if not final_target:
+        final_target = _character_target_path(first)
+    return {
+        "schema_version": 1,
+        "queue_type": "character_reference_selection",
+        "job_id": f"{batch_id}-selection",
+        "batch_id": batch_id,
+        "character_name": str(first.get("character_name") or first.get("name") or ""),
+        "status": "waiting_on_critic",
+        "reason": "critic_vision_not_available",
+        "final_target_path": final_target,
+        "candidates": [_candidate_selection_payload(candidate) for candidate in candidates],
+    }
+
+
+def _candidate_selection_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "job_id": str(candidate.get("job_id") or ""),
+        "batch_id": str(candidate.get("batch_id") or ""),
+        "character_name": str(candidate.get("character_name") or candidate.get("name") or ""),
+    }
+    for key in ("target_path", "output_path", "final_target_path", "prompt"):
+        if candidate.get(key):
+            payload[key] = str(candidate[key])
+    return payload
+
+
+def _run_character_reference_selection(
+    card: Path,
+    selection: dict[str, Any],
+    critic_runner: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    payload = {
+        "batch_id": selection["batch_id"],
+        "candidates": selection["candidates"],
+    }
+    try:
+        critic_report = critic_runner(payload)
+    except Exception as exc:
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "critic_runner_failed"
+        selection["error"] = str(exc)
+        selection["exception_type"] = type(exc).__name__
+        return selection
+    if not isinstance(critic_report, dict):
+        critic_report = {"raw_report": critic_report}
+    selection["critic_report"] = critic_report
+    winner_id = str(critic_report.get("winner_candidate_id") or "").strip()
+    candidates = selection.get("candidates") or []
+    winner = next((candidate for candidate in candidates if candidate.get("job_id") == winner_id), None)
+    if winner is None:
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "invalid_winner_candidate"
+        selection["winner_candidate_id"] = winner_id
+        return selection
+
+    final_target = str(critic_report.get("final_target_path") or selection.get("final_target_path") or "").strip()
+    if not final_target:
+        final_target = _character_target_path(winner)
+    normalized_final = _normalize_asset_path(final_target)
+    if normalized_final is None:
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "invalid_final_target_path"
+        selection["invalid_path"] = final_target
+        selection["winner_candidate_id"] = winner_id
+        return selection
+
+    winner_source = _candidate_output_path(winner)
+    if winner_source is None:
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "invalid_winner_candidate_path"
+        selection["winner_candidate_id"] = winner_id
+        return selection
+    if not (card / Path(winner_source)).is_file():
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "winner_candidate_file_missing"
+        selection["winner_candidate_id"] = winner_id
+        selection["missing_path"] = winner_source
+        return selection
+
+    rejected_moves = []
+    for candidate in candidates:
+        if candidate.get("job_id") == winner_id:
+            continue
+        source = _candidate_output_path(candidate)
+        if source is None:
+            selection["status"] = "waiting_on_critic"
+            selection["reason"] = "invalid_rejected_candidate_path"
+            selection["winner_candidate_id"] = winner_id
+            selection["invalid_candidate_id"] = candidate.get("job_id")
+            return selection
+        rejected = _rejected_candidate_path(selection["batch_id"], source)
+        if rejected is None:
+            selection["status"] = "waiting_on_critic"
+            selection["reason"] = "invalid_rejected_candidate_path"
+            selection["winner_candidate_id"] = winner_id
+            selection["invalid_candidate_id"] = candidate.get("job_id")
+            return selection
+        rejected_moves.append((source, rejected))
+
+    try:
+        final_abs = card / Path(normalized_final)
+        final_abs.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(card / Path(winner_source)), str(final_abs))
+        for source, rejected in rejected_moves:
+            source_abs = card / Path(source)
+            if not source_abs.exists():
+                continue
+            rejected_abs = card / Path(rejected)
+            rejected_abs.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source_abs), str(rejected_abs))
+    except Exception as exc:
+        selection["status"] = "waiting_on_critic"
+        selection["reason"] = "candidate_file_move_failed"
+        selection["error"] = str(exc)
+        selection["exception_type"] = type(exc).__name__
+        selection["winner_candidate_id"] = winner_id
+        return selection
+
+    selection["status"] = "completed"
+    selection.pop("reason", None)
+    selection["winner_candidate_id"] = winner_id
+    selection["final_target_path"] = normalized_final
+    selection["rejected_paths"] = [rejected for _, rejected in rejected_moves]
+    return selection
+
+
+def _candidate_output_path(candidate: dict[str, Any]) -> str | None:
+    normalized = _normalize_asset_path(candidate.get("output_path") or candidate.get("target_path") or "")
+    return normalized if normalized else None
+
+
+def _rejected_candidate_path(batch_id: str, source_path: str) -> str | None:
+    source_name = Path(source_path).name
+    if not source_name:
+        return None
+    return _normalize_asset_path(f"generated/tmp/{batch_id}/rejected/{source_name}")
 
 
 def _plan_jobs(plan: dict[str, Any]) -> list[Any]:
