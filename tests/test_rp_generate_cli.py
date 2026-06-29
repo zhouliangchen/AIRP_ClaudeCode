@@ -622,6 +622,10 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(len(prompts), 2)
         self.assertIn("索引藏在Ada灯座下方。", prompts[1])
         self.assertEqual(result["natural_reply"], "我想起灯座下方的索引，低声提醒自己。")
+        recalled = result.get("_runtime_recalled_key_memories")
+        self.assertIsInstance(recalled, list)
+        self.assertEqual(recalled[0]["tag"], "封存索引")
+        self.assertEqual(recalled[0]["detail"], "索引藏在Ada灯座下方。")
 
     def test_dispatch_actor_reruns_when_recall_protocol_appears_after_intro_line(self):
         actor_dir = self.card / "characters" / "雨蒙"
@@ -1847,6 +1851,42 @@ class RpGenerateCliTest(unittest.TestCase):
             }
         ])
         self.assertNotIn("old ritual", normalized["content"])
+
+    def test_normalize_story_output_does_not_expose_character_reply_to_gm_as_dialogue(self):
+        story = {
+            "content": "<content>苏黎低头翻书，手掌压住草稿纸一角。</content>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "loop_outputs": {
+                "actors": {
+                    "character:苏黎": [
+                        {
+                            "agent": "character",
+                            "agent_id": "character:苏黎",
+                            "character_name": "苏黎",
+                            "events": [
+                                {
+                                    "type": "reply",
+                                    "target": "gm",
+                                    "content": "那股气息不该出现在普通学生附近。五年前之后，我学会了先确认自己有没有被确认。",
+                                    "metadata": {},
+                                }
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
+                }
+            }
+        }
+
+        normalized = self.module._normalize_story_output(story, story_input)
+
+        self.assertEqual(normalized["character_dialogues"], [])
+        self.assertIn("<character_dialogues>[]</character_dialogues>", normalized["content"])
+        self.assertNotIn("五年前", normalized["content"])
+        self.assertNotIn("那股气息", normalized["content"])
 
     def test_player_character_names_come_from_input_analysis_not_raw_keyword_matching(self):
         story_input = {

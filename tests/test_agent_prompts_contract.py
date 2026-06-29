@@ -41,6 +41,14 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("art_style", text)
         self.assertIn("scene_illustration_each_round", text)
 
+    def test_postprocess_prompt_uses_chinese_confirmation_prefix(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts.build_postprocess_prompt({})
+
+        self.assertIn('"label": "确认行动：玩家已经明确提出的可见行动"', text)
+        self.assertNotIn('"label": "Confirm action: visible player action"', text)
+
     def test_input_analyst_prompt_advertises_replay_capability_gates(self):
         prompts = _load_module("agent_prompts")
 

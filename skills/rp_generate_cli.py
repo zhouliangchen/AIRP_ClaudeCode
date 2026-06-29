@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterable
 import agent_outputs
 import agent_prompts
 import agent_run
+import actor_recall_artifacts
 import actor_memory_store
 import agent_memory
 import agent_schemas
@@ -634,11 +635,27 @@ def _run_actor_protocol_tool(
     query: str,
     extra_context: Dict[str, Any] | None,
 ) -> str:
+    return str(_run_actor_protocol_tool_result(agent_key, query, extra_context).get("text") or "")
+
+
+def _run_actor_protocol_tool_result(
+    agent_key: str,
+    query: str,
+    extra_context: Dict[str, Any] | None,
+) -> Dict[str, str]:
     actor_id, card_folder = _actor_protocol_identity(agent_key, extra_context)
     if not actor_id or card_folder is None:
-        return f"我试着回忆“{query}”，但这里没有可用的记忆档案。"
+        text = f"我试着回忆“{query}”，但这里没有可用的记忆档案。"
+        return {"query": query, "text": text}
     memory = actor_memory_store.recall_key_memory(card_folder, actor_id, query)
-    return _format_recalled_memory(query, memory)
+    return {
+        "query": query,
+        "actor_id": actor_id,
+        "tag": str(memory.get("tag") or "").strip(),
+        "summary": str(memory.get("summary") or "").strip(),
+        "detail": str(memory.get("detail") or "").strip(),
+        "text": _format_recalled_memory(query, memory),
+    }
 
 
 def _inject_actor_protocol_results(prompt_text: str, tool_results: list[str]) -> str:
@@ -652,6 +669,20 @@ def _inject_actor_protocol_results(prompt_text: str, tool_results: list[str]) ->
         "请把这些刚刚想起的内容当作我现在已经回忆起来的第一人称记忆，然后继续完成当前任务。",
     ]
     return prompt_text.rstrip() + "\n\n" + "\n".join(sections).strip() + "\n"
+
+
+def _actor_protocol_result_texts(tool_results: list[Dict[str, str]]) -> list[str]:
+    return [str(item.get("text") or "").strip() for item in tool_results if isinstance(item, dict)]
+
+
+def _attach_actor_protocol_results(
+    agent_key: str,
+    payload: Dict[str, Any],
+    tool_results: list[Dict[str, str]],
+) -> Dict[str, Any]:
+    if not _is_actor_agent_key(agent_key):
+        return payload
+    return actor_recall_artifacts.attach_runtime_items(payload, tool_results)
 
 
 def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -831,10 +862,10 @@ def _dispatch_agent_payload(
     protocol_enabled = _is_actor_agent_key(agent_key) or _is_post_round_memory_agent(agent_key)
     max_protocol_iterations = 4
     for attempt in range(attempts):
-        tool_results: list[str] = []
+        tool_results: list[Dict[str, str]] = []
         try:
             for protocol_iteration in range(max_protocol_iterations + 1):
-                prompt_body = _inject_actor_protocol_results(prompt_text, tool_results)
+                prompt_body = _inject_actor_protocol_results(prompt_text, _actor_protocol_result_texts(tool_results))
                 prompt = _with_attempt_rejection_feedback(
                     _outer_prompt(agent_key, prompt_body, extra_context),
                     last_error,
@@ -850,10 +881,14 @@ def _dispatch_agent_payload(
                             raise AgentExecutionError(
                                 f"{agent_key} kept invoking actor protocol after {max_protocol_iterations} iterations"
                             ) from exc
-                        tool_results.append(_run_actor_protocol_tool(agent_key, protocol_query, extra_context))
+                        tool_results.append(_run_actor_protocol_tool_result(agent_key, protocol_query, extra_context))
                         continue
                     if _is_actor_agent_key(agent_key):
-                        return _validate(agent_key, text, extra_context)
+                        return _attach_actor_protocol_results(
+                            agent_key,
+                            _validate(agent_key, text, extra_context),
+                            tool_results,
+                        )
                     if agent_key != "story":
                         raise
                     payload = _recover_story_payload_from_malformed_json(text, exc)
@@ -868,9 +903,9 @@ def _dispatch_agent_payload(
                         raise AgentExecutionError(
                             f"{agent_key} kept invoking actor protocol after {max_protocol_iterations} iterations"
                         )
-                    tool_results.append(_run_actor_protocol_tool(agent_key, protocol_query, extra_context))
+                    tool_results.append(_run_actor_protocol_tool_result(agent_key, protocol_query, extra_context))
                     continue
-                return normalized
+                return _attach_actor_protocol_results(agent_key, normalized, tool_results)
         except AgentExecutionError as exc:
             last_error = exc
             if attempt == attempts - 1:
@@ -1104,7 +1139,7 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
                 content = str(event.get("content") or "").strip()
                 if not content:
                     continue
-                if event_type == "reply" and not line:
+                if event_type == "reply" and not line and _character_reply_is_public_dialogue(event):
                     line = content
             if line:
                 break
@@ -1115,6 +1150,13 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
         if len(dialogues) >= 6:
             break
     return dialogues
+
+
+def _character_reply_is_public_dialogue(event: dict[str, Any]) -> bool:
+    target = str(event.get("target") or "").strip().lower()
+    if target in {"gm", "self"}:
+        return False
+    return target in {"", "player", "public", "world", "all", "everyone"}
 
 
 def _normalize_story_output(story: Dict[str, Any], story_input: Dict[str, Any] | None = None) -> Dict[str, Any]:

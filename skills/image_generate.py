@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import mimetypes
 import os
 import re
 import subprocess
 import sys
 import time
+import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -34,6 +36,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 FRONTEND_SETTINGS_PATH = llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
 LOCAL_SETTINGS_PATH = llm_settings.DEFAULT_LOCAL_SETTINGS_PATH
+
+
+class ReferenceImageNotSupported(RuntimeError):
+    """Raised when the configured image provider cannot accept reference images."""
 
 
 def _json_out(obj, code=0):
@@ -221,13 +227,21 @@ def _load_config(card: Path | None = None) -> dict:
 
 
 def _candidate_generation_urls(base_url: str) -> list[str]:
+    return _candidate_image_urls(base_url, "/images/generations")
+
+
+def _candidate_edit_urls(base_url: str) -> list[str]:
+    return _candidate_image_urls(base_url, "/images/edits")
+
+
+def _candidate_image_urls(base_url: str, suffix: str) -> list[str]:
     base = base_url.rstrip("/")
     urls = []
     if base.endswith("/v1"):
-        urls.append(base + "/images/generations")
+        urls.append(base + suffix)
     else:
-        urls.append(base + "/v1/images/generations")
-        urls.append(base + "/images/generations")
+        urls.append(base + "/v1" + suffix)
+        urls.append(base + suffix)
     # Preserve order while deduping.
     deduped = []
     for url in urls:
@@ -236,7 +250,73 @@ def _candidate_generation_urls(base_url: str) -> list[str]:
     return deduped
 
 
-def _call_openai_images(prompt: str, model: str, size: str, config: dict) -> bytes:
+def _decode_image_response(body: dict) -> bytes:
+    image = (body.get("data") or [{}])[0]
+    b64 = image.get("b64_json")
+    if b64:
+        return base64.b64decode(b64)
+    image_url = image.get("url")
+    if image_url:
+        with urllib.request.urlopen(image_url, timeout=180) as img_resp:
+            return img_resp.read()
+    raise RuntimeError("image response contained neither b64_json nor url")
+
+
+def _multipart_image_payload(fields: dict[str, str], references: list[Path]) -> tuple[bytes, str]:
+    boundary = "----AIRPImageBoundary" + uuid.uuid4().hex
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    for reference in references:
+        content_type = mimetypes.guess_type(str(reference))[0] or "application/octet-stream"
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"image\"; filename=\"{reference.name}\"\r\n"
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        chunks.append(reference.read_bytes())
+        chunks.append(b"\r\n")
+    chunks.append((f"--{boundary}--\r\n").encode("utf-8"))
+    return b"".join(chunks), "multipart/form-data; boundary=" + boundary
+
+
+def _reference_error_is_unsupported(status: int | None, detail: str) -> bool:
+    lowered = detail.lower()
+    if status in {404, 405, 501}:
+        return True
+    if status in {400, 415, 422}:
+        return any(
+            marker in lowered
+            for marker in (
+                "not supported",
+                "unsupported",
+                "not found",
+                "no such endpoint",
+                "unknown endpoint",
+                "images/edits",
+                "image edit",
+                "edits endpoint",
+            )
+        )
+    return False
+
+
+def _call_openai_images(
+    prompt: str,
+    model: str,
+    size: str,
+    config: dict,
+    *,
+    references: list[Path] | None = None,
+) -> bytes:
     api_key = config.get("api_key")
     if not api_key:
         raise RuntimeError(
@@ -248,21 +328,35 @@ def _call_openai_images(prompt: str, model: str, size: str, config: dict) -> byt
     if not model:
         raise RuntimeError("AIRP_IMAGE_GENERATION_MODEL or image_generation.model in AIRP LLM settings is not set")
 
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "size": size,
-        "n": 1,
-    }
-    data = json.dumps(payload).encode("utf-8")
+    references = references or []
     last_error = None
-    for url in _candidate_generation_urls(base_url):
+    urls = _candidate_edit_urls(base_url) if references else _candidate_generation_urls(base_url)
+    for url in urls:
+        if references:
+            data, content_type = _multipart_image_payload(
+                {
+                    "model": model,
+                    "prompt": prompt,
+                    "size": size,
+                    "n": "1",
+                },
+                references,
+            )
+        else:
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "size": size,
+                "n": 1,
+            }
+            data = json.dumps(payload).encode("utf-8")
+            content_type = "application/json"
         req = urllib.request.Request(
             url,
             data=data,
             headers={
                 "Authorization": "Bearer " + api_key,
-                "Content-Type": "application/json",
+                "Content-Type": content_type,
                 "User-Agent": "AIRP-ClaudeCode/1.0",
                 "Accept": "application/json",
             },
@@ -271,25 +365,22 @@ def _call_openai_images(prompt: str, model: str, size: str, config: dict) -> byt
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-            image = (body.get("data") or [{}])[0]
-            b64 = image.get("b64_json")
-            if b64:
-                return base64.b64decode(b64)
-            image_url = image.get("url")
-            if image_url:
-                with urllib.request.urlopen(image_url, timeout=180) as img_resp:
-                    return img_resp.read()
-            raise RuntimeError("image response contained neither b64_json nor url")
+            return _decode_image_response(body)
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read().decode("utf-8", errors="replace")[:600]
             except Exception:
                 detail = ""
+            if references and _reference_error_is_unsupported(e.code, detail):
+                last_error = ReferenceImageNotSupported(f"{url} -> HTTP {e.code}: {detail}")
+                continue
             last_error = RuntimeError(f"{url} -> HTTP {e.code}: {detail}")
             continue
         except Exception as e:
             last_error = RuntimeError(f"{url} -> {e}")
             continue
+    if isinstance(last_error, ReferenceImageNotSupported):
+        raise last_error
     raise RuntimeError(str(last_error) if last_error else "image generation failed")
 
 
@@ -383,23 +474,6 @@ def main():
         )
         _json_out({"ok": False, "error": str(exc)}, 2)
 
-    if references and not args.dry_run:
-        payload = {
-            "status": "deferred",
-            "reason": "reference_image_not_supported",
-            "references": references,
-        }
-        _write_job_status(card, args.job_id, payload)
-        _json_out(
-            {
-                "ok": False,
-                "error": "reference_image_not_supported",
-                "status": "deferred",
-                "references": references,
-            },
-            1,
-        )
-
     if args.async_job:
         _json_out(_spawn_async(args))
 
@@ -425,8 +499,36 @@ def main():
             if not output_path or not out_path.exists():
                 out_path.write_bytes(b"")
         else:
-            image_bytes = _call_openai_images(args.prompt, model, args.size, config)
+            reference_paths = [card / reference for reference in references]
+            image_bytes = _call_openai_images(
+                args.prompt,
+                model,
+                args.size,
+                config,
+                references=reference_paths,
+            )
             out_path.write_bytes(image_bytes)
+    except ReferenceImageNotSupported as e:
+        _write_job_status(
+            card,
+            args.job_id,
+            {
+                "status": "deferred",
+                "reason": "reference_image_not_supported",
+                "error": str(e),
+                "references": references,
+                "path": rel_path.as_posix(),
+            },
+        )
+        _json_out(
+            {
+                "ok": False,
+                "error": "reference_image_not_supported",
+                "status": "deferred",
+                "references": references,
+            },
+            1,
+        )
     except Exception as e:
         _write_job_status(
             card,

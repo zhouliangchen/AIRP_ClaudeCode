@@ -133,15 +133,21 @@ def run_round(
             _write_artifact(run_dir, "runtime.result.json", result)
             return result
 
+        runtime_settings = _runtime_settings_from_applied(input_analysis_result)
         runtime_pump["after_critic"] = agent_runtime_pump.run_pending_intents(
             card,
             run_dir,
             phase="after_critic",
-            runtime_settings=_runtime_settings_from_applied(input_analysis_result),
+            runtime_settings=runtime_settings,
             run_command=run_command,
             async_asset_tasks=True,
         )
-        runtime_pump["persistent_assets"] = _run_persistent_assets(card, run_dir, run_command)
+        runtime_pump["persistent_assets"] = _run_persistent_assets(
+            card,
+            run_dir,
+            run_command,
+            runtime_settings=runtime_settings,
+        )
 
         _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
         stages.append("postprocess")
@@ -187,12 +193,15 @@ def _run_persistent_assets(
     card: Path,
     run_dir: Path,
     run_command: Callable[..., Any],
+    *,
+    runtime_settings: dict[str, Any],
 ) -> dict[str, Any]:
     try:
         return assets_ui_runtime.process_persistent_requirements(
             card,
             run_dir,
             phase="after_critic",
+            runtime_settings=runtime_settings,
             run_command=run_command,
         )
     except Exception as exc:
@@ -606,6 +615,63 @@ def _record_story_repair_attempt(run_dir: Path, critic: dict[str, Any], attempt:
         handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def _with_required_player_decision_options(raw: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    if not evidence:
+        return raw
+    if not isinstance(raw, dict):
+        return raw
+    core = raw.get("core")
+    if not isinstance(core, dict):
+        return raw
+
+    existing_options = core.get("options")
+    original_options = list(existing_options) if isinstance(existing_options, list) else []
+    evidence_items = [item for item in evidence if isinstance(item, dict)]
+    options: list[Any] = []
+    for option in original_options:
+        normalized = postprocess_outputs._option_item(option)
+        if normalized and normalized.get("source") == "player_agent_critical_action":
+            continue
+        options.append(option)
+    normalized_options = postprocess_outputs.validate_postprocess_output(
+        {
+            "core": {
+                "summary": core.get("summary") or "pending",
+                "current_goal": core.get("current_goal") or "pending",
+                "options": options,
+            }
+        }
+    )
+    if normalized_options.get("ok"):
+        comparable_options = normalized_options.get("output", {}).get("core", {}).get("options", [])
+    else:
+        comparable_options = []
+
+    added = options != original_options
+    for item in evidence_items:
+        if any(postprocess_outputs.option_matches_evidence(option, item) for option in comparable_options):
+            continue
+        required_label = str(item.get("required_label") or "").strip()
+        if not required_label:
+            continue
+        option = {
+            "label": f"确认行动：{required_label}",
+            "source": "player_agent_critical_action",
+            "requires_confirmation": True,
+        }
+        options.append(option)
+        comparable_options.append(option)
+        added = True
+
+    if not added:
+        return raw
+    updated = dict(raw)
+    updated_core = dict(core)
+    updated_core["options"] = options
+    updated["core"] = updated_core
+    return updated
+
+
 def _run_postprocess(
     card: Path,
     root: Path,
@@ -629,9 +695,11 @@ def _run_postprocess(
         prompt,
         extra_context={"postprocess_context": context},
     )
+    critical_action_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
+    raw = _with_required_player_decision_options(raw, critical_action_evidence)
     validation = postprocess_outputs.validate_postprocess_output(
         raw,
-        critical_action_evidence=agent_outputs.extract_player_critical_action_evidence(story_input),
+        critical_action_evidence=critical_action_evidence,
     )
     if not validation.get("ok"):
         raise RoundRuntimeError(f"postprocess output rejected: {validation}")

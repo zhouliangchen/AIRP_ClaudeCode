@@ -421,7 +421,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["reason"], "invalid_path")
 
-    def test_main_async_reference_defers_without_spawning(self):
+    def test_main_async_reference_spawns_worker_instead_of_deferring(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
             reference = card / "characters" / "Ada" / "Ada.png"
@@ -444,11 +444,12 @@ class ImageGenerateConfigTest(unittest.TestCase):
                     with self.assertRaises(SystemExit) as exc:
                         self.mod.main()
 
-            self.assertEqual(exc.exception.code, 1)
-            popen.assert_not_called()
-            payload = json.loads(job_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["status"], "deferred")
-            self.assertEqual(payload["reason"], "reference_image_not_supported")
+            self.assertEqual(exc.exception.code, 0)
+            popen.assert_called_once()
+            command = popen.call_args.args[0]
+            self.assertIn("--reference", command)
+            self.assertIn("characters/Ada/Ada.png", command)
+            self.assertFalse(job_path.exists())
 
     def test_main_dry_run_custom_output_path_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -498,6 +499,52 @@ class ImageGenerateConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):
             self.mod._call_openai_images("draw", "image-model", "1024x1024", {"api_key": "secret"})
 
+    def test_call_openai_images_with_reference_uses_edits_multipart(self):
+        requests = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"data": [{"b64_json": "aW1hZ2UtYnl0ZXM="}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            requests.append(request)
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = Path(tmp) / "ref.png"
+            reference.write_bytes(b"png-bytes")
+
+            with mock.patch.object(self.mod.urllib.request, "urlopen", side_effect=fake_urlopen):
+                image = self.mod._call_openai_images(
+                    "draw with reference",
+                    "image-model",
+                    "1024x1024",
+                    {
+                        "base_url": "https://image.example/v1",
+                        "api_key": "secret",
+                    },
+                    references=[reference],
+                )
+
+        self.assertEqual(image, b"image-bytes")
+        self.assertEqual(len(requests), 1)
+        request = requests[0]
+        self.assertEqual(request.full_url, "https://image.example/v1/images/edits")
+        self.assertIn("multipart/form-data", request.headers["Content-type"])
+        body = request.data
+        self.assertIn(b'name="prompt"', body)
+        self.assertIn(b"draw with reference", body)
+        self.assertIn(b'name="image"; filename="ref.png"', body)
+        self.assertIn(b"png-bytes", body)
+
     def test_main_api_failure_defers_job_for_frontend_notice(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
@@ -535,6 +582,48 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["status"], "deferred")
             self.assertEqual(payload["reason"], "image_generation_failed")
             self.assertIn("Images API is not supported", payload["error"])
+
+    def test_main_reference_unsupported_defers_with_specific_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            reference = card / "characters" / "Ada" / "Ada.png"
+            reference.parent.mkdir(parents=True)
+            reference.write_bytes(b"png")
+            job_path = card / "generated" / "jobs" / "scene-round-000004.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--reference",
+                "characters/Ada/Ada.png",
+                "--job-id",
+                "scene-round-000004",
+            ]
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_load_config",
+                    return_value={
+                        "base_url": "https://image.example/v1",
+                        "api_key": "secret",
+                        "model": "image-model",
+                    },
+                ):
+                    with mock.patch.object(
+                        self.mod,
+                        "_call_openai_images",
+                        side_effect=self.mod.ReferenceImageNotSupported("edits endpoint is not available"),
+                    ):
+                        with self.assertRaises(SystemExit) as exc:
+                            self.mod.main()
+
+            self.assertEqual(exc.exception.code, 1)
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "deferred")
+            self.assertEqual(payload["reason"], "reference_image_not_supported")
+            self.assertEqual(payload["references"], ["characters/Ada/Ada.png"])
 
 
 if __name__ == "__main__":

@@ -240,6 +240,174 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertEqual([intent["requested_by"] for intent in pending], ["story", "critic"])
         self.assertEqual([intent["payload"]["action"] for intent in pending], ["create", "delete"])
 
+    def test_run_postprocess_injects_missing_player_decision_confirmation_option(self):
+        manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        story_input = {
+            "loop_outputs": {
+                "gm": {
+                    "outputs": [
+                        {
+                            "stop_reason": "continue",
+                            "actor_calls": [
+                                {"call_id": "call-player-1", "actor_id": "player", "prompt": "你现在怎么做？"}
+                            ],
+                            "decision_point": None,
+                        },
+                        {
+                            "stop_reason": "player_decision",
+                            "actor_calls": [],
+                            "decision_point": {
+                                "id": "player-decision-3",
+                                "reason": "老师要求收干净桌面，玩家必须选择怎么处理便签。",
+                            },
+                        },
+                    ]
+                },
+                "actors": {
+                    "player": [
+                        {
+                            "agent": "player",
+                            "agent_id": "player",
+                            "source_call_id": "call-player-1",
+                            "natural_reply": "我把左手往便签上一盖，装作翻开数学书复习。",
+                            "events": [],
+                        }
+                    ]
+                },
+            },
+        }
+        story_output = {
+            "content": "老师要求收干净桌面，便签在掌下轻轻动了一下。",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        def run_claude(agent_key, prompt, cwd):
+            self.assertEqual(agent_key, "postprocess")
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "core": {
+                        "summary": "便签仍被压在手下。",
+                        "current_goal": "决定如何处理桌面检查。",
+                        "options": ["继续观察老师反应"],
+                    },
+                    "ui_extensions": {},
+                    "ui_extension_status": {"status": "ok", "issues": []},
+                    "mvu": {"commands": []},
+                },
+                ensure_ascii=False,
+            )
+
+        output = self.round_runtime._run_postprocess(
+            self.card,
+            self.root,
+            self.run_dir,
+            run_claude,
+            story_input,
+            story_output,
+        )
+
+        options = output["core"]["options"]
+        self.assertEqual(options[0]["label"], "继续观察老师反应")
+        self.assertIn(
+            {
+                "label": "确认行动：我把左手往便签上一盖，装作翻开数学书复习。",
+                "source": "player_agent_critical_action",
+                "requires_confirmation": True,
+            },
+            options,
+        )
+        artifact = json.loads((self.run_dir / "artifacts" / "postprocess.output.json").read_text(encoding="utf-8"))
+        self.assertEqual(artifact["core"]["options"], options)
+
+    def test_run_postprocess_replaces_stale_player_decision_confirmation_option(self):
+        story_input = {
+            "loop_outputs": {
+                "gm": {
+                    "outputs": [
+                        {
+                            "stop_reason": "continue",
+                            "actor_calls": [
+                                {"call_id": "call-player-1", "actor_id": "player", "prompt": "你现在怎么做？"}
+                            ],
+                            "decision_point": None,
+                        },
+                        {
+                            "stop_reason": "player_decision",
+                            "actor_calls": [],
+                            "decision_point": {
+                                "id": "player-decision-3",
+                                "reason": "苏黎让出走廊谈话的机会，玩家必须决定是否跟过去。",
+                            },
+                        },
+                    ]
+                },
+                "actors": {
+                    "player": [
+                        {
+                            "agent": "player",
+                            "agent_id": "player",
+                            "source_call_id": "call-player-1",
+                            "natural_reply": "我抱着练习册走到苏黎旁边，压低声音问她是不是知道什么。",
+                            "events": [],
+                        }
+                    ]
+                },
+            },
+        }
+        story_output = {
+            "content": "苏黎用问作业的语气接住话题，提出可以去走廊说。",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+
+        def run_claude(agent_key, prompt, cwd):
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "core": {
+                        "summary": "苏黎给出可以去走廊说的台阶。",
+                        "current_goal": "决定是否跟苏黎去走廊。",
+                        "options": [
+                            {
+                                "label": "Confirm action: 跟苏黎去走廊尽头，继续压低声音询问。",
+                                "source": "player_agent_critical_action",
+                                "requires_confirmation": True,
+                            },
+                            "留在教室继续试探",
+                        ],
+                    },
+                    "ui_extensions": {},
+                    "ui_extension_status": {"status": "ok", "issues": []},
+                    "mvu": {"commands": []},
+                },
+                ensure_ascii=False,
+            )
+
+        output = self.round_runtime._run_postprocess(
+            self.card,
+            self.root,
+            self.run_dir,
+            run_claude,
+            story_input,
+            story_output,
+        )
+
+        options = output["core"]["options"]
+        player_options = [item for item in options if item["source"] == "player_agent_critical_action"]
+        self.assertEqual(
+            player_options,
+            [
+                {
+                    "label": "确认行动：我抱着练习册走到苏黎旁边，压低声音问她是不是知道什么。",
+                    "source": "player_agent_critical_action",
+                    "requires_confirmation": True,
+                }
+            ],
+        )
+        self.assertEqual(options[0]["label"], "留在教室继续试探")
+
     def test_run_round_refreshes_current_run_after_replay_switch(self):
         replay_dir = self.card / ".agent_runs" / "round-000002-replay-001"
         replay_dir.mkdir(parents=True)
@@ -328,8 +496,8 @@ class RoundRuntimeTest(unittest.TestCase):
         calls = []
         original = assets_ui_runtime.process_persistent_requirements
 
-        def fake_process(card_folder, run_dir, *, phase, run_command=None, planner=None):
-            calls.append((Path(card_folder), Path(run_dir), phase))
+        def fake_process(card_folder, run_dir, *, phase, runtime_settings=None, run_command=None, planner=None):
+            calls.append((Path(card_folder), Path(run_dir), phase, runtime_settings))
             return {"status": "planned", "jobs": []}
 
         original_apply = self.round_runtime.input_analysis_apply.apply_current_run
@@ -355,6 +523,7 @@ class RoundRuntimeTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls[0][2], "after_critic")
+        self.assertEqual(calls[0][3]["wordCount"], 800)
         self.assertIn("persistent_assets", result["runtime_pump"])
 
     def test_run_round_persistent_assets_error_does_not_block_delivery(self):

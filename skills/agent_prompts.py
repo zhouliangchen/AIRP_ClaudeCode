@@ -860,7 +860,7 @@ def build_postprocess_prompt(run_summary: Dict[str, Any]) -> str:
             "summary": "player-visible recap of the delivered turn",
             "options": [
                 {
-                    "label": "Confirm action: visible player action",
+                    "label": "确认行动：玩家已经明确提出的可见行动",
                     "source": "player_agent_critical_action",
                     "requires_confirmation": True,
                 }

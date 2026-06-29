@@ -18,6 +18,7 @@ import agent_run
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import actor_recall_artifacts
 import actor_memory_store
 import character_promotions
 import input_routing_requests
@@ -341,6 +342,9 @@ def _validate_actor(actor_id: str, payload: Any) -> dict:
             )
         except agent_schemas.ValidationError as exc:
             raise AgentTurnLoopError(f"invalid actor output for {actor_id}: {exc}") from exc
+    runtime_recalled = actor_recall_artifacts.runtime_items(payload)
+    if isinstance(payload, dict) and runtime_recalled:
+        payload = actor_recall_artifacts.strip_runtime_fields(payload)
     try:
         output = agent_schemas.validate_actor_output(payload)
     except agent_schemas.ValidationError as exc:
@@ -351,7 +355,30 @@ def _validate_actor(actor_id: str, payload: Any) -> dict:
         raise AgentTurnLoopError(f"invalid actor output for {actor_id}: wrong agent {output.get('agent')!r}")
     if output.get("agent_id") != actor_id:
         raise AgentTurnLoopError(f"invalid actor output for {actor_id}: wrong agent_id {output.get('agent_id')!r}")
+    if runtime_recalled:
+        output = actor_recall_artifacts.attach_runtime_items(output, runtime_recalled)
     return output
+
+
+def _strip_runtime_actor_output_fields(actor_output: dict) -> dict:
+    return actor_recall_artifacts.strip_runtime_fields(actor_output)
+
+
+def _record_actor_recalled_key_memories(
+    run_dir: Path,
+    actor_id: str,
+    call_id: str,
+    actor_output: dict,
+) -> None:
+    try:
+        actor_recall_artifacts.append_records(
+            run_dir,
+            actor_id,
+            call_id,
+            actor_recall_artifacts.runtime_items(actor_output),
+        )
+    except Exception as exc:
+        raise AgentTurnLoopError(f"record actor recalled key memories failed: {exc}") from exc
 
 
 def _event_content(event: dict) -> str:
@@ -834,7 +861,8 @@ def _dispatch_actor_call(
         },
     )
     raw_actor_payload = dispatch(_dispatch_actor_key(actor_id), packet)
-    actor_output = _validate_actor(actor_id, raw_actor_payload)
+    runtime_actor_output = _validate_actor(actor_id, raw_actor_payload)
+    actor_output = _strip_runtime_actor_output_fields(runtime_actor_output)
     _append_short_term_dialogue(
         card_folder,
         actor_id,
@@ -860,7 +888,7 @@ def _dispatch_actor_call(
             "returned_hash": returned_hash,
             "current_hash": current_hash,
         }
-    return actor_output, warning
+    return runtime_actor_output, warning
 
 
 def _projection_rejection_actor_output(actor_id: str, call: dict, exc: ProjectionRejected) -> dict:
@@ -1136,6 +1164,25 @@ def _coerce_same_output_player_decision(gm_output: dict) -> dict:
     normalized["stop_reason"] = "continue"
     normalized["decision_point"] = None
     return normalized
+
+
+def _coerce_invalid_player_decision(
+    gm_output: dict,
+    *,
+    player_participated_before_gm: bool,
+) -> tuple[dict, dict]:
+    validation = player_decision_evidence.valid_gm_player_decision(
+        gm_output,
+        player_participated_before_gm=player_participated_before_gm,
+    )
+    if str(gm_output.get("stop_reason") or "").strip() != "player_decision":
+        return gm_output, validation
+    if validation.get("valid"):
+        return gm_output, validation
+    normalized = dict(gm_output)
+    normalized["stop_reason"] = "continue"
+    normalized["decision_point"] = None
+    return normalized, validation
 
 
 def _input_requests_player_actor(input_payload: dict) -> bool:
@@ -1539,6 +1586,10 @@ def run_interactive_loop(
         )
         _normalize_main_actor_call_ids(gm_output, generated_call_counts, used_actor_call_ids)
         gm_output = _coerce_same_output_player_decision(gm_output)
+        gm_output, gm_player_decision = _coerce_invalid_player_decision(
+            gm_output,
+            player_participated_before_gm=player_participated_before_gm,
+        )
         _preflight_subgm_actor_conflicts(root, gm_output, input_payload)
         _apply_subgm_commands(root, gm_output, input_payload)
         _assert_main_actor_calls_do_not_conflict(root, gm_output.get("actor_calls", []))
@@ -1553,10 +1604,6 @@ def run_interactive_loop(
         _update_visible_events(root, world_state)
 
         gm_stop = str(gm_output.get("stop_reason") or "continue")
-        gm_player_decision = player_decision_evidence.valid_gm_player_decision(
-            gm_output,
-            player_participated_before_gm=player_participated_before_gm,
-        )
         gm_terminal_stop = gm_stop if gm_stop in STOP_REASONS and gm_stop != "player_decision" else ""
 
         max_parallel = agent_actor_batches.max_parallel_from_input(input_payload)
@@ -1653,6 +1700,8 @@ def run_interactive_loop(
                         )
                 for call, actor_id, actor_output, _warning in results:
                     call_id = str(call.get("call_id") or "")
+                    _record_actor_recalled_key_memories(root, actor_id, call_id, actor_output)
+                    actor_output = _strip_runtime_actor_output_fields(actor_output)
                     called_actors.append(actor_id)
                     actor_outputs.setdefault(actor_id, []).append(actor_output)
                     raw_story_units += _actor_raw_story_units(actor_output)

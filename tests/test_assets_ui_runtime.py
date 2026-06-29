@@ -137,6 +137,47 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         audit = _read_json(self.run_dir / "artifacts" / "assets_ui" / "intent-assets-1.json")
         self.assertEqual(audit["intent_id"], "intent-assets-1")
 
+    def test_process_assets_task_debug_logs_assets_ui_planner_call(self):
+        intent = {
+            "id": "intent-assets-debug",
+            "type": "assets_task",
+            "payload": {
+                "kind": "scene_illustration",
+                "target": "scene_illustration",
+                "prompt": "debug scene prompt",
+            },
+        }
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_critic",
+            runtime_settings={"modelDebugMode": True},
+            planner=lambda context: {
+                "schema_version": 1,
+                "scene_jobs": [
+                    {
+                        "job_id": "scene-debug",
+                        "kind": "scene_illustration",
+                        "target": "scene_illustration",
+                        "prompt": "debug cinematic prompt",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(result["status"], "completed")
+        index_path = self.card / "debug" / "model_calls" / "index.jsonl"
+        index_lines = index_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(index_lines), 1)
+        index_item = json.loads(index_lines[0])
+        self.assertEqual(index_item["agent_key"], "assets-ui")
+        record = _read_json(self.card / index_item["relative_path"])
+        self.assertIn("intent-assets-debug", record["raw_input"]["prompt"])
+        self.assertIn("after_critic", record["raw_input"]["prompt"])
+        self.assertIn("scene-debug", record["raw_output"]["stdout"])
+
     def test_process_assets_task_starts_scene_job_when_references_exist(self):
         self._configure_image_settings()
         reference = self.card / "characters" / "苏黎" / "苏黎.png"
@@ -434,6 +475,63 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertIn("雨蒙故作镇定回到教室", scene_job["prompt"])
         self.assertIn("苏黎", scene_job["prompt"])
         self.assertNotEqual(scene_job["prompt"], "用户指令要求每轮提供一张带角色的剧情插图。")
+
+    def test_scene_prompt_is_cinematic_and_describes_reference_purposes(self):
+        su_li = self.card / "characters" / "苏黎" / "苏黎.png"
+        su_li.parent.mkdir(parents=True)
+        su_li.write_bytes(b"portrait")
+        prior_scene = self.card / "generated" / "images" / "scene-0001.png"
+        prior_scene.parent.mkdir(parents=True)
+        prior_scene.write_bytes(b"style")
+        (self.run_dir / "story.output.json").write_text(
+            json.dumps(
+                {
+                    "content": (
+                        "预备铃即将响起，雨蒙把数学练习册半合在桌面，只露出粉色水印的一角。"
+                        "苏黎坐在靠窗后排，指尖压着旧封皮笔记，窗外晨光斜切过课桌。"
+                        "两人都装作在对题，实际上都在观察那枚粉色吊坠与便签的反光。"
+                    )
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-cinematic-reference-prompt",
+                "type": "assets_task",
+                "payload": {
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "characters": ["苏黎"],
+                    "reference_policy": "required",
+                    "reference_candidates": [
+                        "characters/苏黎/苏黎.png",
+                        "generated/images/scene-0001.png",
+                    ],
+                    "planner_hints": "突出二人表面普通对题、暗中试探的紧张感。",
+                },
+            },
+            phase="after_critic",
+            planner=None,
+        )
+
+        scene_job = result["outputs"]["jobs"][0]
+        prompt = scene_job["prompt"]
+        self.assertIn("镜头设计：", prompt)
+        self.assertIn("构图与主体：", prompt)
+        self.assertIn("光线与氛围：", prompt)
+        self.assertIn("参考图用途：", prompt)
+        self.assertIn("characters/苏黎/苏黎.png", prompt)
+        self.assertIn("文件名：苏黎.png", prompt)
+        self.assertIn("角色人设参考：苏黎", prompt)
+        self.assertIn("generated/images/scene-0001.png", prompt)
+        self.assertIn("文件名：scene-0001.png", prompt)
+        self.assertIn("画风参考", prompt)
+        self.assertNotIn("剧情依据：", prompt)
 
     def test_default_plan_infers_art_style_when_save_has_no_reference_images(self):
         (self.run_dir / "story.output.json").write_text(

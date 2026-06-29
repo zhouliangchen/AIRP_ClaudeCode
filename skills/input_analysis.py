@@ -257,6 +257,8 @@ def _role_input_split(data, role_channel):
                 guidance_parts.append(text)
     action = "\n".join(_dedupe_nonempty(action_parts))
     guidance = "\n".join(_dedupe_nonempty(guidance_parts))
+    if not guidance and _to_text(role_channel).strip():
+        action = _to_text(role_channel).strip()
     if not action and not guidance:
         action = _to_text(role_channel).strip()
     return action, guidance

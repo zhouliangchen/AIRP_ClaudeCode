@@ -283,6 +283,73 @@ class AgentTurnLoopTest(unittest.TestCase):
         self.agent_run.read_json(self.run_dir / "gm.output.json")
         self.agent_run.read_json(self.run_dir / "actor.outputs.json")
 
+    def test_actor_recalled_key_memory_is_written_to_runtime_sidecar_only(self):
+        self.register_characters("Ada")
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                return {
+                    "agent": "gm",
+                    "scene_beats": [],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-character-Ada-1",
+                        "actor_id": "character:Ada",
+                        "prompt": "You notice the old seal.",
+                        "reason": "Ada can inspect the seal.",
+                        "visibility_basis": {
+                            "mode": "direct",
+                            "summary": "The seal is directly visible to Ada.",
+                            "target_actor": "character:Ada",
+                            "visible_to": ["character:Ada"],
+                            "sensory_channels": ["visual"],
+                        },
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": {
+                        "reason": "The player decides what to do next.",
+                        "options": ["wait", "ask"],
+                    },
+                    "stop_reason": "player_decision",
+                }
+            self.assertEqual(agent_key, "character:Ada")
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "natural_reply": "I remember where the sealed index is.",
+                "events": [{
+                    "type": "reply",
+                    "target": "gm",
+                    "content": "I remember where the sealed index is.",
+                    "metadata": {},
+                }],
+                "_runtime_recalled_key_memories": [{
+                    "query": "sealed index",
+                    "tag": "sealed index",
+                    "summary": "I know the sealed index is connected to the lamp.",
+                    "detail": "DETAIL_FOR_POST_ROUND_MEMORY",
+                }],
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=1)
+
+        self.assertTrue(result["ok"])
+        actor_outputs = self.agent_run.read_json(self.run_dir / "actor.outputs.json")
+        self.assertNotIn("_runtime_recalled_key_memories", json.dumps(actor_outputs, ensure_ascii=False))
+        sidecar = self.agent_run.read_json(
+            self.run_dir / "artifacts" / "actor.recalled_key_memories.json"
+        )
+        self.assertEqual(
+            sidecar["character:Ada"][0]["detail"],
+            "DETAIL_FOR_POST_ROUND_MEMORY",
+        )
+        self.assertEqual(
+            sidecar["character:Ada"][0]["source_call_id"],
+            "call-character-Ada-1",
+        )
+
     def test_gm_capability_request_creates_pending_character_rename_intent(self):
         def dispatch(agent_key, packet):
             self.assertEqual(agent_key, "gm")
@@ -2708,6 +2775,53 @@ class AgentTurnLoopTest(unittest.TestCase):
         trace = self.agent_run.read_json(self.run_dir / "interaction.trace.json")
         self.assertNotEqual(trace.get("status"), "decision_point")
         self.assertEqual([agent_key for agent_key, _packet in calls], ["gm"])
+
+    def test_invalid_late_player_decision_is_sanitized_before_gm_artifact(self):
+        calls = []
+
+        def dispatch(agent_key, packet):
+            calls.append((agent_key, packet))
+            if agent_key == "player":
+                return {
+                    "agent": "player",
+                    "agent_id": "player",
+                    "events": [{"type": "reply", "target": "gm", "content": "I raise my hand."}],
+                    "stop_reason": "continue",
+                }
+            self.assertEqual(agent_key, "gm")
+            if len([call for call in calls if call[0] == "gm"]) == 1:
+                return {
+                    "agent": "gm",
+                    "scene_beats": [{"content": "The classroom notices the mark."}],
+                    "events": [],
+                    "actor_calls": [{
+                        "call_id": "call-player-1",
+                        "actor_id": "player",
+                        "prompt": "你注意到班主任正在看你。",
+                        "reason": "The player should respond before any decision stop.",
+                    }],
+                    "parallel_groups": [],
+                    "world_state_delta": [],
+                    "decision_point": None,
+                    "stop_reason": "continue",
+                }
+            return {
+                "agent": "gm",
+                "scene_beats": [{"content": "The teacher asks whether you can walk to the infirmary."}],
+                "events": [],
+                "actor_calls": [],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": "player_decision",
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertEqual(result["stop_reason"], "max_steps")
+        gm_loop = self.agent_run.read_json(self.run_dir / "gm.output.json")
+        self.assertEqual(gm_loop["outputs"][1]["stop_reason"], "continue")
+        self.assertIsNone(gm_loop["outputs"][1]["decision_point"])
 
     def test_pre_player_gm_output_preserves_sensory_claims(self):
         def dispatch(agent_key, packet):

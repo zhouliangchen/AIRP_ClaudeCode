@@ -31,6 +31,46 @@ class CapabilityExecutorsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_execute_assets_task_passes_runtime_settings_to_assets_ui_runtime(self):
+        intent = {
+            "id": "intent_assets_debug",
+            "type": "assets_task",
+            "payload": {"kind": "scene_illustration", "prompt": "debug"},
+        }
+        calls = []
+        original = self.executors.assets_ui_runtime.process_assets_task
+
+        def fake_process(card_folder, run_dir, current_intent, *, phase, runtime_settings=None, run_command=None, planner=None):
+            del planner
+            calls.append(
+                {
+                    "card_folder": Path(card_folder),
+                    "run_dir": Path(run_dir),
+                    "intent": current_intent,
+                    "phase": phase,
+                    "runtime_settings": runtime_settings,
+                    "run_command": run_command,
+                }
+            )
+            return {"status": "completed", "outputs": {"ok": True}}
+
+        try:
+            self.executors.assets_ui_runtime.process_assets_task = fake_process
+            result = self.executors.execute_intent(
+                self.card,
+                self.run_dir,
+                intent,
+                phase="after_critic",
+                runtime_settings={"modelDebugMode": True},
+            )
+        finally:
+            self.executors.assets_ui_runtime.process_assets_task = original
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["phase"], "after_critic")
+        self.assertEqual(calls[0]["runtime_settings"], {"modelDebugMode": True})
+
     def test_execute_replay_plan_materializes_nested_payload_without_confirmation(self):
         backup_id = "round-000001-20260623T000000000000Z-abc123def456"
         backup_dir = self.card / "backup" / backup_id

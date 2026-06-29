@@ -17,6 +17,7 @@ import agent_run
 import agent_schemas
 import agent_visibility
 import agent_visibility_guard
+import actor_recall_artifacts
 import actor_memory_store
 import projection_agent
 import runtime_settings
@@ -244,6 +245,9 @@ def _validate_actor_output(actor_id: str, payload: Any) -> dict:
             )
         except agent_schemas.ValidationError as exc:
             raise SubgmTurnLoopError(f"invalid actor output for {actor_id}: {exc}") from exc
+    runtime_recalled = actor_recall_artifacts.runtime_items(payload)
+    if isinstance(payload, dict) and runtime_recalled:
+        payload = actor_recall_artifacts.strip_runtime_fields(payload)
     try:
         output = agent_schemas.validate_actor_output(payload)
     except agent_schemas.ValidationError as exc:
@@ -252,7 +256,30 @@ def _validate_actor_output(actor_id: str, payload: Any) -> dict:
         raise SubgmTurnLoopError(f"invalid actor output for {actor_id}: wrong agent {output.get('agent')!r}")
     if output.get("agent_id") != actor_id:
         raise SubgmTurnLoopError(f"invalid actor output for {actor_id}: wrong agent_id {output.get('agent_id')!r}")
+    if runtime_recalled:
+        output = actor_recall_artifacts.attach_runtime_items(output, runtime_recalled)
     return output
+
+
+def _strip_runtime_actor_output_fields(actor_output: dict) -> dict:
+    return actor_recall_artifacts.strip_runtime_fields(actor_output)
+
+
+def _record_actor_recalled_key_memories(
+    side_dir: Path,
+    actor_id: str,
+    call_id: str,
+    actor_output: dict,
+) -> None:
+    try:
+        actor_recall_artifacts.append_records(
+            side_dir,
+            actor_id,
+            call_id,
+            actor_recall_artifacts.runtime_items(actor_output),
+        )
+    except Exception as exc:
+        raise SubgmTurnLoopError(f"record actor recalled key memories failed: {exc}") from exc
 
 
 def _validate_actor_call_id(call: dict) -> str:
@@ -529,7 +556,8 @@ def _route_actor_calls(
                 "actor_call_id": call_id,
             },
         )
-        actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
+        runtime_actor_output = _validate_actor_output(actor_id, dispatch(actor_id, packet))
+        actor_output = _strip_runtime_actor_output_fields(runtime_actor_output)
         _append_short_term_dialogue(
             card_folder,
             actor_id,
@@ -545,6 +573,7 @@ def _route_actor_calls(
             f"{side_dir.name}:{call_id}:actor",
         )
         called_actors.append(actor_id)
+        _record_actor_recalled_key_memories(side_dir, actor_id, call_id, runtime_actor_output)
         _persist_actor_output(side_dir, actor_id, actor_output)
         for event in actor_output.get("events", []):
             _record_actor_event(side_dir, actor_id, event, call_id)

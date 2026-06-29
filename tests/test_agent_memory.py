@@ -889,6 +889,68 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertIn("Projected actor-facing wording.", dialogue_text)
         self.assertNotIn("Raw objective claim.", dialogue_text)
 
+    def test_schedule_post_round_memory_jobs_includes_runtime_recalled_key_memory_details(self):
+        self._write_actor_files(
+            "Ada",
+            profile="I am Ada.\n",
+            long_term="I guard the archive.\n",
+            key_memories=[{
+                "tag": "sealed index",
+                "summary": "I know the sealed index matters.",
+                "detail": "STORED_DETAIL_SHOULD_NOT_APPEAR_WITHOUT_RECALL",
+            }],
+            short_term="I am standing near the lamp.\n",
+        )
+        self._write_story_input(
+            {
+                "character:Ada": [
+                    {
+                        "agent": "character",
+                        "agent_id": "character:Ada",
+                        "character_name": "Ada",
+                        "natural_reply": "I remember the sealed index.",
+                        "events": [{
+                            "type": "reply",
+                            "target": "gm",
+                            "content": "I remember the sealed index.",
+                            "metadata": {},
+                        }],
+                    }
+                ],
+            }
+        )
+        _write_json(
+            self.run_dir / "artifacts" / "actor.recalled_key_memories.json",
+            {
+                "character:Ada": [
+                    {
+                        "query": "sealed index",
+                        "tag": "sealed index",
+                        "summary": "I know the sealed index matters.",
+                        "detail": "DETAIL_VISIBLE_TO_POST_ROUND_MEMORY",
+                        "source_call_id": "call-character-Ada-1",
+                    }
+                ]
+            },
+        )
+
+        self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
+
+        job_payload = json.loads(
+            (self.run_dir / "post_round_memory_jobs" / "character_Ada.job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        prompt_text = (
+            self.run_dir / "prompts" / "post_round_memory" / "character_Ada.prompt.md"
+        ).read_text(encoding="utf-8")
+        job_text = json.dumps(job_payload, ensure_ascii=False)
+
+        self.assertIn("DETAIL_VISIBLE_TO_POST_ROUND_MEMORY", job_text)
+        self.assertIn("DETAIL_VISIBLE_TO_POST_ROUND_MEMORY", prompt_text)
+        self.assertIn("本轮我主动回忆起的重点记忆细节", prompt_text)
+        self.assertNotIn("STORED_DETAIL_SHOULD_NOT_APPEAR_WITHOUT_RECALL", prompt_text)
+
     def test_schedule_post_round_memory_jobs_uses_new_actor_files_and_ignores_objective_recent_and_legacy_goals(self):
         self._write_actor_files(
             "Ada",

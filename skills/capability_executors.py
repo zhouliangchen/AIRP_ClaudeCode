@@ -33,6 +33,7 @@ def execute_intent(
             run_dir,
             intent,
             phase=phase,
+            runtime_settings=runtime_settings,
             run_command=run_command,
         )
     if intent_type == "replay_plan":
@@ -61,6 +62,7 @@ def execute_assets_task(
     intent: dict[str, Any],
     *,
     phase: str,
+    runtime_settings: dict[str, Any] | None = None,
     run_command: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     return assets_ui_runtime.process_assets_task(
@@ -68,6 +70,7 @@ def execute_assets_task(
         run_dir,
         intent,
         phase=phase,
+        runtime_settings=runtime_settings,
         run_command=run_command,
     )
 

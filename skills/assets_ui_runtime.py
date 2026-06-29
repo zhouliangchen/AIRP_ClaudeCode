@@ -8,7 +8,9 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 import agent_run
+import llm_runner
 import llm_settings
+import model_debug
 import postprocess_outputs
 
 
@@ -29,6 +31,7 @@ def process_assets_task(
     intent: dict[str, Any],
     *,
     phase: str,
+    runtime_settings: dict[str, Any] | None = None,
     run_command: Callable[..., Any] | None = None,
     planner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -37,7 +40,15 @@ def process_assets_task(
     payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
     postprocess_contract_update = postprocess_outputs.apply_ui_schema_contract_update(card, payload)
     context = _planner_context(card, run_root, intent, payload, phase)
-    plan = planner(context) if planner is not None else _default_plan(context)
+    plan = (
+        _run_planner_with_debug(
+            model_debug.logger_from_settings(card, run_root.name, runtime_settings),
+            planner,
+            context,
+        )
+        if planner is not None
+        else _default_plan(context)
+    )
     if not isinstance(plan, dict):
         plan = {}
 
@@ -108,6 +119,7 @@ def process_persistent_requirements(
     run_dir: str | Path,
     *,
     phase: str,
+    runtime_settings: dict[str, Any] | None = None,
     run_command: Callable[..., Any] | None = None,
     planner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -145,9 +157,99 @@ def process_persistent_requirements(
         run_dir,
         intent,
         phase=phase,
+        runtime_settings=runtime_settings,
         run_command=run_command,
         planner=planner,
     )
+
+
+def _run_planner_with_debug(
+    logger: model_debug.ModelDebugLogger | None,
+    planner: Callable[[dict[str, Any]], dict[str, Any]],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    if logger is None:
+        return planner(context)
+
+    started = model_debug.utc_now()
+    prompt = _debug_json(
+        {
+            "agent": "assets-ui",
+            "task": "plan image asset jobs from runtime context",
+            "context": context,
+        }
+    )
+    stdout = ""
+    error = ""
+    exception_type = ""
+    returncode: int | None = None
+    try:
+        plan = planner(context)
+        stdout = _debug_json(plan)
+        returncode = 0
+        return plan
+    except Exception as exc:
+        error = str(exc)
+        exception_type = exc.__class__.__name__
+        raise
+    finally:
+        ended = model_debug.utc_now()
+        try:
+            logger.write_call(
+                agent_key="assets-ui",
+                cwd=str(context.get("run_dir") or ""),
+                prompt=prompt,
+                stdout=stdout,
+                stderr="",
+                returncode=returncode,
+                started_at=model_debug.isoformat(started),
+                ended_at=model_debug.isoformat(ended),
+                duration_ms=model_debug.duration_ms(started, ended),
+                error=error,
+                exception_type=exception_type,
+                api_metadata=_planner_api_metadata(stdout),
+            )
+        except Exception:
+            if not exception_type:
+                raise
+
+
+def _planner_api_metadata(stdout: str) -> dict[str, Any]:
+    try:
+        last_result = llm_runner.get_last_result()
+    except Exception:
+        last_result = None
+    if not isinstance(last_result, dict):
+        return {}
+    metadata = {
+        key: last_result[key]
+        for key in ("provider", "model", "status", "usage", "raw_response")
+        if key in last_result
+    }
+    preview = str(last_result.get("text") or stdout or "").strip()
+    if preview:
+        metadata["response_preview"] = preview[:500]
+    return metadata
+
+
+def _debug_json(value: Any) -> str:
+    return json.dumps(_debug_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _debug_jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _debug_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_debug_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_debug_jsonable(item) for item in value]
+    if isinstance(value, set):
+        return sorted((_debug_jsonable(item) for item in value), key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _planner_context(
@@ -260,9 +362,10 @@ def _scene_illustration_prompt(
     reference_candidates: list[str],
 ) -> str:
     parts: list[str] = []
+    parts.append("画面目标：生成一张有镜头感的剧情插图，选择本轮剧情中最有张力的一瞬间；不要把正文逐句画成流水账。")
     hints = _text(payload.get("planner_hints"))
     if hints:
-        parts.append(f"本轮画面重点：{hints}")
+        parts.append(f"画面重点：{hints}")
     art_style = _text(payload.get("art_style"))
     if art_style:
         parts.append(f"用户指定画风：{art_style}")
@@ -270,11 +373,9 @@ def _scene_illustration_prompt(
         parts.append(
             "画风策略：当前存档没有可用参考图片；请根据剧情题材、时代、情绪、场景和角色状态智能匹配画风，"
             "并在后续同一存档中保持一致。"
-        )
+    )
     story = context.get("story_output") if isinstance(context.get("story_output"), dict) else {}
     story_text = _text(story.get("content")) or _default_persistent_prompt(card, run_dir)
-    if story_text:
-        parts.append(f"剧情依据：{_trim_text(story_text, 900)}")
     summary = _text(payload.get("summary")) or _text(payload.get("prompt"))
     if summary:
         parts.append(f"需求来源：{summary}")
@@ -288,8 +389,63 @@ def _scene_illustration_prompt(
         parts.append("角色形象参考：" + "；".join(profile_lines))
     if characters:
         parts.append("画面必须包含角色：" + "、".join(characters))
-    parts.append("生成一张剧情插图，强调当前场景、角色关系、动作和情绪；保持小说插画质感，避免文字、对白气泡、UI和水印。")
+    reference_lines = _reference_usage_lines(reference_candidates)
+    if reference_lines:
+        parts.append("参考图用途：\n" + "\n".join(reference_lines))
+    visual_source = _trim_text(story_text, 520)
+    if visual_source:
+        parts.append(f"剧情素材摘要（仅用于提炼画面，不要逐句复述）：{visual_source}")
+    if characters:
+        parts.append(
+            "构图与主体：以主要角色的姿态、视线和相互距离表达关系；让关键道具或异常现象成为视觉焦点，"
+            "避免把所有剧情元素平均铺满画面。"
+        )
+    else:
+        parts.append(
+            "构图与主体：选择最能概括本轮剧情的主体、道具或环境变化作为视觉焦点，避免信息堆叠。"
+        )
+    parts.append("镜头设计：使用小说插画式单镜头构图，可采用中景、近景或斜向视角；明确前景、中景、背景层次。")
+    parts.append("动作与情绪：突出正在发生的动作、微表情和紧张/暧昧/悬疑等情绪，不要画成静态人物站桩。")
+    parts.append("光线与氛围：根据场景时间、地点和情绪设计光源、色温、阴影和空气感，使画面具有电影感。")
+    parts.append("禁止：不要文字、对白气泡、UI、截图边框、水印、签名；不要把剧情文本或说明文字画进画面。")
     return "\n".join(part for part in parts if part).strip()
+
+
+def _reference_usage_lines(reference_candidates: list[str]) -> list[str]:
+    lines: list[str] = []
+    for reference in reference_candidates:
+        rel = _normalize_reference_display_path(reference)
+        if not rel:
+            continue
+        filename = Path(rel).name
+        purpose = _reference_purpose(rel)
+        lines.append(f"- {rel}（文件名：{filename}）：{purpose}")
+    return lines
+
+
+def _normalize_reference_display_path(reference: str) -> str:
+    raw = _text(reference).replace("\\", "/").strip("/")
+    if not raw or raw.startswith("../") or "/../" in raw:
+        return ""
+    return raw
+
+
+def _reference_purpose(reference: str) -> str:
+    parts = [part for part in reference.replace("\\", "/").split("/") if part]
+    if len(parts) >= 3 and parts[0] == "characters":
+        character_name = parts[1]
+        stem = Path(parts[-1]).stem
+        prefix = character_name + "-"
+        if stem.startswith(prefix):
+            state = stem[len(prefix) :]
+            return f"角色人设参考：{character_name}（当前外观状态：{state}）"
+        return f"角色人设参考：{character_name}"
+    lowered = reference.lower()
+    if any(marker in lowered for marker in ("style", "art_style", "palette", "mood", "画风")):
+        return "画风参考：沿用整体画风、色彩倾向、笔触和质感"
+    if "generated/images/" in lowered or "scene" in lowered:
+        return "画风参考：沿用既有插图的整体画风、镜头氛围和场景质感"
+    return "其他参考：用于补充画面设定、道具、场景或氛围"
 
 
 def _materialize_character_reference_job(

@@ -785,6 +785,47 @@ class InputAnalysisTest(unittest.TestCase):
             ],
         )
 
+    def test_routing_preserves_full_role_channel_when_no_guidance(self):
+        first_action = "我保持语气自然，没有立刻追问吊坠或魔法少女的事。"
+        second_action = "同时我继续观察她和那本旧封皮笔记，留意她是否知道粉色花瓣水印的含义。"
+        role_text = first_action + second_action
+        data = self._analysis()
+        data["routing"]["role_channel"] = role_text
+        data["semantic_units"] = [
+            {
+                "id": "role-action-1",
+                "source_channel": "role_input",
+                "type": "action",
+                "raw_excerpt": first_action,
+                "derived_summary": "玩家角色保持自然语气。",
+                "confidence": 0.91,
+                "visibility": "player_pov",
+                "persist": False,
+            },
+            {
+                "id": "role-action-2",
+                "source_channel": "role_input",
+                "type": "action",
+                "raw_excerpt": second_action,
+                "derived_summary": "玩家角色继续观察苏黎和旧笔记。",
+                "confidence": 0.9,
+                "visibility": "player_pov",
+                "persist": False,
+            },
+        ]
+
+        result = self.mod.analysis_to_routed_input(data)
+
+        self.assertEqual(result["role_action_channel"], role_text)
+        self.assertEqual(result["narrative_guidance_channel"], "")
+        self.assertEqual(
+            result["components"],
+            [
+                {"channel": "role", "text": role_text},
+                {"channel": "user_instruction", "text": self.instruction},
+            ],
+        )
+
     def test_validate_rejects_non_explicit_routing_text_not_in_raw_input(self):
         data = self._analysis()
         data["routing"]["role_channel"] = "I do something the player never wrote."

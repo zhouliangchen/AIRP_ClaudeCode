@@ -91,7 +91,7 @@ python skills/image_generate.py "<卡片文件夹>" --prompt "rainy seaside conv
 
 图片与 UI 工作永远是正文交付后的异步增强。除用户主动提出的图片/UI需求外，GM、story、critic 可以通过 `asset_requests[]` 提出、修改或删除 assets-ui 任务需求，subGM 只能提出新增需求；一轮可以有多个需求，但通常不建议超过 2 张。剧情插图可以覆盖整段剧情、剧情亮点片段，也可以用于人物形象刻画，由发起 agent 根据审美判断。运行时会把这些需求记录成非阻塞 `assets_task`；任务会在 critic 通过后启动并委托给 assets-ui runtime planner 执行，由 runtime pump 和执行器维护任务状态，并把审计结果写入 `artifacts/assets_ui/`、`artifacts/runtime_pump/` 和 `generated/jobs/`。assets-ui 任务不会阻塞正文交付或下一轮输入。当 UI manifest 中存在 `asset_requirements.scene_illustration_each_round` 等持久化需求时，assets-ui runtime 会把它们保存在 `ui_manifest.json` 中，后续轮次继续复用，而不是把需求静默留在单轮 prompt 里。
 
-如果请求要求“必须使用参考图”或“必须保持角色/画风一致”，assets-ui runtime 会显式记录参考策略。当前 provider 尚不支持必需参考图时，任务会以 `reference_image_not_supported` 等明确原因进入 deferred 状态，而不是静默降级成无参考图的 prompt-only 生成。没有外部图片/UI worker 时，任务同样会标记为 `deferred`，不会阻塞已经通过 critic 的文本交付，也不会调用真实图片模型。
+如果请求要求“必须使用参考图”或“必须保持角色/画风一致”，assets-ui runtime 会显式记录参考策略；`image_generate.py` 会在存在 `--reference` 时调用 OpenAI-compatible `/images/edits` 端点并把一张或多张参考图随 multipart 请求发送给底层 provider。assets-ui 生成剧情插图 prompt 时会把剧情材料优化为镜头化图片描述，并逐张标注参考图的相对路径、文件名和引用目的，例如具体角色人设参考、画风参考或场景氛围参考。若 provider 的参考图端点不可用或不支持，任务会以 `reference_image_not_supported` 等明确原因进入 deferred 状态，而不是静默降级成无参考图的 prompt-only 生成。没有外部图片/UI worker 时，任务同样会标记为 `deferred`，不会阻塞已经通过 critic 的文本交付，也不会调用真实图片模型。
 
 单存档 UI 定制请写在卡片文件夹内的 `.beautify_template.html`、`.beautify.json`、`.regex_scripts.json`、`ui_manifest.json` 和按需生成的 `postprocess_contract.json`。不要把全局 `skills/styles/index.html` 当作某张卡的定制层。若 assets-ui 更新存档级 UI schema，必须同步更新 `postprocess_contract.json`；缺少必要数据契约时写入 `.agent_runs/postprocess_repair_queue.jsonl`，下一轮再补齐。
 
@@ -180,7 +180,7 @@ critic 会在 `critic.report.json.repair_routing` 中标注失败来源和回退
 }
 ```
 
-开启后，每次大模型调用都会把实际发送给模型的完整原始 prompt，以及模型进程返回的完整 stdout、stderr、returncode 或异常信息写入当前存档目录的 `debug/model_calls/` 下。单次调用日志位于 `debug/model_calls/<round_id>/`，全局索引位于 `debug/model_calls/index.jsonl`。这些日志可能包含 GM-only 隐藏设定、角色私有记忆、用户指令和模型原始输出，只用于本地调试，不会进入 agent 上下文，也不应提交到仓库。
+开启后，每次大模型调用都会把实际发送给模型的完整原始 prompt，以及模型进程返回的完整 stdout、stderr、returncode 或异常信息写入当前存档目录的 `debug/model_calls/` 下；assets-ui agent/planner 的图片任务规划调用也会写入同一目录。单次调用日志位于 `debug/model_calls/<round_id>/`，全局索引位于 `debug/model_calls/index.jsonl`。这些日志可能包含 GM-only 隐藏设定、角色私有记忆、用户指令、绘图规划材料和模型原始输出，只用于本地调试，不会进入 agent 上下文，也不应提交到仓库。
 
 ## 常用开发命令
 

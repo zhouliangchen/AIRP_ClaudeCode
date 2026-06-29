@@ -12,6 +12,7 @@ import agent_memory_model
 import agent_messages
 import agent_run
 import agent_visibility
+import actor_recall_artifacts
 import actor_memory_store
 
 
@@ -554,6 +555,45 @@ def _key_memory_cue_lines(value: Any, *, limit: int = 20) -> list[str]:
     return lines
 
 
+def _recalled_key_memory_lines(value: Any, *, limit: int = 20) -> list[str]:
+    lines: list[str] = []
+    source = value if isinstance(value, list) else []
+    for item in source:
+        if len(lines) >= limit:
+            lines.append("- ...")
+            break
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("tag") or item.get("query") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        call_id = str(item.get("source_call_id") or "").strip()
+        if not (label or summary or detail):
+            continue
+        header = f"- {label}" if label else "- 本轮主动回忆"
+        if call_id:
+            header += f"（来源：{call_id}）"
+        lines.append(header)
+        if summary:
+            lines.append(f"  摘要：{summary}")
+        if detail:
+            lines.append(f"  详情：{detail}")
+    return lines
+
+
+def _recalled_key_memories_for_actor(run_dir: Path, agent_id: str) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for item in actor_recall_artifacts.read_records(run_dir).get(agent_id, []):
+        records.append(item)
+    side_root = run_dir / "side_threads"
+    for side_dir in sorted(side_root.iterdir()) if side_root.exists() else []:
+        if not side_dir.is_dir():
+            continue
+        for item in actor_recall_artifacts.read_records(side_dir).get(agent_id, []):
+            records.append(item)
+    return records
+
+
 def _post_round_dialogue_text(round_dialogue: Any) -> str:
     if not isinstance(round_dialogue, list) or not round_dialogue:
         return "- 本轮没有需要我整理进短期记忆的直接对话。"
@@ -575,6 +615,7 @@ def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
     short_term = str(job_payload.get("short_term_memories") or "").strip()
     key_cues = job_payload.get("key_memory_cues", [])
     key_lines = _key_memory_cue_lines(key_cues, limit=20)
+    recalled_lines = _recalled_key_memory_lines(job_payload.get("recalled_key_memories", []), limit=20)
     sections = [
         "## 我是谁",
         profile if profile else "暂无。",
@@ -584,6 +625,9 @@ def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
         "",
         "## 我当前已有的重点记忆线索",
         "\n".join(key_lines) if key_lines else "暂无。",
+        "",
+        "## 本轮我主动回忆起的重点记忆细节",
+        "\n".join(recalled_lines) if recalled_lines else "暂无。",
         "",
         "## 本轮自动记录的短期记忆",
         short_term if short_term else "暂无。",
@@ -614,6 +658,7 @@ def _post_round_job_payload(
         "short_term_memories": str(stored.get("short_term") or ""),
         "long_term_memories": str(stored.get("long_term") or ""),
         "key_memory_cues": key_cues,
+        "recalled_key_memories": _recalled_key_memories_for_actor(run_dir, agent_id),
     }
     _validate_post_round_actor_safe_payload(payload, "post_round_memory_job")
     return payload

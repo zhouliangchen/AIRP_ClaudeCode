@@ -1098,6 +1098,28 @@ class TurnStateTest(unittest.TestCase):
                 return json.loads(response.read().decode("utf-8"))
 
         try:
+            chinese_role_text = "我叫雨蒙，今天早上看见粉色云彩。"
+            chinese_instruction_text = "作品基调：日式轻小说校园非日常喜剧。"
+            chinese_result = post_submit({
+                "roleText": chinese_role_text,
+                "instructionText": chinese_instruction_text,
+            })
+
+            self.assertTrue(chinese_result["ok"])
+            self.assertEqual(chinese_result["text"], chinese_role_text)
+            expected_chinese_raw = chinese_role_text + "\n\n[USER_INSTRUCTION]\n" + chinese_instruction_text
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_chinese_raw)
+            inputs = self.handler.read_player_inputs(str(self.card))
+            pending = self.handler.read_pending_user_turn(str(self.card))
+            self.assertEqual(inputs[-1]["raw_text"], expected_chinese_raw)
+            self.assertEqual(inputs[-1]["display_text"], chinese_role_text)
+            self.assertEqual(inputs[-1]["role_text"], chinese_role_text)
+            self.assertEqual(inputs[-1]["user_instruction_text"], chinese_instruction_text)
+            self.assertEqual(pending["raw_text"], expected_chinese_raw)
+            self.assertEqual(pending["display_text"], chinese_role_text)
+            self.assertEqual(pending["role_text"], chinese_role_text)
+            self.assertEqual(pending["user_instruction_text"], chinese_instruction_text)
+
             role_text = " I open the gate. "
             instruction_text = " Make the gate lead to orbit. "
             result = post_submit({"roleText": role_text, "instructionText": instruction_text})
