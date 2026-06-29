@@ -141,13 +141,17 @@ def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
             else:
                 resolved.append(normalized)
 
-    if required:
+    reference_candidates = []
+    if job.get("queue_type") == "scene_illustration":
         for item in _reference_candidate_paths(job):
             normalized = _normalize_asset_path(item)
             if normalized is None:
                 return str(item)
-            if not normalized:
-                continue
+            if normalized:
+                reference_candidates.append(normalized)
+
+    if required:
+        for normalized in reference_candidates:
             if (card / Path(normalized)).is_file():
                 resolved.append(normalized)
             else:

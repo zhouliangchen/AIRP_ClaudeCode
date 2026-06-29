@@ -352,6 +352,43 @@ class AssetJobQueueTest(unittest.TestCase):
         job = _read_json(self.card / "generated" / "jobs" / "scene-optional-ref.json")
         self.assertEqual(job["resolved_references"], ["generated/characters/Ada/Ada.png"])
 
+    def test_optional_scene_invalid_reference_candidate_path_fails_before_worker(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-optional-invalid-candidate",
+                    "round_id": "round-000003",
+                    "prompt": "Ada 站在舞台中央",
+                    "reference_policy": "optional",
+                    "reference_candidates": ["../escape.png"],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "scene-optional-invalid-candidate.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "invalid_asset_path")
+        self.assertEqual(job["invalid_path"], "../escape.png")
+
     def test_required_scene_resolved_references_pass_worker_references(self):
         ref = self.card / "generated" / "characters" / "Ada" / "Ada.png"
         ref.parent.mkdir(parents=True)
