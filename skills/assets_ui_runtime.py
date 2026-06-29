@@ -51,6 +51,8 @@ def process_assets_task(
     )
     if not isinstance(plan, dict):
         plan = {}
+    plan = dict(plan)
+    plan["scene_jobs"] = _scene_jobs_with_payload_defaults(plan.get("scene_jobs"), payload, card, context)
 
     asset_requirement_update = _apply_asset_requirement_update(card, payload, plan)
     settings = llm_settings.read_effective_settings()
@@ -297,6 +299,10 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     if not reference_candidates and appearance_specs:
         reference_candidates = [spec["reference_path"] for spec in appearance_specs]
         using_default_references = True
+    reference_candidates = _append_reference_candidates(
+        reference_candidates,
+        _recent_scene_reference_candidates(card, context),
+    )
     reference_policy = _default_reference_policy(payload, characters)
     prompt = _scene_illustration_prompt(context, payload, card, run_dir, characters, reference_candidates)
     plan: dict[str, Any] = {
@@ -340,6 +346,74 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     if requirement:
         plan["asset_requirement_update"] = requirement
     return plan
+
+
+def _scene_jobs_with_payload_defaults(
+    value: Any,
+    payload: dict[str, Any],
+    card: Path,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    payload_characters = _safe_character_names(payload.get("characters"))
+    payload_appearances = _character_appearance_specs(payload, payload_characters)
+    payload_reference_candidates = _as_string_list(payload.get("reference_candidates"))
+    if not payload_reference_candidates and payload_appearances:
+        payload_reference_candidates = [spec["reference_path"] for spec in payload_appearances]
+    payload_reference_candidates = _append_reference_candidates(
+        payload_reference_candidates,
+        _recent_scene_reference_candidates(card, context),
+    )
+    payload_policy = _default_reference_policy(payload, _appearance_character_names(payload_appearances))
+    payload_art_style = _text(payload.get("art_style"))
+
+    for item in _as_list(value):
+        job = dict(item) if isinstance(item, dict) else {}
+        characters = _safe_character_names(job.get("characters"))
+        appearances = _normalize_job_appearances(job.get("character_appearances"))
+        reference_candidates = _as_string_list(job.get("reference_candidates"))
+
+        if not characters and payload_appearances:
+            job["characters"] = _appearance_character_names(payload_appearances)
+        if not appearances and payload_appearances:
+            job["character_appearances"] = payload_appearances
+        if not reference_candidates and payload_reference_candidates:
+            job["reference_candidates"] = payload_reference_candidates
+        if not _text(job.get("reference_policy")) and payload_policy:
+            job["reference_policy"] = payload_policy
+        if not _text(job.get("art_style")) and payload_art_style:
+            job["art_style"] = payload_art_style
+        jobs.append(job)
+    return jobs
+
+
+def _append_reference_candidates(base: list[str], extra: list[str]) -> list[str]:
+    result = list(base)
+    for item in extra:
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def _recent_scene_reference_candidates(card: Path, context: dict[str, Any]) -> list[str]:
+    assets = context.get("card_assets") if isinstance(context.get("card_assets"), dict) else {}
+    images = _as_list(assets.get("images") if isinstance(assets, dict) else None)
+    for item in reversed(images):
+        if not isinstance(item, dict):
+            continue
+        kind = _text(item.get("kind"))
+        if kind not in {"scene", "scene_illustration"}:
+            continue
+        status = _text(item.get("status"))
+        if status and status != "completed":
+            continue
+        try:
+            path = _normalize_relative_path(item.get("path"))
+        except InvalidAssetPathError:
+            continue
+        if path and (card / Path(path)).exists():
+            return [path]
+    return []
 
 
 def _default_reference_policy(payload: dict[str, Any], characters: list[str]) -> str:

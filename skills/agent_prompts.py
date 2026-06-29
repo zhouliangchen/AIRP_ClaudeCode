@@ -764,6 +764,9 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
         contract_notes=(
             "Story writes only prose, source-backed character dialogues, "
             "and derived-content repair edits. Leave `derived_content_edits` empty for normal turns; "
+            "Visible `content` must be written as player-character second-person prose: "
+            "address the current player role as 你/妳/您 in narration, not primarily by character name "
+            "or third-person pronouns. This is the 玩家角色第二人称 delivery contract. "
             "For the player and registered important characters, story prose may quote or narrate "
             "their voluntary dialogue, actions, private thoughts, or long-term choices only when "
             "source-backed by `story_input.loop_outputs.actors` or side-thread `actor_outputs`; "
@@ -816,6 +819,11 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
                 "exempted": False,
                 "notes": "",
             },
+            "output_perspective": {
+                "status": "pass",
+                "expected": "second_person",
+                "notes": "",
+            },
         },
         "repair_routing": {
             "stage": "story_composition",
@@ -837,6 +845,7 @@ def _critic_prompt(run_summary: Dict[str, Any]) -> str:
         "- The dispatcher passes `quality_metrics` in Runtime Input next to `story_input` and `story_output`.\n"
         "- Fill `quality_checks.style_alignment` from the selected style and style profile; use `pass`, `revise`, `block`, or `not_checked`.\n"
         "- Fill `quality_checks.length` from `quality_metrics.word_count`; use `pass`, `revise`, `block`, `exempt`, or `not_checked`.\n"
+        "- Fill or enforce `quality_checks.output_perspective` from `quality_metrics.output_perspective`; visible prose must satisfy the 玩家角色第二人称 contract by addressing the player character as 你/妳/您 in narration. If the delivered prose primarily uses the player character name or third-person pronouns, treat it as a hard failure requiring story rewrite.\n"
         "- If `quality_metrics.word_count.exempted` is true because of a player decision stop, set the length status to `exempt` or otherwise note the player decision exemption instead of requiring expansion.\n"
         "- Do not create any quality check for NSFW; it is creative tone guidance, not a critic validation requirement.\n"
         "- `story.output.json` does not require `<summary>` or `<options>`; hard-failing their absence is incorrect because postprocess owns `core.summary` and `core.options` after critic pass.\n"

@@ -24,6 +24,7 @@ import input_analysis_apply
 import llm_runner
 import model_debug
 import projection_agent
+import runtime_settings
 
 try:
     from handler import write_progress
@@ -1541,7 +1542,67 @@ def _normalize_critic_report_for_story(
         and not _has_actionable_derived_content_edits(story, require_full_ai=True)
     ):
         return _force_retcon_derived_edit_revise(normalized)
+    if not _story_uses_second_person_player_view(story):
+        normalized = _force_second_person_story_revise(normalized)
     _infer_story_repair_routing_from_issues(normalized)
+    return normalized
+
+
+_QUOTED_TEXT_RE = re.compile(
+    r"「[^」]*」|『[^』]*』|“[^”]*”|\"[^\"]*\"|'[^']*'",
+    re.DOTALL,
+)
+
+
+def _story_uses_second_person_player_view(story: Dict[str, Any]) -> bool:
+    content = story.get("content", "") if isinstance(story, dict) else ""
+    visible = runtime_settings.extract_tag(content, "content") or (
+        content if isinstance(content, str) else ""
+    )
+    visible = runtime_settings.strip_control_tags(visible)
+    if runtime_settings.count_chinese_chars(visible) < 20:
+        return True
+    narration = _QUOTED_TEXT_RE.sub("", visible)
+    return any(marker in narration for marker in ("你", "妳", "您"))
+
+
+def _force_second_person_story_revise(critic: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(critic)
+    hard_failures = normalized.get("hard_failures")
+    if not isinstance(hard_failures, list):
+        hard_failures = []
+    failure = (
+        "story.output.json visible prose is not written from the player character's "
+        "second-person viewpoint; rewrite the delivered story so narration addresses "
+        "the player character as 你/妳/您 instead of primarily using the character name "
+        "or third-person pronouns."
+    )
+    if not any("second-person" in str(item) for item in hard_failures):
+        hard_failures.append(failure)
+    normalized["hard_failures"] = hard_failures
+    if str(normalized.get("decision") or "") == "pass":
+        normalized["decision"] = "revise"
+    instruction = str(normalized.get("repair_instruction") or "").strip()
+    perspective_instruction = (
+        "Rewrite only `story.output.json` as player-character second-person prose. "
+        "Keep source-backed events, dialogue provenance, and decision boundaries, but "
+        "make the visible narration address the player character as 你/妳/您."
+    )
+    normalized["repair_instruction"] = (
+        instruction + "\n" + perspective_instruction if instruction else perspective_instruction
+    )
+    routing = normalized.get("repair_routing")
+    routing = dict(routing) if isinstance(routing, dict) else {}
+    routing.update(
+        {
+            "stage": "story_composition",
+            "target_agents": ["story"],
+            "rollback": "story_only",
+            "can_auto_repair": True,
+            "risk": "low",
+        }
+    )
+    normalized["repair_routing"] = routing
     return normalized
 
 

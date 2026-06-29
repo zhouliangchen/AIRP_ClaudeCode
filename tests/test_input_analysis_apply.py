@@ -440,6 +440,137 @@ class InputAnalysisApplyTest(unittest.TestCase):
             self.assertIn("path: characters/雨蒙", player_mapping)
             self.assertFalse((card / "characters" / "player").exists())
 
+    def test_dual_channel_synopsis_with_role_alias_preserves_guidance(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        agent_run = _load_module("agent_run")
+        role_text = (
+            "我叫雨蒙，一名普通的高一男生。今天早上，我在上学路上，"
+            "发现天空出现诡异的粉色云彩。再回过神来时，自己正置身熟悉的教室。"
+        )
+        instruction_text = "作品基调：日式轻小说风格。"
+        raw_text = role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            (card / ".card_data.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "blank_bootstrap",
+                        "source_type": "blank",
+                        "name": "未命名角色",
+                        "data": {"name": "未命名角色"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (card / "chat_log.json").write_text("[]", encoding="utf-8")
+            run_dir = agent_run.create_run_dir(card, turn_index=0)
+            integrity = {
+                "raw_text_sha256": input_analysis.sha256_text(raw_text),
+                "role_text_sha256": input_analysis.sha256_text(role_text),
+                "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+                "raw_preserved": True,
+            }
+            (run_dir / "input.raw.json").write_text(
+                json.dumps(
+                    {
+                        "raw_text": raw_text,
+                        "role_text": role_text,
+                        "user_instruction_text": instruction_text,
+                        "source_integrity": integrity,
+                        "explicit_payload": {
+                            "input_schema": "dual_channel_v1",
+                            "role_text": role_text,
+                            "user_instruction_text": instruction_text,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "input_analysis.output.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "round_id": "round-000001",
+                        "analysis_mode": "fixture",
+                        "source_integrity": integrity,
+                        "semantic_units": [
+                            {
+                                "id": "su-001",
+                                "type": "character_declaration",
+                                "visibility": "player_pov",
+                                "raw_excerpt": "我叫雨蒙，一名普通的高一男生。",
+                                "derived_summary": "玩家声明自己叫雨蒙。",
+                                "source_channel": "role",
+                            },
+                            {
+                                "id": "su-002",
+                                "type": "synopsis",
+                                "visibility": "player_pov",
+                                "raw_excerpt": "今天早上，我在上学路上，发现天空出现诡异的粉色云彩。",
+                                "derived_summary": "玩家提供空白开局的异常云彩。",
+                                "source_channel": "role",
+                            },
+                            {
+                                "id": "su-003",
+                                "type": "synopsis",
+                                "visibility": "player_pov",
+                                "raw_excerpt": "再回过神来时，自己正置身熟悉的教室。",
+                                "derived_summary": "玩家提供回神后的教室场景。",
+                                "source_channel": "role",
+                            },
+                        ],
+                        "world_updates": {
+                            "hidden_facts": [],
+                            "public_facts": [],
+                            "important_characters": [
+                                {
+                                    "name": "雨蒙",
+                                    "summary": "高一男生，玩家操控的主要角色。",
+                                    "visibility": "character_pov",
+                                    "status": "active",
+                                }
+                            ],
+                            "retcon_requests": [],
+                        },
+                        "narrative_directives": {
+                            "rewrite_previous_output": False,
+                            "expand_synopsis_before_continue": False,
+                            "continue_after_player_action": True,
+                        },
+                        "routing": {
+                            "role_channel": role_text,
+                            "role_action_channel": "",
+                            "narrative_guidance_channel": role_text,
+                            "user_instruction_channel": instruction_text,
+                            "gm": True,
+                            "player": True,
+                            "characters": ["雨蒙"],
+                        },
+                        "routing_requests": [],
+                        "capability_requests": [],
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            mod.apply_current_run(card, ROOT)
+
+            normalized = json.loads(
+                (run_dir / "input_analysis.output.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                normalized["routing"]["narrative_guidance_channel"],
+                "今天早上，我在上学路上，发现天空出现诡异的粉色云彩。"
+                "\n再回过神来时，自己正置身熟悉的教室。",
+            )
+            self.assertEqual(normalized["routing"]["role_action_channel"], "")
+
     def test_normalizes_non_style_units_that_use_instruction_as_false_evidence(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis

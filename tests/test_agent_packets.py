@@ -1465,11 +1465,14 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("轻快节奏", story_prompt)
         self.assertIn("用明亮、轻快的句子推进场景。", story_prompt)
         self.assertIn("story output target: 1200", story_prompt)
+        self.assertIn("玩家角色第二人称", story_prompt)
         self.assertIn("NSFW creative tone: 舒缓", story_prompt)
         self.assertIn("轻快节奏", critic_prompt)
         self.assertIn("quality_metrics", critic_prompt)
         self.assertIn("style_alignment", critic_prompt)
         self.assertIn("length", critic_prompt)
+        self.assertIn("output_perspective", critic_prompt)
+        self.assertIn("玩家角色第二人称", critic_prompt)
         self.assertIn("player decision", critic_prompt)
         self.assertNotIn("NSFW creative tone: 舒缓", critic_prompt)
         for prompt_name, prompt_text in {
@@ -1482,7 +1485,7 @@ class AgentPacketTest(unittest.TestCase):
                 self.assertNotIn("minimum_chinese_chars", prompt_text)
             for removed_key in ("person", "antiImpersonation", "bgNpc", "charName"):
                 with self.subTest(prompt=prompt_name, removed_key=removed_key):
-                    self.assertNotIn(removed_key, prompt_text)
+                    self.assertNotIn(f'"{removed_key}"', prompt_text)
         self.assertNotIn("wordCount", critic_prompt)
         self.assertNotIn("NSFW tone option", critic_prompt)
         self.assertNotIn("NSFW creative tone", critic_prompt)

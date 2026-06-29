@@ -137,6 +137,101 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         audit = _read_json(self.run_dir / "artifacts" / "assets_ui" / "intent-assets-1.json")
         self.assertEqual(audit["intent_id"], "intent-assets-1")
 
+    def test_planner_scene_job_inherits_payload_characters_and_references_when_omitted(self):
+        self._configure_image_settings()
+        for rel_path in (
+            "characters/雨蒙/雨蒙.png",
+            "characters/苏黎/苏黎.png",
+            "generated/images/scene-0003.png",
+        ):
+            path = self.card / rel_path
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"png")
+        (self.card / ".card_assets.json").write_text(
+            json.dumps(
+                {
+                    "images": [
+                        {
+                            "id": "scene-0003",
+                            "kind": "scene",
+                            "path": "generated/images/scene-0003.png",
+                            "status": "completed",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+
+        def run_command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        intent = {
+            "id": "intent-assets-planner-metadata",
+            "type": "assets_task",
+            "payload": {
+                "kind": "scene_illustration",
+                "target": "scene_illustration",
+                "prompt": "教室里雨蒙和苏黎互相试探。",
+                "characters": ["雨蒙", "苏黎"],
+                "character_appearances": [
+                    {
+                        "name": "雨蒙",
+                        "description": "普通高一男生，抱着书包遮住口袋。",
+                    },
+                    {
+                        "name": "苏黎",
+                        "description": "漂亮冷淡的靠窗女同学。",
+                    },
+                ],
+                "reference_policy": "required",
+            },
+        }
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            intent,
+            phase="after_critic",
+            run_command=run_command,
+            planner=lambda context: {
+                "schema_version": 1,
+                "scene_jobs": [
+                    {
+                        "job_id": "scene-round-000004",
+                        "kind": "scene_illustration",
+                        "target": "scene_illustration",
+                        "prompt": "cinematic classroom scene",
+                    }
+                ],
+            },
+        )
+
+        scene_job = result["outputs"]["jobs"][0]
+        self.assertEqual(scene_job["status"], "queued")
+        self.assertEqual(scene_job["characters"], ["雨蒙", "苏黎"])
+        self.assertEqual(
+            scene_job["reference_candidates"],
+            [
+                "characters/雨蒙/雨蒙.png",
+                "characters/苏黎/苏黎.png",
+                "generated/images/scene-0003.png",
+            ],
+        )
+        self.assertEqual(scene_job["resolved_references"], scene_job["reference_candidates"])
+        command = calls[0][0][0]
+        self.assertIn("--reference", command)
+        self.assertIn("characters/雨蒙/雨蒙.png", command)
+        self.assertIn("characters/苏黎/苏黎.png", command)
+        self.assertIn("generated/images/scene-0003.png", command)
+        self.assertIn("--character", command)
+        self.assertIn("雨蒙", command)
+        self.assertIn("苏黎", command)
+
     def test_process_assets_task_debug_logs_assets_ui_planner_call(self):
         intent = {
             "id": "intent-assets-debug",

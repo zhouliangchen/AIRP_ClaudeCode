@@ -554,9 +554,12 @@ def _grounded_in(text, source):
         return True
     if text_value in source_value:
         return True
-    return text_value.translate(GROUNDING_QUOTE_TRANSLATION) in source_value.translate(
-        GROUNDING_QUOTE_TRANSLATION
-    )
+    normalized_source = source_value.translate(GROUNDING_QUOTE_TRANSLATION)
+    normalized_text = text_value.translate(GROUNDING_QUOTE_TRANSLATION)
+    if normalized_text in normalized_source:
+        return True
+    grounded_parts = [part.strip() for part in normalized_text.splitlines() if part.strip()]
+    return bool(grounded_parts) and all(part in normalized_source for part in grounded_parts)
 
 
 def _validate_routing_grounded(

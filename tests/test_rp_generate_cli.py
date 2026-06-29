@@ -1541,6 +1541,31 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(normalized["decision"], "pass")
         self.assertEqual(normalized["hard_failures"], [])
 
+    def test_normalize_critic_report_revises_story_without_second_person_player_view(self):
+        critic = {
+            "decision": "pass",
+            "hard_failures": [],
+            "soft_issues": [],
+            "repair_instruction": "",
+            "system_iteration_suggestion": "",
+        }
+        story = {
+            "content": (
+                "<content>雨蒙坐在座位上，口袋里的粉色花朵吊坠还在发热。"
+                "他先没有把任何东西拿出来，只是低头撕下一小角草稿纸。"
+                "苏黎看了他一眼，又把课本往前推了一点。</content>"
+            ),
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {"loop_outputs": {"actors": {"player": {"reply": "我先写纸条。"}}}}
+
+        normalized = self.module._normalize_critic_report_for_story(critic, story, story_input)
+
+        self.assertEqual(normalized["decision"], "revise")
+        self.assertIn("second-person", "\n".join(normalized["hard_failures"]))
+        self.assertTrue(normalized["repair_routing"]["can_auto_repair"])
+
     def test_normalize_critic_report_keeps_token_failure_when_current_story_has_placeholder(self):
         hard_failures = ["story.output.json contains placeholder <tokens> values ('NNNN')"]
         critic = {

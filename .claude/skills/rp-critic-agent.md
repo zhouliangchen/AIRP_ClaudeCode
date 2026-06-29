@@ -18,6 +18,7 @@ Frontend data is out of critic scope. Do not review, request, generate, or repai
 - Player authority: raw player input is preserved; AI-derived data bends to player revisions.
 - Explicit player-action polarity: hard-fail if `story_output.content` narrates a player action as completed when the current `story_input.player_inputs.raw_text` or role channel says the player stopped, refused, avoided, did not repeat, only considered, or otherwise did not perform that action. This includes cases where GM/actor artifacts drifted; story must follow the current role channel.
 - Decision point: the text stops before deciding critical player choices.
+- Output perspective: visible `story_output.content` must be 玩家角色第二人称 prose. Hard-fail if narration primarily uses the player character name or third-person pronouns instead of addressing the current player role as “你/妳/您”.
 - Style alignment: compare the current draft against Runtime Input `quality_metrics.style`, `quality_metrics.style_profile.title`, and `quality_metrics.style_profile.content`; avoid banned cliches, flat exposition, same-voice dialogue, and abstract emotion labels.
 - Length: compare the current visible content count against Runtime Input `quality_metrics.word_count.target`, `minimum`, and `current`. If `quality_metrics.word_count.exempted` is true because the round stopped at a player decision, record an exemption instead of requiring expansion.
 - Immersion: visible response tags must not contain prompt analysis, routing notes, source summaries, user-instruction summaries, or phrases such as `玩家以...提供`.
@@ -74,6 +75,11 @@ Write `critic.report.json`:
       "minimum": 0,
       "current": 0,
       "exempted": false,
+      "notes": ""
+    },
+    "output_perspective": {
+      "status": "pass",
+      "expected": "second_person",
       "notes": ""
     }
   },

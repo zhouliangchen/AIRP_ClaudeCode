@@ -20,6 +20,7 @@ Read from current `.agent_runs/<round>/`:
 ## Composition Rules
 
 - Preserve the player's authoritative input exactly in meaning; do not rewrite `.player_inputs.jsonl`.
+- `story.output.json.content` must be 玩家角色第二人称 prose: address the current player role as “你/妳/您” in narration, not primarily by character name or third-person pronouns. Character names can still appear when clarity requires it, but the delivered viewpoint stays anchored on the player role.
 - When Runtime Input includes `story_input`, treat it as the authorized story-facing context. It may omit or redact raw GM/actor audit details; do not recover omitted private facts by reading raw `gm.output.json`, `actor.outputs.json`, traces, memory files, or hidden settings for story prose.
 - Generic character `action` events in raw actor artifacts are audit material and may contain private perception or reasoning. Use only character natural-language dialogue events that remain in Runtime Input `story_input`; do not read raw actor actions to fill in omitted behavior.
 - `story_input.player_inputs.routed_input.role_channel` and raw player input outrank `story_input.loop_outputs`. If any GM or actor artifact continues an obsolete scene, invents player dialogue/actions, or reveals hidden user-instruction facts against the current role_channel, discard that conflicting part and follow player authority.
