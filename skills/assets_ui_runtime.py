@@ -88,7 +88,11 @@ def process_assets_task(
         run_command=run_command,
     )
     jobs = _as_job_list(apply_result.get("jobs") if isinstance(apply_result, dict) else None)
-    resume_result = asset_job_queue.resume_waiting_jobs(card, run_root, critic_runner=None)
+    resume_result = asset_job_queue.resume_waiting_jobs(
+        card,
+        run_root,
+        critic_runner=_character_reference_critic_runner(card, run_root, context),
+    )
     resumed_jobs = _as_job_list(resume_result.get("jobs") if isinstance(resume_result, dict) else None)
     summary_status = _summarize_status(jobs + resumed_jobs)
     outputs = {
@@ -212,6 +216,94 @@ def _run_planner_with_debug(
         except Exception:
             if not exception_type:
                 raise
+
+
+def _character_reference_critic_runner(
+    card: Path,
+    run_dir: Path,
+    context: dict[str, Any],
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    def run(payload: dict[str, Any]) -> dict[str, Any]:
+        prompt = _character_reference_critic_prompt(card, run_dir, context, payload)
+        raw = llm_runner.run_llm_agent("critic", prompt, run_dir)
+        parsed = _parse_json_object(raw)
+        winner = _text(parsed.get("winner_candidate_id"))
+        if not winner:
+            raise ValueError("critic report missing winner_candidate_id")
+        return parsed
+
+    return run
+
+
+def _character_reference_critic_prompt(
+    card: Path,
+    run_dir: Path,
+    context: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    candidates = _as_list(payload.get("candidates"))
+    character_names = []
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            _append_unique_name(character_names, candidate.get("character_name"))
+    profiles = _load_character_profiles(card, {"characters": character_names})
+    story = context.get("story_output") if isinstance(context.get("story_output"), dict) else {}
+    story_text = _text(story.get("content")) or _default_persistent_prompt(card, run_dir)
+    lines = [
+        "你是 critic agent，负责从三张候选人设图中选择最终人设图。",
+        "请读取候选图片路径对应的图像；如果底层模型不能直接查看图片，也必须基于候选 prompt、角色背景和剧情材料给出可审计判断。",
+        "评分标准：画风贴合度、人设吻合度、其他亮点。每项建议 1-10 分，并说明理由。",
+        "只返回严格 JSON，不要 Markdown。",
+        'JSON schema: {"winner_candidate_id":"...","final_target_path":"可选","scores":{"candidate-id":{"style_fit":0,"character_fit":0,"highlights":"..."}},"reason":"..."}',
+        f"batch_id: {_text(payload.get('batch_id'))}",
+    ]
+    if story_text:
+        lines.append(f"剧情文本：{_trim_text(story_text, 900)}")
+    if profiles:
+        lines.append("角色背景：")
+        for name, profile in profiles.items():
+            lines.append(f"- {name}: {_trim_text(_text(profile), 500)}")
+    lines.append("候选人设图：")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        lines.append(
+            "- "
+            + json.dumps(
+                {
+                    "job_id": _text(candidate.get("job_id")),
+                    "character_name": _text(candidate.get("character_name")),
+                    "image_path": _text(candidate.get("output_path")) or _text(candidate.get("target_path")),
+                    "final_target_path": _text(candidate.get("final_target_path")),
+                    "prompt": _trim_text(_text(candidate.get("prompt")), 500),
+                },
+                ensure_ascii=False,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    text = _text(raw)
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid critic JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("critic JSON must be an object")
+    return parsed
 
 
 def _planner_api_metadata(stdout: str) -> dict[str, Any]:

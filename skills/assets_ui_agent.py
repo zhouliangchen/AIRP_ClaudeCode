@@ -72,6 +72,7 @@ def build_assets_ui_prompt(context: dict[str, Any]) -> str:
             "剧情插图 display_policy 必须为 story_inline；人设图 display_policy 必须为 hidden_reference。",
             "场景 prompt 必须包含画面目标、镜头或视角、主体、动作情绪、光线氛围、参考图用途和负面约束，不得直接复制 story 正文。",
             "camera_perspective 只能是 protagonist_first_person、other_character_first_person、third_person_camera。",
+            "梦境、回忆、闪回等特殊场景适合采用主角第一人称视角；这类 scene_mode 请优先考虑 protagonist_first_person，但不要机械校验。",
             "scene_mode 只能是 story_scene、atmosphere_only、dream、memory、flashback、transition。",
             "UI patch request 必须 scope: \"card_only\"，不得要求修改全局模板影响所有存档。",
             "JSON schema: {\"schema_version\":1,\"plan_id\":\"...\",\"style_state\":{\"has_style_reference\":false,\"style_reference_paths\":[],\"art_style\":\"\"},\"jobs\":[],\"ui_patch_requests\":[],\"rename_operations\":[]}",

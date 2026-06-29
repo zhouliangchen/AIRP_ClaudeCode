@@ -101,6 +101,8 @@ class AssetsUiAgentTest(unittest.TestCase):
         self.assertIn("protagonist_first_person", calls[0][1])
         self.assertIn("other_character_first_person", calls[0][1])
         self.assertIn("third_person_camera", calls[0][1])
+        self.assertIn("梦境、回忆、闪回", calls[0][1])
+        self.assertIn("优先考虑 protagonist_first_person", calls[0][1])
         self.assertIn("story_scene", calls[0][1])
         self.assertIn("atmosphere_only", calls[0][1])
         self.assertIn("dream", calls[0][1])

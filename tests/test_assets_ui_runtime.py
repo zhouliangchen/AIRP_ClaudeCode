@@ -992,6 +992,9 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         jobs_dir = self.card / "generated" / "jobs"
         jobs_dir.mkdir(parents=True)
         for index in range(1, 4):
+            target = self.card / "generated" / "tmp" / "ada-reference-candidates" / f"candidate-{index}.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(f"candidate-{index}".encode("ascii"))
             candidate = {
                 "schema_version": 1,
                 "queue_type": "character_reference_candidate",
@@ -1008,27 +1011,126 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-        result = self.mod.process_assets_task(
-            self.card,
-            self.run_dir,
-            {
-                "id": "intent-resume-waiting",
-                "type": "assets_task",
-                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
-            },
-            phase="after_critic",
-            planner=lambda context: {"schema_version": 1, "jobs": []},
+        calls = []
+        original_runner = self.mod.llm_runner.run_llm_agent
+
+        def fake_runner(agent_key, prompt, cwd):
+            calls.append((agent_key, prompt, cwd))
+            return json.dumps(
+                {
+                    "winner_candidate_id": "ada-reference-candidate-2",
+                    "scores": {
+                        "ada-reference-candidate-1": {
+                            "style_fit": 6,
+                            "character_fit": 7,
+                            "highlights": "轮廓清楚但风格偏离。",
+                        },
+                        "ada-reference-candidate-2": {
+                            "style_fit": 9,
+                            "character_fit": 9,
+                            "highlights": "最贴合角色背景和画风。",
+                        },
+                        "ada-reference-candidate-3": {
+                            "style_fit": 7,
+                            "character_fit": 6,
+                            "highlights": "表情可用但辨识度不足。",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
+
+        self.mod.llm_runner.run_llm_agent = fake_runner
+        try:
+            result = self.mod.process_assets_task(
+                self.card,
+                self.run_dir,
+                {
+                    "id": "intent-resume-waiting",
+                    "type": "assets_task",
+                    "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
+                },
+                phase="after_critic",
+                planner=lambda context: {"schema_version": 1, "jobs": []},
+            )
+        finally:
+            self.mod.llm_runner.run_llm_agent = original_runner
+
+        self.assertEqual(calls[0][0], "critic")
+        self.assertIn("画风贴合度", calls[0][1])
+        self.assertIn("人设吻合度", calls[0][1])
+        self.assertIn("其他亮点", calls[0][1])
+        self.assertIn("generated/tmp/ada-reference-candidates/candidate-2.png", calls[0][1])
+        self.assertEqual(result["outputs"]["status"], "completed")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["job_id"], "ada-reference-candidates-selection")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "completed")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["winner_candidate_id"], "ada-reference-candidate-2")
+        self.assertEqual((self.card / "generated" / "characters" / "Ada" / "Ada.png").read_bytes(), b"candidate-2")
+        self.assertEqual(
+            (self.card / "generated" / "tmp" / "ada-reference-candidates" / "rejected" / "candidate-1.png").read_bytes(),
+            b"candidate-1",
         )
+        self.assertEqual(
+            (self.card / "generated" / "tmp" / "ada-reference-candidates" / "rejected" / "candidate-3.png").read_bytes(),
+            b"candidate-3",
+        )
+
+    def test_process_assets_task_waits_when_candidate_critic_runner_fails(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        for index in range(1, 4):
+            target = self.card / "generated" / "tmp" / "ada-reference-candidates" / f"candidate-{index}.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(f"candidate-{index}".encode("ascii"))
+            candidate = {
+                "schema_version": 1,
+                "queue_type": "character_reference_candidate",
+                "job_id": f"ada-reference-candidate-{index}",
+                "batch_id": "ada-reference-candidates",
+                "character_name": "Ada",
+                "target_path": f"generated/tmp/ada-reference-candidates/candidate-{index}.png",
+                "final_target_path": "generated/characters/Ada/Ada.png",
+                "prompt": "Ada reference",
+                "status": "completed",
+            }
+            (jobs_dir / f"ada-reference-candidate-{index}.json").write_text(
+                json.dumps(candidate, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        original_runner = self.mod.llm_runner.run_llm_agent
+
+        def failing_runner(_agent_key, _prompt, _cwd):
+            raise RuntimeError("critic offline")
+
+        self.mod.llm_runner.run_llm_agent = failing_runner
+        try:
+            result = self.mod.process_assets_task(
+                self.card,
+                self.run_dir,
+                {
+                    "id": "intent-resume-waiting",
+                    "type": "assets_task",
+                    "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
+                },
+                phase="after_critic",
+                planner=lambda context: {"schema_version": 1, "jobs": []},
+            )
+        finally:
+            self.mod.llm_runner.run_llm_agent = original_runner
 
         self.assertEqual(result["outputs"]["status"], "waiting_on_critic")
         self.assertEqual(result["outputs"]["resumed_jobs"][0]["job_id"], "ada-reference-candidates-selection")
         self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "waiting_on_critic")
-        self.assertEqual(result["outputs"]["resumed_jobs"][0]["reason"], "critic_vision_not_available")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["reason"], "critic_runner_failed")
 
     def test_process_assets_task_prioritizes_waiting_critic_over_new_deferred_jobs(self):
         jobs_dir = self.card / "generated" / "jobs"
         jobs_dir.mkdir(parents=True)
         for index in range(1, 4):
+            target = self.card / "generated" / "tmp" / "ada-reference-candidates" / f"candidate-{index}.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(f"candidate-{index}".encode("ascii"))
             candidate = {
                 "schema_version": 1,
                 "queue_type": "character_reference_candidate",
@@ -1045,27 +1147,37 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-        result = self.mod.process_assets_task(
-            self.card,
-            self.run_dir,
-            {
-                "id": "intent-mixed-status",
-                "type": "assets_task",
-                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
-            },
-            phase="after_critic",
-            planner=lambda context: {
-                "schema_version": 1,
-                "jobs": [
-                    {
-                        "queue_type": "scene_illustration",
-                        "job_id": "scene-deferred",
-                        "prompt": "scene waits for image settings",
-                    }
-                ],
-            },
-        )
+        original_runner = self.mod.llm_runner.run_llm_agent
+
+        def failing_runner(_agent_key, _prompt, _cwd):
+            raise RuntimeError("critic offline")
+
+        self.mod.llm_runner.run_llm_agent = failing_runner
+        try:
+            result = self.mod.process_assets_task(
+                self.card,
+                self.run_dir,
+                {
+                    "id": "intent-mixed-status",
+                    "type": "assets_task",
+                    "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
+                },
+                phase="after_critic",
+                planner=lambda context: {
+                    "schema_version": 1,
+                    "jobs": [
+                        {
+                            "queue_type": "scene_illustration",
+                            "job_id": "scene-deferred",
+                            "prompt": "scene waits for image settings",
+                        }
+                    ],
+                },
+            )
+        finally:
+            self.mod.llm_runner.run_llm_agent = original_runner
 
         self.assertEqual(result["outputs"]["jobs"][0]["status"], "deferred")
         self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "waiting_on_critic")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["reason"], "critic_runner_failed")
         self.assertEqual(result["outputs"]["status"], "waiting_on_critic")
