@@ -117,6 +117,28 @@ class AssetsUiAgentTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_jobs"):
             self.mod.validate_plan({"schema_version": 1})
 
+    def test_validate_plan_rejects_string_schema_version(self):
+        payload = {
+            "schema_version": "1",
+            "jobs": [],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_schema_version"):
+            self.mod.validate_plan(payload)
+
+    def test_validate_plan_rejects_bool_schema_version(self):
+        payload = {
+            "schema_version": True,
+            "jobs": [],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
+        with self.assertRaisesRegex(self.mod.AssetsUiAgentError, "invalid_schema_version"):
+            self.mod.validate_plan(payload)
+
     def test_validate_plan_rejects_character_reference_selection_story_inline(self):
         payload = {
             "schema_version": 1,

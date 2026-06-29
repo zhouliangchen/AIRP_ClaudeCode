@@ -54,7 +54,8 @@ def build_assets_ui_prompt(context: dict[str, Any]) -> str:
 def validate_plan(plan: Any) -> dict[str, Any]:
     if not isinstance(plan, dict):
         raise AssetsUiAgentError("invalid_plan", "assets-ui plan must be an object")
-    if int(plan.get("schema_version") or 0) != 1:
+    schema_version = plan.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
         raise AssetsUiAgentError("invalid_schema_version")
     if "jobs" not in plan or not isinstance(plan["jobs"], list):
         raise AssetsUiAgentError("invalid_jobs")
