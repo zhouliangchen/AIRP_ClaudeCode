@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 import agent_run
+import asset_job_queue
+import assets_ui_agent
 import llm_runner
 import llm_settings
 import model_debug
@@ -40,58 +42,54 @@ def process_assets_task(
     payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
     postprocess_contract_update = postprocess_outputs.apply_ui_schema_contract_update(card, payload)
     context = _planner_context(card, run_root, intent, payload, phase)
-    plan = (
-        _run_planner_with_debug(
+    active_planner = planner or assets_ui_agent.plan_assets_task
+    try:
+        plan = _run_planner_with_debug(
             model_debug.logger_from_settings(card, run_root.name, runtime_settings),
-            planner,
+            active_planner,
             context,
         )
-        if planner is not None
-        else _default_plan(context)
-    )
-    if not isinstance(plan, dict):
-        plan = {}
-    plan = dict(plan)
-    plan["scene_jobs"] = _scene_jobs_with_payload_defaults(plan.get("scene_jobs"), payload, card, context)
+        if not isinstance(plan, dict):
+            plan = {}
+        plan = dict(plan)
+        plan["jobs"] = _jobs_with_payload_defaults(plan.get("jobs"), payload, card, context)
+    except Exception as exc:
+        outputs = {
+            "status": "deferred",
+            "reason": "assets_ui_agent_failed",
+            "phase": phase,
+            "postprocess_contract_update": postprocess_contract_update,
+            "jobs": [],
+            "resumed_jobs": [],
+            "plan": {},
+            "error": str(exc),
+            "exception_type": exc.__class__.__name__,
+        }
+        audit = {
+            "schema_version": 1,
+            "intent_id": _text(intent.get("id")),
+            "intent_type": _text(intent.get("type")) or "assets_task",
+            "phase": phase,
+            "payload": payload,
+            "plan": {},
+            "outputs": outputs,
+        }
+        audit_path = run_root / "artifacts" / "assets_ui" / f"{agent_run.safe_name(_text(intent.get('id')) or 'assets-task')}.json"
+        agent_run.write_json(audit_path, audit)
+        return {"status": "completed", "outputs": outputs}
 
     asset_requirement_update = _apply_asset_requirement_update(card, payload, plan)
     settings = llm_settings.read_effective_settings()
-    jobs: list[dict[str, Any]] = []
-    resumed_jobs: list[dict[str, Any]] = []
-
-    for job in _as_list(plan.get("character_reference_jobs")):
-        materialized = _materialize_job(
-            card,
-            run_root,
-            job,
-            lambda current_job: _materialize_character_reference_job(
-                card,
-                run_root,
-                settings,
-                current_job,
-                run_command,
-            ),
-            default_kind="character_reference",
-        )
-        jobs.append(materialized)
-
-    for job in _as_list(plan.get("scene_jobs")):
-        materialized = _materialize_job(
-            card,
-            run_root,
-            job,
-            lambda current_job: _materialize_scene_job(
-                card,
-                run_root,
-                settings,
-                current_job,
-                run_command,
-            ),
-            default_kind="scene_illustration",
-        )
-        jobs.append(materialized)
-
-    resumed_jobs = _resume_waiting_scene_jobs(card, run_root, settings, run_command)
+    apply_result = asset_job_queue.apply_plan(
+        card,
+        run_root,
+        plan,
+        image_settings_ready=_image_settings_ready(settings),
+        run_command=run_command,
+    )
+    jobs = _as_job_list(apply_result.get("jobs") if isinstance(apply_result, dict) else None)
+    resume_result = asset_job_queue.resume_waiting_jobs(card, run_root, critic_runner=None)
+    resumed_jobs = _as_job_list(resume_result.get("jobs") if isinstance(resume_result, dict) else None)
     summary_status = _summarize_status(jobs + resumed_jobs)
     outputs = {
         "status": summary_status,
@@ -285,8 +283,7 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "asset_requirement_update": update,
-            "scene_jobs": [],
-            "character_reference_jobs": [],
+            "jobs": [],
         }
     card = Path(context["card_path"])
     run_dir = Path(context["run_dir"])
@@ -307,8 +304,9 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
     prompt = _scene_illustration_prompt(context, payload, card, run_dir, characters, reference_candidates)
     plan: dict[str, Any] = {
         "schema_version": 1,
-        "scene_jobs": [
+        "jobs": [
             {
+                "queue_type": "scene_illustration",
                 "job_id": job_id,
                 "kind": _text(payload.get("kind")) or "scene_illustration",
                 "target": _text(payload.get("target")) or "scene_illustration",
@@ -332,6 +330,7 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
             profile = _text(profiles.get(name))
             reference_jobs.append(
                 {
+                    "queue_type": "character_reference",
                     "job_id": _character_reference_job_id(spec),
                     "character_name": name,
                     "appearance_state": spec.get("appearance_state", ""),
@@ -341,7 +340,7 @@ def _default_plan(context: dict[str, Any]) -> dict[str, Any]:
                 }
             )
         if reference_jobs:
-            plan["character_reference_jobs"] = reference_jobs
+            plan["jobs"] = reference_jobs + _as_job_list(plan.get("jobs"))
     requirement = _required_scene_requirement(payload) or _required_scene_requirement({})
     if requirement:
         plan["asset_requirement_update"] = requirement
@@ -379,11 +378,42 @@ def _scene_jobs_with_payload_defaults(
             job["character_appearances"] = payload_appearances
         if not reference_candidates and payload_reference_candidates:
             job["reference_candidates"] = payload_reference_candidates
+            reference_candidates = payload_reference_candidates
         if not _text(job.get("reference_policy")) and payload_policy:
             job["reference_policy"] = payload_policy
         if not _text(job.get("art_style")) and payload_art_style:
             job["art_style"] = payload_art_style
+        if not _as_string_list(job.get("resolved_references")) and reference_candidates:
+            resolved_references = []
+            for candidate in reference_candidates:
+                try:
+                    normalized = _normalize_relative_path(candidate)
+                except InvalidAssetPathError:
+                    continue
+                if normalized and (card / Path(normalized)).is_file():
+                    resolved_references.append(normalized)
+            if resolved_references:
+                job["resolved_references"] = resolved_references
         jobs.append(job)
+    return jobs
+
+
+def _jobs_with_payload_defaults(
+    value: Any,
+    payload: dict[str, Any],
+    card: Path,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for item in _as_list(value):
+        job = dict(item) if isinstance(item, dict) else {}
+        queue_type = _text(job.get("queue_type") or job.get("kind"))
+        if queue_type == "scene_illustration":
+            scene_job = _scene_jobs_with_payload_defaults([job], payload, card, context)[0]
+            scene_job.setdefault("queue_type", "scene_illustration")
+            jobs.append(scene_job)
+        else:
+            jobs.append(job)
     return jobs
 
 
@@ -508,6 +538,14 @@ def _reference_purpose(reference: str) -> str:
     parts = [part for part in reference.replace("\\", "/").split("/") if part]
     if len(parts) >= 3 and parts[0] == "characters":
         character_name = parts[1]
+        stem = Path(parts[-1]).stem
+        prefix = character_name + "-"
+        if stem.startswith(prefix):
+            state = stem[len(prefix) :]
+            return f"角色人设参考：{character_name}（当前外观状态：{state}）"
+        return f"角色人设参考：{character_name}"
+    if len(parts) >= 4 and parts[0] == "generated" and parts[1] == "characters":
+        character_name = parts[2]
         stem = Path(parts[-1]).stem
         prefix = character_name + "-"
         if stem.startswith(prefix):
@@ -1033,8 +1071,8 @@ def _appearance_character_names(specs: list[dict[str, str]]) -> list[str]:
 def _default_character_reference_path(name: str, appearance_state: str) -> str:
     if appearance_state:
         suffix = agent_run.safe_name(appearance_state)
-        return f"characters/{name}/{name}-{suffix}.png"
-    return f"characters/{name}/{name}.png"
+        return f"generated/characters/{name}/{name}-{suffix}.png"
+    return f"generated/characters/{name}/{name}.png"
 
 
 def _character_reference_job_id(spec: dict[str, str]) -> str:
@@ -1084,6 +1122,11 @@ def _summarize_status(jobs: list[dict[str, Any]]) -> str:
         return "not_required"
     if "waiting_on_references" in statuses:
         return "waiting_on_references"
+    if "waiting_on_critic" in statuses:
+        return "waiting_on_critic"
+    for status in sorted(statuses):
+        if status.startswith("waiting_on"):
+            return status
     if "failed" in statuses:
         return "failed"
     if "queued" in statuses:
@@ -1132,6 +1175,10 @@ def _as_string_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _as_job_list(value: Any) -> list[dict[str, Any]]:
+    return [item for item in _as_list(value) if isinstance(item, dict)]
 
 
 def _trim_text(text: str, limit: int) -> str:

@@ -75,6 +75,80 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH = frontend
         self.llm_settings.DEFAULT_LOCAL_SETTINGS_PATH = local
 
+    def test_process_assets_task_requires_assets_ui_agent_in_production_path(self):
+        calls = []
+        plan = {
+            "schema_version": 1,
+            "plan_id": "fake-agent-plan",
+            "jobs": [],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+        original_planner = self.mod.assets_ui_agent.plan_assets_task
+
+        def fake_planner(context):
+            calls.append(context)
+            return plan
+
+        self.mod.assets_ui_agent.plan_assets_task = fake_planner
+        try:
+            result = self.mod.process_assets_task(
+                self.card,
+                self.run_dir,
+                {
+                    "id": "intent-agent-required",
+                    "type": "assets_task",
+                    "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "scene"},
+                },
+                phase="after_critic",
+            )
+        finally:
+            self.mod.assets_ui_agent.plan_assets_task = original_planner
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["payload"]["prompt"], "scene")
+        self.assertEqual(result["outputs"]["plan"], plan)
+        audit = _read_json(self.run_dir / "artifacts" / "assets_ui" / "intent-agent-required.json")
+        self.assertEqual(audit["plan"], plan)
+
+    def test_process_assets_task_does_not_default_plan_when_agent_fails(self):
+        original_planner = self.mod.assets_ui_agent.plan_assets_task
+
+        def failing_planner(_context):
+            raise RuntimeError("agent unavailable")
+
+        self.mod.assets_ui_agent.plan_assets_task = failing_planner
+        try:
+            result = self.mod.process_assets_task(
+                self.card,
+                self.run_dir,
+                {
+                    "id": "intent-agent-fails",
+                    "type": "assets_task",
+                    "payload": {
+                        "kind": "scene_illustration",
+                        "target": "scene_illustration",
+                        "prompt": "苏黎站在雨中",
+                        "characters": ["苏黎"],
+                        "reference_policy": "required",
+                    },
+                },
+                phase="after_critic",
+            )
+        finally:
+            self.mod.assets_ui_agent.plan_assets_task = original_planner
+
+        outputs = result["outputs"]
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(outputs["status"], "deferred")
+        self.assertEqual(outputs["reason"], "assets_ui_agent_failed")
+        self.assertEqual(outputs["jobs"], [])
+        self.assertEqual(outputs["resumed_jobs"], [])
+        self.assertEqual(outputs["plan"], {})
+        self.assertFalse((self.card / "generated" / "jobs").exists())
+        audit = _read_json(self.run_dir / "artifacts" / "assets_ui" / "intent-agent-fails.json")
+        self.assertEqual(audit["outputs"]["reason"], "assets_ui_agent_failed")
+
     def test_process_assets_task_persists_requirement_and_waits_for_missing_character_reference(self):
         intent = {
             "id": "intent-assets-1",
@@ -103,23 +177,23 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                     "scene_illustration_each_round": True,
                     "reason": "从本轮开始每轮必须提供剧情插图",
                 },
-                "character_reference_jobs": [
+                "jobs": [
                     {
+                        "queue_type": "character_reference",
                         "job_id": "character-suli-reference",
                         "character_name": "苏黎",
-                        "target_path": "characters/苏黎/苏黎.png",
+                        "target_path": "generated/characters/苏黎/苏黎.png",
                         "prompt": "professional character sheet for Su Li",
-                    }
-                ],
-                "scene_jobs": [
+                    },
                     {
+                        "queue_type": "scene_illustration",
                         "job_id": "scene-round-000004",
                         "kind": "scene_illustration",
                         "target": "scene_illustration",
                         "prompt": "cinematic rainy classroom with Su Li",
                         "characters": ["苏黎"],
                         "reference_policy": "required",
-                        "reference_candidates": ["characters/苏黎/苏黎.png"],
+                        "reference_candidates": ["generated/characters/苏黎/苏黎.png"],
                     }
                 ],
             },
@@ -128,9 +202,9 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         outputs = result["outputs"]
         self.assertEqual(outputs["status"], "waiting_on_references")
-        self.assertEqual(outputs["jobs"][0]["kind"], "character_reference")
+        self.assertEqual(outputs["jobs"][0]["queue_type"], "character_reference")
         self.assertEqual(outputs["jobs"][1]["status"], "waiting_on_references")
-        self.assertEqual(outputs["jobs"][1]["missing_references"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(outputs["jobs"][1]["missing_references"], ["generated/characters/苏黎/苏黎.png"])
         manifest = _read_json(self.card / "ui_manifest.json")
         self.assertTrue(manifest["asset_requirements"]["scene_illustration_each_round"]["enabled"])
         self.assertTrue((self.card / "generated" / "jobs" / "scene-round-000004.json").exists())
@@ -140,8 +214,8 @@ class AssetsUiRuntimeTest(unittest.TestCase):
     def test_planner_scene_job_inherits_payload_characters_and_references_when_omitted(self):
         self._configure_image_settings()
         for rel_path in (
-            "characters/雨蒙/雨蒙.png",
-            "characters/苏黎/苏黎.png",
+            "generated/characters/雨蒙/雨蒙.png",
+            "generated/characters/苏黎/苏黎.png",
             "generated/images/scene-0003.png",
         ):
             path = self.card / rel_path
@@ -200,7 +274,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             run_command=run_command,
             planner=lambda context: {
                 "schema_version": 1,
-                "scene_jobs": [
+                "jobs": [
                     {
                         "job_id": "scene-round-000004",
                         "kind": "scene_illustration",
@@ -217,16 +291,16 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(
             scene_job["reference_candidates"],
             [
-                "characters/雨蒙/雨蒙.png",
-                "characters/苏黎/苏黎.png",
+                "generated/characters/雨蒙/雨蒙.png",
+                "generated/characters/苏黎/苏黎.png",
                 "generated/images/scene-0003.png",
             ],
         )
         self.assertEqual(scene_job["resolved_references"], scene_job["reference_candidates"])
         command = calls[0][0][0]
         self.assertIn("--reference", command)
-        self.assertIn("characters/雨蒙/雨蒙.png", command)
-        self.assertIn("characters/苏黎/苏黎.png", command)
+        self.assertIn("generated/characters/雨蒙/雨蒙.png", command)
+        self.assertIn("generated/characters/苏黎/苏黎.png", command)
         self.assertIn("generated/images/scene-0003.png", command)
         self.assertIn("--character", command)
         self.assertIn("雨蒙", command)
@@ -251,7 +325,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             runtime_settings={"modelDebugMode": True},
             planner=lambda context: {
                 "schema_version": 1,
-                "scene_jobs": [
+                "jobs": [
                     {
                         "job_id": "scene-debug",
                         "kind": "scene_illustration",
@@ -275,7 +349,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
     def test_process_assets_task_starts_scene_job_when_references_exist(self):
         self._configure_image_settings()
-        reference = self.card / "characters" / "苏黎" / "苏黎.png"
+        reference = self.card / "generated" / "characters" / "苏黎" / "苏黎.png"
         reference.parent.mkdir(parents=True)
         reference.write_bytes(b"png")
         calls = []
@@ -296,7 +370,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             run_command=run_command,
             planner=lambda context: {
                 "schema_version": 1,
-                "scene_jobs": [
+                "jobs": [
                     {
                         "job_id": "scene-round-000004",
                         "kind": "scene_illustration",
@@ -304,7 +378,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                         "prompt": "cinematic rainy scene",
                         "characters": ["苏黎"],
                         "reference_policy": "optional",
-                        "reference_candidates": ["characters/苏黎/苏黎.png"],
+                        "reference_candidates": ["generated/characters/苏黎/苏黎.png"],
                     }
                 ],
             },
@@ -318,7 +392,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
     def test_process_assets_task_preserves_required_reference_worker_deferred_reason(self):
         self._configure_image_settings()
-        reference = self.card / "characters" / "Ada" / "Ada.png"
+        reference = self.card / "generated" / "characters" / "Ada" / "Ada.png"
         reference.parent.mkdir(parents=True)
         reference.write_bytes(b"png")
 
@@ -330,7 +404,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                         "ok": False,
                         "status": "deferred",
                         "error": "reference_image_not_supported",
-                        "references": ["characters/Ada/Ada.png"],
+                        "references": ["generated/characters/Ada/Ada.png"],
                     },
                     ensure_ascii=False,
                 ),
@@ -349,7 +423,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             run_command=run_command,
             planner=lambda context: {
                 "schema_version": 1,
-                "scene_jobs": [
+                "jobs": [
                     {
                         "job_id": "scene-required-reference",
                         "kind": "scene_illustration",
@@ -357,7 +431,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                         "prompt": "Ada scene",
                         "characters": ["Ada"],
                         "reference_policy": "required",
-                        "reference_candidates": ["characters/Ada/Ada.png"],
+                        "reference_candidates": ["generated/characters/Ada/Ada.png"],
                     }
                 ],
             },
@@ -399,7 +473,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             run_command=run_command,
             planner=lambda context: {
                 "schema_version": 1,
-                "scene_jobs": [
+                "jobs": [
                     {
                         "job_id": "scene-image-api-failed",
                         "kind": "scene_illustration",
@@ -452,7 +526,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                     phase="after_critic",
                     planner=lambda context, path=unsafe_path: {
                         "schema_version": 1,
-                        "scene_jobs": [
+                        "jobs": [
                             {
                                 "job_id": "scene-invalid-path",
                                 "kind": "scene_illustration",
@@ -478,7 +552,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
 
         def planner(context):
             captured["character_profiles"] = context["character_profiles"]
-            return {"schema_version": 1, "scene_jobs": []}
+            return {"schema_version": 1, "jobs": []}
 
         result = self.mod.process_assets_task(
             self.card,
@@ -517,22 +591,22 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["outputs"]["status"], "waiting_on_references")
-        self.assertEqual(result["outputs"]["jobs"][0]["kind"], "character_reference")
+        self.assertEqual(result["outputs"]["jobs"][0]["queue_type"], "character_reference")
         self.assertEqual(result["outputs"]["jobs"][0]["status"], "deferred")
         self.assertEqual(result["outputs"]["jobs"][0]["target_path"], result["outputs"]["jobs"][1]["missing_references"][0])
         self.assertEqual(result["outputs"]["jobs"][1]["status"], "waiting_on_references")
         self.assertEqual(
             result["outputs"]["jobs"][1]["reference_candidates"],
-            ["characters/苏黎/苏黎.png"],
+            ["generated/characters/苏黎/苏黎.png"],
         )
         self.assertEqual(
             result["outputs"]["jobs"][1]["missing_references"],
-            ["characters/苏黎/苏黎.png"],
+            ["generated/characters/苏黎/苏黎.png"],
         )
 
     def test_default_plan_treats_reuse_character_references_as_required(self):
@@ -552,19 +626,19 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         outputs = result["outputs"]
         self.assertEqual(outputs["status"], "waiting_on_references")
-        self.assertEqual(outputs["jobs"][0]["kind"], "character_reference")
-        self.assertEqual(outputs["jobs"][1]["kind"], "character_reference")
+        self.assertEqual(outputs["jobs"][0]["queue_type"], "character_reference")
+        self.assertEqual(outputs["jobs"][1]["queue_type"], "character_reference")
         scene_job = outputs["jobs"][2]
         self.assertEqual(scene_job["status"], "waiting_on_references")
         self.assertEqual(scene_job["reference_policy"], "required")
         self.assertEqual(
             scene_job["reference_candidates"],
-            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+            ["generated/characters/雨蒙/雨蒙.png", "generated/characters/苏黎/苏黎.png"],
         )
         self.assertIn("剧情插图", scene_job["prompt"])
         self.assertIn("雨蒙故作镇定回到教室", scene_job["prompt"])
@@ -572,7 +646,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertNotEqual(scene_job["prompt"], "用户指令要求每轮提供一张带角色的剧情插图。")
 
     def test_scene_prompt_is_cinematic_and_describes_reference_purposes(self):
-        su_li = self.card / "characters" / "苏黎" / "苏黎.png"
+        su_li = self.card / "generated" / "characters" / "苏黎" / "苏黎.png"
         su_li.parent.mkdir(parents=True)
         su_li.write_bytes(b"portrait")
         prior_scene = self.card / "generated" / "images" / "scene-0001.png"
@@ -604,14 +678,14 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                     "characters": ["苏黎"],
                     "reference_policy": "required",
                     "reference_candidates": [
-                        "characters/苏黎/苏黎.png",
+                        "generated/characters/苏黎/苏黎.png",
                         "generated/images/scene-0001.png",
                     ],
                     "planner_hints": "突出二人表面普通对题、暗中试探的紧张感。",
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         scene_job = result["outputs"]["jobs"][0]
@@ -620,7 +694,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertIn("构图与主体：", prompt)
         self.assertIn("光线与氛围：", prompt)
         self.assertIn("参考图用途：", prompt)
-        self.assertIn("characters/苏黎/苏黎.png", prompt)
+        self.assertIn("generated/characters/苏黎/苏黎.png", prompt)
         self.assertIn("文件名：苏黎.png", prompt)
         self.assertIn("角色人设参考：苏黎", prompt)
         self.assertIn("generated/images/scene-0001.png", prompt)
@@ -652,7 +726,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         scene_job = result["outputs"]["jobs"][0]
@@ -675,7 +749,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         scene_job = result["outputs"]["jobs"][0]
@@ -683,7 +757,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(scene_job["art_style"], "90年代赛璐璐动画画风，低饱和胶片颗粒")
 
     def test_default_plan_requires_matching_character_appearance_reference(self):
-        base_reference = self.card / "characters" / "苏黎" / "苏黎.png"
+        base_reference = self.card / "generated" / "characters" / "苏黎" / "苏黎.png"
         base_reference.parent.mkdir(parents=True)
         base_reference.write_bytes(b"base portrait")
 
@@ -709,18 +783,18 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 },
             },
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         outputs = result["outputs"]
         self.assertEqual(outputs["status"], "waiting_on_references")
-        self.assertEqual(outputs["jobs"][0]["kind"], "character_reference")
-        self.assertEqual(outputs["jobs"][0]["target_path"], "characters/苏黎/苏黎-蝶化形态.png")
+        self.assertEqual(outputs["jobs"][0]["queue_type"], "character_reference")
+        self.assertEqual(outputs["jobs"][0]["target_path"], "generated/characters/苏黎/苏黎-蝶化形态.png")
         self.assertIn("蝶化形态", outputs["jobs"][0]["prompt"])
         scene_job = outputs["jobs"][1]
         self.assertEqual(scene_job["status"], "waiting_on_references")
-        self.assertEqual(scene_job["reference_candidates"], ["characters/苏黎/苏黎-蝶化形态.png"])
-        self.assertEqual(scene_job["missing_references"], ["characters/苏黎/苏黎-蝶化形态.png"])
+        self.assertEqual(scene_job["reference_candidates"], ["generated/characters/苏黎/苏黎-蝶化形态.png"])
+        self.assertEqual(scene_job["missing_references"], ["generated/characters/苏黎/苏黎-蝶化形态.png"])
         self.assertEqual(scene_job["character_appearances"][0]["appearance_state"], "蝶化形态")
 
     def test_character_reference_job_writes_to_target_path(self):
@@ -750,13 +824,13 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             },
             phase="after_critic",
             run_command=run_command,
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         self.assertEqual(result["outputs"]["jobs"][0]["status"], "queued")
         command = calls[0][0][0]
         self.assertIn("--output-path", command)
-        self.assertIn("characters/苏黎/苏黎-蝶化形态.png", command)
+        self.assertIn("generated/characters/苏黎/苏黎-蝶化形态.png", command)
         self.assertIn("--character", command)
         self.assertIn("苏黎", command)
 
@@ -784,7 +858,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             self.card,
             self.run_dir,
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         self.assertEqual(result["outputs"]["status"], "waiting_on_references")
@@ -793,7 +867,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(scene_job["reference_policy"], "required")
         self.assertEqual(
             scene_job["reference_candidates"],
-            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+            ["generated/characters/雨蒙/雨蒙.png", "generated/characters/苏黎/苏黎.png"],
         )
 
     def test_asset_requirement_delete_removes_existing_requirement_without_jobs(self):
@@ -832,8 +906,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                     "action": "delete",
                     "asset_requirement_key": "scene_illustration_each_round",
                 },
-                "scene_jobs": [],
-                "character_reference_jobs": [],
+                "jobs": [],
             },
         )
 
@@ -903,7 +976,7 @@ class AssetsUiRuntimeTest(unittest.TestCase):
             self.card,
             self.run_dir,
             phase="after_critic",
-            planner=None,
+            planner=lambda context: self.mod._default_plan(context),
         )
 
         scene_job = result["outputs"]["jobs"][2]
@@ -911,40 +984,29 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(scene_job["reference_policy"], "required")
         self.assertEqual(
             scene_job["reference_candidates"],
-            ["characters/雨蒙/雨蒙.png", "characters/苏黎/苏黎.png"],
+            ["generated/characters/雨蒙/雨蒙.png", "generated/characters/苏黎/苏黎.png"],
         )
         self.assertIn("画面必须包含角色：雨蒙、苏黎", scene_job["prompt"])
 
-    def test_process_assets_task_resumes_waiting_scene_job_when_references_exist(self):
-        self._configure_image_settings()
-        waiting_payload = {
-            "schema_version": 1,
-            "job_id": "scene-waiting",
-            "kind": "scene_illustration",
-            "target": "scene_illustration",
-            "prompt": "scene after portrait arrives",
-            "characters": ["Ada"],
-            "reference_policy": "required",
-            "reference_candidates": ["characters/Ada/Ada.png"],
-            "resolved_references": [],
-            "missing_references": ["characters/Ada/Ada.png"],
-            "status": "waiting_on_references",
-            "reason": "missing_character_reference",
-        }
+    def test_process_assets_task_merges_resumed_queue_jobs(self):
         jobs_dir = self.card / "generated" / "jobs"
         jobs_dir.mkdir(parents=True)
-        (jobs_dir / "scene-waiting.json").write_text(
-            json.dumps(waiting_payload, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        reference = self.card / "characters" / "Ada" / "Ada.png"
-        reference.parent.mkdir(parents=True)
-        reference.write_bytes(b"png")
-        calls = []
-
-        def run_command(*args, **kwargs):
-            calls.append((args, kwargs))
-            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        for index in range(1, 4):
+            candidate = {
+                "schema_version": 1,
+                "queue_type": "character_reference_candidate",
+                "job_id": f"ada-reference-candidate-{index}",
+                "batch_id": "ada-reference-candidates",
+                "character_name": "Ada",
+                "target_path": f"generated/tmp/ada-reference-candidates/candidate-{index}.png",
+                "final_target_path": "generated/characters/Ada/Ada.png",
+                "prompt": "Ada reference",
+                "status": "completed",
+            }
+            (jobs_dir / f"ada-reference-candidate-{index}.json").write_text(
+                json.dumps(candidate, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
         result = self.mod.process_assets_task(
             self.card,
@@ -955,12 +1017,55 @@ class AssetsUiRuntimeTest(unittest.TestCase):
                 "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
             },
             phase="after_critic",
-            run_command=run_command,
-            planner=lambda context: {"schema_version": 1, "scene_jobs": []},
+            planner=lambda context: {"schema_version": 1, "jobs": []},
         )
 
-        self.assertEqual(result["outputs"]["resumed_jobs"][0]["job_id"], "scene-waiting")
-        self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "queued")
-        command = calls[0][0][0]
-        self.assertIn("--reference", command)
-        self.assertIn("characters/Ada/Ada.png", command)
+        self.assertEqual(result["outputs"]["status"], "waiting_on_critic")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["job_id"], "ada-reference-candidates-selection")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "waiting_on_critic")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["reason"], "critic_vision_not_available")
+
+    def test_process_assets_task_prioritizes_waiting_critic_over_new_deferred_jobs(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        for index in range(1, 4):
+            candidate = {
+                "schema_version": 1,
+                "queue_type": "character_reference_candidate",
+                "job_id": f"ada-reference-candidate-{index}",
+                "batch_id": "ada-reference-candidates",
+                "character_name": "Ada",
+                "target_path": f"generated/tmp/ada-reference-candidates/candidate-{index}.png",
+                "final_target_path": "generated/characters/Ada/Ada.png",
+                "prompt": "Ada reference",
+                "status": "completed",
+            }
+            (jobs_dir / f"ada-reference-candidate-{index}.json").write_text(
+                json.dumps(candidate, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-mixed-status",
+                "type": "assets_task",
+                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "noop"},
+            },
+            phase="after_critic",
+            planner=lambda context: {
+                "schema_version": 1,
+                "jobs": [
+                    {
+                        "queue_type": "scene_illustration",
+                        "job_id": "scene-deferred",
+                        "prompt": "scene waits for image settings",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(result["outputs"]["jobs"][0]["status"], "deferred")
+        self.assertEqual(result["outputs"]["resumed_jobs"][0]["status"], "waiting_on_critic")
+        self.assertEqual(result["outputs"]["status"], "waiting_on_critic")
