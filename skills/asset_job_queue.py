@@ -265,12 +265,13 @@ def _reference_candidate_paths(job: dict[str, Any]) -> list[str]:
 
 def _missing_dependencies(card: Path, job: dict[str, Any]) -> list[str]:
     explicit = [str(item) for item in job.get("dependencies") or [] if str(item)]
-    important = [str(item) for item in job.get("important_characters") or [] if str(item)]
-    for name in important:
-        path = _normalize_asset_path(f"generated/characters/{name}/{name}.png")
-        if path is None:
-            return [f"generated/characters/{name}/{name}.png"]
-        explicit.append(path)
+    if job.get("reference_policy") == "required":
+        important = [str(item) for item in job.get("important_characters") or [] if str(item)]
+        for name in important:
+            path = _normalize_asset_path(f"generated/characters/{name}/{name}.png")
+            if path is None:
+                return [f"generated/characters/{name}/{name}.png"]
+            explicit.append(path)
     missing = []
     for rel in explicit:
         if rel and not (card / Path(rel)).is_file():
@@ -327,10 +328,11 @@ def _apply_worker_failure(job: dict[str, Any]) -> None:
     reason = str(details.get("reason") or "")
     status = str(details.get("status") or "")
     error = details.get("error")
+    semantic_reason = reason or str(error or "")
     if status in {"deferred", "failed"}:
-        job["status"] = "failed" if status == "failed" or reason == "invalid_asset_path" else "deferred"
-        if reason:
-            job["reason"] = reason
+        job["status"] = "failed" if status == "failed" or semantic_reason == "invalid_asset_path" else "deferred"
+        if semantic_reason:
+            job["reason"] = semantic_reason
         else:
             job["reason"] = "asset_worker_start_failed"
         if error:

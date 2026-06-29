@@ -400,6 +400,82 @@ class AssetJobQueueTest(unittest.TestCase):
         job = _read_json(self.card / "generated" / "jobs" / "scene-optional-ref.json")
         self.assertEqual(job["resolved_references"], ["generated/characters/Ada/Ada.png"])
 
+    def test_scene_important_characters_are_prompt_only_without_required_policy(self):
+        for policy in (None, "optional"):
+            with self.subTest(reference_policy=policy):
+                commands = []
+
+                def fake_run(command, **kwargs):
+                    commands.append(command)
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+                job_id = "scene-important-no-policy" if policy is None else "scene-important-optional"
+                job = {
+                    "queue_type": "scene_illustration",
+                    "job_id": job_id,
+                    "round_id": "round-000003",
+                    "prompt": "Ada walks through the market",
+                    "important_characters": ["Ada"],
+                }
+                if policy is not None:
+                    job["reference_policy"] = policy
+                plan = {
+                    "schema_version": 1,
+                    "plan_id": "assets-round-000003",
+                    "jobs": [job],
+                }
+
+                result = self.mod.apply_plan(
+                    self.card,
+                    self.run_dir,
+                    plan,
+                    image_settings_ready=True,
+                    run_command=fake_run,
+                )
+
+                self.assertEqual(result["status"], "queued")
+                self.assertEqual(len(commands), 1)
+                self.assertNotIn("--reference", commands[0])
+                persisted = _read_json(self.card / "generated" / "jobs" / f"{job_id}.json")
+                self.assertEqual(persisted["status"], "queued")
+                self.assertNotIn("missing_references", persisted)
+
+    def test_required_scene_important_character_waits_for_generated_reference(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-important-required",
+                    "round_id": "round-000003",
+                    "prompt": "Ada walks through the market",
+                    "important_characters": ["Ada"],
+                    "reference_policy": "required",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "waiting_on_references")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "scene-important-required.json")
+        self.assertEqual(job["status"], "waiting_on_references")
+        self.assertEqual(job["missing_references"], ["generated/characters/Ada/Ada.png"])
+
     def test_optional_scene_invalid_reference_candidate_path_fails_before_worker(self):
         commands = []
 
@@ -521,6 +597,50 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["status"], "deferred")
         self.assertEqual(job["reason"], "reference_image_not_supported")
         self.assertEqual(job["worker_references"], ["x.png"])
+
+    def test_worker_structured_deferred_stdout_uses_error_as_reason(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "status": "deferred",
+                        "error": "reference_image_not_supported",
+                    }
+                ),
+                stderr="",
+            )
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-worker-deferred-error",
+                    "round_id": "round-000003",
+                    "prompt": "Rainy theater",
+                    "important_characters": [],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(len(commands), 1)
+        job = _read_json(self.card / "generated" / "jobs" / "scene-worker-deferred-error.json")
+        self.assertEqual(job["status"], "deferred")
+        self.assertEqual(job["reason"], "reference_image_not_supported")
 
     def test_punctuation_job_id_uses_worker_compatible_filename_slug(self):
         plan = {
