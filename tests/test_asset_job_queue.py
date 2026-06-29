@@ -106,6 +106,78 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         self.assertTrue(all("--async" in cmd for cmd in commands))
 
+    def test_ready_scene_job_passes_characters_to_worker(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-with-characters",
+                    "round_id": "round-000003",
+                    "prompt": "苏黎和林岚在雨中对话",
+                    "characters": ["苏黎", "林岚"],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        suli_index = command.index("--character")
+        self.assertEqual(command[suli_index + 1], "苏黎")
+        linlan_index = command.index("--character", suli_index + 2)
+        self.assertEqual(command[linlan_index + 1], "林岚")
+
+    def test_ready_character_reference_job_passes_character_name_to_worker(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "character_reference",
+                    "job_id": "character-suli-reference",
+                    "character_name": "苏黎",
+                    "target_path": "generated/characters/苏黎/苏黎.png",
+                    "prompt": "为苏黎绘制人设图",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        character_index = command.index("--character")
+        self.assertEqual(command[character_index + 1], "苏黎")
+
     def test_control_queue_types_wait_without_image_worker(self):
         cases = [
             ("asset_rename", "deferred", "asset_rename_executor_not_ready"),

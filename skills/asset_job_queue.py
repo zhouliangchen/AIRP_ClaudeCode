@@ -298,6 +298,8 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
     ]
     if job.get("target_path"):
         command.extend(["--output-path", str(job["target_path"])])
+    for character in _worker_characters(job):
+        command.extend(["--character", character])
     for ref in _worker_references(job):
         command.extend(["--reference", str(ref)])
     command.append("--async")
@@ -320,6 +322,16 @@ def _worker_references(job: dict[str, Any]) -> list[str]:
     if job.get("reference_policy") != "required":
         return []
     return [str(ref) for ref in job.get("resolved_references") or [] if str(ref)]
+
+
+def _worker_characters(job: dict[str, Any]) -> list[str]:
+    queue_type = str(job.get("queue_type") or "")
+    if queue_type == "scene_illustration":
+        return [str(name) for name in job.get("characters") or [] if str(name)]
+    if queue_type in {"character_reference", "character_reference_candidate"}:
+        name = str(job.get("character_name") or job.get("name") or "")
+        return [name] if name else []
+    return []
 
 
 def _apply_worker_failure(job: dict[str, Any]) -> None:
