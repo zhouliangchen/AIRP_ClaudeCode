@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,29 @@ class AgentRuntimePumpTest(unittest.TestCase):
         os.environ.update(self.original_environ)
         self.tmp.cleanup()
 
+    def _scene_asset_plan(self, context):
+        round_id = Path(context.get("run_dir") or self.run_dir).name
+        return {
+            "schema_version": 1,
+            "plan_id": "test-assets-plan",
+            "style_state": {"has_style_reference": False, "style_reference_paths": [], "art_style": ""},
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": f"scene-{round_id}",
+                    "round_id": round_id,
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "rainy street",
+                    "display_policy": "story_inline",
+                    "camera_perspective": "third_person_camera",
+                    "scene_mode": "story_scene",
+                }
+            ],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
     def test_after_input_analysis_leaves_assets_task_pending_for_after_critic(self):
         created = self.intents.create_intent(
             self.run_dir,
@@ -95,11 +119,16 @@ class AgentRuntimePumpTest(unittest.TestCase):
             },
         )["intent"]
 
-        result = self.pump.run_pending_intents(
-            self.card,
-            self.run_dir,
-            phase="after_critic",
-        )
+        with mock.patch.object(
+            self.capability_executors.assets_ui_runtime.assets_ui_agent,
+            "plan_assets_task",
+            side_effect=self._scene_asset_plan,
+        ):
+            result = self.pump.run_pending_intents(
+                self.card,
+                self.run_dir,
+                phase="after_critic",
+            )
 
         self.assertEqual(result["phase"], "after_critic")
         self.assertEqual(result["processed"][0]["intent_id"], created["id"])
@@ -248,13 +277,18 @@ class AgentRuntimePumpTest(unittest.TestCase):
             calls.append((args, kwargs))
             return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
 
-        result = self.capability_executors.execute_assets_task(
-            self.card,
-            self.run_dir,
-            intent,
-            phase="after_critic",
-            run_command=run_command,
-        )
+        with mock.patch.object(
+            self.capability_executors.assets_ui_runtime.assets_ui_agent,
+            "plan_assets_task",
+            side_effect=self._scene_asset_plan,
+        ):
+            result = self.capability_executors.execute_assets_task(
+                self.card,
+                self.run_dir,
+                intent,
+                phase="after_critic",
+                run_command=run_command,
+            )
 
         self.assertEqual(result["outputs"]["status"], "deferred")
         self.assertEqual(result["outputs"]["jobs"][0]["reason"], "asset_worker_not_configured")

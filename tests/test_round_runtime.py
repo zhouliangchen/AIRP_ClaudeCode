@@ -135,6 +135,29 @@ class RoundRuntimeTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _scene_asset_plan(self, context):
+        round_id = Path(context.get("run_dir") or self.run_dir).name
+        return {
+            "schema_version": 1,
+            "plan_id": "test-assets-plan",
+            "style_state": {"has_style_reference": False, "style_reference_paths": [], "art_style": ""},
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": f"scene-{round_id}",
+                    "round_id": round_id,
+                    "kind": "scene_illustration",
+                    "target": "scene_illustration",
+                    "prompt": "a dim doorway with warm light",
+                    "display_policy": "story_inline",
+                    "camera_perspective": "third_person_camera",
+                    "scene_mode": "story_scene",
+                }
+            ],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
     def test_run_round_writes_thin_runtime_artifacts_and_delivers(self):
         original_apply = self.round_runtime.input_analysis_apply.apply_current_run
         self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
@@ -626,6 +649,7 @@ class RoundRuntimeTest(unittest.TestCase):
             "evidence": {"raw_excerpt": "生成一张门后的图"},
         }
         original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        original_planner = self.round_runtime.assets_ui_runtime.assets_ui_agent.plan_assets_task
         self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
             "ok": True,
             "capability_requests": [request],
@@ -634,6 +658,7 @@ class RoundRuntimeTest(unittest.TestCase):
                 "style_profile": {},
             },
         }
+        self.round_runtime.assets_ui_runtime.assets_ui_agent.plan_assets_task = self._scene_asset_plan
         try:
             result = self.round_runtime.run_round(
                 self.card,
@@ -641,34 +666,35 @@ class RoundRuntimeTest(unittest.TestCase):
                 run_claude=_fake_run_claude,
                 run_command=_fake_run_command,
             )
+
+            pump_path = self.run_dir / "artifacts" / "runtime_pump" / "after_input_analysis.json"
+            self.assertTrue(pump_path.exists())
+            pump = json.loads(pump_path.read_text(encoding="utf-8"))
+            self.assertEqual(pump["phase"], "after_input_analysis")
+            self.assertEqual(pump["processed"], [])
+            self.assertEqual(pump["skipped"][0]["type"], "assets_task")
+            self.assertEqual(pump["skipped"][0]["reason"], "phase_deferred")
+            after_critic = result["runtime_pump"]["after_critic"]
+            self.assertEqual(after_critic["processed"][0]["type"], "assets_task")
+            self.assertIn(after_critic["processed"][0]["outputs"]["status"], {"started", "queued", "deferred"})
+            self.assertEqual(
+                result["runtime_pump"]["after_critic"]["processed"][0]["type"],
+                "assets_task",
+            )
+            agent_intents = _load_module("agent_intents")
+            pending = agent_intents.list_intents(self.run_dir, "pending")
+            self.assertEqual(pending, [])
+            completed = []
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                completed = agent_intents.list_intents(self.run_dir, "completed")
+                if completed:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(completed[0]["type"], "assets_task")
         finally:
             self.round_runtime.input_analysis_apply.apply_current_run = original_apply
-
-        pump_path = self.run_dir / "artifacts" / "runtime_pump" / "after_input_analysis.json"
-        self.assertTrue(pump_path.exists())
-        pump = json.loads(pump_path.read_text(encoding="utf-8"))
-        self.assertEqual(pump["phase"], "after_input_analysis")
-        self.assertEqual(pump["processed"], [])
-        self.assertEqual(pump["skipped"][0]["type"], "assets_task")
-        self.assertEqual(pump["skipped"][0]["reason"], "phase_deferred")
-        after_critic = result["runtime_pump"]["after_critic"]
-        self.assertEqual(after_critic["processed"][0]["type"], "assets_task")
-        self.assertIn(after_critic["processed"][0]["outputs"]["status"], {"started", "queued", "deferred"})
-        self.assertEqual(
-            result["runtime_pump"]["after_critic"]["processed"][0]["type"],
-            "assets_task",
-        )
-        agent_intents = _load_module("agent_intents")
-        pending = agent_intents.list_intents(self.run_dir, "pending")
-        self.assertEqual(pending, [])
-        completed = []
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            completed = agent_intents.list_intents(self.run_dir, "completed")
-            if completed:
-                break
-            time.sleep(0.02)
-        self.assertEqual(completed[0]["type"], "assets_task")
+            self.round_runtime.assets_ui_runtime.assets_ui_agent.plan_assets_task = original_planner
 
     def test_input_analysis_apply_failure_retries_with_rejection_feedback(self):
         calls = {"apply": 0, "prompts": []}
