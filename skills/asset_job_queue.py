@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
@@ -20,17 +21,30 @@ def apply_plan(
     card = Path(card_folder)
     run_root = Path(run_dir)
     jobs = []
+    used_safe_ids: set[str] = set()
     for index, raw_job in enumerate(plan.get("jobs") or [], start=1):
         job = _normalize_job(raw_job, plan, index)
+        _dedupe_job_id(job, used_safe_ids)
         job = _evaluate_and_submit(card, job, image_settings_ready=image_settings_ready, run_command=run_command)
         _write_job(card, run_root, job)
         jobs.append(job)
     return {"status": _summarize(jobs), "jobs": jobs, "plan_id": str(plan.get("plan_id") or "")}
 
 
-def _normalize_job(raw_job: dict[str, Any], plan: dict[str, Any], index: int) -> dict[str, Any]:
-    queue_type = str(raw_job.get("queue_type") or raw_job.get("kind") or "")
+def _normalize_job(raw_job: Any, plan: dict[str, Any], index: int) -> dict[str, Any]:
     plan_id = str(plan.get("plan_id") or "asset-plan")
+    if not isinstance(raw_job, dict):
+        return {
+            "schema_version": 1,
+            "queue_type": "invalid_job",
+            "job_id": f"{plan_id}-invalid_job-{index}",
+            "agent_plan_id": str(plan.get("plan_id") or ""),
+            "status": "failed",
+            "reason": "invalid_job",
+            "raw_job": raw_job,
+        }
+
+    queue_type = str(raw_job.get("queue_type") or raw_job.get("kind") or "")
     job_id = str(raw_job.get("job_id") or f"{plan_id}-{queue_type or 'asset-job'}-{index}")
     job = dict(raw_job)
     job["schema_version"] = 1
@@ -48,6 +62,19 @@ def _normalize_job(raw_job: dict[str, Any], plan: dict[str, Any], index: int) ->
     return job
 
 
+def _dedupe_job_id(job: dict[str, Any], used_safe_ids: set[str]) -> None:
+    original = str(job.get("job_id") or "asset-job")
+    candidate = original
+    suffix = 2
+    while agent_run.safe_name(candidate) in used_safe_ids:
+        candidate = f"{original}-{suffix}"
+        suffix += 1
+    if candidate != original:
+        job["source_job_id"] = original
+        job["job_id"] = candidate
+    used_safe_ids.add(agent_run.safe_name(candidate))
+
+
 def _evaluate_and_submit(
     card: Path,
     job: dict[str, Any],
@@ -55,6 +82,8 @@ def _evaluate_and_submit(
     image_settings_ready: bool,
     run_command: Callable[..., Any] | None,
 ) -> dict[str, Any]:
+    if job.get("status") == "failed":
+        return job
     invalid = _prepare_asset_paths(card, job)
     if invalid:
         job["status"] = "failed"
@@ -79,12 +108,13 @@ def _evaluate_and_submit(
         job["status"] = "queued"
         job.pop("reason", None)
     else:
-        job["status"] = "deferred"
-        job["reason"] = "asset_worker_start_failed"
+        _apply_worker_failure(job)
     return job
 
 
 def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
+    required = job.get("queue_type") == "scene_illustration" and job.get("reference_policy") == "required"
+    required_missing = []
     if job.get("target_path"):
         normalized = _normalize_asset_path(job["target_path"])
         if normalized is None:
@@ -106,10 +136,12 @@ def _prepare_asset_paths(card: Path, job: dict[str, Any]) -> str:
         if normalized is None:
             return str(item)
         if normalized:
-            resolved.append(normalized)
+            if required and not (card / Path(normalized)).exists():
+                required_missing.append(normalized)
+            else:
+                resolved.append(normalized)
 
-    if job.get("queue_type") == "scene_illustration" and job.get("reference_policy") == "required":
-        required_missing = []
+    if required:
         for item in _reference_candidate_paths(job):
             normalized = _normalize_asset_path(item)
             if normalized is None:
@@ -203,6 +235,35 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
         "stdout": str(getattr(result, "stdout", "") or ""),
         "stderr": str(getattr(result, "stderr", "") or ""),
     }
+
+
+def _apply_worker_failure(job: dict[str, Any]) -> None:
+    command = job.get("command") or {}
+    details = _parse_worker_stdout(command.get("stdout"))
+    reason = str(details.get("reason") or "")
+    status = str(details.get("status") or "")
+    error = details.get("error")
+    if status in {"deferred", "failed"}:
+        job["status"] = "failed" if status == "failed" or reason == "invalid_asset_path" else "deferred"
+        if reason:
+            job["reason"] = reason
+        else:
+            job["reason"] = "asset_worker_start_failed"
+        if error:
+            job["error"] = str(error)
+        if isinstance(details.get("references"), list):
+            job["worker_references"] = [str(item) for item in details["references"]]
+        return
+    job["status"] = "deferred"
+    job["reason"] = "asset_worker_start_failed"
+
+
+def _parse_worker_stdout(stdout: Any) -> dict[str, Any]:
+    try:
+        data = json.loads(str(stdout or "").strip())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _unique_paths(paths: list[str]) -> list[str]:
