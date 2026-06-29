@@ -106,6 +106,47 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         self.assertTrue(all("--async" in cmd for cmd in commands))
 
+    def test_control_queue_types_wait_without_image_worker(self):
+        cases = [
+            ("asset_rename", "deferred", "asset_rename_executor_not_ready"),
+            ("character_reference_selection", "waiting_on_critic", "critic_vision_not_available"),
+            ("ui_patch_request", "deferred", "ui_patch_requires_claude_code"),
+        ]
+        for queue_type, expected_status, expected_reason in cases:
+            with self.subTest(queue_type=queue_type):
+                commands = []
+
+                def fake_run(command, **kwargs):
+                    commands.append(command)
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+                plan = {
+                    "schema_version": 1,
+                    "plan_id": "assets-round-000003",
+                    "jobs": [
+                        {
+                            "queue_type": queue_type,
+                            "job_id": f"{queue_type}-job",
+                            "prompt": "control task",
+                        }
+                    ],
+                }
+
+                result = self.mod.apply_plan(
+                    self.card,
+                    self.run_dir,
+                    plan,
+                    image_settings_ready=True,
+                    run_command=fake_run,
+                )
+
+                self.assertEqual(commands, [])
+                self.assertEqual(result["status"], expected_status)
+                job = _read_json(self.card / "generated" / "jobs" / f"{queue_type}-job.json")
+                self.assertEqual(job["status"], expected_status)
+                self.assertEqual(job["reason"], expected_reason)
+                self.assertNotIn("command", job)
+
     def test_required_scene_reference_waits_and_resolves_existing_references(self):
         existing = self.card / "generated" / "characters" / "苏黎" / "苏黎.png"
         existing.parent.mkdir(parents=True)

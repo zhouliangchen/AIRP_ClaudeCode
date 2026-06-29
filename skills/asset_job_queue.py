@@ -19,6 +19,12 @@ SUPPORTED_QUEUE_TYPES = {
     "ui_patch_request",
 }
 
+NON_IMAGE_QUEUE_WAIT_STATES = {
+    "asset_rename": ("deferred", "asset_rename_executor_not_ready"),
+    "character_reference_selection": ("waiting_on_critic", "critic_vision_not_available"),
+    "ui_patch_request": ("deferred", "ui_patch_requires_claude_code"),
+}
+
 
 def apply_plan(
     card_folder: str | Path,
@@ -136,6 +142,10 @@ def _evaluate_and_submit(
         job["status"] = "waiting_on_references"
         job["reason"] = "missing_character_reference"
         job["missing_references"] = _unique_paths(missing)
+        return job
+    non_image_wait = NON_IMAGE_QUEUE_WAIT_STATES.get(str(job.get("queue_type") or ""))
+    if non_image_wait:
+        job["status"], job["reason"] = non_image_wait
         return job
     if not image_settings_ready or run_command is None:
         job["status"] = "deferred"
@@ -350,8 +360,12 @@ def _summarize(jobs: list[dict[str, Any]]) -> str:
     statuses = {str(job.get("status") or "") for job in jobs}
     if "failed" in statuses:
         return "failed"
-    if any(status.startswith("waiting_on") for status in statuses):
+    if "waiting_on_references" in statuses:
         return "waiting_on_references"
+    if "waiting_on_critic" in statuses:
+        return "waiting_on_critic"
+    if any(status.startswith("waiting_on") for status in statuses):
+        return sorted(statuses)[0]
     if "queued" in statuses:
         return "queued"
     if "deferred" in statuses:
