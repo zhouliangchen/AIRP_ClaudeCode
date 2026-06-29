@@ -10,6 +10,16 @@ from typing import Any, Callable
 import agent_run
 
 
+SUPPORTED_QUEUE_TYPES = {
+    "asset_rename",
+    "character_reference",
+    "character_reference_candidate",
+    "character_reference_selection",
+    "scene_illustration",
+    "ui_patch_request",
+}
+
+
 def apply_plan(
     card_folder: str | Path,
     run_dir: str | Path,
@@ -22,13 +32,31 @@ def apply_plan(
     run_root = Path(run_dir)
     jobs = []
     used_safe_ids: set[str] = set()
-    for index, raw_job in enumerate(plan.get("jobs") or [], start=1):
+    raw_jobs = _plan_jobs(plan)
+    for index, raw_job in enumerate(raw_jobs, start=1):
         job = _normalize_job(raw_job, plan, index)
         _dedupe_job_id(job, used_safe_ids)
         job = _evaluate_and_submit(card, job, image_settings_ready=image_settings_ready, run_command=run_command)
         _write_job(card, run_root, job)
         jobs.append(job)
     return {"status": _summarize(jobs), "jobs": jobs, "plan_id": str(plan.get("plan_id") or "")}
+
+
+def _plan_jobs(plan: dict[str, Any]) -> list[Any]:
+    raw_jobs = plan.get("jobs")
+    if raw_jobs is None:
+        return []
+    if isinstance(raw_jobs, list):
+        return raw_jobs
+    return [
+        {
+            "queue_type": "invalid_jobs_shape",
+            "job_id": f"{str(plan.get('plan_id') or 'asset-plan')}-invalid_jobs_shape-1",
+            "status": "failed",
+            "reason": "invalid_jobs_shape",
+            "raw_jobs_type": type(raw_jobs).__name__,
+        }
+    ]
 
 
 def _normalize_job(raw_job: Any, plan: dict[str, Any], index: int) -> dict[str, Any]:
@@ -51,6 +79,16 @@ def _normalize_job(raw_job: Any, plan: dict[str, Any], index: int) -> dict[str, 
     job["queue_type"] = queue_type
     job["job_id"] = job_id
     job["agent_plan_id"] = str(plan.get("plan_id") or "")
+    if str(job.get("status") or "") == "failed":
+        return job
+    if not queue_type:
+        job["status"] = "failed"
+        job["reason"] = "invalid_queue_type"
+        return job
+    if queue_type not in SUPPORTED_QUEUE_TYPES:
+        job["status"] = "failed"
+        job["reason"] = "unsupported_queue_type"
+        return job
     job.setdefault("dependencies", [])
     job.setdefault("batch_id", str(raw_job.get("batch_id") or ""))
     job.setdefault("round_id", str(raw_job.get("round_id") or ""))
@@ -103,7 +141,14 @@ def _evaluate_and_submit(
         job["status"] = "deferred"
         job["reason"] = "asset_worker_not_configured"
         return job
-    job["command"] = _run_image_job(card, job, run_command)
+    try:
+        job["command"] = _run_image_job(card, job, run_command)
+    except Exception as exc:
+        job["status"] = "deferred"
+        job["reason"] = "asset_worker_start_failed"
+        job["error"] = str(exc)
+        job["exception_type"] = type(exc).__name__
+        return job
     if job["command"]["returncode"] == 0:
         job["status"] = "queued"
         job.pop("reason", None)

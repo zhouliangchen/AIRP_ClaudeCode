@@ -474,6 +474,120 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["reason"], "reference_image_not_supported")
         self.assertEqual(job["worker_references"], ["x.png"])
 
+    def test_unknown_queue_type_fails_without_worker(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "ui_patch",
+                    "job_id": "unknown-ui-patch",
+                    "prompt": "更新状态栏",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "unknown-ui-patch.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "unsupported_queue_type")
+        self.assertEqual(job["queue_type"], "ui_patch")
+
+    def test_missing_queue_type_fails_without_worker(self):
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "job_id": "missing-queue-type",
+                    "prompt": "没有类型的任务",
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(commands, [])
+        job = _read_json(self.card / "generated" / "jobs" / "missing-queue-type.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "invalid_queue_type")
+
+    def test_worker_exception_persists_job_and_continues(self):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            raise RuntimeError("worker unavailable")
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-worker-exception",
+                    "round_id": "round-000003",
+                    "prompt": "雨夜剧院",
+                    "important_characters": [],
+                },
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "scene-deferred-after-exception",
+                    "round_id": "round-000003",
+                    "prompt": "后台灯光",
+                    "important_characters": [],
+                },
+            ],
+        }
+
+        result = self.mod.apply_plan(
+            self.card,
+            self.run_dir,
+            plan,
+            image_settings_ready=True,
+            run_command=fake_run,
+        )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(len(result["jobs"]), 2)
+        self.assertEqual(len(calls), 2)
+        first = _read_json(self.card / "generated" / "jobs" / "scene-worker-exception.json")
+        second = _read_json(self.card / "generated" / "jobs" / "scene-deferred-after-exception.json")
+        self.assertEqual(first["status"], "deferred")
+        self.assertEqual(first["reason"], "asset_worker_start_failed")
+        self.assertEqual(first["exception_type"], "RuntimeError")
+        self.assertIn("worker unavailable", first["error"])
+        self.assertEqual(second["status"], "deferred")
+        self.assertEqual(second["reason"], "asset_worker_start_failed")
+
     def test_sanitized_explicit_job_id_collisions_are_disambiguated(self):
         plan = {
             "schema_version": 1,
@@ -518,3 +632,18 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["reason"], "invalid_job")
         job = _read_json(self.card / "generated" / "jobs" / "assets-round-000003-invalid_job-1.json")
         self.assertEqual(job["raw_job"], "not a job")
+
+    def test_non_list_jobs_persists_failed_plan_shape_record(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": {"queue_type": "scene_illustration"},
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["jobs"][0]["status"], "failed")
+        self.assertEqual(result["jobs"][0]["reason"], "invalid_jobs_shape")
+        job = _read_json(self.card / "generated" / "jobs" / "assets-round-000003-invalid_jobs_shape-1.json")
+        self.assertEqual(job["raw_jobs_type"], "dict")
