@@ -781,6 +781,8 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
     ]
     if job.get("target_path"):
         command.extend(["--output-path", str(job["target_path"])])
+    if job.get("round_id"):
+        command.extend(["--round-id", str(job["round_id"])])
     for character in _worker_characters(job):
         command.extend(["--character", character])
     for ref in _worker_references(job):

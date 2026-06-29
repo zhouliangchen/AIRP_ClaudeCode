@@ -139,6 +139,27 @@ def _merge_manifest_image(images: list, item: dict) -> None:
     images.append(dict(item))
 
 
+HIDDEN_REFERENCE_TYPES = {"character_reference", "character_reference_candidate", "portrait"}
+STORY_INLINE_TYPES = {"scene_illustration", "scene"}
+
+
+def _display_policy_for(kind: str, target: str) -> str:
+    asset_types = {str(kind or "").strip().lower(), str(target or "").strip().lower()}
+    if asset_types & HIDDEN_REFERENCE_TYPES:
+        return "hidden_reference"
+    if asset_types & STORY_INLINE_TYPES:
+        return "story_inline"
+    return ""
+
+
+def _resolve_round_id(round_id: str | None, job_id: str | None) -> str:
+    explicit = str(round_id or "").strip()
+    if explicit:
+        return explicit
+    match = re.search(r"(?<![A-Za-z0-9])round-\d{6}(?![A-Za-z0-9])", str(job_id or ""))
+    return match.group(0) if match else ""
+
+
 def _completed_job_assets(card: Path) -> list[dict]:
     jobs_dir = card / "generated" / "jobs"
     if not jobs_dir.exists():
@@ -189,6 +210,7 @@ def _build_manifest_item(
     created_at: int,
     references: list[str] | None = None,
     job_id: str | None = None,
+    round_id: str | None = None,
     characters: list[str] | None = None,
 ) -> dict:
     item = {
@@ -205,6 +227,12 @@ def _build_manifest_item(
         item["references"] = list(references)
     if job_id:
         item["source_job_id"] = job_id
+    policy = _display_policy_for(kind, target)
+    if policy:
+        item["display_policy"] = policy
+    resolved_round_id = _resolve_round_id(round_id, job_id)
+    if resolved_round_id:
+        item["round_id"] = resolved_round_id
     if characters:
         item["characters"] = list(characters)
     return item
@@ -399,6 +427,8 @@ def _spawn_async(args) -> dict:
         cmd.extend(["--output-path", str(args.output_path)])
     if getattr(args, "job_id", None):
         cmd.extend(["--job-id", str(args.job_id)])
+    if getattr(args, "round_id", None):
+        cmd.extend(["--round-id", str(args.round_id)])
     for character in getattr(args, "character", []) or []:
         cmd.extend(["--character", str(character)])
     if args.dry_run:
@@ -450,6 +480,7 @@ def main():
     parser.add_argument("--reference", action="append", default=[], help="card-local reference image path")
     parser.add_argument("--output-path", default=None, help="card-local output path override")
     parser.add_argument("--job-id", default=None, help="job id for generated/jobs/<job-id>.json")
+    parser.add_argument("--round-id", default=None, help="round id for story-inline assets, e.g. round-000003")
     parser.add_argument("--character", action="append", default=[], help="character metadata for the asset manifest")
     parser.add_argument("--dry-run", action="store_true", help="write manifest entry without calling the API")
     parser.add_argument("--async", dest="async_job", action="store_true", help="queue detached generation job and return immediately")
@@ -462,15 +493,20 @@ def main():
     try:
         references = [_safe_card_relative_path(card, value) for value in args.reference]
         output_path = _safe_card_relative_path(card, args.output_path) if args.output_path else None
+        args.round_id = _resolve_round_id(args.round_id, args.job_id)
     except ValueError as exc:
+        job_payload = {
+            "status": "failed",
+            "reason": "invalid_path",
+            "error": str(exc),
+        }
+        resolved_round_id = _resolve_round_id(getattr(args, "round_id", None), args.job_id)
+        if resolved_round_id:
+            job_payload["round_id"] = resolved_round_id
         _write_job_status(
             card,
             args.job_id,
-            {
-                "status": "failed",
-                "reason": "invalid_path",
-                "error": str(exc),
-            },
+            job_payload,
         )
         _json_out({"ok": False, "error": str(exc)}, 2)
 
@@ -509,17 +545,16 @@ def main():
             )
             out_path.write_bytes(image_bytes)
     except ReferenceImageNotSupported as e:
-        _write_job_status(
-            card,
-            args.job_id,
-            {
-                "status": "deferred",
-                "reason": "reference_image_not_supported",
-                "error": str(e),
-                "references": references,
-                "path": rel_path.as_posix(),
-            },
-        )
+        job_payload = {
+            "status": "deferred",
+            "reason": "reference_image_not_supported",
+            "error": str(e),
+            "references": references,
+            "path": rel_path.as_posix(),
+        }
+        if args.round_id:
+            job_payload["round_id"] = args.round_id
+        _write_job_status(card, args.job_id, job_payload)
         _json_out(
             {
                 "ok": False,
@@ -530,16 +565,15 @@ def main():
             1,
         )
     except Exception as e:
-        _write_job_status(
-            card,
-            args.job_id,
-            {
-                "status": "deferred",
-                "reason": "image_generation_failed",
-                "error": str(e),
-                "path": rel_path.as_posix(),
-            },
-        )
+        job_payload = {
+            "status": "deferred",
+            "reason": "image_generation_failed",
+            "error": str(e),
+            "path": rel_path.as_posix(),
+        }
+        if args.round_id:
+            job_payload["round_id"] = args.round_id
+        _write_job_status(card, args.job_id, job_payload)
         _json_out({
             "ok": False,
             "error": str(e),
@@ -557,19 +591,19 @@ def main():
         created_at=int(time.time()),
         references=references,
         job_id=args.job_id,
+        round_id=args.round_id,
         characters=args.character,
     )
     _merge_manifest_image(manifest["images"], item)
     _write_json(manifest_path, manifest)
-    _write_job_status(
-        card,
-        args.job_id,
-        {
-            "status": "completed",
-            "path": rel_path.as_posix(),
-            "asset": item,
-        },
-    )
+    job_payload = {
+        "status": "completed",
+        "path": rel_path.as_posix(),
+        "asset": item,
+    }
+    if args.round_id:
+        job_payload["round_id"] = args.round_id
+    _write_job_status(card, args.job_id, job_payload)
     frontend = _refresh_frontend_assets(card)
 
     _json_out({

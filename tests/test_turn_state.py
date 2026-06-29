@@ -2391,7 +2391,7 @@ round_total: 7
                             "kind": "scene_illustration",
                             "target": "scene_illustration",
                             "path": "generated/images/scene-0001.png",
-                            "references": ["characters/苏黎/苏黎.png"],
+                            "references": ["generated/characters/苏黎/苏黎.png"],
                             "characters": ["苏黎"],
                             "source_job_id": "scene-round-000004",
                             "status": "completed",
@@ -2406,7 +2406,7 @@ round_total: 7
         assets = self.handler._load_card_assets(self.card)
 
         image = assets["images"][0]
-        self.assertEqual(image["references"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(image["references"], ["generated/characters/苏黎/苏黎.png"])
         self.assertEqual(image["characters"], ["苏黎"])
         self.assertEqual(image["source_job_id"], "scene-round-000004")
         self.assertEqual(image["status"], "completed")

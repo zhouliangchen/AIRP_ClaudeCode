@@ -124,7 +124,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
                 },
                 "characters": ["苏黎"],
                 "reference_policy": "required",
-                "reference_candidates": ["characters/苏黎/苏黎.png"],
+                "reference_candidates": ["generated/characters/苏黎/苏黎.png"],
                 "art_style": "水彩绘本画风",
                 "planner_hints": {"style": "consistent with previous scene"},
                 "ui_schema": {"postprocess_data_required": ["ui_extensions.scene"]},
@@ -148,7 +148,7 @@ class InputRoutingRequestsTest(unittest.TestCase):
         self.assertEqual(payload["asset_requirement"]["scene_illustration_each_round"], True)
         self.assertEqual(payload["characters"], ["苏黎"])
         self.assertEqual(payload["reference_policy"], "required")
-        self.assertEqual(payload["reference_candidates"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(payload["reference_candidates"], ["generated/characters/苏黎/苏黎.png"])
         self.assertEqual(payload["art_style"], "水彩绘本画风")
         self.assertEqual(payload["planner_hints"]["style"], "consistent with previous scene")
         self.assertIn("ui_schema", payload)

@@ -127,6 +127,10 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(result["status"], "queued")
         self.assertEqual(len(commands), 2)
         self.assertTrue(all("--async" in cmd for cmd in commands))
+        scene_command = commands[0]
+        self.assertIn("--round-id", scene_command)
+        self.assertEqual(scene_command[scene_command.index("--round-id") + 1], "round-000003")
+        self.assertNotIn("--round-id", commands[1])
 
     def test_ready_scene_job_passes_characters_to_worker(self):
         commands = []
@@ -164,6 +168,8 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(command[suli_index + 1], "苏黎")
         linlan_index = command.index("--character", suli_index + 2)
         self.assertEqual(command[linlan_index + 1], "林岚")
+        self.assertIn("--round-id", command)
+        self.assertEqual(command[command.index("--round-id") + 1], "round-000003")
 
     def test_ready_character_reference_job_passes_character_name_to_worker(self):
         commands = []
@@ -199,6 +205,7 @@ class AssetJobQueueTest(unittest.TestCase):
         command = commands[0]
         character_index = command.index("--character")
         self.assertEqual(command[character_index + 1], "苏黎")
+        self.assertNotIn("--round-id", command)
 
     def test_control_queue_types_wait_without_image_worker(self):
         cases = [
@@ -1412,6 +1419,8 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertIn("--reference", commands[0])
         ref_index = commands[0].index("--reference")
         self.assertEqual(commands[0][ref_index + 1], "generated/characters/Ada/Ada.png")
+        self.assertIn("--round-id", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--round-id") + 1], "round-000003")
 
     def test_worker_structured_deferred_stdout_preserves_reason(self):
         commands = []

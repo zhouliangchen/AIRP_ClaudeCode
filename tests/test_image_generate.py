@@ -280,15 +280,45 @@ class ImageGenerateConfigTest(unittest.TestCase):
             rel_path="generated/images/scene-0001.png",
             target="scene_illustration",
             created_at=1234567890,
-            references=["characters/苏黎/苏黎.png"],
+            references=["generated/characters/苏黎/苏黎.png"],
             job_id="scene-round-000004",
+            round_id="round-000004",
             characters=["苏黎"],
         )
 
         self.assertEqual(item["source_job_id"], "scene-round-000004")
-        self.assertEqual(item["references"], ["characters/苏黎/苏黎.png"])
+        self.assertEqual(item["references"], ["generated/characters/苏黎/苏黎.png"])
         self.assertEqual(item["characters"], ["苏黎"])
         self.assertEqual(item["status"], "completed")
+        self.assertEqual(item["display_policy"], "story_inline")
+        self.assertEqual(item["round_id"], "round-000004")
+
+    def test_build_manifest_item_marks_character_reference_as_hidden_reference(self):
+        item = self.mod._build_manifest_item(
+            image_id="character-suli-reference",
+            kind="portrait",
+            model="test-model",
+            prompt="draw character reference",
+            rel_path="generated/characters/苏黎/苏黎.png",
+            target="character_reference",
+            created_at=1234567890,
+            job_id="character-suli-reference",
+            characters=["苏黎"],
+        )
+
+        self.assertEqual(item["display_policy"], "hidden_reference")
+        self.assertNotIn("round_id", item)
+
+    def test_round_id_is_inferred_from_job_id_only_for_round_pattern(self):
+        self.assertEqual(
+            self.mod._resolve_round_id(None, "scene-round-000003"),
+            "round-000003",
+        )
+        self.assertEqual(
+            self.mod._resolve_round_id("round-000004", "scene-round-000003"),
+            "round-000004",
+        )
+        self.assertEqual(self.mod._resolve_round_id(None, "scene-round-3"), "")
 
     def test_write_job_status_writes_generated_job_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,9 +350,10 @@ class ImageGenerateConfigTest(unittest.TestCase):
                             {
                                 "id": "character-苏黎-reference",
                                 "kind": "character_reference",
-                                "path": "characters/苏黎/苏黎.png",
+                                "path": "generated/characters/苏黎/苏黎.png",
                                 "status": "completed",
                                 "source_job_id": "character-苏黎-reference",
+                                "display_policy": "hidden_reference",
                             }
                         ]
                     },
@@ -341,6 +372,8 @@ class ImageGenerateConfigTest(unittest.TestCase):
                             "path": "generated/images/scene-0001.png",
                             "status": "completed",
                             "source_job_id": "scene-round-000003",
+                            "display_policy": "story_inline",
+                            "round_id": "round-000003",
                         },
                     },
                     ensure_ascii=False,
@@ -366,9 +399,10 @@ class ImageGenerateConfigTest(unittest.TestCase):
             size="1024x1024",
             model="test-model",
             dry_run=True,
-            reference=["characters/苏黎/苏黎.png", "generated/images/scene-prev.png"],
-            output_path="characters/苏黎/苏黎.png",
+            reference=["generated/characters/苏黎/苏黎.png", "generated/images/scene-prev.png"],
+            output_path="generated/characters/苏黎/苏黎.png",
             job_id="scene-round-000004",
+            round_id="round-000004",
             character=["苏黎", "旁白"],
         )
 
@@ -383,12 +417,14 @@ class ImageGenerateConfigTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         cmd = popen.call_args.args[0]
         self.assertIn("--reference", cmd)
-        self.assertIn("characters/苏黎/苏黎.png", cmd)
+        self.assertIn("generated/characters/苏黎/苏黎.png", cmd)
         self.assertIn("generated/images/scene-prev.png", cmd)
         self.assertIn("--output-path", cmd)
-        self.assertIn("characters/苏黎/苏黎.png", cmd)
+        self.assertIn("generated/characters/苏黎/苏黎.png", cmd)
         self.assertIn("--job-id", cmd)
         self.assertIn("scene-round-000004", cmd)
+        self.assertIn("--round-id", cmd)
+        self.assertIn("round-000004", cmd)
         self.assertIn("--character", cmd)
         self.assertIn("苏黎", cmd)
         self.assertIn("旁白", cmd)
@@ -424,7 +460,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
     def test_main_async_reference_spawns_worker_instead_of_deferring(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
-            reference = card / "characters" / "Ada" / "Ada.png"
+            reference = card / "generated" / "characters" / "Ada" / "Ada.png"
             reference.parent.mkdir(parents=True)
             reference.write_bytes(b"png")
             job_path = card / "generated" / "jobs" / "scene-round-000004.json"
@@ -434,7 +470,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
                 "--prompt",
                 "draw scene",
                 "--reference",
-                "characters/Ada/Ada.png",
+                "generated/characters/Ada/Ada.png",
                 "--job-id",
                 "scene-round-000004",
                 "--async",
@@ -448,13 +484,13 @@ class ImageGenerateConfigTest(unittest.TestCase):
             popen.assert_called_once()
             command = popen.call_args.args[0]
             self.assertIn("--reference", command)
-            self.assertIn("characters/Ada/Ada.png", command)
+            self.assertIn("generated/characters/Ada/Ada.png", command)
             self.assertFalse(job_path.exists())
 
     def test_main_dry_run_custom_output_path_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
-            portrait = card / "characters" / "苏黎" / "苏黎.png"
+            portrait = card / "generated" / "characters" / "苏黎" / "苏黎.png"
             portrait.parent.mkdir(parents=True)
             original_bytes = b"portrait-bytes"
             portrait.write_bytes(original_bytes)
@@ -471,7 +507,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
                 "character_reference",
                 "--dry-run",
                 "--output-path",
-                "characters/苏黎/苏黎.png",
+                "generated/characters/苏黎/苏黎.png",
                 "--job-id",
                 "character-suli-reference",
             ]
@@ -490,10 +526,50 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertTrue(manifest_path.exists())
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(len(manifest["images"]), 1)
-            self.assertEqual(manifest["images"][0]["path"], "characters/苏黎/苏黎.png")
+            self.assertEqual(manifest["images"][0]["path"], "generated/characters/苏黎/苏黎.png")
+            self.assertEqual(manifest["images"][0]["display_policy"], "hidden_reference")
             self.assertTrue(job_path.exists())
             payload = json.loads(job_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["asset"]["display_policy"], "hidden_reference")
+
+    def test_main_dry_run_scene_writes_story_inline_and_inferred_round_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            manifest_path = card / ".card_assets.json"
+            job_path = card / "generated" / "jobs" / "scene-round-000003.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--kind",
+                "scene_illustration",
+                "--target",
+                "scene_illustration",
+                "--dry-run",
+                "--job-id",
+                "scene-round-000003",
+            ]
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_refresh_frontend_assets",
+                    return_value={"content_js": False, "error": None},
+                ):
+                    with self.assertRaises(SystemExit) as exc:
+                        self.mod.main()
+
+            self.assertEqual(exc.exception.code, 0)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            item = manifest["images"][0]
+            self.assertEqual(item["display_policy"], "story_inline")
+            self.assertEqual(item["round_id"], "round-000003")
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["asset"]["display_policy"], "story_inline")
+            self.assertEqual(payload["asset"]["round_id"], "round-000003")
 
     def test_call_openai_images_rejects_missing_base_url_without_default(self):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):
@@ -586,7 +662,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
     def test_main_reference_unsupported_defers_with_specific_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
-            reference = card / "characters" / "Ada" / "Ada.png"
+            reference = card / "generated" / "characters" / "Ada" / "Ada.png"
             reference.parent.mkdir(parents=True)
             reference.write_bytes(b"png")
             job_path = card / "generated" / "jobs" / "scene-round-000004.json"
@@ -596,7 +672,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
                 "--prompt",
                 "draw scene",
                 "--reference",
-                "characters/Ada/Ada.png",
+                "generated/characters/Ada/Ada.png",
                 "--job-id",
                 "scene-round-000004",
             ]
@@ -623,7 +699,7 @@ class ImageGenerateConfigTest(unittest.TestCase):
             payload = json.loads(job_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "deferred")
             self.assertEqual(payload["reason"], "reference_image_not_supported")
-            self.assertEqual(payload["references"], ["characters/Ada/Ada.png"])
+            self.assertEqual(payload["references"], ["generated/characters/Ada/Ada.png"])
 
 
 if __name__ == "__main__":
