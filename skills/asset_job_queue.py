@@ -511,14 +511,17 @@ def _apply_asset_rename(card: Path, run_dir: Path, job: dict[str, Any]) -> dict[
         return job
 
     replacements = rename["replacements"]
+    conflict = _preflight_asset_rename(card, from_path, to_path, replacements)
+    if conflict:
+        job["status"] = "failed"
+        job["reason"] = conflict["reason"]
+        if conflict.get("conflict_path"):
+            job["conflict_path"] = conflict["conflict_path"]
+        return job
+
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != target.resolve():
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
             shutil.move(str(source), str(target))
         _apply_internal_renamed_files(card, from_path, to_path, replacements)
         _rewrite_asset_reference_files(card, run_dir, replacements)
@@ -535,6 +538,31 @@ def _apply_asset_rename(card: Path, run_dir: Path, job: dict[str, Any]) -> dict[
     job["status"] = "completed"
     job.pop("reason", None)
     return job
+
+
+def _preflight_asset_rename(
+    card: Path,
+    from_path: str,
+    to_path: str,
+    replacements: list[dict[str, str]],
+) -> dict[str, str]:
+    source = card / Path(from_path)
+    target = card / Path(to_path)
+    if target.exists() and source.resolve() != target.resolve():
+        return {"reason": "target_asset_exists", "conflict_path": to_path}
+    for replacement in replacements:
+        old = replacement["from"]
+        new = replacement["to"]
+        if old == from_path or new == to_path:
+            continue
+        moved_old = _path_after_parent_rename(old, from_path, to_path)
+        if moved_old is None or moved_old == new:
+            continue
+        old_abs = card / Path(old)
+        new_abs = card / Path(new)
+        if old_abs.exists() and new_abs.exists():
+            return {"reason": "target_asset_exists", "conflict_path": new}
+    return {}
 
 
 def _normalized_asset_rename(job: dict[str, Any]) -> dict[str, Any]:
@@ -634,10 +662,10 @@ def _replace_asset_path_strings(value: Any, replacements: list[dict[str, str]]) 
     if isinstance(value, list):
         return [_replace_asset_path_strings(item, replacements) for item in value]
     if isinstance(value, str):
-        updated = value
         for replacement in replacements:
-            updated = updated.replace(replacement["from"], replacement["to"])
-        return updated
+            if value == replacement["from"]:
+                return replacement["to"]
+        return value
     return value
 
 

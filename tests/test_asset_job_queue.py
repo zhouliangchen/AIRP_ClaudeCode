@@ -334,6 +334,152 @@ class AssetJobQueueTest(unittest.TestCase):
         updated_mirror = _read_json(mirror_path)
         self.assertEqual(updated_mirror["reference_candidates"][0]["path"], new_path)
 
+    def test_asset_rename_rewrites_only_exact_json_string_values(self):
+        old_path = "generated/characters/旧/旧.png"
+        new_path = "generated/characters/新/新.png"
+        old_file = self.card / old_path
+        old_file.parent.mkdir(parents=True)
+        old_file.write_bytes(b"old portrait")
+        job_payload = {
+            "schema_version": 1,
+            "queue_type": "scene_illustration",
+            "job_id": "scene-prose-reference",
+            "status": "waiting_on_references",
+            "notes": "do not rewrite generated/characters/旧/旧.png inside prose",
+            "description": f"embedded {old_path} path stays prose",
+            "path": old_path,
+            "resolved_references": [old_path],
+            "reference_candidates": [{"path": old_path}],
+        }
+        job_path = self.card / "generated" / "jobs" / "scene-prose-reference.json"
+        job_path.parent.mkdir(parents=True)
+        job_path.write_text(json.dumps(job_payload, ensure_ascii=False), encoding="utf-8")
+        (self.card / ".card_assets.json").write_text(
+            json.dumps(
+                {
+                    "images": [
+                        {
+                            "path": old_path,
+                            "notes": "do not rewrite generated/characters/旧/旧.png inside prose",
+                            "references": [old_path],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-exact-values",
+                    "from_path": "generated/characters/旧",
+                    "to_path": "generated/characters/新",
+                    "replacements": [{"from": old_path, "to": new_path}],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "completed")
+        updated_job = _read_json(job_path)
+        self.assertEqual(updated_job["notes"], "do not rewrite generated/characters/旧/旧.png inside prose")
+        self.assertEqual(updated_job["description"], f"embedded {old_path} path stays prose")
+        self.assertEqual(updated_job["path"], new_path)
+        self.assertEqual(updated_job["resolved_references"], [new_path])
+        self.assertEqual(updated_job["reference_candidates"][0]["path"], new_path)
+        updated_assets = _read_json(self.card / ".card_assets.json")
+        self.assertEqual(updated_assets["images"][0]["notes"], "do not rewrite generated/characters/旧/旧.png inside prose")
+        self.assertEqual(updated_assets["images"][0]["path"], new_path)
+        self.assertEqual(updated_assets["images"][0]["references"], [new_path])
+
+    def test_asset_rename_rejects_existing_target_without_deleting_assets(self):
+        source_dir = self.card / "generated" / "characters" / "Old"
+        target_dir = self.card / "generated" / "characters" / "New"
+        source_file = source_dir / "Old.png"
+        target_file = target_dir / "New.png"
+        source_file.parent.mkdir(parents=True)
+        target_file.parent.mkdir(parents=True)
+        source_file.write_bytes(b"source portrait")
+        target_file.write_bytes(b"existing target portrait")
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-existing-target",
+                    "from_path": "generated/characters/Old",
+                    "to_path": "generated/characters/New",
+                    "replacements": [
+                        {
+                            "from": "generated/characters/Old/Old.png",
+                            "to": "generated/characters/New/New.png",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(source_file.is_file())
+        self.assertEqual(source_file.read_bytes(), b"source portrait")
+        self.assertTrue(target_file.is_file())
+        self.assertEqual(target_file.read_bytes(), b"existing target portrait")
+        job = _read_json(self.card / "generated" / "jobs" / "rename-existing-target.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "target_asset_exists")
+        self.assertEqual(job["conflict_path"], "generated/characters/New")
+        self.assertNotIn("applied_replacements", job)
+
+    def test_asset_rename_rejects_existing_internal_replacement_target_without_moving_source(self):
+        source_dir = self.card / "generated" / "tmp" / "old"
+        source_file = source_dir / "portrait.png"
+        replacement_target = self.card / "generated" / "characters" / "New" / "New.png"
+        source_file.parent.mkdir(parents=True)
+        replacement_target.parent.mkdir(parents=True)
+        source_file.write_bytes(b"source portrait")
+        replacement_target.write_bytes(b"existing replacement target")
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "asset_rename",
+                    "job_id": "rename-existing-internal-target",
+                    "from_path": "generated/tmp/old",
+                    "to_path": "generated/tmp/new",
+                    "replacements": [
+                        {
+                            "from": "generated/tmp/old/portrait.png",
+                            "to": "generated/characters/New/New.png",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(source_file.is_file())
+        self.assertEqual(source_file.read_bytes(), b"source portrait")
+        self.assertFalse((self.card / "generated" / "tmp" / "new").exists())
+        self.assertTrue(replacement_target.is_file())
+        self.assertEqual(replacement_target.read_bytes(), b"existing replacement target")
+        job = _read_json(self.card / "generated" / "jobs" / "rename-existing-internal-target.json")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["reason"], "target_asset_exists")
+        self.assertEqual(job["conflict_path"], "generated/characters/New/New.png")
+        self.assertNotIn("applied_replacements", job)
+
     def test_asset_rename_rejects_unsafe_replacement_path_without_moving_source(self):
         old_path = "generated/characters/无名少女/无名少女.png"
         old_file = self.card / old_path
