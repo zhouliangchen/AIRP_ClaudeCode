@@ -142,7 +142,8 @@ class AssetJobQueueTest(unittest.TestCase):
 
                 self.assertEqual(commands, [])
                 self.assertEqual(result["status"], expected_status)
-                job = _read_json(self.card / "generated" / "jobs" / f"{queue_type}-job.json")
+                job_path = f"{queue_type.replace('_', '-')}-job.json"
+                job = _read_json(self.card / "generated" / "jobs" / job_path)
                 self.assertEqual(job["status"], expected_status)
                 self.assertEqual(job["reason"], expected_reason)
                 self.assertNotIn("command", job)
@@ -263,7 +264,13 @@ class AssetJobQueueTest(unittest.TestCase):
         )
         self.assertEqual(len(set(job_ids)), 2)
         files = sorted((self.card / "generated" / "jobs").glob("*.json"))
-        self.assertEqual([path.stem for path in files], job_ids)
+        self.assertEqual(
+            [path.stem for path in files],
+            [
+                "assets-round-000003-scene-illustration-1",
+                "assets-round-000003-scene-illustration-2",
+            ],
+        )
 
     def test_required_scene_missing_prefilled_resolved_reference_waits(self):
         commands = []
@@ -515,6 +522,32 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job["reason"], "reference_image_not_supported")
         self.assertEqual(job["worker_references"], ["x.png"])
 
+    def test_punctuation_job_id_uses_worker_compatible_filename_slug(self):
+        plan = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000003",
+            "jobs": [
+                {
+                    "queue_type": "scene_illustration",
+                    "job_id": "a:b",
+                    "round_id": "round-000003",
+                    "prompt": "exterior",
+                    "important_characters": [],
+                }
+            ],
+        }
+
+        result = self.mod.apply_plan(self.card, self.run_dir, plan, image_settings_ready=False)
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertTrue((self.card / "generated" / "jobs" / "ab.json").is_file())
+        self.assertFalse((self.card / "generated" / "jobs" / "a_b.json").exists())
+        self.assertTrue(
+            (self.run_dir / "artifacts" / "assets_ui" / "jobs" / "ab.json").is_file()
+        )
+        mirror = _read_json(self.run_dir / "artifacts" / "assets_ui" / "jobs" / "ab.json")
+        self.assertEqual(mirror["job_id"], "a:b")
+
     def test_unknown_queue_type_fails_without_worker(self):
         commands = []
 
@@ -657,7 +690,7 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(job_ids, ["a/b", "a:b-2"])
         self.assertEqual(result["jobs"][1]["source_job_id"], "a:b")
         files = sorted((self.card / "generated" / "jobs").glob("*.json"))
-        self.assertEqual([path.name for path in files], ["a_b-2.json", "a_b.json"])
+        self.assertEqual([path.name for path in files], ["ab-2.json", "ab.json"])
 
     def test_non_dict_plan_job_persists_failed_record(self):
         plan = {
@@ -671,7 +704,7 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["jobs"][0]["status"], "failed")
         self.assertEqual(result["jobs"][0]["reason"], "invalid_job")
-        job = _read_json(self.card / "generated" / "jobs" / "assets-round-000003-invalid_job-1.json")
+        job = _read_json(self.card / "generated" / "jobs" / "assets-round-000003-invalid-job-1.json")
         self.assertEqual(job["raw_job"], "not a job")
 
     def test_non_list_jobs_persists_failed_plan_shape_record(self):
@@ -686,5 +719,7 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["jobs"][0]["status"], "failed")
         self.assertEqual(result["jobs"][0]["reason"], "invalid_jobs_shape")
-        job = _read_json(self.card / "generated" / "jobs" / "assets-round-000003-invalid_jobs_shape-1.json")
+        job = _read_json(
+            self.card / "generated" / "jobs" / "assets-round-000003-invalid-jobs-shape-1.json"
+        )
         self.assertEqual(job["raw_jobs_type"], "dict")

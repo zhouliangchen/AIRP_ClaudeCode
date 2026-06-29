@@ -26,6 +26,19 @@ NON_IMAGE_QUEUE_WAIT_STATES = {
 }
 
 
+def _job_filename_slug(text: str) -> str:
+    keep = []
+    for ch in text.lower():
+        if ch.isalnum():
+            keep.append(ch)
+        elif ch in "-_ ":
+            keep.append("-")
+    slug = "".join(keep).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug[:48] or "image"
+
+
 def apply_plan(
     card_folder: str | Path,
     run_dir: str | Path,
@@ -110,13 +123,19 @@ def _dedupe_job_id(job: dict[str, Any], used_safe_ids: set[str]) -> None:
     original = str(job.get("job_id") or "asset-job")
     candidate = original
     suffix = 2
-    while agent_run.safe_name(candidate) in used_safe_ids:
-        candidate = f"{original}-{suffix}"
+    while _job_filename_slug(candidate) in used_safe_ids:
+        direct_candidate = f"{original}-{suffix}"
+        candidate = direct_candidate
+        if _job_filename_slug(candidate) in used_safe_ids:
+            suffix_text = f"-{suffix}"
+            base_slug = _job_filename_slug(original)
+            prefix_limit = max(1, 48 - len(suffix_text))
+            candidate = f"{base_slug[:prefix_limit].rstrip('-') or 'image'}{suffix_text}"
         suffix += 1
     if candidate != original:
         job["source_job_id"] = original
         job["job_id"] = candidate
-    used_safe_ids.add(agent_run.safe_name(candidate))
+    used_safe_ids.add(_job_filename_slug(candidate))
 
 
 def _evaluate_and_submit(
@@ -351,7 +370,7 @@ def _character_target_path(job: dict[str, Any]) -> str:
 
 
 def _write_job(card: Path, run_dir: Path, job: dict[str, Any]) -> None:
-    safe_id = agent_run.safe_name(str(job.get("job_id") or "asset-job"))
+    safe_id = _job_filename_slug(str(job.get("job_id") or ""))
     agent_run.write_json(card / "generated" / "jobs" / f"{safe_id}.json", job)
     agent_run.write_json(run_dir / "artifacts" / "assets_ui" / "jobs" / f"{safe_id}.json", job)
 
