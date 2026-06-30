@@ -275,7 +275,11 @@ class AgentOutputsTest(unittest.TestCase):
                 "core": {
                     "summary": "Postprocess summary.",
                     "current_goal": "Keep moving through the archive.",
-                    "options": ["Step deeper into the archive."],
+                    "options": [
+                        "Step deeper into the archive.",
+                        "Ask Ada what she hears.",
+                        "Inspect the threshold first.",
+                    ],
                     "state_patch": {"quest": "Explore the archive"},
                 },
                 "ui_extensions": {
@@ -3543,7 +3547,7 @@ class AgentOutputsTest(unittest.TestCase):
         self.assertEqual(result["reason"], "postprocess_core_invalid")
         self.assertIn("missing fixed option for critical action", "\n".join(result["detail"]["errors"]))
 
-    def test_prepare_delivery_fills_default_postprocess_option_when_noncritical_options_empty(self):
+    def test_prepare_delivery_blocks_when_postprocess_options_are_not_exactly_three(self):
         self._write_story_and_critic(
             decision="pass",
             postprocess_payload={
@@ -3558,11 +3562,9 @@ class AgentOutputsTest(unittest.TestCase):
 
         result = self.agent_outputs.prepare_delivery(self.card, self.styles_dir)
 
-        self.assertTrue(result["ok"])
-        options = result["postprocess"]["core"]["options"]
-        self.assertEqual(len(options), 1)
-        self.assertEqual(options[0]["source"], "postprocess_fallback")
-        self.assertFalse(options[0]["requires_confirmation"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "postprocess_core_invalid")
+        self.assertIn("core.options must include exactly 3 valid options", result["detail"]["errors"])
 
     def test_prepare_delivery_success_includes_and_exports_normalized_postprocess(self):
         self._add_player_critical_action()
@@ -3580,6 +3582,7 @@ class AgentOutputsTest(unittest.TestCase):
                             "requires_confirmation": True,
                         },
                         "Step back and listen.",
+                        "Ask Ada what she sees.",
                     ],
                     "state_patch": {
                         "quest": "Resolve the sealed door",

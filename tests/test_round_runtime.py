@@ -70,7 +70,7 @@ def _fake_run_claude(agent_key, prompt, cwd):
             "core": {
                 "summary": "你推开门。",
                 "current_goal": "观察门后",
-                "options": [{"label": "进入房间"}],
+                "options": [{"label": "进入房间"}, {"label": "先观察门缝"}, {"label": "退后听声"}],
             },
             "mvu": {"commands": []},
             "ui_extensions": {},
@@ -322,6 +322,22 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertFalse((self.card / ".pending_user_turn.json").exists())
         self.assertFalse((styles / ".pending").exists())
 
+    def test_instruction_only_opening_flag_is_not_control_only(self):
+        result = self.round_runtime._is_control_only_input(
+            {
+                "routed_input": {
+                    "role_channel": "",
+                    "role_action_channel": "",
+                    "narrative_guidance_channel": "",
+                    "user_instruction_channel": "Use a random opening that fits the premise.",
+                },
+                "input_payload_flags": {"instruction_only_opening": True},
+                "capability_requests": [],
+            }
+        )
+
+        self.assertFalse(result)
+
     def test_story_and_critic_asset_requests_are_routed_to_pending_intents(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         story_input = {
@@ -389,7 +405,7 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertEqual([intent["requested_by"] for intent in pending], ["story", "critic"])
         self.assertEqual([intent["payload"]["action"] for intent in pending], ["create", "delete"])
 
-    def test_run_postprocess_injects_missing_player_decision_confirmation_option(self):
+    def test_run_postprocess_combines_player_decision_with_two_generated_options(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         story_input = {
             "loop_outputs": {
@@ -433,13 +449,16 @@ class RoundRuntimeTest(unittest.TestCase):
 
         def run_claude(agent_key, prompt, cwd):
             self.assertEqual(agent_key, "postprocess")
+            self.assertIn("player_critical_action_options", prompt)
+            self.assertIn("remaining_options_to_generate", prompt)
+            self.assertIn("我把左手往便签上一盖，装作翻开数学书复习。", prompt)
             return json.dumps(
                 {
                     "schema_version": 1,
                     "core": {
                         "summary": "便签仍被压在手下。",
                         "current_goal": "决定如何处理桌面检查。",
-                        "options": ["继续观察老师反应"],
+                        "options": ["继续观察老师反应", "把便签塞进口袋"],
                     },
                     "ui_extensions": {},
                     "ui_extension_status": {"status": "ok", "issues": []},
@@ -458,7 +477,9 @@ class RoundRuntimeTest(unittest.TestCase):
         )
 
         options = output["core"]["options"]
+        self.assertEqual(len(options), 3)
         self.assertEqual(options[0]["label"], "继续观察老师反应")
+        self.assertEqual(options[1]["label"], "把便签塞进口袋")
         self.assertIn(
             {
                 "label": "确认行动：我把左手往便签上一盖，装作翻开数学书复习。",
@@ -470,7 +491,7 @@ class RoundRuntimeTest(unittest.TestCase):
         artifact = json.loads((self.run_dir / "artifacts" / "postprocess.output.json").read_text(encoding="utf-8"))
         self.assertEqual(artifact["core"]["options"], options)
 
-    def test_run_postprocess_replaces_stale_player_decision_confirmation_option(self):
+    def test_run_postprocess_rejects_stale_player_decision_confirmation_option(self):
         story_input = {
             "loop_outputs": {
                 "gm": {
@@ -519,12 +540,13 @@ class RoundRuntimeTest(unittest.TestCase):
                         "summary": "苏黎给出可以去走廊说的台阶。",
                         "current_goal": "决定是否跟苏黎去走廊。",
                         "options": [
+                            "留在教室继续试探",
+                            "问苏黎是不是知道什么",
                             {
                                 "label": "Confirm action: 跟苏黎去走廊尽头，继续压低声音询问。",
                                 "source": "player_agent_critical_action",
                                 "requires_confirmation": True,
                             },
-                            "留在教室继续试探",
                         ],
                     },
                     "ui_extensions": {},
@@ -534,28 +556,15 @@ class RoundRuntimeTest(unittest.TestCase):
                 ensure_ascii=False,
             )
 
-        output = self.round_runtime._run_postprocess(
-            self.card,
-            self.root,
-            self.run_dir,
-            run_claude,
-            story_input,
-            story_output,
-        )
-
-        options = output["core"]["options"]
-        player_options = [item for item in options if item["source"] == "player_agent_critical_action"]
-        self.assertEqual(
-            player_options,
-            [
-                {
-                    "label": "确认行动：我抱着练习册走到苏黎旁边，压低声音问她是不是知道什么。",
-                    "source": "player_agent_critical_action",
-                    "requires_confirmation": True,
-                }
-            ],
-        )
-        self.assertEqual(options[0]["label"], "留在教室继续试探")
+        with self.assertRaisesRegex(self.round_runtime.RoundRuntimeError, "postprocess output rejected"):
+            self.round_runtime._run_postprocess(
+                self.card,
+                self.root,
+                self.run_dir,
+                run_claude,
+                story_input,
+                story_output,
+            )
 
     def test_run_round_refreshes_current_run_after_replay_switch(self):
         replay_dir = self.card / ".agent_runs" / "round-000002-replay-001"

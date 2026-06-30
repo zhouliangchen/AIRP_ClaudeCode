@@ -11,7 +11,9 @@ import signal
 import socket
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 import mimetypes
 from pathlib import Path
 
@@ -33,6 +35,7 @@ SESSION_FILE = ROOT / ".session_init"
 # Allow importing handler from skills/
 sys.path.insert(0, str(SKILLS))
 from frontend import handler as handler
+from runtime import debug_log
 from runtime import runtime_settings as runtime_settings
 from llm import provider as llm_provider
 from llm import settings as llm_settings
@@ -98,6 +101,31 @@ def _post_round_memory_input_block(card_folder):
             "scheduled": {},
         }
     return state if isinstance(state, dict) else {}
+
+
+def _dual_channel_raw(role_text, instruction_text):
+    if instruction_text:
+        return role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+    return role_text
+
+
+def _latest_turn_options(card_folder):
+    if not card_folder:
+        return []
+    try:
+        return handler.latest_turn_options(card_folder)
+    except Exception:
+        return []
+
+
+def _card_has_delivered_turns(card_folder):
+    if not card_folder:
+        return False
+    try:
+        log = handler.read_chat_log(card_folder)
+    except Exception:
+        return False
+    return isinstance(log, list) and bool(log)
 
 
 def _settings_payload(raw):
@@ -187,6 +215,17 @@ def _merge_llm_settings_into(current, payload):
                 merged["image_generation"][key] = image_generation[key]
         if _should_replace_api_key(image_generation.get("api_key")):
             merged["image_generation"]["api_key"] = image_generation["api_key"]
+        if "fallback" in image_generation:
+            incoming = _llm_section(image_generation, "fallback")
+            current_fallback = merged["image_generation"].get("fallback")
+            target = dict(current_fallback) if isinstance(current_fallback, dict) else {}
+            for key in ("base_url", "model"):
+                if key in incoming:
+                    target[key] = incoming[key]
+            if _should_replace_api_key(incoming.get("api_key")):
+                target["api_key"] = incoming["api_key"]
+            if target:
+                merged["image_generation"]["fallback"] = target
 
     return llm_settings.normalize_settings(merged, CLAUDE_SETTINGS_FILE)
 
@@ -208,10 +247,148 @@ def _redacted_llm_settings(settings=None):
     errors = llm_settings.settings_errors(settings)
     if errors:
         redacted["configuration_errors"] = errors
+    notices = _recent_api_fallback_notices()
+    if notices:
+        redacted["fallback_notices"] = notices
     return redacted
 
 
-def _test_llm_settings(settings):
+def _recent_api_fallback_notices():
+    events = debug_log.recent_events(_card_folder(), event="api_fallback", limit=3)
+    notices = []
+    for record in events:
+        details = record.get("details") if isinstance(record.get("details"), dict) else {}
+        source = str(details.get("from") or details.get("provider") or "").strip()
+        target = str(details.get("to") or "").strip()
+        error = str(details.get("error") or "").strip()
+        if source and target:
+            message = f"最近已自动 fallback：{source} -> {target}"
+        elif source:
+            message = f"最近 API 不可用：{source}"
+        else:
+            message = "最近发生 API fallback"
+        if error:
+            message += f"；{error}"
+        notices.append(
+            {
+                "timestamp": record.get("timestamp", ""),
+                "event": record.get("event", "api_fallback"),
+                "level": record.get("level", "warning"),
+                "message": message,
+                "details": details,
+            }
+        )
+    return notices
+
+
+def _image_generation_config(image_generation):
+    if not isinstance(image_generation, dict):
+        return {}
+    return {
+        "base_url": image_generation.get("base_url", ""),
+        "api_key": image_generation.get("api_key", ""),
+        "model": image_generation.get("model", ""),
+    }
+
+
+def _test_image_generation_connection(config, provider="image_generation", urlopen=urllib.request.urlopen):
+    settings = dict(config if isinstance(config, dict) else {})
+    missing = [key for key in ("base_url", "api_key", "model") if not str(settings.get(key) or "").strip()]
+    if missing:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": str(settings.get("model") or ""),
+            "error": f"{provider}: missing required config: {', '.join(missing)}",
+        }
+
+    base_url = str(settings["base_url"]).rstrip("/") + "/"
+    url = urllib.parse.urljoin(base_url, "models")
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {settings['api_key']}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            response.read(1024)
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": settings["model"],
+            "error": f"{provider}: HTTP {exc.code} {exc.reason}",
+        }
+    except urllib.error.URLError as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": settings["model"],
+            "error": f"{provider}: URL error: {exc.reason}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": settings["model"],
+            "error": f"{provider}: request failed: {exc}",
+        }
+    return {
+        "ok": True,
+        "provider": provider,
+        "status": status,
+        "model": settings["model"],
+    }
+
+
+def _test_llm_settings_target(settings, target):
+    if not isinstance(target, dict):
+        return None
+    provider = str(target.get("provider") or "").strip()
+    tier = str(target.get("tier") or "").strip()
+    results = []
+
+    if provider == "cc_switch":
+        cc_switch = settings.get("cc_switch", {})
+        if not isinstance(cc_switch, dict):
+            cc_switch = {}
+        tiers = [tier] if tier in llm_settings.TEXT_MODEL_TIERS else list(llm_settings.TEXT_MODEL_TIERS)
+        for current_tier in tiers:
+            config = dict(cc_switch)
+            config["model"] = llm_settings.resolve_claude_code_model_tier(current_tier, CLAUDE_SETTINGS_FILE)
+            config["headers"] = llm_settings.claude_code_auth_headers(CLAUDE_SETTINGS_FILE)
+            result = llm_provider.test_connection("cc_switch", config)
+            result["tier"] = current_tier
+            results.append(result)
+    elif provider == "openai_compatible" and tier in llm_settings.TEXT_MODEL_TIERS:
+        openai_compatible = settings.get("openai_compatible", {})
+        tier_config = openai_compatible.get(tier) if isinstance(openai_compatible, dict) else {}
+        config = dict(tier_config if isinstance(tier_config, dict) else {})
+        result = llm_provider.test_connection("openai_compatible", config)
+        result["tier"] = tier
+        results.append(result)
+    elif provider == "image_generation":
+        image_generation = settings.get("image_generation", {})
+        results.append(_test_image_generation_connection(_image_generation_config(image_generation), "image_generation"))
+    elif provider == "image_generation.fallback":
+        image_generation = settings.get("image_generation", {})
+        fallback = image_generation.get("fallback") if isinstance(image_generation, dict) else {}
+        results.append(_test_image_generation_connection(_image_generation_config(fallback), "image_generation.fallback"))
+    else:
+        return {"ok": False, "error": "unknown LLM test target", "results": []}
+
+    return {"ok": all(bool(result.get("ok")) for result in results), "results": results}
+
+
+def _test_llm_settings(settings, target=None):
+    targeted = _test_llm_settings_target(settings, target)
+    if targeted is not None:
+        return targeted
+
     results = []
     cc_switch = settings.get("cc_switch", {})
     if isinstance(cc_switch, dict) and cc_switch.get("enabled") is True:
@@ -309,11 +486,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if has_dual_channel:
                 role_text = "" if role_text is None else str(role_text)
                 instruction_text = "" if instruction_text is None else str(instruction_text)
-                full_raw = (
-                    role_text + "\n\n[USER_INSTRUCTION]\n" + instruction_text
-                    if instruction_text
-                    else role_text
-                )
                 text = role_text
 
             incoming_has_content = bool(role_text or instruction_text) if has_dual_channel else bool(text.strip())
@@ -324,6 +496,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         {
                             "ok": False,
                             "error": "post_round_memory_pending",
+                            "retry_when_ready": True,
+                            "frontend_action": "queue_and_retry",
                             "blocking": blocking,
                         },
                         409,
@@ -331,10 +505,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return
 
             if has_dual_channel and (role_text or instruction_text):
+                card = _card_folder()
+                autofilled_role = ""
+                instruction_only_opening = False
+                if not role_text.strip() and instruction_text.strip():
+                    turn_options = _latest_turn_options(card)
+                    if turn_options:
+                        autofilled_role = str(random.choice(turn_options))
+                        role_text = autofilled_role
+                        text = role_text
+                    elif card and not _card_has_delivered_turns(card):
+                        instruction_only_opening = True
+                full_raw = _dual_channel_raw(role_text, instruction_text)
                 has_visible_role_text = bool(role_text.strip())
                 full = f"【{char_name}】{role_text}" if char_name and has_visible_role_text else (role_text if has_visible_role_text else "")
                 INPUT_FILE.write_text(full_raw, encoding="utf-8")
-                card = _card_folder()
                 player_entry = None
                 if card:
                     player_entry = handler.record_player_input(
@@ -344,6 +529,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         role_text=role_text,
                         user_instruction_text=instruction_text,
                         input_schema="dual_channel_v1",
+                        instruction_only_opening=instruction_only_opening,
                     )
                     handler.write_pending_user_turn(
                         card,
@@ -353,11 +539,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         role_text=role_text,
                         user_instruction_text=instruction_text,
                         input_schema="dual_channel_v1",
+                        instruction_only_opening=instruction_only_opening,
                     )
                     handler.write_content_js(card)
                 handler.write_progress("input.received", "已接收玩家输入", percent=10)
                 PENDING_FILE.touch()
-                self._json({"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None})
+                response = {"ok": True, "text": full, "player_input_id": player_entry.get("id") if player_entry else None}
+                if autofilled_role:
+                    response["autofilled_role_from_option"] = autofilled_role
+                if instruction_only_opening:
+                    response["instruction_only_opening"] = True
+                self._json(response)
             elif text.strip():
                 # Write input for Claude Code
                 full = f"【{char_name}】{text}" if char_name else text
@@ -458,7 +650,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         CLAUDE_SETTINGS_FILE,
                         local_path=LLM_LOCAL_SETTINGS_FILE,
                     )
-                self._json(_test_llm_settings(settings))
+                self._json(_test_llm_settings(settings, data.get("target")))
             except json.JSONDecodeError:
                 self._json({"ok": False, "error": "invalid json"}, 400)
             except Exception as e:
@@ -750,6 +942,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # API: current response progress, if available
         if parsed.path == "/api/progress":
             self._json(handler.read_progress())
+            return
+
+        # API: tell the frontend whether a queued submit can be retried without
+        # creating a new pending turn or user-input log entry.
+        if parsed.path == "/api/input_ready":
+            blocking = _post_round_memory_input_block(_card_folder())
+            if blocking:
+                self._json(
+                    {
+                        "ok": True,
+                        "ready": False,
+                        "error": "post_round_memory_pending",
+                        "retry_when_ready": True,
+                        "blocking": blocking,
+                    }
+                )
+            else:
+                self._json({"ok": True, "ready": True})
             return
 
         # API: player-authored input log for editing UI.

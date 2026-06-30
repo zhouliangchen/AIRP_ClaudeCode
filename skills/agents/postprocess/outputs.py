@@ -9,6 +9,7 @@ from pathlib import Path
 ALLOWED_STATE_PATCH_KEYS = {"quest", "stage", "time", "location", "env", "actions"}
 DEFAULT_UI_EXTENSIONS = {"status_panels": {}, "custom_cards": {}, "asset_bindings": {}}
 DEFAULT_MVU = {"commands": [], "status": "ok", "issues": []}
+EXPECTED_OPTION_COUNT = 3
 DEFAULT_POSTPROCESS_CONTRACT = {
     "schema_version": 1,
     "ui_extensions": {"status_panels": {}, "custom_cards": {}, "asset_bindings": {}},
@@ -36,21 +37,13 @@ def validate_postprocess_output(payload, *, critical_action_evidence=None):
     summary = _clean_text(core.get("summary"))
     current_goal = _clean_text(core.get("current_goal"))
     options = _normalize_options(core.get("options"))
-    if not options and summary and current_goal and not critical_action_evidence:
-        options = [
-            {
-                "label": current_goal,
-                "source": "postprocess_fallback",
-                "requires_confirmation": False,
-            }
-        ]
 
     if not summary:
         errors.append("core.summary is required")
     if not current_goal:
         errors.append("core.current_goal is required")
-    if not options:
-        errors.append("core.options must include at least one valid option")
+    if len(options) != EXPECTED_OPTION_COUNT:
+        errors.append("core.options must include exactly 3 valid options")
 
     critical_errors = validate_critical_action_options(options, critical_action_evidence)
     errors.extend(critical_errors)

@@ -126,6 +126,7 @@ def record_player_input(
     role_text=None,
     user_instruction_text=None,
     input_schema=None,
+    instruction_only_opening=False,
 ):
     """Append an immutable player-authored input entry.
 
@@ -150,6 +151,8 @@ def record_player_input(
         entry["user_instruction_text"] = (
             "" if user_instruction_text is None else str(user_instruction_text)
         )
+    if instruction_only_opening:
+        entry["instruction_only_opening"] = True
     path = _player_input_log_path(card_folder)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -219,6 +222,7 @@ def write_pending_user_turn(
     role_text=None,
     user_instruction_text=None,
     input_schema=None,
+    instruction_only_opening=False,
 ):
     has_explicit_channels = (
         input_schema == "dual_channel_v1"
@@ -237,6 +241,8 @@ def write_pending_user_turn(
         entry["user_instruction_text"] = (
             "" if user_instruction_text is None else str(user_instruction_text)
         )
+    if instruction_only_opening:
+        entry["instruction_only_opening"] = True
     _write_json_file(_pending_user_turn_path(card_folder), entry)
     return entry
 
@@ -623,7 +629,30 @@ def _postprocess_option_labels(postprocess):
         label = str(option.get("label") or "").strip()
         if label:
             labels.append(label)
-    return labels
+    return labels if len(labels) == postprocess_outputs.EXPECTED_OPTION_COUNT else []
+
+
+def _legacy_option_labels(text):
+    match = re.search(r"<options>(.*?)</options>", text or "", re.DOTALL)
+    if not match:
+        return []
+    labels = []
+    for line in match.group(1).strip().split("\n"):
+        label = _strip_html(line).strip()
+        if label:
+            labels.append(label)
+    return labels if len(labels) == postprocess_outputs.EXPECTED_OPTION_COUNT else []
+
+
+def latest_turn_options(card_folder):
+    """Return the latest player-facing action option labels."""
+    log = read_chat_log(card_folder)
+    postprocess = _load_postprocess_output(card_folder)
+    options = _postprocess_option_labels(postprocess)
+    if options:
+        return options
+    latest_ai = log[-1].get("ai", "") if log else ""
+    return _legacy_option_labels(latest_ai)
 
 
 def _replace_state_field(raw, key, value):
@@ -795,7 +824,14 @@ ASSET_JOB_VISIBLE_STATUSES = {
     "waiting_on_references",
     "waiting_on_critic",
 }
-ASSET_JOB_PENDING_STATUSES = ASSET_JOB_VISIBLE_STATUSES - {"failed"}
+ASSET_JOB_PENDING_IMAGE_STATUSES = {
+    "planned",
+    "waiting_on_style_reference",
+    "waiting_on_references",
+    "waiting_on_critic",
+}
+ASSET_JOB_GENERATING_IMAGE_STATUSES = {"queued"}
+ASSET_JOB_FAILED_IMAGE_STATUSES = {"deferred", "failed"}
 ASSET_JOB_PREVIEW_PRIORITY = {
     "failed": 0,
     "waiting_on_references": 1,
@@ -855,7 +891,7 @@ def _load_asset_jobs(card_folder):
     return [job for _, _, _, job in jobs[:8]]
 
 
-def _count_pending_asset_jobs(card_folder):
+def _count_asset_jobs_by_status(card_folder, statuses):
     jobs_dir = Path(card_folder) / "generated" / "jobs"
     if not jobs_dir.exists():
         return 0
@@ -865,7 +901,7 @@ def _count_pending_asset_jobs(card_folder):
         if not isinstance(payload, dict):
             continue
         status = str(payload.get("status") or "").strip()
-        if status in ASSET_JOB_PENDING_STATUSES:
+        if status in statuses:
             count += 1
     return count
 
@@ -901,7 +937,9 @@ def _load_card_assets(card_folder):
         images.append(copied)
     assets["images"] = images
     assets["jobs"] = _load_asset_jobs(card_folder)
-    assets["pending_job_count"] = _count_pending_asset_jobs(card_folder)
+    assets["pending_image_count"] = _count_asset_jobs_by_status(card_folder, ASSET_JOB_PENDING_IMAGE_STATUSES)
+    assets["generating_image_count"] = _count_asset_jobs_by_status(card_folder, ASSET_JOB_GENERATING_IMAGE_STATUSES)
+    assets["failed_image_count"] = _count_asset_jobs_by_status(card_folder, ASSET_JOB_FAILED_IMAGE_STATUSES)
     return assets
 
 
@@ -1454,14 +1492,9 @@ def write_content_js(card_folder):
         latest_summary = log[-1].get("summary", "") if log else ""
     latest_ai = log[-1].get("ai", "") if log else ""
 
-    # Extract options from latest AI content
     options = _postprocess_option_labels(postprocess)
-    opts_match = re.search(r"<options>(.*?)</options>", latest_ai, re.DOTALL)
-    if not options and opts_match:
-        for line in opts_match.group(1).strip().split("\n"):
-            line = line.strip()
-            if line:
-                options.append(line)
+    if not options:
+        options = _legacy_option_labels(latest_ai)
 
     # Load card author's regex_scripts for frontend application
     regex_scripts = []

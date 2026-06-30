@@ -90,7 +90,34 @@ http://localhost:8765
 - OpenAI-compatible 文本 API。
 - 图片生成 API。
 
-前端 API 设置会保存到 `skills/styles/llm_settings.frontend.json`；本地兜底 API 配置文件是 `skills/styles/llm_settings.local.json`。配置优先级为：前端设置 > 环境变量 > 本地配置文件。
+前端 API 设置会保存到 `skills/styles/llm_settings.frontend.json`；本地兜底 API 配置文件是 `skills/styles/llm_settings.local.json`。配置优先级为：前端设置 > 环境变量 > 本地配置文件。图片生成 API 可额外填写 `image_generation.fallback` 作为备用接口。
+
+本地配置文件示例：
+
+```json
+{
+  "cc_switch": {
+    "enabled": true,
+    "service_url": "http://127.0.0.1:15721"
+  },
+  "openai_compatible": {
+    "enabled": false,
+    "core": {"base_url": "", "api_key": "", "model": ""},
+    "review": {"base_url": "", "api_key": "", "model": ""},
+    "actor": {"base_url": "", "api_key": "", "model": ""}
+  },
+  "image_generation": {
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "fallback": {
+      "base_url": "",
+      "api_key": "",
+      "model": ""
+    }
+  }
+}
+```
 
 也可以使用环境变量配置。常用变量包括：
 
@@ -100,9 +127,10 @@ $env:AIRP_CC_SWITCH_SERVICE_URL="http://127.0.0.1:15721"
 $env:AIRP_IMAGE_GENERATION_BASE_URL="https://..."
 $env:AIRP_IMAGE_GENERATION_API_KEY="sk-..."
 $env:AIRP_IMAGE_GENERATION_MODEL="..."
+$env:AIRP_IMAGE_GENERATION_FALLBACK_BASE_URL="https://..."
+$env:AIRP_IMAGE_GENERATION_FALLBACK_API_KEY="sk-..."
+$env:AIRP_IMAGE_GENERATION_FALLBACK_MODEL="..."
 ```
-
-配置保存后重新发起一轮即可生效。密钥和本地配置文件不应提交到版本控制。
 
 ## 图片与个性化 UI
 
@@ -168,7 +196,7 @@ $env:AIRP_HOST="127.0.0.1"
 
 **图片没有生成**
 
-检查图片生成 API 是否配置完整。正文可以正常交付时，图片任务仍可能因为缺少图片 API、缺少参考图或底层 provider 不支持参考图而暂缓。
+检查图片生成 API 是否配置完整。若已配置备用图片 API，主接口不可用时会自动尝试备用接口，并在 API 设置页显示提示。正文可以正常交付时，图片任务仍可能因为缺少图片 API、缺少参考图或底层 provider 不支持参考图而暂缓。
 
 **移动端打不开局域网地址**
 
@@ -183,4 +211,4 @@ $env:AIRP_HOST="127.0.0.1"
 - `docs/测试样例-空白卡.md`：用于验证空白启动流程。
 - `docs/存档文件指南.md`：维护者使用的存档文件结构说明。
 - `docs/重构建议.md`：当前重构阶段的权威设计参考。
-- `docs/技术文档（待更新）/`：面向维护者的技术主题文档。
+- `docs/技术文档/`：面向维护者的技术主题文档。

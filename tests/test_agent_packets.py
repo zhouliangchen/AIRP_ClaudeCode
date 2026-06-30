@@ -2433,6 +2433,40 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("Make the gate lead to orbit.", json.dumps(player_packet, ensure_ascii=False))
         self.assertNotIn("Make the gate lead to orbit.", json.dumps(character_packet, ensure_ascii=False))
 
+    def test_prepare_agent_run_preserves_instruction_only_opening_flag_in_raw_request(self):
+        explicit_payload = {
+            "input_schema": "dual_channel_v1",
+            "raw_text": "\n\n[USER_INSTRUCTION]\nUse a random opening that fits the premise.",
+            "display_text": "",
+            "role_text": "",
+            "user_instruction_text": "Use a random opening that fits the premise.",
+            "instruction_only_opening": True,
+        }
+
+        result = self.agent_packets.prepare_agent_run(
+            self.card,
+            user_text="Legacy fallback text should not be routed.",
+            chat_log=[],
+            card_data={"title": "Explicit Test"},
+            character_contexts={"characters": []},
+            turn_index=0,
+            input_payload=explicit_payload,
+        )
+
+        run_dir = Path(result["run_dir"])
+        raw_record = json.loads((run_dir / "input.raw.json").read_text(encoding="utf-8"))
+        input_json = json.loads((run_dir / "input.json").read_text(encoding="utf-8"))
+        gm_packet = json.loads((run_dir / "gm.context.json").read_text(encoding="utf-8"))
+        player_packet = json.loads((run_dir / "player.context.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(raw_record["explicit_payload"]["instruction_only_opening"])
+        self.assertEqual(raw_record["explicit_payload"]["input_schema"], "dual_channel_v1")
+        self.assertEqual(raw_record["role_text"], "")
+        self.assertEqual(raw_record["user_instruction_text"], explicit_payload["user_instruction_text"])
+        self.assertTrue(input_json["instruction_only_opening"])
+        self.assertNotIn("instruction_only_opening", json.dumps(gm_packet, ensure_ascii=False))
+        self.assertNotIn("instruction_only_opening", json.dumps(player_packet, ensure_ascii=False))
+
     def test_prepare_agent_run_includes_gm_only_hidden_settings_without_actor_leak(self):
         hidden_text = (
             "用于长期剧情引导的提示，"

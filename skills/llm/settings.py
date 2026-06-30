@@ -50,6 +50,18 @@ def _openai_tier_settings(openai_compatible: Mapping[str, Any], tier: str) -> di
     }
 
 
+def _image_api_settings(image_generation: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "base_url": _string(image_generation.get("base_url")),
+        "api_key": _string(image_generation.get("api_key")),
+        "model": _string(image_generation.get("model")),
+    }
+
+
+def _has_image_api_settings(settings: Mapping[str, Any]) -> bool:
+    return any(bool(_string(settings.get(key))) for key in ("base_url", "api_key", "model"))
+
+
 def _bool_value(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -87,6 +99,10 @@ def normalize_settings(
     cc_switch = _section(data, "cc_switch")
     openai_compatible = _section(data, "openai_compatible")
     image_generation = _section(data, "image_generation")
+    image_settings = _image_api_settings(image_generation)
+    image_fallback = _image_api_settings(_section(image_generation, "fallback"))
+    if _has_image_api_settings(image_fallback):
+        image_settings["fallback"] = image_fallback
 
     return {
         "cc_switch": {
@@ -99,11 +115,7 @@ def normalize_settings(
             "review": _openai_tier_settings(openai_compatible, "review"),
             "actor": _openai_tier_settings(openai_compatible, "actor"),
         },
-        "image_generation": {
-            "base_url": _string(image_generation.get("base_url")),
-            "api_key": _string(image_generation.get("api_key")),
-            "model": _string(image_generation.get("model")),
-        },
+        "image_generation": image_settings,
     }
 
 
@@ -214,6 +226,8 @@ def read_effective_settings(
     frontend_image = dict(_section(frontend_raw, "image_generation"))
     local_cc_switch = dict(_section(local_raw, "cc_switch"))
     local_openai = dict(_section(local_raw, "openai_compatible"))
+    frontend_image_fallback = dict(_section(frontend_image, "fallback"))
+    local_image_fallback = dict(_section(local_normalized["image_generation"], "fallback"))
 
     merged = {
         "cc_switch": {
@@ -250,6 +264,28 @@ def read_effective_settings(
             ),
         },
     }
+    image_fallback = {
+        "base_url": _merge_string(
+            frontend_image_fallback.get("base_url"),
+            environ,
+            "AIRP_IMAGE_GENERATION_FALLBACK_BASE_URL",
+            local_image_fallback.get("base_url"),
+        ),
+        "api_key": _merge_string(
+            frontend_image_fallback.get("api_key"),
+            environ,
+            "AIRP_IMAGE_GENERATION_FALLBACK_API_KEY",
+            local_image_fallback.get("api_key"),
+        ),
+        "model": _merge_string(
+            frontend_image_fallback.get("model"),
+            environ,
+            "AIRP_IMAGE_GENERATION_FALLBACK_MODEL",
+            local_image_fallback.get("model"),
+        ),
+    }
+    if _has_image_api_settings(image_fallback):
+        merged["image_generation"]["fallback"] = image_fallback
 
     frontend_value = _explicit_bool(frontend_cc_switch)
     env_value = _env_bool(environ, "AIRP_CC_SWITCH_ENABLED")
@@ -300,6 +336,12 @@ def redact_settings(settings: Mapping[str, Any] | None) -> dict[str, Any]:
                 tier_section["api_key_set"] = bool(tier_section.get("api_key"))
                 tier_section["api_key"] = ""
             continue
+        fallback = section.get("fallback")
+        if isinstance(fallback, Mapping):
+            fallback_section = dict(fallback)
+            fallback_section["api_key_set"] = bool(fallback_section.get("api_key"))
+            fallback_section["api_key"] = ""
+            section["fallback"] = fallback_section
         section["api_key_set"] = bool(section.get("api_key"))
         section["api_key"] = ""
     return result
@@ -331,6 +373,20 @@ def settings_errors(settings: Mapping[str, Any] | None) -> list[str]:
                 errors.append(f"OpenAI-compatible {tier} 缺少 {key}")
     if not cc_usable and not openai_usable:
         errors.append("未启用可用的文本 LLM provider")
+
+    image_required = ("base_url", "model", "api_key")
+    image_missing = [key for key in image_required if not image_generation.get(key)]
+    image_usable = not image_missing
+    image_fallback = image_generation.get("fallback")
+    fallback_missing: list[str] = []
+    fallback_usable = False
+    if isinstance(image_fallback, Mapping) and _has_image_api_settings(image_fallback):
+        fallback_missing = [key for key in image_required if not image_fallback.get(key)]
+        fallback_usable = not fallback_missing
+    if image_usable or fallback_usable:
+        for key in fallback_missing:
+            errors.append(f"图片生成备用 API 缺少 {key}")
+        return errors
 
     for key in ("base_url", "model", "api_key"):
         if not image_generation.get(key):

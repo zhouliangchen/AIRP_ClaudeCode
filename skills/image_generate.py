@@ -31,6 +31,7 @@ import urllib.error
 from pathlib import Path
 
 from llm import settings as llm_settings
+from runtime import debug_log
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 FRONTEND_SETTINGS_PATH = llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
@@ -250,7 +251,101 @@ def _load_config(card: Path | None = None) -> dict:
             value = image_generation.get(key)
             if isinstance(value, str) and value.strip():
                 config[key] = value.strip()
+        fallback = image_generation.get("fallback")
+        if isinstance(fallback, dict):
+            fallback_config = {}
+            for key in ("base_url", "api_key", "model"):
+                value = fallback.get(key)
+                if isinstance(value, str) and value.strip():
+                    fallback_config[key] = value.strip()
+            if fallback_config:
+                config["fallback"] = fallback_config
     return config
+
+
+def _image_provider_attempts(config: dict, requested_model: str | None) -> list[tuple[str, dict, str]]:
+    primary = {key: config.get(key, "") for key in ("base_url", "api_key", "model")}
+    attempts = [("image_generation", primary, requested_model or str(primary.get("model") or ""))]
+    fallback = config.get("fallback")
+    if isinstance(fallback, dict) and any(str(fallback.get(key) or "").strip() for key in ("base_url", "api_key", "model")):
+        fallback_config = {key: fallback.get(key, "") for key in ("base_url", "api_key", "model")}
+        attempts.append(("image_generation.fallback", fallback_config, requested_model or str(fallback_config.get("model") or "")))
+    return attempts
+
+
+def _redact_provider_error(error: Exception | str, *configs: dict) -> str:
+    secrets = []
+    for config in configs:
+        value = config.get("api_key") if isinstance(config, dict) else None
+        if isinstance(value, str) and value:
+            secrets.append(value)
+    if hasattr(debug_log, "redact_text"):
+        return debug_log.redact_text(error, secrets)
+    text = str(error)
+    for secret in secrets:
+        text = text.replace(secret, "[redacted]")
+    return text
+
+
+def _write_api_fallback_event(card: Path, payload: dict) -> None:
+    try:
+        enabled = debug_log.model_debug_enabled()
+    except Exception:
+        enabled = False
+    try:
+        debug_log.append_event(
+            card,
+            "api_fallback",
+            level="warning",
+            details=payload,
+            enabled=enabled,
+        )
+    except Exception:
+        pass
+
+
+def _call_openai_images_with_fallback(
+    *,
+    card: Path,
+    prompt: str,
+    requested_model: str | None,
+    size: str,
+    config: dict,
+    references: list[Path],
+    job_id: str | None,
+) -> tuple[bytes, str, dict | None]:
+    attempts = _image_provider_attempts(config, requested_model)
+    first_failure: tuple[str, Exception, dict] | None = None
+    last_error: Exception | None = None
+    for provider_name, provider_config, model in attempts:
+        try:
+            image_bytes = _call_openai_images(
+                prompt,
+                model,
+                size,
+                provider_config,
+                references=references,
+            )
+            if first_failure is None:
+                return image_bytes, model, None
+            failed_provider, failed_error, failed_config = first_failure
+            fallback_payload = {
+                "from": failed_provider,
+                "to": provider_name,
+                "error": _redact_provider_error(failed_error, failed_config, provider_config),
+            }
+            if job_id:
+                fallback_payload["job_id"] = job_id
+            _write_api_fallback_event(card, fallback_payload)
+            return image_bytes, model, fallback_payload
+        except Exception as exc:
+            if first_failure is None:
+                first_failure = (provider_name, exc, provider_config)
+            last_error = exc
+            continue
+    if isinstance(last_error, ReferenceImageNotSupported):
+        raise last_error
+    raise RuntimeError(_redact_provider_error(last_error or "image generation failed", *(attempt[1] for attempt in attempts)))
 
 
 def _candidate_generation_urls(base_url: str) -> list[str]:
@@ -515,6 +610,7 @@ def main():
 
     config = _load_config(card)
     model = args.model or config.get("model", "")
+    provider_fallback = None
 
     gen_dir = card / "generated" / "images"
     gen_dir.mkdir(parents=True, exist_ok=True)
@@ -536,12 +632,14 @@ def main():
                 out_path.write_bytes(b"")
         else:
             reference_paths = [card / reference for reference in references]
-            image_bytes = _call_openai_images(
-                args.prompt,
-                model,
-                args.size,
-                config,
+            image_bytes, model, provider_fallback = _call_openai_images_with_fallback(
+                card=card,
+                prompt=args.prompt,
+                requested_model=args.model,
+                size=args.size,
+                config=config,
                 references=reference_paths,
+                job_id=args.job_id,
             )
             out_path.write_bytes(image_bytes)
     except ReferenceImageNotSupported as e:
@@ -601,6 +699,8 @@ def main():
         "path": rel_path.as_posix(),
         "asset": item,
     }
+    if provider_fallback:
+        job_payload["provider_fallback"] = provider_fallback
     if args.round_id:
         job_payload["round_id"] = args.round_id
     _write_job_status(card, args.job_id, job_payload)
@@ -616,6 +716,7 @@ def main():
         "manifest": str(manifest_path),
         "file": str(out_path),
         "frontend": frontend,
+        "provider_fallback": provider_fallback,
     })
 
 

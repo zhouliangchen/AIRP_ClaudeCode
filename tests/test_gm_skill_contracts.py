@@ -354,6 +354,9 @@ class GmSkillContractsTest(unittest.TestCase):
             self.assertIn(field, text)
         self.assertIn("source=player_agent_critical_action", text)
         self.assertIn("requires_confirmation=true", text)
+        self.assertIn("exactly 3 player-facing action options", text)
+        self.assertIn("remaining_options_to_generate", text)
+        self.assertIn("Do not output `source=player_agent_critical_action`", text)
         self.assertIn("must not leak hidden facts", text)
         self.assertIn("must not write `<content>`, `<summary>`, or `<options>` tags", text)
 

@@ -263,6 +263,9 @@ def _is_control_only_input(input_analysis_result: dict[str, Any]) -> bool:
     routed = input_analysis_result.get("routed_input")
     if not isinstance(routed, dict):
         return False
+    flags = input_analysis_result.get("input_payload_flags")
+    if isinstance(flags, dict) and flags.get("instruction_only_opening") is True:
+        return False
     role_fields = (
         "role_channel",
         "role_action_channel",
@@ -708,27 +711,25 @@ def _with_required_player_decision_options(raw: dict[str, Any], evidence: list[d
     existing_options = core.get("options")
     original_options = list(existing_options) if isinstance(existing_options, list) else []
     evidence_items = [item for item in evidence if isinstance(item, dict)]
-    options: list[Any] = []
+    generated_critical_options = []
     for option in original_options:
         normalized = postprocess_outputs._option_item(option)
         if normalized and normalized.get("source") == "player_agent_critical_action":
-            continue
-        options.append(option)
-    normalized_options = postprocess_outputs.validate_postprocess_output(
-        {
-            "core": {
-                "summary": core.get("summary") or "pending",
-                "current_goal": core.get("current_goal") or "pending",
-                "options": options,
-            }
-        }
-    )
-    if normalized_options.get("ok"):
-        comparable_options = normalized_options.get("output", {}).get("core", {}).get("options", [])
-    else:
-        comparable_options = []
+            generated_critical_options.append(option)
+    if generated_critical_options:
+        raise RoundRuntimeError(
+            "postprocess output rejected: core.options must not include "
+            "player_agent_critical_action when runtime prefilled player action options"
+        )
 
-    added = options != original_options
+    options: list[Any] = list(original_options)
+    comparable_options: list[dict[str, Any]] = []
+    for option in original_options:
+        normalized = postprocess_outputs._option_item(option)
+        if normalized:
+            comparable_options.append(normalized)
+
+    added = False
     for item in evidence_items:
         if any(postprocess_outputs.option_matches_evidence(option, item) for option in comparable_options):
             continue
@@ -761,11 +762,28 @@ def _run_postprocess(
     story_input: dict[str, Any],
     story_output: dict[str, Any],
 ) -> dict[str, Any]:
+    critical_action_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
+    player_action_options = [
+        {
+            "label": f"确认行动：{str(item.get('required_label') or '').strip()}",
+            "source": "player_agent_critical_action",
+            "requires_confirmation": True,
+        }
+        for item in critical_action_evidence
+        if isinstance(item, dict) and str(item.get("required_label") or "").strip()
+    ]
     context = {
         "story_input": agent_outputs.story_prompt_context(story_input),
         "story_output": story_output,
         "pending_repairs": postprocess_outputs.read_pending_repairs(card),
         "postprocess_contract": postprocess_outputs.load_postprocess_contract(card),
+        "critical_action_evidence": critical_action_evidence,
+        "player_critical_action_options": player_action_options,
+        "remaining_options_to_generate": max(
+            0,
+            postprocess_outputs.EXPECTED_OPTION_COUNT - len(player_action_options),
+        ),
+        "total_options_required": postprocess_outputs.EXPECTED_OPTION_COUNT,
     }
     prompt = agent_prompts.build_postprocess_prompt({"postprocess_context": context})
     raw = _dispatch(
@@ -776,7 +794,6 @@ def _run_postprocess(
         prompt,
         extra_context={"postprocess_context": context},
     )
-    critical_action_evidence = agent_outputs.extract_player_critical_action_evidence(story_input)
     raw = _with_required_player_decision_options(raw, critical_action_evidence)
     validation = postprocess_outputs.validate_postprocess_output(
         raw,

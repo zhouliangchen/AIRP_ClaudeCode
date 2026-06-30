@@ -23,6 +23,8 @@ Read the current run and card context:
 - Runtime Input `postprocess_context.story_output`
 - Runtime Input `postprocess_context.critic_report`
 - Runtime Input `postprocess_context.critical_action_evidence`
+- Runtime Input `postprocess_context.player_critical_action_options`
+- Runtime Input `postprocess_context.remaining_options_to_generate`
 - Do not read raw `story.input.json`, `gm.output.json`, `actor.outputs.json`, `interaction.trace.json`, memory files, or hidden settings to recover omitted private facts for frontend summary/options/state.
 - Dispatcher derives this Runtime Input from controlled artifacts such as `story.input.json`, `story.output.json`, `critic.report.json`, and `interaction.trace.json`; treat those raw files as runtime/audit sources, not as extra private context to read.
 - `ui_manifest.json`
@@ -33,7 +35,7 @@ Read the current run and card context:
 
 ## Output JSON Contract
 
-Write `postprocess.output.json` as a JSON object:
+Write `postprocess.output.json` as a JSON object. The example below shows the response shape when one runtime-prefilled player critical action already occupies a final option slot, so only two generated options are returned:
 
 ```json
 {
@@ -42,9 +44,14 @@ Write `postprocess.output.json` as a JSON object:
     "summary": "player-visible recap of the delivered turn",
     "options": [
       {
-        "label": "Confirm action: push open the sealed door",
-        "source": "player_agent_critical_action",
-        "requires_confirmation": true
+        "label": "Step back and listen from the threshold",
+        "source": "postprocess",
+        "requires_confirmation": false
+      },
+      {
+        "label": "Ask Ada what she notices about the seal",
+        "source": "postprocess",
+        "requires_confirmation": false
       }
     ],
     "current_goal": "current player-visible objective",
@@ -76,11 +83,14 @@ Write `postprocess.output.json` as a JSON object:
 }
 ```
 
-Required contract fields: `schema_version`, `core.summary`, `core.options`, `core.current_goal`, `core.state_patch`, `ui_extensions`, `ui_extension_status`, `mvu`, `repair_requests`, and `metadata`.
+Required contract fields: `schema_version`, `core.summary`, `core.options`, `core.current_goal`, `core.state_patch`, `ui_extensions`, `ui_extension_status`, `mvu`, `repair_requests`, and `metadata`. The final normalized `postprocess.output.json.core.options` must contain exactly 3 player-facing action options after runtime merges any prefilled player critical action options.
 
 ## Rules
 
-- Critical action evidence from the player agent must appear as an option with `source=player_agent_critical_action` and `requires_confirmation=true`.
+- If Runtime Input `postprocess_context.player_critical_action_options` is empty, produce exactly 3 player-facing action options in `core.options`.
+- If Runtime Input `postprocess_context.player_critical_action_options` is not empty, do not output those fixed options yourself; produce exactly `postprocess_context.remaining_options_to_generate` additional player-facing action options in `core.options`.
+- Do not output `source=player_agent_critical_action`; runtime owns those fixed options and will merge them into the final 3 options before validation.
+- Critical action evidence from the player agent must be treated as already occupying one final action-option slot with `source=player_agent_critical_action` and `requires_confirmation=true`.
 - The summary, options, current goal, state patch, and UI extensions must not leak hidden facts, prompt notes, user-instruction summaries, GM-only reasoning, or private character knowledge that was not disclosed in-world.
 - Do not infer player intent from fixed keywords, substrings, or regex matches in free text.
 - Do not invent new story events to justify UI fields.

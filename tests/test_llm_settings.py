@@ -154,6 +154,77 @@ class LlmSettingsTest(unittest.TestCase):
         self.assertEqual(redacted["image_generation"]["api_key"], "")
         self.assertTrue(redacted["image_generation"]["api_key_set"])
 
+    def test_image_generation_fallback_normalizes_merges_and_redacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = Path(tmp) / "llm_settings.local.json"
+            frontend_path = Path(tmp) / "llm_settings.frontend.json"
+            local_path.write_text(
+                json.dumps(
+                    {
+                        "image_generation": {
+                            "base_url": "https://local-primary.example/v1",
+                            "api_key": "local-primary-key",
+                            "model": "local-primary-model",
+                            "fallback": {
+                                "base_url": "https://local-fallback.example/v1",
+                                "api_key": "local-fallback-key",
+                                "model": "local-fallback-model",
+                            },
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            frontend_path.write_text(
+                json.dumps(
+                    {
+                        "image_generation": {
+                            "base_url": "https://frontend-primary.example/v1",
+                            "api_key": "",
+                            "model": "",
+                            "fallback": {
+                                "base_url": "",
+                                "api_key": "frontend-fallback-key",
+                                "model": "",
+                            },
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.mod.read_effective_settings(
+                frontend_path,
+                claude_settings_path=Path(tmp) / "missing.json",
+                env={
+                    "AIRP_IMAGE_GENERATION_BASE_URL": "https://env-primary.example/v1",
+                    "AIRP_IMAGE_GENERATION_API_KEY": "env-primary-key",
+                    "AIRP_IMAGE_GENERATION_MODEL": "env-primary-model",
+                    "AIRP_IMAGE_GENERATION_FALLBACK_BASE_URL": "https://env-fallback.example/v1",
+                    "AIRP_IMAGE_GENERATION_FALLBACK_API_KEY": "env-fallback-key",
+                    "AIRP_IMAGE_GENERATION_FALLBACK_MODEL": "env-fallback-model",
+                },
+                local_path=local_path,
+            )
+            redacted = self.mod.redact_settings(result)
+
+        self.assertEqual(result["image_generation"], {
+            "base_url": "https://frontend-primary.example/v1",
+            "api_key": "env-primary-key",
+            "model": "env-primary-model",
+            "fallback": {
+                "base_url": "https://env-fallback.example/v1",
+                "api_key": "frontend-fallback-key",
+                "model": "env-fallback-model",
+            },
+        })
+        self.assertEqual(redacted["image_generation"]["api_key"], "")
+        self.assertTrue(redacted["image_generation"]["api_key_set"])
+        self.assertEqual(redacted["image_generation"]["fallback"]["api_key"], "")
+        self.assertTrue(redacted["image_generation"]["fallback"]["api_key_set"])
+
     def test_resolve_claude_code_model_tier_prefers_expected_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             claude_path = self._claude_settings(

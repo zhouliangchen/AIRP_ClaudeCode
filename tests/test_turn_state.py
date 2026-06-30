@@ -288,7 +288,11 @@ class TurnStateTest(unittest.TestCase):
             "core": core or {
                 "summary": "Postprocess summary",
                 "current_goal": "Follow the postprocess goal",
-                "options": ["Postprocess option"],
+                "options": [
+                    "Postprocess option A",
+                    "Postprocess option B",
+                    "Postprocess option C",
+                ],
                 "state_patch": {},
             },
             "ui_extensions": ui_extensions or {
@@ -611,6 +615,19 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("setInterval(loadProgress", html)
         self.assertIn("reloadData();", html)
 
+    def test_frontend_displays_asset_waiting_generating_and_failed_counts(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function assetJobCounts", html)
+        self.assertIn("assets.pending_image_count", html)
+        self.assertIn("assets.generating_image_count", html)
+        self.assertIn("assets.failed_image_count", html)
+        self.assertNotIn("pending_job_count", html)
+        self.assertNotIn("assets.jobs || []", html)
+        self.assertIn("待生成图片: ' + counts.pending", html)
+        self.assertIn("生成中图片: ' + counts.generating", html)
+        self.assertIn("生成失败: ' + counts.failed", html)
+
     def test_append_turn_preserves_authoritative_pending_player_text(self):
         entry = self.handler.record_player_input(
             str(self.card),
@@ -927,6 +944,10 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn('id="mobile-actions-card"', html)
         self.assertIn("function renderInlineActions", html)
         self.assertIn("contentEl.appendChild(card)", html)
+        self.assertIn("rawTurnOpts.length === 3", html)
+        self.assertIn("opts.length !== 3", html)
+        self.assertNotIn("fallbackActions", html)
+        self.assertNotIn("S.actions", html)
         self.assertIn("dismissCurrentInlineActions();", html)
         self.assertIn("dismissedActionSignature", html)
 
@@ -983,12 +1004,26 @@ class TurnStateTest(unittest.TestCase):
             "llm-image-base-url",
             "llm-image-api-key",
             "llm-image-model",
+            "llm-image-fallback-base-url",
+            "llm-image-fallback-api-key",
+            "llm-image-fallback-model",
         ]:
             self.assertIn(f'id="{field_id}"', html)
+
+        for button_id in [
+            "llm-test-cc-switch",
+            "llm-test-openai-core",
+            "llm-test-openai-review",
+            "llm-test-openai-actor",
+            "llm-test-image-primary",
+            "llm-test-image-fallback",
+        ]:
+            self.assertIn(f'id="{button_id}"', html)
 
         self.assertNotIn('id="llm-openai-base-url"', html)
         self.assertNotIn('id="llm-openai-api-key"', html)
         self.assertNotIn('id="llm-openai-model"', html)
+        self.assertNotIn('class="llm-settings-test"', html)
 
         for function_name in [
             "openLlmSettings",
@@ -997,11 +1032,19 @@ class TurnStateTest(unittest.TestCase):
             "collectLlmSettings",
             "saveLlmSettings",
             "testLlmSettings",
+            "updateLlmTestButtons",
         ]:
             self.assertIn(f"function {function_name}", html)
 
         self.assertIn("BRIDGE + '/api/llm_settings'", html)
         self.assertIn("BRIDGE + '/api/llm_settings/test'", html)
+        self.assertIn("target: target", html)
+        self.assertIn("provider: 'cc_switch'", html)
+        self.assertIn("provider: 'openai_compatible', tier: 'core'", html)
+        self.assertIn("provider: 'openai_compatible', tier: 'review'", html)
+        self.assertIn("provider: 'openai_compatible', tier: 'actor'", html)
+        self.assertIn("provider: 'image_generation'", html)
+        self.assertIn("provider: 'image_generation.fallback'", html)
         self.assertIn("image_generation", html)
         self.assertIn("api_key_set", html)
         self.assertIn("collectOpenaiTierSettings", html)
@@ -1009,6 +1052,7 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("applyLlmSettings(data)", html)
         self.assertIn("applyLlmSettings(settings)", html)
         self.assertIn("configuration_errors", html)
+        self.assertIn("fallback_notices", html)
         self.assertIn("Array.isArray(data.results)", html)
         self.assertNotIn("save: true", html)
         self.assertNotIn('placeholder="http://127.0.0.1:15721"', html)
@@ -1034,7 +1078,7 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("progress.schema_version === 2", html)
         self.assertIn("detail.agent", html)
         self.assertIn("progress.state", html)
-        self.assertIn("countPendingAssets", html)
+        self.assertIn("assetJobCounts", html)
 
     def test_frontend_keeps_legacy_progress_stage_alias_visible(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
@@ -1058,6 +1102,31 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("if (sendTextarea) sendTextarea.value = value", html)
         self.assertIn("var $ui = $('#role-input')", html)
         self.assertIn("document.getElementById('role-input').addEventListener('input', syncLegacyInputBridge)", html)
+
+    def test_frontend_queues_blocked_submit_for_auto_retry(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="queued-submit-panel"', html)
+        self.assertIn("const QUEUED_SUBMIT_KEY", html)
+        self.assertIn("function queueBlockedSubmit", html)
+        self.assertIn("function withdrawQueuedSubmit", html)
+        self.assertIn("function editQueuedSubmit", html)
+        self.assertIn("function retryQueuedSubmitIfReady", html)
+        self.assertIn("localStorage.setItem(QUEUED_SUBMIT_KEY", html)
+        self.assertIn("data.retry_when_ready === true", html)
+        self.assertIn("data.error === 'post_round_memory_pending'", html)
+        self.assertIn("BRIDGE + '/api/input_ready'", html)
+        self.assertIn("setInterval(retryQueuedSubmitIfReady", html)
+
+    def test_frontend_withdraw_queued_submit_prepends_cached_text_to_existing_inputs(self):
+        html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function prependQueuedTextToInput", html)
+        self.assertIn("input.value = current ? incoming + '\\n' + current : incoming", html)
+        self.assertIn("const queued = readQueuedSubmit();", html)
+        self.assertIn("prependQueuedTextToInput(roleInput, queued.roleText)", html)
+        self.assertIn("prependQueuedTextToInput(instructionInput, queued.instructionText)", html)
+        self.assertIn("syncLegacyInputBridge();", html)
 
     def test_round_prepare_documents_player_input_interpretation_policy(self):
         source = (ROOT / "skills" / "round_prepare.py").read_text(encoding="utf-8")
@@ -1198,6 +1267,73 @@ class TurnStateTest(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=5)
 
+    def test_server_submit_autofills_instruction_only_role_from_turn_options(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.INPUT_FILE = self.styles / "input.txt"
+        server.PENDING_FILE = self.styles / ".pending"
+        server.CARD_PATH_FILE = self.styles / ".card_path"
+        server.SETTINGS_FILE = self.styles / "settings.json"
+        server.handler.STYLES = self.styles
+        server.CARD_PATH_FILE.write_text(str(self.card), encoding="utf-8")
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "user": "I look around.",
+            "ai": "<p>The room waits.</p>",
+            "summary": "The room waits.",
+        }])
+        self._write_postprocess_output(
+            core={
+                "summary": "The room waits.",
+                "current_goal": "Choose what to do next.",
+                "options": [
+                    {"label": "Open the left door"},
+                    {"label": "Ask the guide what changed"},
+                    {"label": "Wait and listen"},
+                ],
+                "state_patch": {},
+            }
+        )
+        original_choice = server.random.choice
+        server.random.choice = lambda options: options[1]
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            instruction_text = "Keep the next scene tense."
+            body = json.dumps({"instructionText": instruction_text}, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}/api/submit",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            selected = "Ask the guide what changed"
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["text"], selected)
+            self.assertEqual(payload["autofilled_role_from_option"], selected)
+            expected_raw = selected + "\n\n[USER_INSTRUCTION]\n" + instruction_text
+            self.assertEqual(server.INPUT_FILE.read_text(encoding="utf-8"), expected_raw)
+            inputs = self.handler.read_player_inputs(str(self.card))
+            pending = self.handler.read_pending_user_turn(str(self.card))
+            self.assertEqual(inputs[-1]["display_text"], selected)
+            self.assertEqual(inputs[-1]["role_text"], selected)
+            self.assertEqual(inputs[-1]["user_instruction_text"], instruction_text)
+            self.assertEqual(pending["display_text"], selected)
+            self.assertEqual(pending["role_text"], selected)
+            self.assertEqual(pending["user_instruction_text"], instruction_text)
+            self.assertFalse(pending.get("instruction_only_opening"))
+        finally:
+            server.random.choice = original_choice
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
     def test_server_submit_blocks_when_post_round_memory_is_pending(self):
         server = _load_server()
         server.ROOT = self.styles
@@ -1245,10 +1381,58 @@ class TurnStateTest(unittest.TestCase):
             self.assertEqual(raised.exception.code, 409)
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["error"], "post_round_memory_pending")
+            self.assertTrue(payload["retry_when_ready"])
+            self.assertEqual(payload["frontend_action"], "queue_and_retry")
             self.assertEqual(payload["blocking"]["previous_round_id"], "round-000001")
             self.assertFalse(server.PENDING_FILE.exists())
             self.assertFalse(server.INPUT_FILE.exists())
             self.assertEqual(self.handler.read_player_inputs(str(self.card)), [])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+    def test_server_input_ready_reports_post_round_memory_block_without_submit_conflict(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.INPUT_FILE = self.styles / "input.txt"
+        server.PENDING_FILE = self.styles / ".pending"
+        server.CARD_PATH_FILE = self.styles / ".card_path"
+        server.SETTINGS_FILE = self.styles / "settings.json"
+        server.handler.STYLES = self.styles
+        server.CARD_PATH_FILE.write_text(str(self.card), encoding="utf-8")
+        manifest_path = self.card / ".agent_runs" / "round-000001" / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "round_id": "round-000001",
+                    "post_round_memory_jobs": {
+                        "status": "pending",
+                        "scheduled": {"player": {"output": "post_round_memory_jobs/player.summary.json"}},
+                        "failed": {},
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/api/input_ready", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(response.status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["ready"])
+            self.assertEqual(payload["error"], "post_round_memory_pending")
+            self.assertTrue(payload["retry_when_ready"])
+            self.assertEqual(payload["blocking"]["previous_round_id"], "round-000001")
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -1392,6 +1576,11 @@ class TurnStateTest(unittest.TestCase):
                         "base_url": "https://image.example/v1",
                         "api_key": "image-secret",
                         "model": "image-model",
+                        "fallback": {
+                            "base_url": "https://image-fallback.example/v1",
+                            "api_key": "image-fallback-secret",
+                            "model": "image-fallback-model",
+                        },
                     },
                 },
                 method="POST",
@@ -1419,6 +1608,10 @@ class TurnStateTest(unittest.TestCase):
                     "image_generation": {
                         "base_url": "https://image2.example/v1",
                         "model": "image-model-2",
+                        "fallback": {
+                            "base_url": "https://image-fallback2.example/v1",
+                            "model": "image-fallback-model-2",
+                        },
                     },
                 },
                 method="POST",
@@ -1446,6 +1639,8 @@ class TurnStateTest(unittest.TestCase):
         self.assertTrue(first["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertEqual(first["settings"]["image_generation"]["api_key"], "")
         self.assertTrue(first["settings"]["image_generation"]["api_key_set"])
+        self.assertEqual(first["settings"]["image_generation"]["fallback"]["api_key"], "")
+        self.assertTrue(first["settings"]["image_generation"]["fallback"]["api_key_set"])
         self.assertNotIn("api_key", first["settings"]["cc_switch"])
         self.assertNotIn("model", first["settings"]["cc_switch"])
         self.assertEqual(get_result, first["settings"])
@@ -1455,31 +1650,38 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(saved["openai_compatible"]["review"]["api_key"], "review-secret")
         self.assertEqual(saved["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved["image_generation"]["api_key"], "image-secret")
+        self.assertEqual(saved["image_generation"]["fallback"]["api_key"], "image-fallback-secret")
         self.assertNotIn("api_key", saved["cc_switch"])
         self.assertNotIn("model", saved["cc_switch"])
         self.assertTrue(roundtrip["settings"]["openai_compatible"]["core"]["api_key_set"])
         self.assertTrue(roundtrip["settings"]["openai_compatible"]["review"]["api_key_set"])
         self.assertTrue(roundtrip["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertTrue(roundtrip["settings"]["image_generation"]["api_key_set"])
+        self.assertTrue(roundtrip["settings"]["image_generation"]["fallback"]["api_key_set"])
         saved_after_roundtrip = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(saved_after_roundtrip["openai_compatible"]["core"]["api_key"], "core-secret")
         self.assertEqual(saved_after_roundtrip["openai_compatible"]["review"]["api_key"], "review-secret")
         self.assertEqual(saved_after_roundtrip["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved_after_roundtrip["image_generation"]["api_key"], "image-secret")
+        self.assertEqual(saved_after_roundtrip["image_generation"]["fallback"]["api_key"], "image-fallback-secret")
 
         self.assertTrue(second["settings"]["openai_compatible"]["core"]["api_key_set"])
         self.assertTrue(second["settings"]["openai_compatible"]["review"]["api_key_set"])
         self.assertTrue(second["settings"]["openai_compatible"]["actor"]["api_key_set"])
         self.assertTrue(second["settings"]["image_generation"]["api_key_set"])
+        self.assertTrue(second["settings"]["image_generation"]["fallback"]["api_key_set"])
         saved_after_second = json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(saved_after_second["openai_compatible"]["core"]["api_key"], "core-secret")
         self.assertEqual(saved_after_second["openai_compatible"]["review"]["api_key"], "review-secret")
         self.assertEqual(saved_after_second["openai_compatible"]["actor"]["api_key"], "actor-secret")
         self.assertEqual(saved_after_second["image_generation"]["api_key"], "image-secret")
+        self.assertEqual(saved_after_second["image_generation"]["fallback"]["api_key"], "image-fallback-secret")
         self.assertEqual(saved_after_second["openai_compatible"]["core"]["base_url"], "https://core2.example/v1")
         self.assertEqual(saved_after_second["openai_compatible"]["review"]["base_url"], "https://review2.example/v1")
         self.assertEqual(saved_after_second["openai_compatible"]["actor"]["base_url"], "https://actor2.example/v1")
         self.assertEqual(saved_after_second["image_generation"]["base_url"], "https://image2.example/v1")
+        self.assertEqual(saved_after_second["image_generation"]["fallback"]["base_url"], "https://image-fallback2.example/v1")
+        self.assertEqual(saved_after_second["image_generation"]["fallback"]["model"], "image-fallback-model-2")
         self.assertFalse(third["settings"]["cc_switch"]["enabled"])
         self.assertEqual(third["settings"]["cc_switch"]["service_url"], "http://cc-switch.local:15721")
         self.assertNotIn("api_key", third["settings"]["cc_switch"])
@@ -1489,6 +1691,51 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(saved_after_third["cc_switch"]["service_url"], "http://cc-switch.local:15721")
         self.assertNotIn("api_key", saved_after_third["cc_switch"])
         self.assertNotIn("model", saved_after_third["cc_switch"])
+
+    def test_server_llm_settings_exposes_recent_api_fallback_notice(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.CARD_PATH_FILE = self.styles / ".card_path"
+        server.CARD_PATH_FILE.write_text(str(self.card.resolve()), encoding="utf-8")
+        log_dir = self.card / "debug" / "log"
+        log_dir.mkdir(parents=True)
+        (log_dir / "2026-06-30.jsonl").write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-06-30T12:34:56+08:00",
+                    "event": "api_fallback",
+                    "level": "warning",
+                    "details": {
+                        "from": "image_generation",
+                        "to": "image_generation.fallback",
+                        "error": "primary unavailable",
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = server._redacted_llm_settings(
+            {
+                "cc_switch": {"enabled": True, "service_url": "http://cc-switch.local:15721"},
+                "openai_compatible": {
+                    "enabled": False,
+                    "core": {"base_url": "", "api_key": "", "model": ""},
+                    "review": {"base_url": "", "api_key": "", "model": ""},
+                    "actor": {"base_url": "", "api_key": "", "model": ""},
+                },
+                "image_generation": {
+                    "base_url": "https://image.example/v1",
+                    "api_key": "image-secret",
+                    "model": "image-model",
+                },
+            }
+        )
+
+        self.assertEqual(result["fallback_notices"][0]["event"], "api_fallback")
+        self.assertIn("image_generation.fallback", result["fallback_notices"][0]["message"])
 
     def test_server_llm_settings_get_uses_frontend_env_local_priority(self):
         server = _load_server()
@@ -1859,6 +2106,127 @@ class TurnStateTest(unittest.TestCase):
         self.assertEqual(calls[1][1]["api_key"], "new-review-secret")
         self.assertEqual(calls[2][1]["api_key"], "new-actor-secret")
         self.assertEqual(json.loads(server.LLM_FRONTEND_SETTINGS_FILE.read_text(encoding="utf-8")), saved_settings)
+
+    def test_server_llm_settings_test_targets_single_provider(self):
+        server = _load_server()
+        server.ROOT = self.styles
+        server.LLM_FRONTEND_SETTINGS_FILE = self.styles / "llm_settings.frontend.json"
+        server.LLM_LOCAL_SETTINGS_FILE = self.styles / "llm_settings.local.json"
+        server.CLAUDE_SETTINGS_FILE = self.base / ".claude" / "settings.json"
+
+        server.LLM_FRONTEND_SETTINGS_FILE.write_text(
+            json.dumps(
+                {
+                    "cc_switch": {
+                        "enabled": True,
+                        "service_url": "http://cc-switch.test",
+                    },
+                    "openai_compatible": {
+                        "enabled": True,
+                        "core": {
+                            "base_url": "https://core.example/v1",
+                            "api_key": "core-secret",
+                            "model": "core-model",
+                        },
+                        "review": {
+                            "base_url": "https://review.example/v1",
+                            "api_key": "review-secret",
+                            "model": "review-model",
+                        },
+                        "actor": {
+                            "base_url": "https://actor.example/v1",
+                            "api_key": "actor-secret",
+                            "model": "actor-model",
+                        },
+                    },
+                    "image_generation": {
+                        "base_url": "https://image.example/v1",
+                        "api_key": "image-secret",
+                        "model": "image-model",
+                        "fallback": {
+                            "base_url": "https://image-fallback.example/v1",
+                            "api_key": "image-fallback-secret",
+                            "model": "image-fallback-model",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        calls = []
+        image_calls = []
+
+        def fake_test_connection(provider, config):
+            calls.append((provider, dict(config)))
+            return {"ok": True, "provider": provider, "status": 200, "model": config.get("model", "")}
+
+        def fake_image_test(config, provider):
+            image_calls.append((provider, dict(config)))
+            return {"ok": True, "provider": provider, "status": 200, "model": config.get("model", "")}
+
+        def post(payload):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{httpd.server_port}/api/llm_settings/test",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        httpd = server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with (
+                mock.patch.object(server.llm_provider, "test_connection", side_effect=fake_test_connection),
+                mock.patch.object(server, "_test_image_generation_connection", side_effect=fake_image_test),
+            ):
+                core = post({"target": {"provider": "openai_compatible", "tier": "core"}})
+                image = post({"target": {"provider": "image_generation"}})
+                fallback = post({"target": {"provider": "image_generation.fallback"}})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertTrue(core["ok"])
+        self.assertTrue(image["ok"])
+        self.assertTrue(fallback["ok"])
+        self.assertEqual(calls, [
+            (
+                "openai_compatible",
+                {
+                    "base_url": "https://core.example/v1",
+                    "api_key": "core-secret",
+                    "model": "core-model",
+                },
+            )
+        ])
+        self.assertEqual(image_calls, [
+            (
+                "image_generation",
+                {
+                    "base_url": "https://image.example/v1",
+                    "api_key": "image-secret",
+                    "model": "image-model",
+                },
+            ),
+            (
+                "image_generation.fallback",
+                {
+                    "base_url": "https://image-fallback.example/v1",
+                    "api_key": "image-fallback-secret",
+                    "model": "image-fallback-model",
+                },
+            ),
+        ])
+        self.assertEqual(core["results"][0]["tier"], "core")
+        self.assertEqual(image["results"][0]["provider"], "image_generation")
+        self.assertEqual(fallback["results"][0]["provider"], "image_generation.fallback")
 
     def test_server_llm_settings_test_save_true_writes_payload(self):
         server = _load_server()
@@ -2275,6 +2643,7 @@ round_total: 7
                 "options": [
                     {"label": "Postprocess option A", "source": "postprocess"},
                     "Postprocess option B",
+                    "Postprocess option C",
                 ],
                 "state_patch": {},
             },
@@ -2288,7 +2657,10 @@ round_total: 7
         self.handler.write_content_js(str(self.card))
 
         self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Postprocess preferred summary")
-        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Postprocess option A", "Postprocess option B"])
+        self.assertEqual(
+            self._content_window_var("TURN_OPTIONS"),
+            ["Postprocess option A", "Postprocess option B", "Postprocess option C"],
+        )
         self.assertEqual(
             self._content_window_var("POSTPROCESS_UI"),
             {
@@ -2306,7 +2678,7 @@ round_total: 7
             core={
                 "summary": "Stale root summary",
                 "current_goal": "Stale root goal",
-                "options": ["Stale root option"],
+                "options": ["Stale root option A", "Stale root option B", "Stale root option C"],
                 "state_patch": {"quest": "Stale root quest"},
             },
             ui_extensions={
@@ -2320,7 +2692,11 @@ round_total: 7
             core={
                 "summary": "Current run summary",
                 "current_goal": "Current run goal",
-                "options": [{"label": "Current run option", "source": "postprocess"}],
+                "options": [
+                    {"label": "Current run option A", "source": "postprocess"},
+                    "Current run option B",
+                    "Current run option C",
+                ],
                 "state_patch": {"quest": "Current run quest"},
             },
             ui_extensions={
@@ -2333,7 +2709,10 @@ round_total: 7
         self.handler.append_turn(str(self.card), content="<p>Main narration.</p>", summary="Legacy summary")
 
         self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Current run summary")
-        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Current run option"])
+        self.assertEqual(
+            self._content_window_var("TURN_OPTIONS"),
+            ["Current run option A", "Current run option B", "Current run option C"],
+        )
         self.assertEqual(
             self._content_window_var("POSTPROCESS_UI"),
             {
@@ -2360,7 +2739,11 @@ round_total: 7
             core={
                 "summary": "Artifact summary",
                 "current_goal": "Artifact goal",
-                "options": [{"label": "Artifact option", "source": "postprocess"}],
+                "options": [
+                    {"label": "Artifact option A", "source": "postprocess"},
+                    "Artifact option B",
+                    "Artifact option C",
+                ],
                 "state_patch": {},
             },
             ui_extensions={
@@ -2373,7 +2756,10 @@ round_total: 7
         self.handler.write_content_js(str(self.card))
 
         self.assertEqual(self._content_window_var("SUMMARY_TEXT"), "Artifact summary")
-        self.assertEqual(self._content_window_var("TURN_OPTIONS"), ["Artifact option"])
+        self.assertEqual(
+            self._content_window_var("TURN_OPTIONS"),
+            ["Artifact option A", "Artifact option B", "Artifact option C"],
+        )
         self.assertEqual(
             self._content_window_var("POSTPROCESS_UI"),
             {
@@ -2476,9 +2862,48 @@ round_total: 7
         self.assertIn("waiting_on_style_reference", exposed_statuses)
         self.assertIn("waiting_on_critic", exposed_statuses)
         self.assertNotIn("completed", exposed_statuses)
-        self.assertEqual(assets["pending_job_count"], 3)
+        self.assertEqual(assets["pending_image_count"], 2)
+        self.assertEqual(assets["generating_image_count"], 1)
+        self.assertEqual(assets["failed_image_count"], 0)
+        self.assertNotIn("pending_job_count", assets)
 
-    def test_card_assets_pending_job_count_is_not_limited_by_job_preview(self):
+    def test_card_assets_exposes_separate_image_job_counts(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        statuses = [
+            "planned",
+            "waiting_on_style_reference",
+            "waiting_on_references",
+            "waiting_on_critic",
+            "queued",
+            "queued",
+            "deferred",
+            "failed",
+            "completed",
+        ]
+        for index, status in enumerate(statuses):
+            (jobs_dir / f"{index:02d}-{status}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": f"job-{index}",
+                        "queue_type": "scene_illustration",
+                        "target": "scene_illustration",
+                        "status": status,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        self.assertEqual(assets["pending_image_count"], 4)
+        self.assertEqual(assets["generating_image_count"], 2)
+        self.assertEqual(assets["failed_image_count"], 2)
+        self.assertNotIn("pending_job_count", assets)
+
+    def test_card_assets_image_job_counts_are_not_limited_by_job_preview(self):
         jobs_dir = self.card / "generated" / "jobs"
         jobs_dir.mkdir(parents=True)
         for index in range(9):
@@ -2499,7 +2924,10 @@ round_total: 7
         assets = self.handler._load_card_assets(self.card)
 
         self.assertEqual(len(assets["jobs"]), 8)
-        self.assertEqual(assets["pending_job_count"], 9)
+        self.assertEqual(assets["pending_image_count"], 0)
+        self.assertEqual(assets["generating_image_count"], 9)
+        self.assertEqual(assets["failed_image_count"], 0)
+        self.assertNotIn("pending_job_count", assets)
 
     def test_card_assets_job_preview_prioritizes_recent_failed_jobs(self):
         jobs_dir = self.card / "generated" / "jobs"
@@ -2569,7 +2997,7 @@ round_total: 7
             core={
                 "summary": "Postprocess summary",
                 "current_goal": "Fallback current goal",
-                "options": ["Continue"],
+                "options": ["Continue", "Ask what changed", "Check the surroundings"],
                 "state_patch": {"quest": "Quest from state patch"},
             }
         )
@@ -2610,7 +3038,7 @@ round_total: 7
             core={
                 "summary": "Postprocess summary",
                 "current_goal": "Current goal fallback quest",
-                "options": ["Continue"],
+                "options": ["Continue", "Ask what changed", "Check the surroundings"],
                 "state_patch": {"stage": "Archive"},
             }
         )

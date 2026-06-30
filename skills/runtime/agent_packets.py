@@ -258,6 +258,8 @@ def _input_analysis_explicit_payload(input_payload: Dict[str, Any]) -> Dict[str,
     for key in ("id", "created_at", "source"):
         if key in input_payload:
             payload[key] = _to_text(input_payload.get(key))
+    if input_payload.get("instruction_only_opening") is True:
+        payload["instruction_only_opening"] = True
     for key in ("snapshot", "replay_outline", "retcon_replay"):
         if isinstance(input_payload.get(key), dict):
             payload[key] = dict(input_payload[key])

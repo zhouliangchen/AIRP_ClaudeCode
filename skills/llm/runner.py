@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from llm import provider as llm_provider
 from llm import settings as llm_settings
+from runtime import debug_log
 class LlmRunnerError(RuntimeError):
     """Raised when no configured LLM runner can return agent text."""
 
@@ -84,6 +85,17 @@ def _complete(provider: str, prompt: str, *, agent_key: str, config: Mapping[str
     return text
 
 
+def _append_debug_event(card_folder: Path, event: str, *, level: str, details: Mapping[str, Any]) -> None:
+    try:
+        enabled = debug_log.model_debug_enabled()
+    except Exception:
+        enabled = False
+    try:
+        debug_log.append_event(card_folder, event, level=level, details=details, enabled=enabled)
+    except Exception:
+        pass
+
+
 def _cc_switch_config(settings: Mapping[str, Any], agent_key: str) -> dict[str, Any]:
     config = dict(settings.get("cc_switch") or {})
     tier = model_tier_for_agent(agent_key)
@@ -102,9 +114,9 @@ def _openai_compatible_config(settings: Mapping[str, Any], agent_key: str) -> di
 
 def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
     """Run one AIRP agent prompt through the configured LLM provider."""
-    del cwd
     global _last_result
     _last_result = None
+    card_folder = Path(cwd)
 
     settings = llm_settings.read_effective_settings()
     cc_enabled = _enabled(settings.get("cc_switch"))
@@ -123,6 +135,12 @@ def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
                 if isinstance(exc, LlmRunnerError):
                     raise
                 error = _redact_error_text(exc, cc_config)
+                _append_debug_event(
+                    card_folder,
+                    "api_unavailable",
+                    level="error",
+                    details={"provider": "cc_switch", "agent": agent_key, "error": error},
+                )
                 raise LlmRunnerError(f"cc_switch failed and no fallback provider is enabled: {error}") from None
             cc_error = exc
     else:
@@ -131,11 +149,35 @@ def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
     if openai_enabled:
         try:
             _require_model("openai_compatible", openai_config)
-            return _complete("openai_compatible", prompt, agent_key=agent_key, config=openai_config)
+            text = _complete("openai_compatible", prompt, agent_key=agent_key, config=openai_config)
+            if cc_error is not None:
+                _append_debug_event(
+                    card_folder,
+                    "api_fallback",
+                    level="warning",
+                    details={
+                        "from": "cc_switch",
+                        "to": "openai_compatible",
+                        "agent": agent_key,
+                        "error": _redact_error_text(cc_error, cc_config, openai_config),
+                    },
+                )
+            return text
         except Exception as exc:
             if cc_error is not None:
                 cc_message = _redact_error_text(cc_error, cc_config, openai_config)
                 fallback_message = _redact_error_text(exc, cc_config, openai_config)
+                _append_debug_event(
+                    card_folder,
+                    "api_unavailable",
+                    level="error",
+                    details={
+                        "provider": "openai_compatible",
+                        "agent": agent_key,
+                        "error": fallback_message,
+                        "previous_error": cc_message,
+                    },
+                )
                 raise LlmRunnerError(
                     "cc_switch failed, then openai_compatible failed: "
                     f"{cc_message}; fallback error: {fallback_message}"
@@ -143,6 +185,12 @@ def run_llm_agent(agent_key: str, prompt: str, cwd: str | Path) -> str:
             if isinstance(exc, LlmRunnerError):
                 raise
             error = _redact_error_text(exc, openai_config)
+            _append_debug_event(
+                card_folder,
+                "api_unavailable",
+                level="error",
+                details={"provider": "openai_compatible", "agent": agent_key, "error": error},
+            )
             raise LlmRunnerError(f"openai_compatible failed: {error}") from None
 
     raise LlmRunnerError("No enabled LLM provider is available.")

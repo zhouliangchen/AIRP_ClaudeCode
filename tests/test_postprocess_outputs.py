@@ -108,6 +108,29 @@ class PostprocessOutputTest(unittest.TestCase):
         self.assertEqual(output["repair_requests"], [{"target": "story"}])
         self.assertEqual(output["metadata"], {"round_id": "round-000001"})
 
+    def test_validate_requires_exactly_three_core_options(self):
+        for options in (
+            [],
+            ["Only one"],
+            ["First", "Second"],
+            ["First", "Second", "Third", "Fourth"],
+        ):
+            with self.subTest(options=options):
+                payload = {
+                    "schema_version": 1,
+                    "core": {
+                        "summary": "The scene pauses at a decision point.",
+                        "options": options,
+                        "current_goal": "Choose the next move.",
+                    },
+                }
+
+                result = self.mod.validate_postprocess_output(payload)
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["reason"], "postprocess_core_invalid")
+                self.assertIn("core.options must include exactly 3 valid options", result["errors"])
+
     def test_validate_rejects_missing_core_fields(self):
         payload = {
             "schema_version": 1,
@@ -124,14 +147,14 @@ class PostprocessOutputTest(unittest.TestCase):
         self.assertEqual(result["reason"], "postprocess_core_invalid")
         self.assertIn("core.summary is required", result["errors"])
         self.assertIn("core.current_goal is required", result["errors"])
-        self.assertIn("core.options must include at least one valid option", result["errors"])
+        self.assertIn("core.options must include exactly 3 valid options", result["errors"])
 
     def test_validate_filters_state_patch_to_frontend_safe_keys(self):
         payload = {
             "schema_version": 1,
             "core": {
                 "summary": "The scene shifts.",
-                "options": ["Continue"],
+                "options": ["Continue", "Ask Ada", "Wait and listen"],
                 "current_goal": "Stay alert.",
                 "state_patch": {
                     "quest": "Find Ada",
@@ -195,7 +218,9 @@ class PostprocessOutputTest(unittest.TestCase):
                         "label": "Confirm action: push open the sealed door",
                         "source": "player_agent_critical_action",
                         "requires_confirmation": True,
-                    }
+                    },
+                    "Step back and listen",
+                    "Ask Ada for advice",
                 ],
                 "current_goal": "Confirm the risky action before continuing.",
             },
@@ -299,6 +324,7 @@ class PostprocessOutputTest(unittest.TestCase):
                         "source": "player_agent_critical_action",
                         "requires_confirmation": True,
                     },
+                    "Step back and listen",
                 ],
                 "current_goal": "Confirm each risky action before continuing.",
             },

@@ -777,6 +777,68 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertEqual(payload["reason"], "image_generation_failed")
             self.assertIn("Images API is not supported", payload["error"])
 
+    def test_main_falls_back_to_backup_image_api_and_records_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            job_path = card / "generated" / "jobs" / "scene-round-000004.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--job-id",
+                "scene-round-000004",
+            ]
+            calls = []
+            events = []
+
+            def fake_call(prompt, model, size, config, *, references=None):
+                calls.append((model, config["base_url"], config["api_key"]))
+                if config["base_url"] == "https://primary-image.example/v1":
+                    raise RuntimeError("primary image api down with primary-secret")
+                return b"fallback-image"
+
+            debug_stub = SimpleNamespace(
+                model_debug_enabled=lambda: True,
+                append_event=lambda card_folder, event, **kwargs: events.append((card_folder, event, kwargs)),
+            )
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_load_config",
+                    return_value={
+                        "base_url": "https://primary-image.example/v1",
+                        "api_key": "primary-secret",
+                        "model": "primary-image-model",
+                        "fallback": {
+                            "base_url": "https://fallback-image.example/v1",
+                            "api_key": "fallback-secret",
+                            "model": "fallback-image-model",
+                        },
+                    },
+                ):
+                    with mock.patch.object(self.mod, "_call_openai_images", side_effect=fake_call):
+                        with mock.patch.object(self.mod, "_refresh_frontend_assets", return_value={"content_js": True, "error": None}):
+                            with mock.patch.object(self.mod, "debug_log", debug_stub, create=True):
+                                with self.assertRaises(SystemExit) as exc:
+                                    self.mod.main()
+
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exc.exception.code, 0)
+        self.assertEqual(calls, [
+            ("primary-image-model", "https://primary-image.example/v1", "primary-secret"),
+            ("fallback-image-model", "https://fallback-image.example/v1", "fallback-secret"),
+        ])
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["asset"]["model"], "fallback-image-model")
+        self.assertEqual(payload["provider_fallback"]["from"], "image_generation")
+        self.assertEqual(payload["provider_fallback"]["to"], "image_generation.fallback")
+        self.assertIn("primary image api down", payload["provider_fallback"]["error"])
+        self.assertIn("api_fallback", [event for _card, event, _payload in events])
+
     def test_main_reference_unsupported_defers_with_specific_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"

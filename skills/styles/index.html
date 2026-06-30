@@ -365,6 +365,46 @@ body {
 .btn-submit:hover { background: #4a6a4a; }
 .btn-secondary { background: var(--border); color: var(--text); }
 .btn-secondary:hover { background: #c4b9a0; }
+#queued-submit-panel {
+  display: none;
+  margin-bottom: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  gap: 8px;
+  align-items: center;
+}
+#queued-submit-panel.is-visible { display: flex; }
+.queued-submit-body {
+  flex: 1;
+  min-width: 0;
+}
+.queued-submit-title {
+  font-size: 0.76em;
+  color: var(--accent2);
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+.queued-submit-preview {
+  font-size: 0.82em;
+  line-height: 1.45;
+  color: var(--muted);
+  max-height: 3.2em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.queued-submit-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+#queued-submit-panel button {
+  padding: 6px 10px;
+  font-size: 0.78em;
+}
 .btn-reroll {
   font-size: 0.85em; padding: 1px 6px; border: 1px solid var(--border);
   border-radius: 4px; background: var(--bg); cursor: pointer;
@@ -477,6 +517,9 @@ body {
   align-items: center;
   margin-top: 7px;
 }
+.llm-settings-test-row {
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+}
 .llm-settings-field span {
   color: var(--muted);
   font-size: 0.82em;
@@ -507,7 +550,26 @@ body {
   border: none; border-radius: 7px; padding: 8px 12px;
   font-size: 0.82em; font-weight: 600; cursor: pointer;
 }
-.llm-settings-test { background: var(--border); color: var(--text); }
+.llm-inline-test {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 5px 10px;
+  font-family: var(--font-ui);
+  font-size: 0.78em;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.llm-inline-test:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.llm-inline-test:not(:disabled):hover {
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
 .llm-settings-save { background: var(--accent2); color: #fff; }
 #llm-settings-status {
   min-height: 1.4em;
@@ -518,6 +580,8 @@ body {
 #llm-settings-status.error { color: #b0624a; }
 @media (max-width: 560px) {
   .llm-settings-field { grid-template-columns: 1fr; }
+  .llm-settings-test-row { grid-template-columns: 1fr; }
+  .llm-inline-test { width: 100%; }
   .llm-settings-actions { flex-direction: column; }
   .llm-settings-actions button { width: 100%; }
 }
@@ -637,6 +701,13 @@ body {
   #input-panel textarea {
     min-height: 48px;
     max-height: 88px;
+  }
+  #queued-submit-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .queued-submit-actions {
+    width: 100%;
   }
   .btn-group { width: 100%; }
   #input-panel button { flex: 1; }
@@ -1393,6 +1464,16 @@ body {
 <div id="mobile-settings-backdrop" onclick="setMobileSettingsOpen(false)" aria-hidden="true"></div>
 
 <div id="input-panel">
+  <div id="queued-submit-panel" aria-live="polite">
+    <div class="queued-submit-body">
+      <div class="queued-submit-title">输入已缓存，等待系统准备好后自动发送</div>
+      <div class="queued-submit-preview" id="queued-submit-preview"></div>
+    </div>
+    <div class="queued-submit-actions">
+      <button class="btn-secondary" type="button" onclick="editQueuedSubmit()">编辑</button>
+      <button class="btn-secondary" type="button" onclick="withdrawQueuedSubmit()">撤回</button>
+    </div>
+  </div>
   <div class="input-row">
     <textarea id="role-input" placeholder="角色行动或剧情梗概" rows="2"></textarea>
     <textarea id="user-input" style="display:none"></textarea>
@@ -1440,10 +1521,11 @@ body {
           <span>启用</span>
           <input id="llm-cc-enabled" type="checkbox">
         </label>
-        <label class="llm-settings-field">
+        <div class="llm-settings-field llm-settings-test-row">
           <span>服务地址</span>
           <input id="llm-cc-service-url" type="url" spellcheck="false" placeholder="未设置将报错">
-        </label>
+          <button id="llm-test-cc-switch" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'cc_switch' })" disabled>测试</button>
+        </div>
       </section>
       <section class="llm-settings-section">
         <h4>OpenAI-compatible</h4>
@@ -1451,10 +1533,11 @@ body {
           <span>启用</span>
           <input id="llm-openai-enabled" type="checkbox">
         </label>
-        <label class="llm-settings-field">
+        <div class="llm-settings-field llm-settings-test-row">
           <span>核心 URL</span>
           <input id="llm-openai-core-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
-        </label>
+          <button id="llm-test-openai-core" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'openai_compatible', tier: 'core' })" disabled>测试</button>
+        </div>
         <label class="llm-settings-field">
           <span>核心 API key</span>
           <input id="llm-openai-core-api-key" type="password" autocomplete="new-password">
@@ -1463,10 +1546,11 @@ body {
           <span>核心模型名</span>
           <input id="llm-openai-core-model" type="text" spellcheck="false">
         </label>
-        <label class="llm-settings-field">
+        <div class="llm-settings-field llm-settings-test-row">
           <span>审查 URL</span>
           <input id="llm-openai-review-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
-        </label>
+          <button id="llm-test-openai-review" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'openai_compatible', tier: 'review' })" disabled>测试</button>
+        </div>
         <label class="llm-settings-field">
           <span>审查 API key</span>
           <input id="llm-openai-review-api-key" type="password" autocomplete="new-password">
@@ -1475,10 +1559,11 @@ body {
           <span>审查模型名</span>
           <input id="llm-openai-review-model" type="text" spellcheck="false">
         </label>
-        <label class="llm-settings-field">
+        <div class="llm-settings-field llm-settings-test-row">
           <span>角色 URL</span>
           <input id="llm-openai-actor-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
-        </label>
+          <button id="llm-test-openai-actor" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'openai_compatible', tier: 'actor' })" disabled>测试</button>
+        </div>
         <label class="llm-settings-field">
           <span>角色 API key</span>
           <input id="llm-openai-actor-api-key" type="password" autocomplete="new-password">
@@ -1490,10 +1575,11 @@ body {
       </section>
       <section class="llm-settings-section">
         <h4>图片生成 API</h4>
-        <label class="llm-settings-field">
+        <div class="llm-settings-field llm-settings-test-row">
           <span>请求 URL</span>
           <input id="llm-image-base-url" type="url" spellcheck="false" placeholder="未设置将报错">
-        </label>
+          <button id="llm-test-image-primary" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'image_generation' })" disabled>测试</button>
+        </div>
         <label class="llm-settings-field">
           <span>API key</span>
           <input id="llm-image-api-key" type="password" autocomplete="new-password">
@@ -1502,11 +1588,23 @@ body {
           <span>模型名</span>
           <input id="llm-image-model" type="text" spellcheck="false" placeholder="未设置将报错">
         </label>
+        <div class="llm-settings-field llm-settings-test-row">
+          <span>备用请求 URL</span>
+          <input id="llm-image-fallback-base-url" type="url" spellcheck="false">
+          <button id="llm-test-image-fallback" class="llm-inline-test" type="button" onclick="testLlmSettings({ provider: 'image_generation.fallback' })" disabled>测试</button>
+        </div>
+        <label class="llm-settings-field">
+          <span>备用 API key</span>
+          <input id="llm-image-fallback-api-key" type="password" autocomplete="new-password">
+        </label>
+        <label class="llm-settings-field">
+          <span>备用模型名</span>
+          <input id="llm-image-fallback-model" type="text" spellcheck="false">
+        </label>
       </section>
     </div>
     <div id="llm-settings-status"></div>
     <div class="llm-settings-actions">
-      <button class="llm-settings-test" type="button" onclick="testLlmSettings()">连接测试</button>
       <button class="llm-settings-save" type="button" onclick="saveLlmSettings()">保存</button>
     </div>
   </div>
@@ -1779,21 +1877,14 @@ function render() {
   setText('sb-summary', sum);
 
   // Actions — render inline after the latest output so they scroll with text.
-  const turnOpts = Array.isArray(window.TURN_OPTIONS) ? window.TURN_OPTIONS : [];
-  const fallbackActions = Array.isArray(S.actions) ? S.actions : [];
+  const rawTurnOpts = Array.isArray(window.TURN_OPTIONS) ? window.TURN_OPTIONS : [];
+  const turnOpts = rawTurnOpts.length === 3 ? rawTurnOpts : [];
   if (turnOpts.length > 0) {
     renderInlineActions(
       contentEl,
       '🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''),
       turnOpts,
       'turn'
-    );
-  } else if (fallbackActions.length > 0) {
-    renderInlineActions(
-      contentEl,
-      '📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : ''),
-      fallbackActions,
-      'fallback'
     );
   } else {
     clearInlineActions();
@@ -1971,7 +2062,7 @@ function dismissCurrentInlineActions() {
 }
 
 function renderInlineActions(contentEl, titleHtml, opts, kind) {
-  if (!contentEl || !Array.isArray(opts) || opts.length === 0) {
+  if (!contentEl || !Array.isArray(opts) || opts.length !== 3) {
     clearInlineActions();
     return;
   }
@@ -2022,6 +2113,141 @@ function renderOptions(container, opts) {
 
 const BRIDGE = window.location.origin;
 let bridgeOk = false;
+const QUEUED_SUBMIT_KEY = 'airp.queuedSubmit.v1';
+let queuedSubmitInFlight = false;
+
+function buildSubmitPayload(roleText, instructionText) {
+  return {
+    text: roleText,
+    roleText: roleText,
+    instructionText: instructionText
+  };
+}
+
+function readQueuedSubmit() {
+  try {
+    const raw = localStorage.getItem(QUEUED_SUBMIT_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return null;
+    return {
+      roleText: typeof data.roleText === 'string' ? data.roleText : '',
+      instructionText: typeof data.instructionText === 'string' ? data.instructionText : '',
+      createdAt: data.createdAt || Date.now()
+    };
+  } catch(e) {
+    localStorage.removeItem(QUEUED_SUBMIT_KEY);
+    return null;
+  }
+}
+
+function queuedSubmitPreview(payload) {
+  const parts = [];
+  if (payload && payload.roleText && payload.roleText.trim()) {
+    parts.push('角色: ' + payload.roleText.trim());
+  }
+  if (payload && payload.instructionText && payload.instructionText.trim()) {
+    parts.push('指令: ' + payload.instructionText.trim());
+  }
+  return parts.join(' / ') || '空输入';
+}
+
+function renderQueuedSubmitPanel() {
+  const panel = document.getElementById('queued-submit-panel');
+  const preview = document.getElementById('queued-submit-preview');
+  if (!panel || !preview) return;
+  const queued = readQueuedSubmit();
+  if (!queued) {
+    panel.classList.remove('is-visible');
+    preview.textContent = '';
+    return;
+  }
+  preview.textContent = queuedSubmitPreview(queued);
+  panel.classList.add('is-visible');
+}
+
+function queueBlockedSubmit(payload, data) {
+  const queued = {
+    roleText: payload && typeof payload.roleText === 'string' ? payload.roleText : '',
+    instructionText: payload && typeof payload.instructionText === 'string' ? payload.instructionText : '',
+    createdAt: Date.now(),
+    blockedReason: data && data.error ? data.error : 'post_round_memory_pending'
+  };
+  localStorage.setItem(QUEUED_SUBMIT_KEY, JSON.stringify(queued));
+  renderQueuedSubmitPanel();
+  showToast('输入已缓存，系统准备好后会自动发送');
+}
+
+function clearQueuedSubmit() {
+  localStorage.removeItem(QUEUED_SUBMIT_KEY);
+  renderQueuedSubmitPanel();
+}
+
+function prependQueuedTextToInput(input, text) {
+  if (!input || typeof text !== 'string' || text === '') return;
+  const incoming = text;
+  const current = input.value || '';
+  input.value = current ? incoming + '\n' + current : incoming;
+}
+
+function withdrawQueuedSubmit() {
+  const queued = readQueuedSubmit();
+  if (!queued) return;
+  clearQueuedSubmit();
+  const roleInput = document.getElementById('role-input');
+  const instructionInput = document.getElementById('instruction-input');
+  prependQueuedTextToInput(roleInput, queued.roleText);
+  prependQueuedTextToInput(instructionInput, queued.instructionText);
+  syncLegacyInputBridge();
+  if (roleInput && queued.roleText) {
+    roleInput.focus();
+  } else if (instructionInput && queued.instructionText) {
+    instructionInput.focus();
+  }
+  showToast('已撤回缓存输入，可继续编辑');
+}
+
+function editQueuedSubmit() {
+  const queued = readQueuedSubmit();
+  if (!queued) return;
+  clearQueuedSubmit();
+  const roleInput = document.getElementById('role-input');
+  const instructionInput = document.getElementById('instruction-input');
+  if (roleInput) roleInput.value = queued.roleText || '';
+  if (instructionInput) instructionInput.value = queued.instructionText || '';
+  syncLegacyInputBridge();
+  if (roleInput) roleInput.focus();
+}
+
+function clearSubmitInputs() {
+  const roleInput = document.getElementById('role-input');
+  const instructionInput = document.getElementById('instruction-input');
+  if (roleInput) roleInput.value = '';
+  if (instructionInput) instructionInput.value = '';
+  syncLegacyInputBridge();
+}
+
+function handleAcceptedSubmit(data, clearInputs) {
+  setProgressVisible({ stage: 'received', label: '已发送，等待处理', percent: 10 });
+  dismissCurrentInlineActions();
+  reloadData();
+  if (clearInputs) clearSubmitInputs();
+  const toast = document.getElementById('toast');
+  toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
+  toast.style.background = 'var(--accent2)';
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
+async function postSubmitPayload(payload) {
+  const r = await fetch(BRIDGE + '/api/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await r.json();
+  return { ok: r.ok, data: data };
+}
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
 // 卡内嵌脚本使用 SillyTavern 标准元素 ID:
@@ -2202,16 +2428,13 @@ async function checkBridge() {
   document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请运行 python skills/server.py';
 }
 
-function countPendingAssets() {
+function assetJobCounts() {
   const assets = window.CARD_ASSETS || {};
-  if (Number.isFinite(assets.pending_job_count)) {
-    return assets.pending_job_count;
-  }
-  const jobs = assets.jobs || [];
-  const pendingStatuses = ['planned', 'waiting_on_style_reference', 'waiting_on_references', 'waiting_on_critic', 'queued', 'deferred'];
-  return jobs.filter(function(job) {
-    return job && pendingStatuses.indexOf(job.status) >= 0;
-  }).length;
+  return {
+    pending: Number.isFinite(assets.pending_image_count) ? assets.pending_image_count : 0,
+    generating: Number.isFinite(assets.generating_image_count) ? assets.generating_image_count : 0,
+    failed: Number.isFinite(assets.failed_image_count) ? assets.failed_image_count : 0
+  };
 }
 
 function setProgressVisible(progress) {
@@ -2223,8 +2446,9 @@ function setProgressVisible(progress) {
   const detail = progress && progress.detail && typeof progress.detail === 'object' ? progress.detail : {};
   const agent = isV2 ? (detail.agent || progress.agent || 'agent') : (progress && progress.agent) || 'agent';
   const status = isV2 ? (progress.state || progress.status || 'idle') : (progress && (progress.status || progress.stage)) || 'idle';
+  const counts = assetJobCounts();
   current.textContent = '当前: ' + agent + ' / ' + status;
-  pending.textContent = '待生成图片: ' + countPendingAssets();
+  pending.textContent = '待生成图片: ' + counts.pending + ' | 生成中图片: ' + counts.generating + ' | 生成失败: ' + counts.failed;
 }
 
 async function loadProgress() {
@@ -2235,6 +2459,37 @@ async function loadProgress() {
     setProgressVisible(progress);
   } catch(e) {
     // Progress is optional; leave the rest of the UI usable.
+  }
+}
+
+async function retryQueuedSubmitIfReady() {
+  if (queuedSubmitInFlight) return;
+  const queued = readQueuedSubmit();
+  if (!queued) return;
+  queuedSubmitInFlight = true;
+  try {
+    const readyResponse = await fetch(BRIDGE + '/api/input_ready');
+    if (!readyResponse.ok) return;
+    const ready = await readyResponse.json();
+    if (!ready.ready) {
+      renderQueuedSubmitPanel();
+      return;
+    }
+    const payload = buildSubmitPayload(queued.roleText || '', queued.instructionText || '');
+    const result = await postSubmitPayload(payload);
+    const data = result.data || {};
+    if (data.ok) {
+      clearQueuedSubmit();
+      handleAcceptedSubmit(data, false);
+    } else if (data.retry_when_ready === true && data.error === 'post_round_memory_pending') {
+      renderQueuedSubmitPanel();
+    } else {
+      showError('自动发送失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    // Keep the queued input; the next poll can retry.
+  } finally {
+    queuedSubmitInFlight = false;
   }
 }
 
@@ -2251,28 +2506,15 @@ async function doSubmit() {
   btn.disabled = true; btn.textContent = '...';
 
   try {
-    const r = await fetch(BRIDGE + '/api/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: roleText,
-        roleText: roleText,
-        instructionText: instructionText
-      })
-    });
-    const data = await r.json();
+    const payload = buildSubmitPayload(roleText, instructionText);
+    const result = await postSubmitPayload(payload);
+    const data = result.data || {};
     if (data.ok) {
-      setProgressVisible({ stage: 'received', label: '已发送，等待处理', percent: 10 });
-      dismissCurrentInlineActions();
-      reloadData();
-      if (roleInput) roleInput.value = '';
-      if (instructionInput) instructionInput.value = '';
-      syncLegacyInputBridge();
-      const toast = document.getElementById('toast');
-      toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
-      toast.style.background = 'var(--accent2)';
-      toast.classList.add('show');
-      setTimeout(() => toast.classList.remove('show'), 2500);
+      clearQueuedSubmit();
+      handleAcceptedSubmit(data, true);
+    } else if (data.retry_when_ready === true && data.error === 'post_round_memory_pending') {
+      queueBlockedSubmit(payload, data);
+      clearSubmitInputs();
     } else {
       showError('发送失败: ' + (data.error || '未知错误'));
     }
@@ -2390,6 +2632,62 @@ function setLlmInputValue(id, value) {
   if (input) input.value = value || '';
 }
 
+function getLlmInputValue(id) {
+  const input = document.getElementById(id);
+  return input ? input.value.trim() : '';
+}
+
+function setLlmKeyState(id, hasStoredKey) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  input.dataset.keySet = hasStoredKey ? 'true' : 'false';
+}
+
+function hasLlmKey(id) {
+  const input = document.getElementById(id);
+  if (!input) return false;
+  return !!input.value.trim() || input.dataset.keySet === 'true';
+}
+
+function setLlmTestButton(id, enabled) {
+  const button = document.getElementById(id);
+  if (button) button.disabled = !enabled;
+}
+
+function updateLlmTestButtons() {
+  setLlmTestButton('llm-test-cc-switch', !!getLlmInputValue('llm-cc-service-url'));
+  ['core', 'review', 'actor'].forEach(function(tier) {
+    setLlmTestButton(
+      'llm-test-openai-' + tier,
+      !!getLlmInputValue('llm-openai-' + tier + '-base-url') &&
+      !!getLlmInputValue('llm-openai-' + tier + '-model') &&
+      hasLlmKey('llm-openai-' + tier + '-api-key')
+    );
+  });
+  setLlmTestButton(
+    'llm-test-image-primary',
+    !!getLlmInputValue('llm-image-base-url') &&
+    !!getLlmInputValue('llm-image-model') &&
+    hasLlmKey('llm-image-api-key')
+  );
+  setLlmTestButton(
+    'llm-test-image-fallback',
+    !!getLlmInputValue('llm-image-fallback-base-url') &&
+    !!getLlmInputValue('llm-image-fallback-model') &&
+    hasLlmKey('llm-image-fallback-api-key')
+  );
+}
+
+function initLlmSettingsControls() {
+  const modal = document.getElementById('llm-settings-modal');
+  if (!modal) return;
+  modal.querySelectorAll('input').forEach(function(input) {
+    input.addEventListener('input', updateLlmTestButtons);
+    input.addEventListener('change', updateLlmTestButtons);
+  });
+  updateLlmTestButtons();
+}
+
 function openaiTierSettings(openai, tier) {
   const value = openai && openai[tier];
   return value && typeof value === 'object' ? value : {};
@@ -2403,6 +2701,7 @@ function applyOpenaiTierSettings(openai, tier) {
   if (keyInput) {
     keyInput.value = '';
     keyInput.placeholder = tierSettings.api_key_set ? '已保存，留空保留' : '未设置';
+    setLlmKeyState('llm-openai-' + tier + '-api-key', !!tierSettings.api_key_set);
   }
 }
 
@@ -2421,6 +2720,7 @@ function applyLlmSettings(settings) {
   const cc = settings.cc_switch || {};
   const openai = settings.openai_compatible || {};
   const image = settings.image_generation || {};
+  const imageFallback = image.fallback || {};
   document.getElementById('llm-cc-enabled').checked = cc.enabled === true;
   setLlmInputValue('llm-cc-service-url', cc.service_url);
   document.getElementById('llm-openai-enabled').checked = openai.enabled === true;
@@ -2433,14 +2733,32 @@ function applyLlmSettings(settings) {
   if (imageKey) {
     imageKey.value = '';
     imageKey.placeholder = image.api_key_set ? '已保存，留空保留' : '未设置';
+    setLlmKeyState('llm-image-api-key', !!image.api_key_set);
   }
+  setLlmInputValue('llm-image-fallback-base-url', imageFallback.base_url);
+  setLlmInputValue('llm-image-fallback-model', imageFallback.model);
+  const imageFallbackKey = document.getElementById('llm-image-fallback-api-key');
+  if (imageFallbackKey) {
+    imageFallbackKey.value = '';
+    imageFallbackKey.placeholder = imageFallback.api_key_set ? '已保存，留空保留' : '未设置';
+    setLlmKeyState('llm-image-fallback-api-key', !!imageFallback.api_key_set);
+  }
+  updateLlmTestButtons();
 }
 
 function applyLlmConfigurationErrors(settings, fallbackMessage) {
   const errors = settings && Array.isArray(settings.configuration_errors) ? settings.configuration_errors : [];
+  const notices = settings && Array.isArray(settings.fallback_notices) ? settings.fallback_notices : [];
   if (errors.length) {
     setLlmSettingsStatus(errors.join('；'), true);
     return true;
+  }
+  if (notices.length) {
+    const messages = notices.map(function(item) {
+      return item && item.message ? item.message : '最近发生 API fallback';
+    });
+    setLlmSettingsStatus(messages.join('；'), false);
+    return false;
   }
   setLlmSettingsStatus(fallbackMessage || '', false);
   return false;
@@ -2457,6 +2775,7 @@ async function loadLlmSettings() {
 
 function collectLlmSettings() {
   const imageKey = document.getElementById('llm-image-api-key').value.trim();
+  const imageFallbackKey = document.getElementById('llm-image-fallback-api-key').value.trim();
   const openai = {
     enabled: document.getElementById('llm-openai-enabled').checked,
     core: collectOpenaiTierSettings('core'),
@@ -2468,6 +2787,14 @@ function collectLlmSettings() {
     model: document.getElementById('llm-image-model').value.trim()
   };
   if (imageKey) image.api_key = imageKey;
+  const imageFallback = {
+    base_url: document.getElementById('llm-image-fallback-base-url').value.trim(),
+    model: document.getElementById('llm-image-fallback-model').value.trim()
+  };
+  if (imageFallbackKey) imageFallback.api_key = imageFallbackKey;
+  if (imageFallback.base_url || imageFallback.model || imageFallback.api_key) {
+    image.fallback = imageFallback;
+  }
   return {
     cc_switch: {
       enabled: document.getElementById('llm-cc-enabled').checked,
@@ -2496,21 +2823,26 @@ async function saveLlmSettings() {
   }
 }
 
-async function testLlmSettings() {
+async function testLlmSettings(target) {
   setLlmSettingsStatus('测试中...', false);
   try {
+    const payload = Object.assign({ target: target }, collectLlmSettings());
     const r = await fetch(BRIDGE + '/api/llm_settings/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collectLlmSettings())
+      body: JSON.stringify(payload)
     });
     const data = await r.json();
-    if (!r.ok || data.ok === false) throw new Error(data.error || '连接失败');
     const results = Array.isArray(data.results) ? data.results : [];
+    if (!r.ok || data.ok === false) {
+      const errors = results.map(function(item) { return item && item.error; }).filter(Boolean);
+      throw new Error(errors.join('；') || data.error || '连接失败');
+    }
     const okResults = results.filter(function(item) { return item && item.ok; });
     const labels = okResults.map(function(item) {
       const provider = item.provider || 'unknown';
-      return item.model ? provider + ' / ' + item.model : provider;
+      const tier = item.tier ? ' / ' + item.tier : '';
+      return item.model ? provider + tier + ' / ' + item.model : provider + tier;
     });
     setLlmSettingsStatus('连接成功: ' + (labels.join(', ') || 'unknown'), false);
   } catch(e) {
@@ -2642,6 +2974,8 @@ function initMobileSettingsToggle() {
 
 // No page flash: use dynamic script reloading instead of meta refresh
 initMobileSettingsToggle();
+initLlmSettingsControls();
+renderQueuedSubmitPanel();
 reloadData();
 checkBridge();
 loadProgress();
@@ -2650,6 +2984,7 @@ loadOpenings();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
 setInterval(loadProgress, 1500);
+setInterval(retryQueuedSubmitIfReady, 1500);
 setInterval(loadStyleProfiles, 15000);
 
 // ═══ Dark Mode Toggle ═══

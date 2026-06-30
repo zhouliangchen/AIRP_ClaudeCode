@@ -893,10 +893,20 @@ def build_postprocess_prompt(run_summary: Dict[str, Any]) -> str:
             "summary": "player-visible recap of the delivered turn",
             "options": [
                 {
-                    "label": "确认行动：玩家已经明确提出的可见行动",
-                    "source": "player_agent_critical_action",
-                    "requires_confirmation": True,
-                }
+                    "label": "Study the seal before touching it",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
+                {
+                    "label": "Ask Ada what she recognizes",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
+                {
+                    "label": "Step back and listen for movement",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
             ],
             "current_goal": "current player-visible objective",
             "state_patch": {},
@@ -935,6 +945,11 @@ Required frontend data contract:
 - `mvu.commands`
 - `repair_requests`
 - `metadata`
+
+Action option count contract:
+- If Runtime Input `player_critical_action_options` is empty, generate exactly 3 `core.options` items.
+- If Runtime Input `player_critical_action_options` is not empty, those fixed options are already reserved by the runtime; generate exactly `remaining_options_to_generate` additional `core.options` items.
+- Never output `source: "player_agent_critical_action"` yourself. Runtime will merge fixed options such as `"label": "确认行动：玩家已经明确提出的可见行动"` before final validation.
 
 Do not rewrite story prose.
 Do not review prose quality.

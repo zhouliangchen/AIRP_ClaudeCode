@@ -1042,6 +1042,10 @@ def apply_current_run(card_folder, root_dir=None):
     run_dir = Path(run_dir)
     _assert_manifest_stage_allows_apply(run_dir)
     raw_request = _read_json_required(run_dir / "input.raw.json")
+    explicit_payload = raw_request.get("explicit_payload")
+    input_payload_flags = {}
+    if isinstance(explicit_payload, dict) and explicit_payload.get("instruction_only_opening") is True:
+        input_payload_flags["instruction_only_opening"] = True
     analysis = input_analysis.load_json(run_dir / "input_analysis.output.json")
     analysis, normalized_integrity = _normalize_source_integrity(analysis, raw_request)
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
@@ -1172,6 +1176,7 @@ def apply_current_run(card_folder, root_dir=None):
         ],
         "important_characters_skipped": skipped_important_characters,
         "routed_input": routed_input,
+        "input_payload_flags": input_payload_flags,
         "routing_requests": analysis.get("routing_requests", []),
         "capability_requests": analysis.get("capability_requests", []),
         "manifest": manifest,

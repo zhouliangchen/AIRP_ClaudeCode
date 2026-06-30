@@ -139,6 +139,48 @@ class LlmRunnerTest(unittest.TestCase):
         self.assertEqual(calls, ["cc_switch", "openai_compatible"])
         self.assertEqual(self.mod.get_last_result()["provider"], "openai_compatible")
 
+    def test_text_provider_fallback_records_debug_event_when_enabled(self):
+        self._patch_settings(self._settings(cc_enabled=True, openai_enabled=True))
+        calls = []
+        events = []
+
+        def fake_complete(provider, prompt, *, agent_key, config):
+            calls.append(provider)
+            if provider == "cc_switch":
+                raise RuntimeError("cc down with anthropic-key")
+            return {
+                "text": "openai result",
+                "provider": provider,
+                "model": config["model"],
+                "usage": {"total_tokens": 3},
+                "raw_response": {"choices": []},
+                "status": 200,
+            }
+
+        debug_stub = type(
+            "DebugStub",
+            (),
+            {
+                "model_debug_enabled": staticmethod(lambda: True),
+                "append_event": staticmethod(
+                    lambda card, event, **kwargs: events.append((Path(card), event, kwargs))
+                ),
+            },
+        )
+        self.mod.llm_provider.complete = fake_complete
+
+        with self.subTest("fallback event"):
+            with unittest.mock.patch.object(self.mod, "debug_log", debug_stub, create=True):
+                text = self.mod.run_llm_agent("story", "prompt", ROOT)
+
+        self.assertEqual(text, "openai result")
+        self.assertEqual(calls, ["cc_switch", "openai_compatible"])
+        self.assertEqual(events[0][0], ROOT)
+        self.assertEqual(events[0][1], "api_fallback")
+        self.assertEqual(events[0][2]["details"]["from"], "cc_switch")
+        self.assertEqual(events[0][2]["details"]["to"], "openai_compatible")
+        self.assertIn("cc down", events[0][2]["details"]["error"])
+
     def test_uses_openai_compatible_when_it_is_the_only_enabled_provider(self):
         self._patch_settings(self._settings(cc_enabled=False, openai_enabled=True))
         calls = []

@@ -153,7 +153,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             [item["label"] for item in payload["postprocess"]["core"]["options"]],
-            ["Ask Ada what she knows", "Hide the pendant again"],
+            ["Ask Ada what she knows", "Hide the pendant again", "Look around the classroom"],
         )
         self.assertEqual(
             payload["postprocess"]["core"]["current_goal"],

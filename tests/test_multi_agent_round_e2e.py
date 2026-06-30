@@ -97,21 +97,42 @@ def _post_round_objective_memory_update_payload(agent_id, *, character_name=""):
 
 
 def _write_valid_postprocess_artifact(run_dir, *, round_id, include_player_decision_option=False):
-    options = [
-        {
-            "label": "Pause at the archive threshold.",
-            "source": "postprocess",
-            "requires_confirmation": False,
-        }
-    ]
     if include_player_decision_option:
-        options.append(
+        options = [
             {
                 "label": "Confirm action: I keep one hand on the doorframe and look inside.",
                 "source": "player_agent_critical_action",
                 "requires_confirmation": True,
-            }
-        )
+            },
+            {
+                "label": "Ask Ada to describe the room.",
+                "source": "postprocess",
+                "requires_confirmation": False,
+            },
+            {
+                "label": "Step back and listen first.",
+                "source": "postprocess",
+                "requires_confirmation": False,
+            },
+        ]
+    else:
+        options = [
+            {
+                "label": "Pause at the archive threshold.",
+                "source": "postprocess",
+                "requires_confirmation": False,
+            },
+            {
+                "label": "Ask Ada to describe the room.",
+                "source": "postprocess",
+                "requires_confirmation": False,
+            },
+            {
+                "label": "Step back and listen first.",
+                "source": "postprocess",
+                "requires_confirmation": False,
+            },
+        ]
     _write_json(
         run_dir / "artifacts" / "postprocess.output.json",
         {

@@ -82,6 +82,83 @@ class InputAnalysisApplyTest(unittest.TestCase):
                 {"explicit_payload": {}},
             )
 
+    def test_apply_current_run_surfaces_instruction_only_opening_flag(self):
+        mod = _load_module("input_analysis_apply")
+        input_analysis = mod.input_analysis
+        agent_run = _load_module("agent_run")
+        instruction_text = "Use a random opening that fits the premise."
+        raw_text = "\n\n[USER_INSTRUCTION]\n" + instruction_text
+        integrity = {
+            "raw_text_sha256": input_analysis.sha256_text(raw_text),
+            "role_text_sha256": input_analysis.sha256_text(""),
+            "user_instruction_text_sha256": input_analysis.sha256_text(instruction_text),
+            "raw_preserved": True,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            run_dir = agent_run.create_run_dir(card, turn_index=0)
+            (run_dir / "input.raw.json").write_text(
+                json.dumps(
+                    {
+                        "round_id": "round-000001",
+                        "raw_text": raw_text,
+                        "role_text": "",
+                        "user_instruction_text": instruction_text,
+                        "source_integrity": integrity,
+                        "explicit_payload": {
+                            "input_schema": "dual_channel_v1",
+                            "role_text": "",
+                            "user_instruction_text": instruction_text,
+                            "instruction_only_opening": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "input_analysis.output.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "round_id": "round-000001",
+                        "analysis_mode": "fixture",
+                        "source_integrity": integrity,
+                        "semantic_units": [],
+                        "world_updates": {
+                            "hidden_facts": [],
+                            "public_facts": [],
+                            "important_characters": [],
+                            "retcon_requests": [],
+                        },
+                        "narrative_directives": {
+                            "rewrite_previous_output": False,
+                            "expand_synopsis_before_continue": True,
+                            "continue_after_player_action": True,
+                        },
+                        "routing": {
+                            "role_channel": "",
+                            "role_action_channel": "",
+                            "narrative_guidance_channel": "",
+                            "user_instruction_channel": instruction_text,
+                            "gm": True,
+                            "player": False,
+                            "characters": [],
+                        },
+                        "routing_requests": [],
+                        "capability_requests": [],
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.apply_current_run(card, ROOT)
+
+        self.assertEqual(result["input_payload_flags"], {"instruction_only_opening": True})
+
     def test_structured_retcon_adds_replay_plan_and_execute_from_round_backup(self):
         mod = _load_module("input_analysis_apply")
         input_analysis = mod.input_analysis

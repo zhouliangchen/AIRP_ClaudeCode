@@ -460,6 +460,11 @@ def _postprocess_output_fixture(run_dir: Path) -> Dict[str, Any]:
                     "source": "postprocess",
                     "requires_confirmation": False,
                 },
+                {
+                    "label": "Look around the classroom",
+                    "source": "postprocess",
+                    "requires_confirmation": False,
+                },
             ],
             "current_goal": "Decide how to respond to Ada's warning.",
             "state_patch": {
@@ -468,7 +473,11 @@ def _postprocess_output_fixture(run_dir: Path) -> Dict[str, Any]:
                 "time": "same morning",
                 "location": "classroom",
                 "env": {"lighting": "classroom light"},
-                "actions": ["Ask Ada what she knows", "Hide the pendant again"],
+                "actions": [
+                    "Ask Ada what she knows",
+                    "Hide the pendant again",
+                    "Look around the classroom",
+                ],
             },
         },
         "ui_extensions": {
