@@ -380,6 +380,11 @@ def _record_actor_recalled_key_memories(
         raise AgentTurnLoopError(f"record actor recalled key memories failed: {exc}") from exc
 
 
+def _attach_runtime_recalled_key_memories(run_dir: Path, actor_id: str, packet: dict) -> dict:
+    records = actor_recall_artifacts.read_actor_records(run_dir, actor_id)
+    return actor_recall_artifacts.attach_records_to_packet(packet, records)
+
+
 def _event_content(event: dict) -> str:
     return str(event.get("content") or "")
 
@@ -812,6 +817,7 @@ def _dispatch_actor_call(
     hidden_phrases: Iterable[str],
     dispatch: DispatchFn,
 ) -> tuple[dict, dict | None]:
+    root = Path(run_dir)
     actor_state = _actor_state(actor_id, input_payload)
     if not agent_visibility.actor_call_visible_to_actor(call, actor_id, actor_state):
         raise AgentTurnLoopError(
@@ -826,7 +832,7 @@ def _dispatch_actor_call(
         call,
     )
     packet = agent_lifecycle.attach_actor_context_version(card_folder, actor_id, packet)
-    root = Path(run_dir)
+    packet = _attach_runtime_recalled_key_memories(root, actor_id, packet)
     request_message_id, intent_id = _record_request_actor_intent(root, "gm", actor_id, call)
     try:
         projection_result = _project_actor_message(

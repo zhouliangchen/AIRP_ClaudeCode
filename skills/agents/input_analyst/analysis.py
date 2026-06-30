@@ -4,6 +4,8 @@ import math
 from pathlib import Path
 
 from capabilities import registry as capability_registry
+from domain import character_registry
+
 SCHEMA_VERSION = 1
 ANALYSIS_MODES = {"ai", "fallback", "fixture"}
 SEMANTIC_UNIT_TYPES = {
@@ -665,6 +667,10 @@ def _validate_world_update_records(world_updates):
         _validate_status(record, path)
         if record.get("status").strip() != "active":
             raise InputAnalysisError(f"{path}.status must be active")
+        try:
+            character_registry.normalize_character_metadata(record, path=path)
+        except ValueError as exc:
+            raise InputAnalysisError(str(exc)) from exc
 
     for index, record in enumerate(world_updates.get("retcon_requests", [])):
         path = f"world_updates.retcon_requests[{index}]"

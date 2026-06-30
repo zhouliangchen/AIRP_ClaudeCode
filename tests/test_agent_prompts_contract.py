@@ -47,6 +47,35 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertNotIn("## Skill Body", text)
         self.assertNotIn("You are a Claude Code subagent", text)
 
+    def test_gm_prompt_describes_aliases_and_form_memory_policy(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts._gm_prompt({})
+
+        self.assertIn('"aliases"', text)
+        self.assertIn('"forms"', text)
+        self.assertIn('"related_characters"', text)
+        self.assertIn("same actor and shared memory", text)
+        self.assertIn("independent_persistent", text)
+        self.assertIn("temporary_proxy", text)
+        self.assertIn("GM temporary portrayal", text)
+
+    def test_input_analyst_prompt_and_contract_describe_aliases_and_forms(self):
+        prompts = _load_module("agent_prompts")
+
+        prompt_text = prompts._input_analyst_prompt({})
+        contract_text = (ROOT / "skills" / "agents" / "input_analyst" / "prompts" / "contract.md").read_text(
+            encoding="utf-8"
+        )
+
+        for text in (prompt_text, contract_text):
+            self.assertIn("aliases", text)
+            self.assertIn("forms", text)
+            self.assertIn("memory_policy", text)
+            self.assertIn("shared", text)
+            self.assertIn("independent_persistent", text)
+            self.assertIn("temporary_proxy", text)
+
     def test_input_analyst_prompt_requires_player_self_name_declaration_and_rename(self):
         prompts = _load_module("agent_prompts")
 
@@ -125,6 +154,16 @@ class AgentPromptsContractTest(unittest.TestCase):
         self.assertIn("must include a non-empty `derived_content_edits` array", text)
         self.assertIn("turn_index", text)
         self.assertIn('"ai"', text)
+
+    def test_story_prompt_contract_requires_positioned_character_dialogues(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts._story_prompt({"story_input": {"loop_outputs": {"actors": {}}}})
+
+        self.assertIn("after_paragraph", text)
+        self.assertIn("player agent", text)
+        self.assertIn("current player character name", text)
+        self.assertIn("non-important character dialogue", text)
 
     def test_prompts_enforce_important_actor_source_authority(self):
         prompts = _load_module("agent_prompts")

@@ -949,6 +949,11 @@ class AgentMemoryTest(unittest.TestCase):
         self.assertIn("DETAIL_VISIBLE_TO_POST_ROUND_MEMORY", job_text)
         self.assertIn("DETAIL_VISIBLE_TO_POST_ROUND_MEMORY", prompt_text)
         self.assertIn("本轮我主动回忆起的重点记忆细节", prompt_text)
+        self.assertIn(
+            '我已经回忆起"sealed index"："I know the sealed index matters."，详情为"DETAIL_VISIBLE_TO_POST_ROUND_MEMORY"',
+            prompt_text,
+        )
+        self.assertNotIn('可进一步回忆"sealed index"', prompt_text)
         self.assertNotIn("STORED_DETAIL_SHOULD_NOT_APPEAR_WITHOUT_RECALL", prompt_text)
 
     def test_schedule_post_round_memory_jobs_uses_new_actor_files_and_ignores_objective_recent_and_legacy_goals(self):
@@ -1229,6 +1234,20 @@ class AgentMemoryTest(unittest.TestCase):
         self._write_story_input(actor_outputs, trace_visible_events)
         self.agent_memory.schedule_post_round_memory_jobs(self.card, self.run_dir)
         _write_json(
+            self.run_dir / "artifacts" / "actor.recalled_key_memories.json",
+            {
+                "character:Ada": [
+                    {
+                        "query": "archive shelf",
+                        "tag": "archive shelf",
+                        "summary": "I heard the archive shelf move.",
+                        "detail": "The movement came from inside the archive.",
+                        "source_call_id": "call-character-Ada-1",
+                    }
+                ]
+            },
+        )
+        _write_json(
             self.run_dir / "post_round_memory_jobs" / "character_Ada.summary.json",
             {
                 "agent_id": "character:Ada",
@@ -1274,6 +1293,7 @@ class AgentMemoryTest(unittest.TestCase):
         key_payload = json.loads((actor_dir / "key_memories.json").read_text(encoding="utf-8"))
         self.assertEqual(key_payload["memories"][0]["summary"], "I heard the archive shelf move.")
         self.assertEqual((actor_dir / "short_term_memories.md").read_text(encoding="utf-8"), "")
+        self.assertFalse((self.run_dir / "artifacts" / "actor.recalled_key_memories.json").exists())
         recent = (self.card / "memory" / "characters" / "Ada" / "recent.md").read_text(encoding="utf-8")
         self.assertEqual(recent, "GM整理后的近期经历：Ada在档案架旁听见异常响动。\n")
         self.assertEqual(

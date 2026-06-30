@@ -55,7 +55,12 @@ def validate_promotion(record: Any, path: str) -> dict:
     if activation not in ALLOWED_ACTIVATIONS:
         raise CharacterPromotionError(f"{path}.activation is not allowed: {activation}")
 
-    return {
+    try:
+        metadata = character_registry.normalize_character_metadata(record, path=path)
+    except ValueError as exc:
+        raise CharacterPromotionError(str(exc)) from exc
+
+    normalized = {
         "name": name,
         "source_agent": source_agent,
         "reason": reason,
@@ -63,6 +68,8 @@ def validate_promotion(record: Any, path: str) -> dict:
         "visibility": visibility,
         "activation": activation,
     }
+    normalized.update(metadata)
+    return normalized
 
 
 def _read_text(path: str | Path) -> str:
@@ -119,6 +126,9 @@ def apply_promotions(card_folder: str | Path, records: Any, *, round_id: str) ->
                     "visibility": record["visibility"],
                     "status": "active",
                     "source_unit_id": f"{record['source_agent']}:{round_id}",
+                    "aliases": record.get("aliases", []),
+                    "forms": record.get("forms", []),
+                    "related_characters": record.get("related_characters", []),
                 }
             ],
             source_input_id=f"{record['source_agent']}:{round_id}",

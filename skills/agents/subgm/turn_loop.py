@@ -281,6 +281,11 @@ def _record_actor_recalled_key_memories(
         raise SubgmTurnLoopError(f"record actor recalled key memories failed: {exc}") from exc
 
 
+def _attach_runtime_recalled_key_memories(run_dir: Path, actor_id: str, packet: dict) -> dict:
+    records = actor_recall_artifacts.read_actor_records(run_dir, actor_id)
+    return actor_recall_artifacts.attach_records_to_packet(packet, records)
+
+
 def _validate_actor_call_id(call: dict) -> str:
     call_id = str(call.get("call_id") or "").strip()
     if not TRACE_SAFE_CHARACTER_CALL_ID_RE.fullmatch(call_id):
@@ -532,6 +537,7 @@ def _route_actor_calls(
             agent_visibility.actor_call_basis(call),
         )
         packet = agent_lifecycle.attach_actor_context_version(_card_folder_for_run(run_dir), actor_id, packet)
+        packet = _attach_runtime_recalled_key_memories(run_dir, actor_id, packet)
         packet = _project_subgm_actor_message(
             run_dir=run_dir,
             side_dir=side_dir,

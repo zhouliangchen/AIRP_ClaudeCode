@@ -203,7 +203,18 @@ class CapabilityExecutorsTest(unittest.TestCase):
                 {
                     "name": "Blank",
                     "mode": "blank_bootstrap",
-                    "character_orchestration": {"major": ["player"], "minor_policy": "main_agent"},
+                    "character_orchestration": {
+                        "major": ["player"],
+                        "minor_policy": "main_agent",
+                        "registry": {
+                            "player": {
+                                "canonical_name": "player",
+                                "aliases": ["临时主角"],
+                                "forms": [],
+                                "related_characters": [],
+                            }
+                        },
+                    },
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -241,6 +252,10 @@ class CapabilityExecutorsTest(unittest.TestCase):
         )
         card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
         self.assertEqual(card_data["character_orchestration"]["major"], ["雨蒙"])
+        self.assertNotIn("player", card_data["character_orchestration"]["registry"])
+        registry_entry = card_data["character_orchestration"]["registry"]["雨蒙"]
+        self.assertEqual(registry_entry["canonical_name"], "雨蒙")
+        self.assertEqual(registry_entry["aliases"], ["临时主角", "player"])
         artifact = self.run_dir / "artifacts" / "runtime_pump" / "character_renames" / "intent_000001.json"
         self.assertTrue(artifact.exists())
 

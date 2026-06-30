@@ -52,6 +52,16 @@ When a user instruction declares an important character and also gives secret tr
 - Put setting-level secrets and future reveals in `world_updates.hidden_facts[]` with `visibility: "gm_only"`.
 - If only part of a character declaration is public, keep the `semantic_units[]` visibility conservative (`gm_only` or `specific_characters`) and describe the split in `derived_summary`.
 
+## Important Character Alias And Form Contract
+
+When an important character has recognition names, nicknames, translated names, revealed names, or identity labels, keep `name` as the canonical actor name and put the alternatives in `world_updates.important_characters[].aliases`.
+
+Use `forms[]` for same-character appearance or state names. Each item should include `form_name`, `appearance_state`, `description`, and `memory_policy`.
+
+- `memory_policy: "shared"` means the form is the same actor and shared memory.
+- `memory_policy: "independent_persistent"` means the form should normally be emitted as a separate important character and linked through `related_characters[]`.
+- `memory_policy: "temporary_proxy"` means the state is temporary and should normally remain GM temporary portrayal rather than creating a new actor.
+
 ## Semantic Unit Enum Contract
 
 Every `semantic_units` item must use exactly one of these `type` values:
@@ -80,7 +90,7 @@ Invalid semantic unit visibility aliases: public, private, player, character, wo
 
 - world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
 - world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`
-- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`
+- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`; optional `aliases: string[]`, `forms[]` with `form_name`, `appearance_state`, `description`, `memory_policy: "shared|independent_persistent|temporary_proxy"`, and `related_characters[]` with `name`, `relation`, `memory_policy`
 - world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`
 
 If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.

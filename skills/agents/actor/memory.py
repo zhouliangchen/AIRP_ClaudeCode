@@ -531,9 +531,10 @@ def _natural_lines(value: Any, *, indent: int = 0, limit: int = 30) -> list[str]
     return [prefix + text] if text else []
 
 
-def _key_memory_cue_lines(value: Any, *, limit: int = 20) -> list[str]:
+def _key_memory_cue_lines(value: Any, *, limit: int = 20, recalled_records: Any = None) -> list[str]:
     lines: list[str] = []
     source = value if isinstance(value, list) else []
+    recalled = actor_recall_artifacts.normalize_items(recalled_records)
     for item in source:
         if len(lines) >= limit:
             lines.append("- ...")
@@ -542,6 +543,8 @@ def _key_memory_cue_lines(value: Any, *, limit: int = 20) -> list[str]:
             text = str(item or "").strip()
             if text:
                 lines.append(f'可进一步回忆"{text}"')
+            continue
+        if actor_recall_artifacts.has_matching_record(item, recalled):
             continue
         tag = str(item.get("tag") or "").strip()
         summary = str(item.get("summary") or "").strip()
@@ -556,42 +559,11 @@ def _key_memory_cue_lines(value: Any, *, limit: int = 20) -> list[str]:
 
 
 def _recalled_key_memory_lines(value: Any, *, limit: int = 20) -> list[str]:
-    lines: list[str] = []
-    source = value if isinstance(value, list) else []
-    for item in source:
-        if len(lines) >= limit:
-            lines.append("- ...")
-            break
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("tag") or item.get("query") or "").strip()
-        summary = str(item.get("summary") or "").strip()
-        detail = str(item.get("detail") or "").strip()
-        call_id = str(item.get("source_call_id") or "").strip()
-        if not (label or summary or detail):
-            continue
-        header = f"- {label}" if label else "- 本轮主动回忆"
-        if call_id:
-            header += f"（来源：{call_id}）"
-        lines.append(header)
-        if summary:
-            lines.append(f"  摘要：{summary}")
-        if detail:
-            lines.append(f"  详情：{detail}")
-    return lines
+    return actor_recall_artifacts.format_recalled_memory_lines(value, limit=limit)
 
 
 def _recalled_key_memories_for_actor(run_dir: Path, agent_id: str) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    for item in actor_recall_artifacts.read_records(run_dir).get(agent_id, []):
-        records.append(item)
-    side_root = run_dir / "side_threads"
-    for side_dir in sorted(side_root.iterdir()) if side_root.exists() else []:
-        if not side_dir.is_dir():
-            continue
-        for item in actor_recall_artifacts.read_records(side_dir).get(agent_id, []):
-            records.append(item)
-    return records
+    return actor_recall_artifacts.read_actor_records(run_dir, agent_id)
 
 
 def _post_round_dialogue_text(round_dialogue: Any) -> str:
@@ -614,8 +586,9 @@ def _post_round_reference_text(job_payload: Dict[str, Any]) -> str:
     long_term = str(job_payload.get("long_term_memories") or "").strip()
     short_term = str(job_payload.get("short_term_memories") or "").strip()
     key_cues = job_payload.get("key_memory_cues", [])
-    key_lines = _key_memory_cue_lines(key_cues, limit=20)
-    recalled_lines = _recalled_key_memory_lines(job_payload.get("recalled_key_memories", []), limit=20)
+    recalled_key_memories = job_payload.get("recalled_key_memories", [])
+    key_lines = _key_memory_cue_lines(key_cues, limit=20, recalled_records=recalled_key_memories)
+    recalled_lines = _recalled_key_memory_lines(recalled_key_memories, limit=20)
     sections = [
         "## 我是谁",
         profile if profile else "暂无。",
@@ -1166,6 +1139,7 @@ def ingest_post_round_memory_jobs(card_folder: str | Path, run_dir: str | Path) 
 
     _update_post_round_job_status(root, "complete", failed={})
     _update_post_round_objective_job_status(root, "complete", failed={})
+    actor_recall_artifacts.clear_round_records(root)
     return {
         "ok": True,
         "status": "complete",

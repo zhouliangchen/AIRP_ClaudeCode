@@ -2611,6 +2611,71 @@ round_total: 7
         self.assertIn("I will take point.", content_js)
         self.assertIn("steady", content_js)
 
+    def test_content_js_labels_player_input_with_current_character_name(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "user": "我扶住初春的肩膀。",
+            "ai": "<p>你走到课桌边。</p>",
+            "summary": "summary",
+        }])
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        self.assertIn('<div class="turn-role">雨蒙(user)</div>', content_html)
+        self.assertNotIn('<div class="turn-role">你</div>', content_html)
+
+    def test_frontend_preserves_turn_role_label_case(self):
+        index_html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
+        match = re.search(r"\.turn-role\s*\{(?P<body>.*?)\}", index_html, flags=re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertNotIn("text-transform: uppercase", match.group("body"))
+
+    def test_content_js_labels_pending_player_input_with_current_character_name(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        self.handler.write_pending_user_turn(str(self.card), "我先观察佐天。")
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        self.assertIn('<div class="turn-role">雨蒙(user)</div>', content_html)
+
+    def test_content_js_renders_player_agent_dialogue_with_character_name_without_user_suffix(self):
+        (self.card / "characters").mkdir(parents=True)
+        (self.card / "characters" / "player.md").write_text(
+            "name: 雨蒙\npath: characters/雨蒙\n",
+            encoding="utf-8",
+        )
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "<p>佐天停下手里的毛巾。</p>",
+            "summary": "summary",
+            "character_dialogues": [
+                {
+                    "name": "player",
+                    "agent": "player",
+                    "agent_id": "player",
+                    "line": "佐天，我刚才看起来有什么不对劲吗？",
+                }
+            ],
+        }])
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        self.assertIn('<div class="character-dialogue-name">雨蒙</div>', content_html)
+        self.assertNotIn('<div class="character-dialogue-name">雨蒙(user)</div>', content_html)
+        self.assertNotIn('<div class="character-dialogue-name">player</div>', content_html)
+
     def test_content_js_inserts_character_dialogues_inside_ai_flow(self):
         self.handler.write_chat_log(str(self.card), [{
             "index": 0,
@@ -2629,6 +2694,45 @@ round_total: 7
         after_idx = content_js.index("After.", before_idx)
         self.assertLess(before_idx, dialogue_idx)
         self.assertLess(dialogue_idx, after_idx)
+
+    def test_content_js_inserts_character_dialogues_after_requested_paragraph(self):
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "<p>Before.</p><p>Middle.</p><p>After.</p>",
+            "summary": "summary",
+            "character_dialogues": [
+                {
+                    "name": "Ada",
+                    "source": "subagent",
+                    "line": "I will take point.",
+                    "after_paragraph": 2,
+                }
+            ],
+        }])
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        before_idx = content_html.index("Before.")
+        middle_idx = content_html.index("Middle.")
+        dialogue_idx = content_html.index("character-dialogues", middle_idx)
+        after_idx = content_html.index("After.", middle_idx)
+        self.assertLess(before_idx, middle_idx)
+        self.assertLess(middle_idx, dialogue_idx)
+        self.assertLess(dialogue_idx, after_idx)
+
+    def test_content_js_paragraphizes_plain_text_ai_body(self):
+        self.handler.write_chat_log(str(self.card), [{
+            "index": 0,
+            "ai": "你听见预备铃响起。\n\n佐天把湿毛巾放回桌上。\n她看向你。",
+            "summary": "summary",
+        }])
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        self.assertIn("<p>你听见预备铃响起。</p>", content_html)
+        self.assertIn("<p>佐天把湿毛巾放回桌上。<br>她看向你。</p>", content_html)
 
     def test_write_content_js_prefers_postprocess_core_and_exposes_ui_extensions(self):
         self.handler.write_chat_log(str(self.card), [{
@@ -3091,3 +3195,6 @@ round_total: 7
         self.assertIn("<character_dialogues>", claude)
         self.assertIn("source=\"subagent\"", claude)
         self.assertIn("独立对话框", archive_guide)
+        self.assertIn("雨蒙(user)", archive_guide)
+        self.assertIn("after_paragraph", archive_guide)
+        self.assertIn("纯文本正文", archive_guide)

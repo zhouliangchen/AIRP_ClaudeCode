@@ -706,7 +706,43 @@ def _postprocess_mvu_command_text(postprocess):
     return "\n".join(cleaned)
 
 
-def _normalize_character_dialogues(dialogues):
+def _current_player_character_name(card_folder):
+    try:
+        name = actor_memory_store.actor_paths(card_folder, "player").name
+    except Exception:
+        return ""
+    name = str(name or "").strip()
+    if not name or name.casefold() == "player":
+        return ""
+    return name
+
+
+def _player_input_label(card_folder):
+    name = _current_player_character_name(card_folder)
+    return f"{name}(user)" if name else "你"
+
+
+def _is_player_dialogue_item(item):
+    values = (
+        item.get("agent"),
+        item.get("agent_id"),
+        item.get("actor_id"),
+        item.get("source_agent"),
+        item.get("name"),
+    )
+    return any(str(value or "").strip().casefold() == "player" for value in values)
+
+
+def _dialogue_after_paragraph(item):
+    value = item.get("after_paragraph")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_character_dialogues(dialogues, player_name=""):
     if isinstance(dialogues, str):
         try:
             dialogues = json.loads(dialogues)
@@ -722,15 +758,23 @@ def _normalize_character_dialogues(dialogues):
         source = str(item.get("source", "") or "").strip()
         agent = str(item.get("agent", "") or "").strip().lower()
         agent_id = str(item.get("agent_id", "") or "").strip().lower()
+        is_player = _is_player_dialogue_item(item)
         if source != "subagent":
-            if agent == "character" or agent_id.startswith("character:"):
+            if agent == "character" or agent_id.startswith("character:") or is_player:
                 source = "subagent"
             else:
                 continue
         if source != "subagent":
             continue
-        name = str(item.get("name", "") or "").strip()
-        line = str(item.get("line", "") or "").strip()
+        name = str(
+            item.get("name")
+            or item.get("character_name")
+            or item.get("speaker")
+            or ""
+        ).strip()
+        if is_player and player_name:
+            name = player_name
+        line = str(item.get("line") or item.get("content") or item.get("text") or "").strip()
         aside = str(item.get("aside", "") or "").strip()
         if not name or not line:
             continue
@@ -741,14 +785,17 @@ def _normalize_character_dialogues(dialogues):
         }
         if aside:
             entry["aside"] = aside[:500]
+        after_paragraph = _dialogue_after_paragraph(item)
+        if after_paragraph is not None:
+            entry["after_paragraph"] = after_paragraph
         normalized.append(entry)
         if len(normalized) >= 6:
             break
     return normalized
 
 
-def _render_character_dialogues(dialogues):
-    dialogues = _normalize_character_dialogues(dialogues)
+def _render_character_dialogues(dialogues, player_name=""):
+    dialogues = _normalize_character_dialogues(dialogues, player_name=player_name)
     if not dialogues:
         return ""
     parts = ['<div class="character-dialogues" aria-label="重要角色对话">']
@@ -766,16 +813,47 @@ def _render_character_dialogues(dialogues):
     return "".join(parts)
 
 
-def _insert_character_dialogues(ai_html, dialogues):
-    dialogue_html = _render_character_dialogues(dialogues)
-    if not dialogue_html:
-        return ai_html
+def _insert_character_dialogues(ai_html, dialogues, player_name=""):
+    dialogues = _normalize_character_dialogues(dialogues, player_name=player_name)
+    if not dialogues:
+        return str(ai_html or "")
     html_text = str(ai_html or "")
     paragraph_ends = [m.end() for m in re.finditer(r"</p\s*>", html_text, flags=re.IGNORECASE)]
-    if paragraph_ends:
-        insert_at = paragraph_ends[0]
-        return html_text[:insert_at] + dialogue_html + html_text[insert_at:]
-    return html_text + dialogue_html
+    if not paragraph_ends:
+        return html_text + _render_character_dialogues(dialogues, player_name=player_name)
+
+    grouped = {}
+    for item in dialogues:
+        after_paragraph = _dialogue_after_paragraph(item) or 1
+        if after_paragraph > len(paragraph_ends):
+            insert_at = len(html_text)
+        else:
+            insert_at = paragraph_ends[after_paragraph - 1]
+        grouped.setdefault(insert_at, []).append(item)
+
+    for insert_at in sorted(grouped.keys(), reverse=True):
+        dialogue_html = _render_character_dialogues(grouped[insert_at], player_name=player_name)
+        html_text = html_text[:insert_at] + dialogue_html + html_text[insert_at:]
+    return html_text
+
+
+_AI_BLOCK_HTML_RE = re.compile(
+    r"<\s*(?:content|p|div|section|article|ul|ol|li|blockquote|h[1-6]|table|br)\b",
+    re.IGNORECASE,
+)
+
+
+def _paragraphize_plain_ai_body(text):
+    text = str(text or "").strip()
+    if not text or _AI_BLOCK_HTML_RE.search(text):
+        return text
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
+    parts = []
+    for paragraph in paragraphs:
+        escaped = html.escape(paragraph).replace("\n", "<br>")
+        parts.append("<p>" + escaped + "</p>")
+    return "\n".join(parts)
 
 
 def _shorten(text, limit=600):
@@ -1353,6 +1431,8 @@ def write_content_js(card_folder):
     player_inputs = read_player_inputs(card_folder)
     frontend_inputs = frontend_player_inputs(card_folder)
     postprocess = _load_postprocess_output(card_folder)
+    player_name = _current_player_character_name(card_folder)
+    player_label = _player_input_label(card_folder)
 
     html_parts = []
     turn_tokens = {}  # { "N": {"in": X, "out": Y, "total": Z}, ... }
@@ -1388,9 +1468,10 @@ def write_content_js(card_folder):
                 input_id = player_inputs[user_turn_seq].get("id")
             attrs = ' data-player-input-id="' + _escape_attr(input_id) + '"' if input_id else ""
             user_display = html.escape(user_raw).replace("\n", "<br>")
-            wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + user_display + '</div></div>'
+            wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">' + html.escape(player_label) + '</div><div class="turn-text">' + user_display + '</div></div>'
             user_turn_seq += 1
-        ai_display = _insert_character_dialogues(ai_display, turn.get("character_dialogues", []))
+        ai_display = _paragraphize_plain_ai_body(ai_display)
+        ai_display = _insert_character_dialogues(ai_display, turn.get("character_dialogues", []), player_name=player_name)
         wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
         wrap += '</div>'
         html_parts.append(wrap)
@@ -1407,7 +1488,7 @@ def write_content_js(card_folder):
         current_round_id = _current_round_id(card_folder)
         round_attr = ' data-round-id="' + _escape_attr(current_round_id) + '"' if current_round_id else ""
         wrap = '<div class="turn-wrap turn-pending"' + round_attr + '>'
-        wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + pending_html + '</div></div>'
+        wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">' + html.escape(player_label) + '</div><div class="turn-text">' + pending_html + '</div></div>'
         wrap += '<div class="turn-ai turn-pending-ai"><div class="turn-role">叙事</div><div class="turn-text"><p class="pending-reply">等待 Claude Code 回复...</p></div></div>'
         wrap += '</div>'
         html_parts.append(wrap)
@@ -2133,7 +2214,10 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         ai_text += "\n\n<options>\n" + options + "\n</options>"
 
     entry = {"index": next_index, "ai": ai_text, "summary": summary}
-    normalized_dialogues = _normalize_character_dialogues(character_dialogues)
+    normalized_dialogues = _normalize_character_dialogues(
+        character_dialogues,
+        player_name=_current_player_character_name(card_folder),
+    )
     if normalized_dialogues:
         entry["character_dialogues"] = normalized_dialogues
     if not is_opening:

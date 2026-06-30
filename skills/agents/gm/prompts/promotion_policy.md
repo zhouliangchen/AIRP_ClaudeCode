@@ -33,3 +33,13 @@ Legacy `gm_assistant:*` sources are an old alias/backdoor and must be rejected w
 Promote only when independent agency matters to the next scene: the entity has a distinct voice, durable goal, memory, relationship, or decision-making role that cannot be represented as background NPC narration.
 
 Do not promote temporary set dressing, crowds, one-line vendors, hidden observers, or entities whose main purpose is to reveal GM-only facts. Promotion must not be used to bypass visibility policy.
+
+## Aliases And Forms
+
+Use `aliases` for nicknames, translated names, revealed names, or other labels that should resolve to the same canonical important character.
+
+Use `forms[]` only when a form remains the same actor and shared memory, such as transformation, disguise, injury state, uniform, or battle form. Record its `form_name`, `appearance_state`, `description`, and `memory_policy: "shared"` so assets-ui can use a separate appearance reference without creating a separate actor.
+
+If a form has durable independent memory, register it as a separate important character with `memory_policy: "independent_persistent"` and link it to the original through `related_characters[]`.
+
+If a form has independent memory but is only a temporary state, keep it under `memory_policy: "temporary_proxy"` and use GM temporary portrayal instead of actor registration.

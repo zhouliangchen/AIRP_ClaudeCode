@@ -61,6 +61,64 @@ class CharacterPromotionsTest(unittest.TestCase):
         self.assertEqual(result["contexts"][0]["profile_summary"], "Cold classmate with occult expertise.")
         self.assertEqual(result["contexts"][0]["source_agent"], "gm")
 
+    def test_gm_promotion_persists_aliases_forms_and_related_characters(self):
+        result = self.promotions.apply_promotions(self.card, [{
+            "name": "苏黎",
+            "source_agent": "gm",
+            "reason": "她的蝶化形态开始影响主线推进。",
+            "profile_seed": "神秘学社团成员，能在蝶化形态下感知月火。",
+            "visibility": "character_private_and_gm",
+            "activation": "current_turn",
+            "aliases": ["Suli", "小黎", "Suli", ""],
+            "forms": [
+                {
+                    "form_name": "蝶化苏黎",
+                    "appearance_state": "蝶化形态",
+                    "description": "半透明蝶翼，瞳色泛银。",
+                    "memory_policy": "shared",
+                }
+            ],
+            "related_characters": [
+                {
+                    "name": "苏璃",
+                    "relation": "长期独立记忆形态",
+                    "memory_policy": "independent_persistent",
+                }
+            ],
+        }], round_id="round-000003")
+
+        data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        registry = data["character_orchestration"]["registry"]
+        entry = registry["苏黎"]
+
+        self.assertEqual(result["promoted"], ["苏黎"])
+        self.assertIn("苏黎", data["character_orchestration"]["major"])
+        self.assertNotIn("蝶化苏黎", data["character_orchestration"]["major"])
+        self.assertEqual(entry["canonical_name"], "苏黎")
+        self.assertEqual(entry["aliases"], ["Suli", "小黎"])
+        self.assertEqual(
+            entry["forms"],
+            [
+                {
+                    "form_name": "蝶化苏黎",
+                    "appearance_state": "蝶化形态",
+                    "description": "半透明蝶翼，瞳色泛银。",
+                    "memory_policy": "shared",
+                }
+            ],
+        )
+        self.assertEqual(
+            entry["related_characters"],
+            [
+                {
+                    "name": "苏璃",
+                    "relation": "长期独立记忆形态",
+                    "memory_policy": "independent_persistent",
+                }
+            ],
+        )
+        self.assertFalse((self.card / "characters" / "蝶化苏黎").exists())
+
     def test_subgm_promotion_is_rejected(self):
         with self.assertRaisesRegex(self.promotions.CharacterPromotionError, "subGM"):
             self.promotions.apply_promotions(self.card, [{

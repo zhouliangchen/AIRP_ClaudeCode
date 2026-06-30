@@ -30,7 +30,9 @@ Read from current `.agent_runs/<round>/`:
 - If user supplied omniscient setting, incorporate consequences through GM/story and postprocess-owned variable commands, not through impossible character knowledge.
 - If the input plan or GM handoff says prior AI-derived content must be repaired, emit `<derived_content_edits>` with precise JSON edits for the affected earlier turn before delivery. These edits may replace `ai`, `summary`, or the first paragraph, but must never modify player input.
 - For dream/rewind/false-branch repairs, the first visible scene of the new turn must start from the player's latest time/place. Do not skip ahead to prior NPC hooks until the current action has been resolved and a new player decision point is reached.
-- Integrate important character dialogue in `<character_dialogues>` when it came from a character subagent.
+- Integrate important character dialogue in `<character_dialogues>` when it came from a player agent or character subagent. For the player agent, use the current player character name, not the literal label `player`; the frontend reserves `<角色名>(user)` only for human-authored player input boxes.
+- Each `<character_dialogues>` item should include `after_paragraph` when the dialogue belongs after a known prose paragraph. Count visible `<content>` paragraphs from 1, so `after_paragraph: 2` means the independent dialogue box appears after the second prose paragraph. Use this to preserve the interleaving of narration, player agent dialogue, and character dialogue instead of dumping all dialogue boxes at the end or after the first paragraph.
+- Non-important character dialogue may remain in `<content>`, but keep it as its own sentence or paragraph when that improves readability; do not pack multiple speakers into one unbroken prose block.
 - Important-character dialogue must be source-backed by `actor.outputs.json` or validated `story.input.json` character dialogue metadata. In an explicit flashback, memory, dream, symbolic scene, or retcon recap, temporary GM/subGM portrayal is an allowed source for important-character behavior inside that special scene only. Outside that special scene, do not invent independent important-character dialogue boxes or substantive choices from GM hints, story convenience, or hidden notes.
 - Story may frame actor-authored natural-language dialogue, but must not invent a core character's substantive reply when a valid actor call exists and the character has not answered. If an important character has not answered, frame the waiting point.
 - Treat `story_input.side_threads` as off-screen material unless the main GM has merged/exposed it or a brief intercut clearly improves pacing. Side-thread material must not override raw player input, main-GM decision stops, or current-scene player authority.
@@ -68,7 +70,7 @@ Use only these top-level keys. Put assembly notes, source round identifiers, and
 
 - Do not emit `<polished_input>` for normal story turns. If a legacy repair path explicitly requires it, it must contain only player-visible action reflection, never internal analysis.
 - `<content>` for main prose.
-- `<character_dialogues>` for independent subagent dialogue boxes.
+- `<character_dialogues>` for independent subagent dialogue boxes. Items use `{"name":"角色名","source":"subagent","line":"台词","after_paragraph":1}`; `aside` is optional.
 - Do not write `<summary>` or `<options>` in `story.output.json`; keep old tags only as parser compatibility for existing chat logs, not as live story output.
 - Do not write `<UpdateVariable>` in `story.output.json`; postprocess owns MVU variable update commands in `postprocess.output.json.mvu.commands`.
 - `<derived_content_edits>` when player authority requires correcting, reframing, or rewriting earlier AI-derived content.

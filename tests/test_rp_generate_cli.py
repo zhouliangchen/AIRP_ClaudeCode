@@ -628,6 +628,53 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(recalled[0]["tag"], "封存索引")
         self.assertEqual(recalled[0]["detail"], "索引藏在Ada灯座下方。")
 
+    def test_read_loop_prompt_renders_same_round_recalled_key_memory_state(self):
+        actor_dir = self.card / "characters" / "Ada"
+        actor_dir.mkdir(parents=True, exist_ok=True)
+        (actor_dir / "profile.md").write_text("I am Ada.\n", encoding="utf-8")
+        (actor_dir / "key_memories.json").write_text(
+            json.dumps(
+                {
+                    "memories": [
+                        {
+                            "tag": "sealed index",
+                            "summary": "I know the sealed index matters.",
+                            "detail": "STORED_DETAIL_SHOULD_STAY_HIDDEN",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        prompt = self.module._read_loop_prompt(
+            self.run_dir,
+            {},
+            "character:Ada",
+            packet={
+                "actor_id": "character:Ada",
+                "character_name": "Ada",
+                "card_folder": str(self.card),
+                "runtime_recalled_key_memories": [
+                    {
+                        "query": "sealed index",
+                        "tag": "sealed index",
+                        "summary": "I know the sealed index matters.",
+                        "detail": "DETAIL_VISIBLE_TO_LATER_PROMPT",
+                        "source_call_id": "call-character-Ada-1",
+                    }
+                ],
+            },
+        )
+
+        self.assertIn(
+            '我已经回忆起"sealed index"："I know the sealed index matters."，详情为"DETAIL_VISIBLE_TO_LATER_PROMPT"',
+            prompt,
+        )
+        self.assertNotIn('可进一步回忆"sealed index"', prompt)
+        self.assertNotIn("STORED_DETAIL_SHOULD_STAY_HIDDEN", prompt)
+
     def test_dispatch_actor_reruns_when_recall_protocol_appears_after_intro_line(self):
         actor_dir = self.card / "characters" / "雨蒙"
         actor_dir.mkdir(parents=True, exist_ok=True)
@@ -802,6 +849,7 @@ class RpGenerateCliTest(unittest.TestCase):
             fake_run_claude,
             extra_context={
                 "card_folder": str(self.card),
+                "run_dir": str(self.run_dir),
                 "post_round_memory_job": {"agent_id": "character:Ada", "character_name": "Ada"},
                 "post_round_output_path": "post_round_memory_jobs/character_Ada.summary.json",
             },
@@ -811,6 +859,13 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("披风边缘有银线", prompts[1])
         self.assertEqual(result["agent_id"], "character:Ada")
         self.assertIn("雨夜", result["long_term_memories"])
+        sidecar = json.loads(
+            (self.run_dir / "artifacts" / "actor.recalled_key_memories.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(sidecar["character:Ada"][0]["tag"], "雨夜披风")
+        self.assertEqual(sidecar["character:Ada"][0]["detail"], "那天雨很冷，我记得披风边缘有银线。")
 
     def test_dispatch_post_round_memory_reacts_again_when_recall_request_is_final_result_after_tool_use(self):
         actor_dir = self.card / "characters" / "Ada"
@@ -1877,6 +1932,45 @@ class RpGenerateCliTest(unittest.TestCase):
             }
         ])
         self.assertNotIn("old ritual", normalized["content"])
+
+    def test_normalize_story_output_includes_player_actor_dialogue_with_character_name(self):
+        story = {
+            "content": "<content>佐天停下手里的毛巾。</content>",
+            "character_dialogues": [],
+            "metadata": {},
+        }
+        story_input = {
+            "loop_outputs": {
+                "actors": {
+                    "player": [
+                        {
+                            "agent": "player",
+                            "agent_id": "player",
+                            "character_name": "雨蒙",
+                            "events": [
+                                {
+                                    "type": "reply",
+                                    "target": "character:佐天",
+                                    "content": "佐天，我刚才看起来有什么不对劲吗？",
+                                    "metadata": {},
+                                }
+                            ],
+                            "stop_reason": "continue",
+                        }
+                    ],
+                }
+            }
+        }
+
+        normalized = self.module._normalize_story_output(story, story_input)
+
+        self.assertEqual(normalized["character_dialogues"], [
+            {
+                "name": "雨蒙",
+                "source": "subagent",
+                "line": "佐天，我刚才看起来有什么不对劲吗？",
+            }
+        ])
 
     def test_normalize_story_output_does_not_expose_character_reply_to_gm_as_dialogue(self):
         story = {

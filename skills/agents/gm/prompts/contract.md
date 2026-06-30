@@ -132,7 +132,23 @@ Return one GM output object:
       "reason": "why this character now needs independent agency",
       "profile_seed": "seed used for profile text",
       "visibility": "character_private_and_gm",
-      "activation": "current_turn"
+      "activation": "current_turn",
+      "aliases": ["optional nickname or revealed name"],
+      "forms": [
+        {
+          "form_name": "optional form name",
+          "appearance_state": "visual state for assets-ui",
+          "description": "appearance or identity notes",
+          "memory_policy": "shared"
+        }
+      ],
+      "related_characters": [
+        {
+          "name": "optional independent persistent form",
+          "relation": "how it relates to the canonical character",
+          "memory_policy": "independent_persistent"
+        }
+      ]
     }
   ],
   "subgm_commands": [
@@ -157,6 +173,8 @@ Return one GM output object:
 ```
 
 Use only these top-level keys. Put visible scene pressure in `scene_beats` or `events`, durable world facts in `world_state_delta`, required player/character work in `actor_calls`, important-character promotions in `character_promotions`, and side-thread control in `subgm_commands`. Allowed `subgm_commands.action` values are `start`, `message`, `accelerate`, `pause`, `resume`, `merge`, and `close`. Use `decision_point` and `stop_reason` to stop at real player choices.
+
+`character_promotions[]` may include `aliases`, `forms`, and `related_characters`. Register a form on the same canonical character when it is the same actor and shared memory. For a durable form with independent memory, emit it as a separate important character with `memory_policy: "independent_persistent"` and link it through `related_characters`. For temporary independent-memory states, use `memory_policy: "temporary_proxy"` and GM temporary portrayal rather than registering a new actor.
 
 `scene_beats` and `events` are story-facing visible material. Do not put private character thoughts, hidden setting explanations, GM-only rationale, future reveal notes, or "X internally confirms..." text in those fields. If a hidden fact matters, store durable private truth in `world_state_delta`, route only perception-safe prompts through `actor_calls`, and expose it in `scene_beats`/`events` only after in-world disclosure.
 

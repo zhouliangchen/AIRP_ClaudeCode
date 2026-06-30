@@ -311,7 +311,7 @@ total: NNNN
 </content>
 <character_dialogues>
 [
-  {"name":"重要角色名","source":"subagent","line":"该角色本轮独立台词","aside":"可选：短内心反应或语气"}
+  {"name":"重要角色名","source":"subagent","line":"该角色本轮独立台词","after_paragraph":1,"aside":"可选：短内心反应或语气"}
 ]
 </character_dialogues>
 <summary>一句话剧情摘要</summary>
@@ -327,9 +327,9 @@ total: NNNN
 </tokens>
 ```
 
-- `<content>` 内的段落用 `<p>` 标签包裹
+- `<content>` 内的段落用 `<p>` 标签包裹；非重要角色对话若保留在正文中，也应尽量独立成句或独立成段，避免整轮正文成为无换行的长块
 - `<polished_input>` 不再用于前端展示，也不写作正式玩家回合文本；handler.py 会优先使用 `.pending_user_turn.json` 中的玩家原文。该字段仅可作为内部解释性说明，且不得替代、裁剪、润色或覆盖 `.player_inputs.jsonl` 中的玩家输入
-- `<character_dialogues>` 为可选 JSON 数组，只写本轮**确实调用过 subagent** 的重要角色；每项必须包含 `name`、`source="subagent"`、`line`，可选 `aside`。这些台词会在前端以独立对话框显示；不要在 `<content>` 中重复同一台词
+- `<character_dialogues>` 为可选 JSON 数组，只写本轮**确实调用过 subagent** 的 player agent 或重要角色；每项必须包含 `name`、`source="subagent"`、`line`，可选 `after_paragraph` 与 `aside`。`after_paragraph` 从 1 开始计数，表示该对话框插入到 `<content>` 第几个可见段落之后。player agent 对话的 `name` 使用当前玩家角色名；前端只会把用户亲自输入的角色通道消息显示为 `<角色名>(user)`。这些台词会在前端以独立对话框显示；不要在 `<content>` 中重复同一台词
 - `<summary>` 为纯文本，不含 HTML
 - `<tokens>` 内为从 Claude Code session transcript 读取的真实 token 计数：`in` 输入 token，`out` 输出 token，`total` 合计。`round_deliver.py` 在生成完成后自动从 transcript 采集并附加到 response.txt。
 - `<options>` 内每行一个 `<font>` 标签

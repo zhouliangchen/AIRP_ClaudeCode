@@ -622,12 +622,12 @@ def _format_recalled_memory(query: str, memory: Dict[str, str]) -> str:
     detail = str(memory.get("detail") or "").strip()
     if not (tag or summary or detail):
         return f"我试着回忆“{query}”，但没有想起更清晰的内容。"
-    lines = [f"我刚刚回忆起：{tag or query}"]
-    if summary:
-        lines.append(f"摘要：{summary}")
-    if detail:
-        lines.append(f"详情：{detail}")
-    return "\n".join(lines)
+    return actor_recall_artifacts.format_recalled_memory({
+        "query": query,
+        "tag": tag,
+        "summary": summary,
+        "detail": detail,
+    })
 
 
 def _run_actor_protocol_tool(
@@ -662,11 +662,11 @@ def _inject_actor_protocol_results(prompt_text: str, tool_results: list[str]) ->
     if not tool_results:
         return prompt_text
     sections = [
-        "## 我刚刚想起的重点记忆",
+        "## 我已经回忆起的重点记忆",
         "",
         "\n\n".join(item for item in tool_results if item).strip() or "暂无。",
         "",
-        "请把这些刚刚想起的内容当作我现在已经回忆起来的第一人称记忆，然后继续完成当前任务。",
+        "请把这些内容当作我现在已经回忆起来的第一人称记忆，然后继续完成当前任务。",
     ]
     return prompt_text.rstrip() + "\n\n" + "\n".join(sections).strip() + "\n"
 
@@ -683,6 +683,28 @@ def _attach_actor_protocol_results(
     if not _is_actor_agent_key(agent_key):
         return payload
     return actor_recall_artifacts.attach_runtime_items(payload, tool_results)
+
+
+def _record_post_round_protocol_results(
+    agent_key: str,
+    extra_context: Dict[str, Any] | None,
+    tool_results: list[Dict[str, str]],
+) -> None:
+    if not _is_post_round_memory_agent(agent_key) or not tool_results:
+        return
+    context = extra_context if isinstance(extra_context, dict) else {}
+    run_dir = str(context.get("run_dir") or "").strip()
+    if not run_dir:
+        return
+    job = context.get("post_round_memory_job")
+    job = job if isinstance(job, dict) else {}
+    actor_id = str(job.get("agent_id") or "").strip()
+    if not actor_id:
+        actor_id = str(tool_results[0].get("actor_id") or context.get("actor_id") or "").strip()
+    if not actor_id:
+        return
+    source_call_id = str(context.get("post_round_output_path") or "post_round_memory").strip()
+    actor_recall_artifacts.append_records(run_dir, actor_id, source_call_id, tool_results)
 
 
 def _unwrap_payload(agent_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -905,6 +927,7 @@ def _dispatch_agent_payload(
                         )
                     tool_results.append(_run_actor_protocol_tool_result(agent_key, protocol_query, extra_context))
                     continue
+                _record_post_round_protocol_results(agent_key, extra_context, tool_results)
                 return _attach_actor_protocol_results(agent_key, normalized, tool_results)
         except AgentExecutionError as exc:
             last_error = exc
@@ -1117,9 +1140,14 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
     dialogues: list[Dict[str, str]] = []
     for actor_id, outputs in actors.items():
         actor_key = str(actor_id)
-        if actor_key == "player" or not actor_key.startswith("character:") or not isinstance(outputs, list):
+        if not isinstance(outputs, list):
             continue
-        name = actor_key.split(":", 1)[1]
+        if actor_key == "player":
+            name = "player"
+        elif actor_key.startswith("character:"):
+            name = actor_key.split(":", 1)[1]
+        else:
+            continue
         line = ""
         for output in outputs:
             if not isinstance(output, dict):
@@ -1137,7 +1165,7 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
                 content = str(event.get("content") or "").strip()
                 if not content:
                     continue
-                if event_type == "reply" and not line and _character_reply_is_public_dialogue(event):
+                if event_type == "reply" and not line and _character_reply_is_public_dialogue(event, actor_key=actor_key):
                     line = content
             if line:
                 break
@@ -1150,10 +1178,12 @@ def _dialogues_from_story_input(story_input: Dict[str, Any] | None) -> list[Dict
     return dialogues
 
 
-def _character_reply_is_public_dialogue(event: dict[str, Any]) -> bool:
+def _character_reply_is_public_dialogue(event: dict[str, Any], *, actor_key: str = "") -> bool:
     target = str(event.get("target") or "").strip().lower()
     if target in {"gm", "self"}:
         return False
+    if actor_key == "player" and target.startswith("character:"):
+        return True
     return target in {"", "player", "public", "world", "all", "everyone"}
 
 

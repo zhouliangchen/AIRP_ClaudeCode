@@ -207,6 +207,31 @@ class InputAnalysisTest(unittest.TestCase):
 
                 self._validate(data)
 
+    def test_validate_rejects_invalid_important_character_form_memory_policy(self):
+        data = self._analysis()
+        data["world_updates"]["important_characters"] = [
+            {
+                "name": "苏黎",
+                "text": "苏黎是会长期参与剧情的重要角色。",
+                "visibility": "character_private_and_gm",
+                "status": "active",
+                "forms": [
+                    {
+                        "form_name": "蝶化苏黎",
+                        "appearance_state": "蝶化形态",
+                        "description": "半透明蝶翼。",
+                        "memory_policy": "separate",
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            self.mod.InputAnalysisError,
+            r"important_characters\[0\]\.forms\[0\]\.memory_policy",
+        ):
+            self._validate(data)
+
     def test_validate_rejects_non_active_important_character_status(self):
         for status in ("superseded", "retracted"):
             with self.subTest(status=status):
@@ -1140,6 +1165,71 @@ class InputAnalysisApplyTest(unittest.TestCase):
         self.assertNotIn("raw_text", gm_packet["input_analysis_request"])
         self.assertEqual(manifest["stage"], "analysis_applied")
         self.assertEqual(manifest["expected_outputs"]["input_analysis"], "input_analysis.output.json")
+
+    def test_apply_current_run_persists_important_character_aliases_and_shared_forms(self):
+        analysis = self._analysis()
+        analysis["world_updates"]["hidden_facts"] = []
+        analysis["world_updates"]["important_characters"] = [
+            {
+                "name": "苏黎",
+                "text": "苏黎是重要角色，蝶化形态和日常形态共享同一套记忆。",
+                "visibility": "character_private_and_gm",
+                "status": "active",
+                "aliases": ["Suli", "小黎", "Suli", ""],
+                "forms": [
+                    {
+                        "form_name": "蝶化苏黎",
+                        "appearance_state": "蝶化形态",
+                        "description": "半透明蝶翼，瞳色泛银。",
+                        "memory_policy": "shared",
+                    }
+                ],
+                "related_characters": [
+                    {
+                        "name": "苏璃",
+                        "relation": "长期独立记忆形态",
+                        "memory_policy": "independent_persistent",
+                    }
+                ],
+            }
+        ]
+        analysis["routing"]["characters"] = ["苏黎"]
+        self._write_analysis(analysis)
+
+        result = self.apply_mod.apply_current_run(self.card)
+
+        card_data = json.loads((self.card / ".card_data.json").read_text(encoding="utf-8"))
+        registry = card_data["character_orchestration"]["registry"]
+        entry = registry["苏黎"]
+
+        self.assertEqual(result["important_characters_persisted"], ["苏黎"])
+        self.assertEqual(card_data["character_orchestration"]["major"], ["苏黎"])
+        self.assertNotIn("蝶化苏黎", card_data["character_orchestration"]["major"])
+        self.assertEqual(entry["canonical_name"], "苏黎")
+        self.assertEqual(entry["aliases"], ["Suli", "小黎"])
+        self.assertEqual(
+            entry["forms"],
+            [
+                {
+                    "form_name": "蝶化苏黎",
+                    "appearance_state": "蝶化形态",
+                    "description": "半透明蝶翼，瞳色泛银。",
+                    "memory_policy": "shared",
+                }
+            ],
+        )
+        self.assertEqual(
+            entry["related_characters"],
+            [
+                {
+                    "name": "苏璃",
+                    "relation": "长期独立记忆形态",
+                    "memory_policy": "independent_persistent",
+                }
+            ],
+        )
+        self.assertTrue((self.card / "characters" / "苏黎" / "profile.md").exists())
+        self.assertFalse((self.card / "characters" / "蝶化苏黎").exists())
 
     def test_apply_current_run_does_not_persist_actor_unaware_hidden_truth_as_profile(self):
         analysis = self._analysis()

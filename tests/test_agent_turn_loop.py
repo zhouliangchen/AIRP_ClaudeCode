@@ -348,6 +348,81 @@ class AgentTurnLoopTest(unittest.TestCase):
             "call-character-Ada-1",
         )
 
+    def test_actor_recalled_key_memory_is_visible_to_later_same_round_dispatch(self):
+        self.register_characters("Ada")
+        actor_packets = []
+
+        def gm_step(call_id, prompt, stop_reason):
+            return {
+                "agent": "gm",
+                "scene_beats": [],
+                "events": [],
+                "actor_calls": [{
+                    "call_id": call_id,
+                    "actor_id": "character:Ada",
+                    "prompt": prompt,
+                    "reason": "Ada is directly addressed.",
+                    "visibility_basis": visibility_basis("character:Ada"),
+                }],
+                "parallel_groups": [],
+                "world_state_delta": [],
+                "decision_point": None,
+                "stop_reason": stop_reason,
+            }
+
+        def dispatch(agent_key, packet):
+            if agent_key == "gm":
+                if len(actor_packets) == 0:
+                    return gm_step("call-character-Ada-1", "You notice the old seal.", "continue")
+                return gm_step("call-character-Ada-2", "You inspect the seal again.", "complete")
+            self.assertEqual(agent_key, "character:Ada")
+            actor_packets.append(json_copy(packet))
+            if len(actor_packets) == 1:
+                return {
+                    "agent": "character",
+                    "agent_id": "character:Ada",
+                    "character_name": "Ada",
+                    "natural_reply": "I remember where the sealed index is.",
+                    "events": [{
+                        "type": "reply",
+                        "target": "gm",
+                        "content": "I remember where the sealed index is.",
+                        "metadata": {},
+                    }],
+                    "_runtime_recalled_key_memories": [{
+                        "query": "sealed index",
+                        "tag": "sealed index",
+                        "summary": "I know the sealed index matters.",
+                        "detail": "DETAIL_VISIBLE_TO_SECOND_DISPATCH",
+                    }],
+                }
+            key_memory_lines = packet.get("memory", {}).get("key_memories", [])
+            self.assertIn(
+                '我已经回忆起"sealed index"："I know the sealed index matters."，详情为"DETAIL_VISIBLE_TO_SECOND_DISPATCH"',
+                key_memory_lines,
+            )
+            self.assertFalse(
+                any('可进一步回忆"sealed index"' in str(line) for line in key_memory_lines),
+                key_memory_lines,
+            )
+            return {
+                "agent": "character",
+                "agent_id": "character:Ada",
+                "character_name": "Ada",
+                "natural_reply": "I keep the index in mind.",
+                "events": [{
+                    "type": "reply",
+                    "target": "gm",
+                    "content": "I keep the index in mind.",
+                    "metadata": {},
+                }],
+            }
+
+        result = self.agent_turn_loop.run_interactive_loop(self.run_dir, dispatch, max_steps=2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(actor_packets), 2)
+
     def test_gm_capability_request_creates_pending_character_rename_intent(self):
         def dispatch(agent_key, packet):
             self.assertEqual(agent_key, "gm")

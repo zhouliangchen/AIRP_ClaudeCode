@@ -896,6 +896,7 @@ def _run_post_round_memory_jobs(
             prompt,
             extra_context={
                 "card_folder": str(card),
+                "run_dir": str(run_dir),
                 str(task["context_key"]): job_payload,
                 "post_round_output_path": output_rel,
             },

@@ -18,7 +18,10 @@ class AssetsFrontendManifestTests(unittest.TestCase):
         self.assertNotIn("reply-progress-fill", self.index)
         self.assertIn("agent-status-current", self.index)
         self.assertIn("asset-pending-count", self.index)
-        self.assertIn("assets.pending_job_count", self.index)
+        self.assertIn("assets.pending_image_count", self.index)
+        self.assertIn("assets.generating_image_count", self.index)
+        self.assertIn("assets.failed_image_count", self.index)
+        self.assertNotIn("assets.pending_job_count", self.index)
 
     def test_story_inline_assets_are_filtered_by_turn_round_id(self):
         self.assertIn("function getCurrentRoundId", self.index)

@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from agents.actor import memory_store as actor_memory_store
 from agents.actor import context_renderer as actor_context_renderer
+from agents.actor import recall_artifacts as actor_recall_artifacts
 from runtime import agent_run as agent_run
 from runtime import runtime_settings as runtime_settings
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -63,7 +64,7 @@ WORLD_UPDATE_RECORD_CONTRACT = """World update record contract:
 
 - world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`
 - world_updates.public_facts[]: required `id`, `text`, `visibility: "public_world"`, `status: "active|superseded|retracted"`
-- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`
+- world_updates.important_characters[]: required `name`, one textual field (`text`/`setting_text`/`authoritative_setting`/`description`/`profile`/`summary`), `visibility` in `character_private_and_gm|public_world|character_pov|specific_characters`, `status: "active"`; optional `aliases: string[]`, `forms[]` with `form_name`, `appearance_state`, `description`, `memory_policy: "shared|independent_persistent|temporary_proxy"`, and `related_characters[]` with `name`, `relation`, `memory_policy`
 - world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`
 
 If a world update cannot satisfy the record schema, omit it and keep the semantic unit only."""
@@ -99,14 +100,24 @@ def _file_backed_actor_context(
         return None
     actor_id = _actor_id_for_memory(context, actor_name)
     stored = actor_memory_store.read_actor_memory(card_folder, actor_id)
+    recalled = actor_recall_artifacts.normalize_items(
+        context.get("runtime_recalled_key_memories"),
+        actor_id=actor_id,
+    )
+    key_memories = [
+        item
+        for item in stored.get("key_memories", [])
+        if not actor_recall_artifacts.has_matching_record(item, recalled)
+    ]
     memory = actor_context_renderer.project_actor_memory(
         {
             "long_term": [stored.get("long_term")],
-            "key_memories": stored.get("key_memories"),
+            "key_memories": key_memories,
             "short_term": [stored.get("short_term")],
             "goals": [],
         }
     )
+    memory["key_memories"].extend(actor_recall_artifacts.format_recalled_memory_lines(recalled))
     return {
         "display_name": str(stored.get("name") or "").strip(),
         "profile_text": str(stored.get("profile") or "").strip(),
@@ -372,7 +383,7 @@ def _actor_base_prompt(
 我可以自然地说出自己想记住的事或当前目标，但不修改人设、背景、人格、身体事实或权威设定。
 我只写自己的想法、动作、台词和感受，不能控制他人行动，也不能让环境按照我的意愿给出结果。
 
-现在，如果有重点记忆需要回忆，就输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。
+现在，如果有重点记忆需要回忆，就输出思考：“我想回忆：xxx”，其中xxx是这段记忆的主题词，也许马上就能想起来了。如果上下文已经写着“我已经回忆起...”并给出详情，就说明这段重点记忆已经想起来了，直接使用它，不要再次请求同一段回忆。
 如果没有其他重点记忆需要回忆，那就好好想想接下来怎么办吧。
 我不用“配合剧情”，我不相信世界有剧本。越自然越好，也许现实会奖励真实活着的每一个人。
 我只是 {display_name or "我自己"}，不是别人；我不用扮演任何人。
@@ -457,6 +468,16 @@ def _input_analyst_prompt(context: Dict[str, Any]) -> str:
         "`capability: \"character.rename\"`, `target: \"memory\"`, `from_name: \"player\"`, "
         "`to_name` set to the declared protagonist name, and `actor_id: \"player\"`. "
         "This preserves the same protagonist identity and is not a protagonist switch.\n"
+        "\nImportant character alias/form contract: when an important character "
+        "has recognition names, nicknames, translated names, or revealed names, put "
+        "them in `world_updates.important_characters[].aliases` and keep `name` as "
+        "the canonical actor name. Use `forms[]` for same-character appearance or "
+        "state names. `memory_policy: \"shared\"` means the form is the same actor "
+        "and shared memory; `memory_policy: \"independent_persistent\"` means the "
+        "form should normally be emitted as a separate important character and linked "
+        "through `related_characters[]`; `memory_policy: \"temporary_proxy\"` means "
+        "the state is temporary and should normally remain GM temporary portrayal "
+        "rather than creating a new actor.\n"
         "\nCapability request contract: use top-level `capability_requests[]` "
         "for explicit user-requested system, UI, save-data, retcon/replay, or "
         "source-feature work that should be routed outside ordinary GM/story "
@@ -537,6 +558,22 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
                 "profile_seed": "seed used for profile text",
                 "visibility": "character_private_and_gm",
                 "activation": "current_turn",
+                "aliases": ["optional nickname or revealed name"],
+                "forms": [
+                    {
+                        "form_name": "optional form name",
+                        "appearance_state": "visual state for assets-ui",
+                        "description": "appearance or identity notes",
+                        "memory_policy": "shared",
+                    }
+                ],
+                "related_characters": [
+                    {
+                        "name": "optional independent persistent form",
+                        "relation": "how it relates to the canonical character",
+                        "memory_policy": "independent_persistent",
+                    }
+                ],
             }
         ],
         "subgm_commands": [
@@ -582,7 +619,14 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "are compatibility values for bounded helper paths, not normal creative stops.\n"
         "\nCharacter promotion authority: GM may emit `source_agent: \"gm\"` "
         "inside `character_promotions`; preprocess is handled by input analysis; "
-        "subGM agents must not emit applied promotion records.\n"
+        "subGM agents must not emit applied promotion records. Promotion records may "
+        "include `aliases`, `forms`, and `related_characters`. Register a form on the "
+        "same canonical character when it is the same actor and shared memory. Use "
+        "`memory_policy: \"independent_persistent\"` by emitting a separate important "
+        "character when the form has durable independent memory, and link it through "
+        "`related_characters`. Use `memory_policy: \"temporary_proxy\"` for temporary "
+        "independent-memory states that should remain GM temporary portrayal instead "
+        "of actor registration.\n"
         "\nCharacter rename authority: GM may emit top-level `capability_requests[]` "
         "with `capability: \"character.rename\"`, `target: \"memory\"`, "
         "`requested_by: \"gm\"`, `source_channel: \"gm_output\"`, "
@@ -791,6 +835,14 @@ def _story_prompt(run_summary: Dict[str, Any]) -> str:
             "Visible `content` must be written as player-character second-person prose: "
             "address the current player role as 你/妳/您 in narration, not primarily by character name "
             "or third-person pronouns. This is the 玩家角色第二人称 delivery contract. "
+            "`character_dialogues[]` must contain source-backed independent dialogue boxes from "
+            "the player agent or character subagents; for player agent dialogue, use the "
+            "current player character name instead of the literal `player`, because the frontend "
+            "uses `<角色名>(user)` only for human-authored player input. Include "
+            "`after_paragraph` when a dialogue belongs after a specific visible prose paragraph, "
+            "counting `<content>` paragraphs from 1, so the frontend can interleave narration "
+            "and dialogue boxes in the intended order. Keep non-important character dialogue "
+            "inside `content`, but separate it into its own sentence or paragraph when useful. "
             "For the player and registered important characters, story prose may quote or narrate "
             "their voluntary dialogue, actions, private thoughts, or long-term choices only when "
             "source-backed by `story_input.loop_outputs.actors` or side-thread `actor_outputs`; "
