@@ -7,10 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-import agent_visibility
-import character_promotions
-
-
+from agents.projection import visibility as agent_visibility
+from domain import character_promotions as character_promotions
 class ValidationError(ValueError):
     """Raised when an agent artifact does not match its file contract."""
 

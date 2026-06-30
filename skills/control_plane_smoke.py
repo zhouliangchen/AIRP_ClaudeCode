@@ -802,19 +802,19 @@ def _story_evidence(run_dir: Path) -> Dict[str, Any]:
 def run_smoke(repo: Path) -> Dict[str, Any]:
     _insert_skills_path(repo)
 
-    import agent_interactions
-    import agent_intents
-    import agent_lifecycle
-    import agent_memory
-    import agent_messages
-    import agent_outputs
-    import agent_packets
-    import agent_schemas
-    import agent_snapshots
+    from agents.shared import interactions as agent_interactions
+    from runtime import agent_intents as agent_intents
+    from runtime import agent_lifecycle as agent_lifecycle
+    from agents.actor import memory as agent_memory
+    from runtime import agent_messages as agent_messages
+    from runtime import agent_outputs as agent_outputs
+    from runtime import agent_packets as agent_packets
+    from agents.shared import schemas as agent_schemas
+    from runtime import agent_snapshots as agent_snapshots
+    from agents.assets_ui import agent as assets_ui_agent
     import rp_generate_cli
-    import round_state
-    import subgm_threads
-
+    from runtime import round_state as round_state
+    from agents.subgm import threads as subgm_threads
     with tempfile.TemporaryDirectory(prefix="airp-control-plane-smoke-", dir=_smoke_temp_parent(repo)) as tmp:
         temp_root = Path(tmp)
         card = temp_root / "smoke_card"
@@ -857,8 +857,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         if run_dir.name != "round-000006":
             raise RuntimeError(f"expected round-000006, got {run_dir.name}")
 
-        import input_analysis
-
+        from agents.input_analyst import analysis as input_analysis
         analysis = _build_input_analysis_fixture(run_dir, input_payload, input_analysis)
         _write_json(run_dir / "input_analysis.output.json", analysis)
         _ensure_smoke_character_contexts(run_dir)
@@ -881,6 +880,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         delivery: Dict[str, Any] = {}
         original_dispatch = rp_generate_cli._dispatch_agent_payload
         original_delivery = rp_generate_cli._run_delivery
+        original_assets_planner = assets_ui_agent.plan_assets_task
 
         def fake_dispatch(
             agent_key,
@@ -956,9 +956,27 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
             delivery.update(result)
             return result
 
+        def fake_assets_planner(context):
+            return assets_ui_agent.validate_plan(
+                {
+                    "schema_version": 1,
+                    "jobs": [
+                        {
+                            "job_id": "scene-image-smoke",
+                            "kind": "scene",
+                            "target": "archive-door",
+                            "prompt": "A cinematic archive classroom door with warm warning light.",
+                        }
+                    ],
+                    "ui_patch_requests": [],
+                    "rename_operations": [],
+                }
+            )
+
         try:
             rp_generate_cli._dispatch_agent_payload = fake_dispatch
             rp_generate_cli._run_delivery = fake_delivery
+            assets_ui_agent.plan_assets_task = fake_assets_planner
 
             round_result = rp_generate_cli.run_round(
                 card,
@@ -980,6 +998,7 @@ def run_smoke(repo: Path) -> Dict[str, Any]:
         finally:
             rp_generate_cli._dispatch_agent_payload = original_dispatch
             rp_generate_cli._run_delivery = original_delivery
+            assets_ui_agent.plan_assets_task = original_assets_planner
 
         if not delivery.get("ok"):
             raise RuntimeError(f"delivery failed: {delivery}")

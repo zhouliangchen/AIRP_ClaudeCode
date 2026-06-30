@@ -5,15 +5,15 @@ description: Use when /rp starts, a pending RP input is detected, or a multi-age
 
 ## RP Orchestrator
 
-You are the main Claude Code coordinator. Keep Claude Code as the direct driver, but keep the main agent out of routine fiction writing. Your job is workflow orchestration, script execution, subagent dispatch, artifact collection, repair loops, code/system iteration when authorized, and final delivery.
+You are the main Claude Code coordinator. Keep Claude Code as the direct driver, but keep the main agent out of routine fiction writing. Your job is workflow orchestration, script execution, runtime agent dispatch, artifact collection, repair loops, code/system iteration when authorized, and final delivery.
 
 ## Stage Selection
 
-按需导入 stage skills. Load only the stage skills required by the current phase:
+按需导入 main-agent skills. Load only the main-agent skills required by the current phase. Runtime agent prompt contracts are not `.claude` skills; Python materializes them from `skills/agents/**/prompts/`:
 
 - Startup or resume: use this skill plus `rp-delivery` only if there is an opening to deliver.
-- New player input: use `rp-input-router`, `rp-input-analyst`, `rp-context-projector`, GM/player/character skills, `rp-story-agent`, `rp-critic-agent`, `rp-postprocess-agent`, and `rp-delivery`.
-- Pure user instruction, repair, or planning: load only router, input analyst, GM/story/critic, and delivery as needed.
+- New player input: use `rp-input-router`, `rp-context-projector`, `rp-delivery`, and `rp-assets-ui` only when their main-agent fallback/orchestration guidance is needed. The input analyst, GM, subGM, projection, story, critic, and postprocess runtime contracts are generated from `skills/agents/**/prompts/`.
+- Pure user instruction, repair, or planning: load only router, context projector, delivery, and assets-ui guidance as needed.
 - Image or UI enhancement after text delivery: load `rp-assets-ui`.
 
 ## Startup Modes
@@ -26,15 +26,15 @@ You are the main Claude Code coordinator. Keep Claude Code as the direct driver,
 
 1. Run `python "{ROOT}/skills/round_prepare.py" "<card_folder>" "{ROOT}"`.
 2. Read `skills/styles/round_context.txt` and the `AGENT_RUN` run directory.
-3. Dispatch `rp-input-analyst` with `.agent_runs/<round>/prompts/input_analyst.prompt.md`; it must write `.agent_runs/<round>/input_analysis.output.json`. Do not infer high-risk settings or important characters from keyword matches.
+3. Let `rp_generate_cli.py` / the Python runtime call the input analyst LLM with `.agent_runs/<round>/prompts/input_analyst.prompt.md`; it must write `.agent_runs/<round>/input_analysis.output.json`. Do not infer high-risk settings or important characters from keyword matches.
 4. Validate and apply the analysis with `python "{ROOT}/skills/input_analysis_apply.py" "<card_folder>" "{ROOT}"`. This is the only normal path that persists hidden settings, important-character declarations, routed input components, and rebuilt agent packets.
 5. Use `rp-input-router` to confirm `role_channel` and `user_instruction_channel` from the routed artifacts.
-6. Use `rp-context-projector` to decide what GM, player, and character agents may see.
-7. Dispatch the GM loop and any required player/character actor turns from the rebuilt prompts/packets. Parallelize independent actor calls when possible to improve speed.
-8. Run an interaction loop / 交互循环: agents may respond to each other's world-visible actions and dialogue through the orchestrator until a real player 关键决策点 is reached, the 章节字数 or scene target is met, or the critic says enough.
+6. Use `rp-context-projector` only for fallback reasoning or manual inspection; the default runtime projection prompt comes from `skills/agents/projection/prompts/contract.md`.
+7. Let the Python runtime dispatch the GM loop and any required player/character actor turns from the rebuilt prompts/packets. Independent actor calls may be parallelized by runtime scheduling.
+8. Run an interaction loop / 交互循环 through the Python runtime: agents may respond to each other's world-visible actions and dialogue until a real player 关键决策点 is reached, the 章节字数 or scene target is met, or the critic says enough.
 9. After `gm.output.json`, `actor.outputs.json`, and trace v2 exist, build or request `story.input.json` as the canonical story bundle.
-10. Ask `rp-story-agent` to compose `story.output.json` while preserving subagent agency.
-11. Ask `rp-critic-agent` to write `critic.report.json`.
+10. Let the story runtime agent compose `story.output.json` while preserving actor agency.
+11. Let the critic runtime agent write `critic.report.json`.
 12. After critic `pass`, dispatch `run_postprocess`. Only after postprocess core validates should dispatcher create `deliver_round`. UI extension failures are nonblocking only when the postprocess step writes repair artifacts and queue entries for the next round.
 13. Invoke `rp-delivery` as the artifact gate after `critic.report.json`, even when the critic says `revise` or `block`. On successful text delivery, `round_deliver.py` and `agent_outputs.prepare_delivery` require valid `postprocess.output.json.core` before mirroring story prose; for `revise` / `block`, `round_deliver.py` records `repair_history.jsonl`, appends systemic suggestions to `.agent_runs/improvement_queue.jsonl`, returns `action: retry` only when the configured self-repair mode allows the route, and returns `action: blocked` when the mode, route, or retry limit requires manual intervention.
 14. If `action: retry` is returned, follow `critic.report.json.repair_routing`: `story_composition` and `delivery_gate` rerun story/critic only; `gm_loop`, `actor_agent`, and `subgm` require `full` mode and roll the current round back to the GM-loop checkpoint before regenerating. `system_code` requires both `selfRepairMode: "full"` and `allowSourceCodeSelfRepair: true`; when authorized, the runtime creates a bounded `system_request` intent/message for the main agent, and the dispatcher must not edit source files automatically. If `action: blocked` is returned, stop the automatic repair loop, surface the terminal reason, and wait for manual intervention or explicit authorization before changing prompts/code/process. On approval, the same delivery gate mirrors approved story content to `skills/styles/response.txt`.
@@ -66,7 +66,7 @@ Use the current `.agent_runs/<round>/` folder as a mailbox:
 - `.agent_runs/improvement_queue.jsonl`: session-level backlog for systemic prompt/code/process improvements.
 - `manifest.json` with stages such as `awaiting_input_analysis`, `analysis_applied`, `awaiting_agent_outputs`, `story_ready`, `critic_passed`, `delivered`, or `blocked`.
 
-Only the orchestrator runs delivery. Subagents never write `skills/styles/response.txt`.
+Only the orchestrator/runtime delivery gate runs delivery. Runtime agents never write `skills/styles/response.txt`.
 
 ## Non-Negotiable Boundaries
 

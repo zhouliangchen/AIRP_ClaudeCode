@@ -12,10 +12,8 @@ def _load(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 class CapabilityRegistryTest(unittest.TestCase):
@@ -89,60 +87,6 @@ class CapabilityRegistryTest(unittest.TestCase):
                 self.assertEqual(normalized["status"], "recognized")
                 self.assertEqual(normalized["action"], "intent")
                 self.assertEqual(normalized["intent_type"], "character_rename")
-
-    def test_maps_legacy_assets_route_to_capability_request(self):
-        legacy = {
-            "id": "route-001",
-            "type": "assets_ui_task",
-            "source_channel": "user_instruction",
-            "summary": "Create a rainy street image.",
-            "target": "assets-ui",
-            "payload": {"prompt": "rainy street"},
-            "requires_authorization": False,
-            "authorization_gate": "none",
-            "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "make an image"},
-        }
-
-        mapped = self.registry.legacy_routing_request_to_capability(legacy)
-
-        self.assertEqual(mapped["id"], "route-001")
-        self.assertEqual(mapped["requested_by"], "input_analyst")
-        self.assertEqual(mapped["capability"], "assets.generate_image")
-        self.assertEqual(mapped["authorization_gate"], "none")
-
-    def test_maps_all_current_legacy_route_types(self):
-        cases = {
-            "assets_ui_task": ("assets.generate_image", "assets-ui", "none"),
-            "source_feature_request": (
-                "source.change_request",
-                "main-agent",
-                "allowSourceCodeSelfRepair",
-            ),
-            "story_retcon_consult": ("retcon.consult", "story", "none"),
-            "card_data_edit": ("card.patch_data", "card-data", "manual_confirmation"),
-        }
-
-        for legacy_type, (capability, target, gate) in cases.items():
-            with self.subTest(legacy_type=legacy_type):
-                legacy = {
-                    "id": f"route-{legacy_type}",
-                    "type": legacy_type,
-                    "source_channel": "user_instruction",
-                    "summary": "Legacy request.",
-                    "target": "legacy-target",
-                    "payload": {"kind": "demo"},
-                    "requires_authorization": gate != "none",
-                    "authorization_gate": gate,
-                    "evidence": {"semantic_unit_ids": ["u1"], "raw_excerpt": "request"},
-                }
-
-                mapped = self.registry.legacy_routing_request_to_capability(legacy)
-                normalized = self.registry.normalize_capability_request(mapped)
-
-                self.assertEqual(mapped["capability"], capability)
-                self.assertEqual(mapped["target"], target)
-                self.assertEqual(mapped["authorization_gate"], gate)
-                self.assertEqual(normalized["status"], "recognized")
 
     def test_unknown_capability_becomes_audit_action(self):
         request = {

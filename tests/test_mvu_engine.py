@@ -11,7 +11,7 @@ def _load_mvu_engine():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("mvu_engine", ROOT / "skills" / "mvu_engine.py")
+    spec = importlib.util.spec_from_file_location("mvu_engine", ROOT / "skills" / "domain" / "mvu_engine.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 
 
@@ -15,7 +16,7 @@ class PostprocessOutputTest(unittest.TestCase):
     def setUp(self):
         import importlib
 
-        self.mod = importlib.import_module("postprocess_outputs")
+        self.mod = load_repo_module("postprocess_outputs")
 
     def test_validate_accepts_core_data(self):
         payload = {

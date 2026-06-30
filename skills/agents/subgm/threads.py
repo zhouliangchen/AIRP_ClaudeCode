@@ -9,10 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-import agent_messages
-import agent_interactions
-
-
+from runtime import agent_messages as agent_messages
+from agents.shared import interactions as agent_interactions
 CST = timezone(timedelta(hours=8))
 ACTIVE_STATUSES = {"running", "merging", "needs_gm", "blocked"}
 THREAD_STATUSES = ACTIVE_STATUSES | {"paused", "completed"}

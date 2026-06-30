@@ -7,9 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-import llm_runner
-
-
+from llm import runner as llm_runner
 VALID_QUEUE_TYPES = {
     "character_reference",
     "character_reference_candidate",
@@ -95,12 +93,47 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         raise AssetsUiAgentError("invalid_ui_patch_requests")
     if "rename_operations" not in plan or not isinstance(plan["rename_operations"], list):
         raise AssetsUiAgentError("invalid_rename_operations")
+    plan = _normalize_plan_for_validation(plan)
     for job in plan["jobs"]:
         _validate_job(job)
     for request in plan["ui_patch_requests"]:
         if not isinstance(request, dict) or request.get("scope") != "card_only":
             raise AssetsUiAgentError("ui_patch_scope")
     return plan
+
+
+def _normalize_plan_for_validation(plan: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(plan)
+    normalized_jobs = []
+    for job in normalized.get("jobs", []):
+        if isinstance(job, dict):
+            normalized_jobs.append(_normalize_job_for_validation(job))
+        else:
+            normalized_jobs.append(job)
+    normalized["jobs"] = normalized_jobs
+    return normalized
+
+
+def _normalize_job_for_validation(job: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(job)
+    queue_type = normalized.get("queue_type")
+    if queue_type in (None, "") and _looks_like_scene_job(normalized):
+        normalized["queue_type"] = "scene_illustration"
+    if normalized.get("queue_type") == "scene_illustration":
+        normalized.setdefault("display_policy", "story_inline")
+        normalized.setdefault("camera_perspective", "third_person_camera")
+        normalized.setdefault("scene_mode", "story_scene")
+    return normalized
+
+
+def _looks_like_scene_job(job: dict[str, Any]) -> bool:
+    kind = str(job.get("kind") or "").strip().lower()
+    target = str(job.get("target") or "").strip().lower()
+    return (
+        kind in {"scene", "scene_illustration", "story_scene"}
+        or target in {"scene", "scene_illustration", "story_inline"}
+        or target.startswith("story-asset")
+    )
 
 
 def _validate_job(job: Any) -> None:

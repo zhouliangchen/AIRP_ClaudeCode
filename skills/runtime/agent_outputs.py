@@ -9,20 +9,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-import agent_run
-import agent_intents
-import agent_interactions
-import agent_messages
-import agent_schemas
-import agent_visibility
-import agent_visibility_guard
-import hidden_settings
-import player_decision_evidence
-import postprocess_outputs
-import runtime_settings
-import self_repair
-
-
+from runtime import agent_run as agent_run
+from runtime import agent_intents as agent_intents
+from agents.shared import interactions as agent_interactions
+from runtime import agent_messages as agent_messages
+from agents.shared import schemas as agent_schemas
+from agents.projection import visibility as agent_visibility
+from agents.projection import visibility_guard as agent_visibility_guard
+from runtime import hidden_settings as hidden_settings
+from agents.gm import player_decision_evidence as player_decision_evidence
+from agents.postprocess import outputs as postprocess_outputs
+from runtime import runtime_settings as runtime_settings
+from runtime import self_repair as self_repair
 MAX_CRITIC_RETRIES = 2
 ALLOWED_RAW_TRACE_STATUSES = {"interacting", "decision_point"}
 TRACE_PRESERVED_TARGET_RE = re.compile(r"^(?:player|character:[A-Za-z][A-Za-z0-9_]*)$")
@@ -2011,12 +2009,23 @@ def prepare_delivery(card_folder: str | Path, styles_dir: str | Path) -> Dict[st
     """Gate delivery for the current run and mirror story output to response.txt."""
     run_dir = agent_run.current_run_dir(card_folder)
     if run_dir is None:
-        return {"ok": True, "mode": "legacy"}
+        return {
+            "ok": False,
+            "action": "retry",
+            "reason": "agent_run_missing",
+            "message": "No current agent run is available for delivery.",
+        }
     policy = self_repair.load_policy(Path(styles_dir) / "settings.json")
 
     manifest = _load_manifest(run_dir)
     if manifest is None:
-        return {"ok": True, "mode": "legacy"}
+        return {
+            "ok": False,
+            "action": "retry",
+            "reason": "manifest_missing",
+            "message": "Current agent run manifest is missing.",
+            "run_dir": str(run_dir),
+        }
     if manifest.get("stage") == "delivered":
         return {
             "ok": True,

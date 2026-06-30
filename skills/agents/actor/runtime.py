@@ -6,13 +6,11 @@ import copy
 import json
 from pathlib import Path
 
-import agent_intents
-import agent_interactions
-import agent_messages
-import agent_run
-import actor_memory_store
-
-
+from runtime import agent_intents as agent_intents
+from agents.shared import interactions as agent_interactions
+from runtime import agent_messages as agent_messages
+from runtime import agent_run as agent_run
+from agents.actor import memory_store as actor_memory_store
 class AgentActorRuntimeError(RuntimeError):
     """Raised when actor collaboration artifacts cannot be recorded."""
 

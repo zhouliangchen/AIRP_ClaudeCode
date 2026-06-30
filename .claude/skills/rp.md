@@ -12,6 +12,6 @@ Core boundary:
 - 主 agent 只负责编排, tool/script execution, code or prompt maintenance, artifact collection, final gating, and delivery.
 - Routine narrative writing and role embodiment must be delegated to GM, player, character, story, critic, postprocess, projection, and assets-ui runtime agents through `llm_runner.run_llm_agent()`.
 - If the configured LLM provider is unavailable, block or route repair explicitly; do not silently fall back to main-agent narrative writing.
-- Stage skills are loaded on demand through `rp-orchestrator`; do not load every RP skill when a turn only needs startup, delivery, or a specific repair.
+- Main-agent skills are loaded on demand through `rp-orchestrator`; runtime agent prompt contracts live under `skills/agents/**/prompts/` and are materialized by Python.
 
-Enter `rp-orchestrator` first. It selects startup mode, runs the required Python pipeline, creates `.agent_runs/<round>/` artifacts, selectively imports the stage skills needed for the turn, and delivers only after critic approval.
+Enter `rp-orchestrator` first. It selects startup mode, runs the required Python pipeline, creates `.agent_runs/<round>/` artifacts, uses main-agent skills only for orchestration/delivery/fallback work, and delivers only after critic approval.

@@ -24,8 +24,8 @@ from pathlib import Path
 
 # Both files live in skills/, so direct import works (same as server.py imports handler).
 # import_card.run_import() has no stdout side effects after refactoring.
-from import_card import run_import
-from io_utils import read_json, walk_paths as _walk_vars
+from importing.card import run_import
+from runtime.io_utils import read_json, walk_paths as _walk_vars
 
 
 # ─── Phase 0: Cleanup ────────────────────────────────────────
@@ -395,7 +395,7 @@ def main():
     # Write initial checkpoint so round_deliver can compute deltas.
     # load_checkpoint handles cross-session transcript switching automatically.
     try:
-        import token_stats
+        from runtime import token_stats as token_stats
         token_stats.save_checkpoint(card_folder)  # no delta — just record baseline offset
     except Exception:
         pass

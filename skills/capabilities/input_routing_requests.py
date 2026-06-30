@@ -7,12 +7,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-import agent_intents
-import agent_messages
-import agent_run
-import capability_registry
-
-
+from runtime import agent_intents as agent_intents
+from runtime import agent_messages as agent_messages
+from runtime import agent_run as agent_run
+from capabilities import registry as capability_registry
 REQUESTED_BY = "input_analyst"
 CAPABILITY_ARTIFACT_DIR = "capability_requests"
 CAPABILITY_SOURCE_NAME = "input_analysis.capability_requests"
@@ -61,28 +59,6 @@ def process_capability_requests(
         "created_messages_count": len(created_messages),
         "results": results,
     }
-
-
-def process_routing_requests(
-    run_dir: str | Path,
-    routing_requests: list[dict[str, Any]],
-    *,
-    runtime_settings: dict[str, Any] | None = None,
-    source_intent_id: str = "",
-) -> dict[str, Any]:
-    """Compatibility wrapper for legacy input-analysis routing requests."""
-
-    capability_requests = [
-        capability_registry.legacy_routing_request_to_capability(item)
-        for item in routing_requests or []
-        if isinstance(item, dict)
-    ]
-    return process_capability_requests(
-        run_dir,
-        capability_requests,
-        runtime_settings=runtime_settings,
-        source_intent_id=source_intent_id,
-    )
 
 
 def process_asset_requests(

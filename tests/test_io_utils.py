@@ -13,7 +13,7 @@ def _load_module():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("io_utils", ROOT / "skills" / "io_utils.py")
+    spec = importlib.util.spec_from_file_location("io_utils", ROOT / "skills" / "runtime" / "io_utils.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

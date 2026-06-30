@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-import agent_memory_model
-import agent_messages
-import agent_run
-import agent_visibility
-import actor_recall_artifacts
-import actor_memory_store
+from agents.actor import memory_model as agent_memory_model
+from runtime import agent_messages as agent_messages
+from runtime import agent_run as agent_run
+from agents.projection import visibility as agent_visibility
+from agents.actor import recall_artifacts as actor_recall_artifacts
+from agents.actor import memory_store as actor_memory_store
 
 
 CST = timezone(timedelta(hours=8))

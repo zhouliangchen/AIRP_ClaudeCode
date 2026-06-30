@@ -12,7 +12,7 @@ def _load_agent_projection():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_projection", ROOT / "skills" / "agent_projection.py")
+    spec = importlib.util.spec_from_file_location("agent_projection", ROOT / "skills" / "agents" / "projection" / "context.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

@@ -13,10 +13,8 @@ def load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def read_json(path):

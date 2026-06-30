@@ -7,10 +7,8 @@ import math
 import re
 from typing import Any, Dict
 
-import agent_visibility
-import actor_context_renderer
-
-
+from agents.projection import visibility as agent_visibility
+from agents.actor import context_renderer as actor_context_renderer
 ADDRESS_MODE = "second_person_gm_narration"
 SEGMENT_RE = re.compile(r"[^.!?;。！？；\r\n]+[.!?;。！？；]?[\"'”’)\]）】》」』]*")
 

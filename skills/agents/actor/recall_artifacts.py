@@ -6,9 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import agent_run
-
-
+from runtime import agent_run as agent_run
 RUNTIME_FIELD = "_runtime_recalled_key_memories"
 ARTIFACT_NAME = "actor.recalled_key_memories.json"
 

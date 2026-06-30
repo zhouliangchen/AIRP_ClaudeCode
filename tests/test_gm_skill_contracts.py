@@ -13,7 +13,7 @@ def _load_agent_prompts():
         sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location(
         "agent_prompts",
-        ROOT / "skills" / "agent_prompts.py",
+        ROOT / "skills" / "agents" / "shared" / "prompts.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -24,24 +24,27 @@ class GmSkillContractsTest(unittest.TestCase):
     def read(self, relative):
         return (ROOT / relative).read_text(encoding="utf-8")
 
-    def test_gm_agent_references_required_subskills(self):
-        text = self.read(".claude/skills/rp-gm-agent.md")
-        for name in (
-            "rp-gm-visibility-policy",
-            "rp-gm-actor-routing",
-            "rp-gm-promotion-policy",
+    def test_gm_prompt_explicitly_appends_required_policy_contracts(self):
+        agent_prompts = _load_agent_prompts()
+        text = agent_prompts._gm_prompt({"round_context": "A quiet test scene."})
+
+        for path in (
+            "skills/agents/gm/prompts/visibility_policy.md",
+            "skills/agents/gm/prompts/actor_routing.md",
+            "skills/agents/gm/prompts/promotion_policy.md",
         ):
-            self.assertIn(name, text)
+            self.assertIn(f"### `{path}`", text)
+        self.assertIn("Additional GM Policy Contracts", text)
 
     def test_visibility_policy_blocks_hidden_fact_hints_in_actor_calls(self):
-        text = self.read(".claude/skills/rp-gm-visibility-policy.md")
+        text = self.read("skills/agents/gm/prompts/visibility_policy.md")
         self.assertIn("actor_calls[].prompt", text)
         self.assertIn("actor_calls[].reason", text)
         self.assertIn("must not contain hidden facts, foreshadowing hints, or euphemistic substitutes", text)
         self.assertIn("second-person visible situation only", text)
 
     def test_visibility_policy_requires_structured_visibility_proof(self):
-        text = self.read(".claude/skills/rp-gm-visibility-policy.md")
+        text = self.read("skills/agents/gm/prompts/visibility_policy.md")
         self.assertIn("actor_calls[].visibility_basis", text)
         for field in (
             "scene_id",
@@ -57,7 +60,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("If visibility cannot be proven", text)
 
     def test_promotion_policy_allows_only_preprocess_and_gm_sources(self):
-        text = self.read(".claude/skills/rp-gm-promotion-policy.md")
+        text = self.read("skills/agents/gm/prompts/promotion_policy.md")
         self.assertIn("Allowed promotion sources: preprocess, gm", text)
         self.assertIn("subGM agents must not create or promote important characters", text)
 
@@ -71,7 +74,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("不修改人设、背景、人格、身体事实或权威设定", combined)
 
     def test_actor_routing_skill_defines_executable_parallel_groups(self):
-        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        text = self.read("skills/agents/gm/prompts/actor_routing.md")
         self.assertIn("Executable Parallel Groups", text)
         self.assertIn("The runtime scheduler may execute safe groups concurrently", text)
         self.assertIn("downgrade unsafe groups to serial routing", text)
@@ -79,33 +82,33 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertNotIn("`parallel_groups` is metadata only", text.lower())
 
     def test_actor_routing_requires_per_call_visibility_basis(self):
-        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        text = self.read("skills/agents/gm/prompts/actor_routing.md")
         self.assertIn("visibility_basis", text)
         self.assertIn("per call", text)
 
     def test_gm_routing_uses_natural_language_perception_continuation(self):
-        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        text = self.read("skills/agents/gm/prompts/actor_routing.md")
         self.assertIn("natural-language `actor_calls[].prompt`", text)
         self.assertIn("visible sensory feedback only", text)
         self.assertIn("Do not use `perceive_request`", text)
         self.assertIn("pending perception fields", text)
 
     def test_gm_routing_documents_natural_language_dialogue_transfer(self):
-        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        text = self.read("skills/agents/gm/prompts/actor_routing.md")
         self.assertIn("next `actor_calls[].prompt` as natural language", text)
         self.assertIn("Do not use dialogue-transfer metadata fields", text)
         self.assertIn("quote the visible spoken words", text)
         self.assertIn("Never transfer private intent", text)
 
     def test_visibility_policy_documents_perception_feedback_boundary(self):
-        text = self.read(".claude/skills/rp-gm-visibility-policy.md")
+        text = self.read("skills/agents/gm/prompts/visibility_policy.md")
         self.assertIn("Perception Feedback", text)
         self.assertIn("natural-language `actor_calls[].prompt`", text)
         self.assertIn("do not use `perceive_request`", text)
         self.assertIn("must not reveal hidden causality", text)
 
     def test_story_skill_forbids_invented_important_character_replies(self):
-        text = self.read(".claude/skills/rp-story-agent.md")
+        text = self.read("skills/agents/story/prompts/contract.md")
         self.assertIn("actor-authored natural-language dialogue", text)
         self.assertIn("must not invent", text)
         self.assertTrue(
@@ -143,7 +146,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertNotIn("- `misconceptions`", text)
 
     def test_gm_actor_requests_use_immersive_second_person_labels(self):
-        text = self.read(".claude/skills/rp-gm-agent.md")
+        text = self.read("skills/agents/gm/prompts/contract.md")
 
         self.assertIn("immersive second-person natural language", text)
         self.assertIn("objective world truth", text)
@@ -151,7 +154,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("appearance-level or belief-level label", text)
 
     def test_subgm_actor_requests_use_immersive_second_person_labels(self):
-        text = self.read(".claude/skills/rp-subgm-agent.md")
+        text = self.read("skills/agents/subgm/prompts/contract.md")
 
         self.assertIn("immersive second-person natural language", text)
         self.assertIn("objective world truth", text)
@@ -159,15 +162,18 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("appearance-level or belief-level label", text)
 
     def test_projection_docs_preserve_final_actor_message_boundary(self):
-        readme = self.read("README.md")
+        technical_docs = "\n".join([
+            self.read("docs/重构建议.md"),
+            self.read("docs/存档文件指南.md"),
+        ])
         projector = self.read(".claude/skills/rp-context-projector.md")
-        projection_agent = self.read(".claude/skills/rp-projection-agent.md")
+        projection_agent = self.read("skills/agents/projection/prompts/contract.md")
 
         self.assertIn("final_actor_message", projection_agent)
-        self.assertIn("final_actor_message", readme)
+        self.assertIn("final_actor_message", technical_docs)
         self.assertIn("final_actor_message", projector)
-        self.assertIn("agent_projection.project_actor_context", readme)
-        self.assertIn("actor context rendering", readme)
+        self.assertIn("agents.projection.context.project_actor_context", technical_docs)
+        self.assertIn("actor context rendering", technical_docs)
         self.assertIn("projection/rendering", projector)
 
     def test_actor_prompts_do_not_receive_misconceptions_label(self):
@@ -214,8 +220,8 @@ class GmSkillContractsTest(unittest.TestCase):
 
     def test_gm_and_subgm_schema_examples_require_actor_call_visibility_basis(self):
         combined = "\n".join([
-            self.read(".claude/skills/rp-gm-agent.md"),
-            self.read(".claude/skills/rp-subgm-agent.md"),
+            self.read("skills/agents/gm/prompts/contract.md"),
+            self.read("skills/agents/subgm/prompts/contract.md"),
         ])
 
         self.assertIn('"visibility_basis"', combined)
@@ -225,14 +231,14 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn('"target_actor": "character:Ada"', combined)
 
     def test_gm_actor_call_visibility_can_use_character_private_self_knowledge(self):
-        text = self.read(".claude/skills/rp-gm-agent.md")
+        text = self.read("skills/agents/gm/prompts/contract.md")
 
         self.assertIn("character private self-knowledge", text)
         self.assertIn("角色私有自知", text)
         self.assertIn("not public world knowledge", text)
 
     def test_gm_agent_forbids_repeated_passive_observation_calls(self):
-        text = self.read(".claude/skills/rp-gm-agent.md")
+        text = self.read("skills/agents/gm/prompts/contract.md")
 
         self.assertIn("Do not repeatedly call the same actor", text)
         self.assertIn("passive observation", text)
@@ -240,7 +246,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("stop_reason", text)
 
     def test_gm_agent_requires_player_actor_before_player_decision(self):
-        text = self.read(".claude/skills/rp-gm-agent.md")
+        text = self.read("skills/agents/gm/prompts/contract.md")
 
         self.assertIn("never act as the player agent", text)
         self.assertIn("never act as any important character agent", text)
@@ -256,8 +262,8 @@ class GmSkillContractsTest(unittest.TestCase):
 
     def test_gm_and_subgm_actor_requests_use_natural_language_sensory_boundary(self):
         combined = "\n".join([
-            self.read(".claude/skills/rp-gm-agent.md"),
-            self.read(".claude/skills/rp-subgm-agent.md"),
+            self.read("skills/agents/gm/prompts/contract.md"),
+            self.read("skills/agents/subgm/prompts/contract.md"),
         ])
 
         self.assertIn("GM/subGM may serve as the actor's senses", combined)
@@ -275,8 +281,8 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("Do not ask the actor to output", combined)
 
     def test_gm_and_subgm_document_dream_memory_proxy_exception(self):
-        gm = self.read(".claude/skills/rp-gm-agent.md")
-        subgm = self.read(".claude/skills/rp-subgm-agent.md")
+        gm = self.read("skills/agents/gm/prompts/contract.md")
+        subgm = self.read("skills/agents/subgm/prompts/contract.md")
 
         for text in (gm, subgm):
             self.assertIn("flashback, memory, dream, symbolic scene, or retcon recap", text)
@@ -293,19 +299,19 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("boundary_requests", subgm)
         self.assertIn("Do not directly edit character profiles or memories", subgm)
 
-    def test_readme_documents_natural_language_actor_protocol_not_old_fields(self):
-        readme = self.read("README.md")
+    def test_technical_docs_document_natural_language_actor_protocol_not_old_fields(self):
+        technical_docs = self.read("docs/重构建议.md")
 
-        self.assertIn("actor 只用自然语言回复 GM/subGM", readme)
-        self.assertIn("GM/subGM 可以作为 actor 的感官", readme)
-        self.assertIn("疼痛、瘙痒、眩晕", readme)
-        self.assertIn("不能替 actor 做主动行动、选择、思考或台词", readme)
-        self.assertIn("旧字段 `perceive_request`、`custom_action`、`visible_content`、`stop_for_player_decision` 已废弃", readme)
-        self.assertNotIn("actor 可以返回受控的 `custom_action` 事件", readme)
-        self.assertNotIn("如果 actor 输出 `perceive_request`", readme)
+        self.assertIn("actor 只用自然语言回复 GM/subGM", technical_docs)
+        self.assertIn("GM/subGM 可以作为 actor 的感官", technical_docs)
+        self.assertIn("疼痛、瘙痒、眩晕", technical_docs)
+        self.assertIn("不能替 actor 做主动行动、选择、思考或台词", technical_docs)
+        self.assertIn("旧字段 `perceive_request`、`custom_action`、`visible_content`、`stop_for_player_decision` 已废弃", technical_docs)
+        self.assertNotIn("actor 可以返回受控的 `custom_action` 事件", technical_docs)
+        self.assertNotIn("如果 actor 输出 `perceive_request`", technical_docs)
 
     def test_actor_routing_stop_reasons_match_schema(self):
-        text = self.read(".claude/skills/rp-gm-actor-routing.md")
+        text = self.read("skills/agents/gm/prompts/actor_routing.md")
         for reason in (
             "`continue`",
             "`player_decision`",
@@ -317,7 +323,7 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertNotIn("`blocked`", text)
 
     def test_postprocess_skill_owns_frontend_data_not_progress(self):
-        text = self.read(".claude/skills/rp-postprocess-agent.md")
+        text = self.read("skills/agents/postprocess/prompts/contract.md")
 
         self.assertIn("You generate frontend support data after the critic has approved the story.", text)
         self.assertIn("Do not rewrite story prose.", text)
@@ -352,8 +358,8 @@ class GmSkillContractsTest(unittest.TestCase):
         self.assertIn("must not write `<content>`, `<summary>`, or `<options>` tags", text)
 
     def test_story_and_critic_skills_do_not_own_postprocess_fields(self):
-        story = self.read(".claude/skills/rp-story-agent.md")
-        critic = self.read(".claude/skills/rp-critic-agent.md")
+        story = self.read("skills/agents/story/prompts/contract.md")
+        critic = self.read("skills/agents/critic/prompts/contract.md")
         delivery = self.read(".claude/skills/rp-delivery.md")
         orchestrator = self.read(".claude/skills/rp-orchestrator.md")
 

@@ -3,7 +3,7 @@ MVU (MagVarUpdate) Core Engine — Pure Python port.
 Parses _.set() / <json_patch> commands from AI output and executes against stat_data.
 
 Usage:
-    from mvu_engine import extract_commands, execute_commands, generate_schema
+    from domain.mvu_engine import extract_commands, execute_commands, generate_schema
     commands = extract_commands(text)
     new_data, changes = execute_commands(stat_data, commands)
 """

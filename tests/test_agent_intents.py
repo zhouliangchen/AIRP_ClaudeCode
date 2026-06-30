@@ -15,7 +15,7 @@ def _load_agent_intents():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_intents", ROOT / "skills" / "agent_intents.py")
+    spec = importlib.util.spec_from_file_location("agent_intents", ROOT / "skills" / "runtime" / "agent_intents.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -273,7 +273,7 @@ skills_dir = Path(sys.argv[2])
 index = int(sys.argv[3])
 start_file = run_dir / "start.txt"
 sys.path.insert(0, str(skills_dir))
-spec = importlib.util.spec_from_file_location("agent_intents", skills_dir / "agent_intents.py")
+spec = importlib.util.spec_from_file_location("agent_intents", skills_dir / "runtime" / "agent_intents.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 original_write_json = module._write_json

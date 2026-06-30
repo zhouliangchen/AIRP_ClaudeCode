@@ -18,15 +18,15 @@ import sys
 from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
-import agent_packets
-import agent_snapshots
-import hidden_settings
-import match_worldbook
-import mvu_check
-import runtime_settings
-import retcon_replay
-from handler import apply_injections, read_pending_user_turn, write_progress
-from io_utils import read_file, read_json, walk_paths
+from runtime import agent_packets as agent_packets
+from runtime import agent_snapshots as agent_snapshots
+from runtime import hidden_settings as hidden_settings
+from importing import worldbook as match_worldbook
+from importing import mvu_check as mvu_check
+from runtime import runtime_settings as runtime_settings
+from capabilities import retcon as retcon_replay
+from frontend.handler import apply_injections, read_pending_user_turn, write_progress
+from runtime.io_utils import read_file, read_json, walk_paths
 
 
 def list_initvar_paths(initvar):
@@ -283,7 +283,7 @@ def _read_character_file(card_folder, name, fname):
 
 
 def build_character_contexts(card_folder, card_data, card_structure, chat_log, user_text):
-    """Build compact per-character packets for optional Claude Code subagents."""
+    """Build compact per-character packets for optional runtime actors."""
     orchestration = card_data.get("character_orchestration", {}) if isinstance(card_data, dict) else {}
     major = []
     for name in orchestration.get("major", []) or []:
@@ -382,7 +382,7 @@ def main():
     # ── Token delta capture (retroactively fixes previous turn) ──
     pending_tokens = {}
     try:
-        import token_stats
+        from runtime import token_stats as token_stats
         ts_path = token_stats.locate_transcript()
         cp = token_stats.load_checkpoint(card_folder) if ts_path else {}
         t_offset = cp.get("last_byte_offset", 0)

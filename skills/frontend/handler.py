@@ -16,10 +16,10 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-import actor_memory_store
-from mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
-from io_utils import read_json as _read_json_file, write_json as _write_json_file
-from response_parser import (
+from agents.actor import memory_store as actor_memory_store
+from domain.mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
+from runtime.io_utils import read_json as _read_json_file, write_json as _write_json_file
+from runtime.response_parser import (
     parse_response,
     strip_tags as _strip_tags,
     strip_mvu_commands as _strip_mvu_commands,
@@ -28,21 +28,21 @@ from response_parser import (
 )
 
 try:
-    import round_state
+    from runtime import round_state as round_state
 except Exception:
     round_state = None
 
 try:
-    import agent_run
+    from runtime import agent_run as agent_run
 except Exception:
     agent_run = None
 
 try:
-    import postprocess_outputs
+    from agents.postprocess import outputs as postprocess_outputs
 except Exception:
     postprocess_outputs = None
 
-STYLES = Path(__file__).parent / "styles"
+STYLES = Path(__file__).resolve().parents[1] / "styles"
 BRIDGE = "http://localhost:8765"
 _PROGRESS_WRITE_LOCK = threading.RLock()
 CJK_UNIFIED_RANGE = f"{chr(0x4E00)}-{chr(0x9FFF)}"
@@ -796,6 +796,30 @@ ASSET_JOB_VISIBLE_STATUSES = {
     "waiting_on_critic",
 }
 ASSET_JOB_PENDING_STATUSES = ASSET_JOB_VISIBLE_STATUSES - {"failed"}
+ASSET_JOB_PREVIEW_PRIORITY = {
+    "failed": 0,
+    "waiting_on_references": 1,
+    "waiting_on_style_reference": 2,
+    "waiting_on_critic": 3,
+    "deferred": 4,
+    "queued": 5,
+}
+
+
+def _asset_job_timestamp(payload, path):
+    for key in ("updated_at", "created_at"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                pass
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _load_asset_jobs(card_folder):
@@ -825,10 +849,10 @@ def _load_asset_jobs(card_folder):
         missing = payload.get("missing_references")
         if isinstance(missing, list):
             job["missing_references"] = [str(item) for item in missing if str(item).strip()]
-        jobs.append(job)
-        if len(jobs) >= 8:
-            break
-    return jobs
+        priority = ASSET_JOB_PREVIEW_PRIORITY.get(status, 99)
+        jobs.append((priority, -_asset_job_timestamp(payload, path), path.name, job))
+    jobs.sort()
+    return [job for _, _, _, job in jobs[:8]]
 
 
 def _count_pending_asset_jobs(card_folder):
@@ -854,6 +878,14 @@ def _current_round_id(card_folder):
     except Exception:
         return ""
     return run_dir.name if run_dir is not None else ""
+
+
+def _round_id_for_turn_index(turn_index):
+    try:
+        index = int(turn_index)
+    except (TypeError, ValueError):
+        index = 0
+    return f"round-{index + 1:06d}"
 
 
 def _load_card_assets(card_folder):
@@ -1310,7 +1342,8 @@ def write_content_js(card_folder):
         if tokens:
             turn_tokens[str(turn_idx)] = tokens
 
-        wrap = '<div class="turn-wrap">'
+        round_id = _round_id_for_turn_index(turn_idx)
+        wrap = '<div class="turn-wrap" data-round-id="' + _escape_attr(round_id) + '">'
         if user_raw:
             input_id = turn.get("player_input_id")
             if not input_id and user_turn_seq < len(player_inputs):
@@ -1333,7 +1366,9 @@ def write_content_js(card_folder):
         pending_html = html.escape(pending_text).replace("\n", "<br>")
         pending_id = pending_turn.get("id")
         attrs = ' data-player-input-id="' + _escape_attr(pending_id) + '"' if pending_id else ""
-        wrap = '<div class="turn-wrap turn-pending">'
+        current_round_id = _current_round_id(card_folder)
+        round_attr = ' data-round-id="' + _escape_attr(current_round_id) + '"' if current_round_id else ""
+        wrap = '<div class="turn-wrap turn-pending"' + round_attr + '>'
         wrap += '<div class="turn-user"' + attrs + '><div class="turn-role">你</div><div class="turn-text">' + pending_html + '</div></div>'
         wrap += '<div class="turn-ai turn-pending-ai"><div class="turn-role">叙事</div><div class="turn-text"><p class="pending-reply">等待 Claude Code 回复...</p></div></div>'
         wrap += '</div>'
@@ -2443,7 +2478,7 @@ if __name__ == "__main__":
     # ── Opening: compute startup cost BEFORE append_turn so turn 0 has token stats ──
     if is_opening and not tokens:
         try:
-            from token_stats import save_checkpoint, load_checkpoint
+            from runtime.token_stats import save_checkpoint, load_checkpoint
             save_checkpoint(card_folder, label="startup_end")
             cp = load_checkpoint(card_folder)
             startup_cost = cp.get("startup_cost", {})

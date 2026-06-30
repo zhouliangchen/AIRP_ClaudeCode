@@ -14,15 +14,8 @@ def _load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(
-        name,
-        ROOT / "skills" / f"{name}.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 def _load_projection_agent():
     return _load_module("projection_agent")
 
@@ -312,8 +305,7 @@ class ProjectionAgentTest(unittest.TestCase):
             self.assertNotIn(forbidden, serialized_prompt_text)
 
     def test_build_review_packet_reads_card_folder_from_projected_actor_packet(self):
-        import agent_projection
-
+        from agents.projection import context as agent_projection
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
             actor_dir = card / "characters" / "Ada"
@@ -342,8 +334,7 @@ class ProjectionAgentTest(unittest.TestCase):
         self.assertIn("never open a sealed archive", packet["actor_context"])
 
     def test_review_packet_includes_current_round_retcon_authority(self):
-        import agent_projection
-
+        from agents.projection import context as agent_projection
         with tempfile.TemporaryDirectory() as tmp:
             card = Path(tmp) / "card"
             actor_dir = card / "characters" / "Yumeng"

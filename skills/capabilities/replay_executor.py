@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-import agent_snapshots
-import handler
+from runtime import agent_snapshots as agent_snapshots
+from frontend import handler as handler
 import round_prepare
 import rp_generate_cli
 

@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
-import agent_run
-import asset_job_queue
-import assets_ui_agent
-import llm_runner
-import llm_settings
-import model_debug
-import postprocess_outputs
-
-
+from runtime import agent_run as agent_run
+from agents.assets_ui import job_queue as asset_job_queue
+from agents.assets_ui import agent as assets_ui_agent
+from llm import runner as llm_runner
+from llm import settings as llm_settings
+from llm import model_debug as model_debug
+from agents.postprocess import outputs as postprocess_outputs
 DEFAULT_UI_MANIFEST = {"version": 1, "mode": "autonomous", "generated_assets": []}
 
 
@@ -475,6 +472,9 @@ def _scene_jobs_with_payload_defaults(
             job["reference_policy"] = payload_policy
         if not _text(job.get("art_style")) and payload_art_style:
             job["art_style"] = payload_art_style
+        if not _text(job.get("round_id")):
+            run_dir = Path(context["run_dir"])
+            job["round_id"] = run_dir.name
         if not _as_string_list(job.get("resolved_references")) and reference_candidates:
             resolved_references = []
             for candidate in reference_candidates:
@@ -650,213 +650,6 @@ def _reference_purpose(reference: str) -> str:
     if "generated/images/" in lowered or "scene" in lowered:
         return "画风参考：沿用既有插图的整体画风、镜头氛围和场景质感"
     return "其他参考：用于补充画面设定、道具、场景或氛围"
-
-
-def _materialize_character_reference_job(
-    card: Path,
-    run_dir: Path,
-    settings: dict[str, Any],
-    job: dict[str, Any],
-    run_command: Callable[..., Any] | None,
-) -> dict[str, Any]:
-    job_id = _text(job.get("job_id")) or "character-reference"
-    target_path = _normalize_relative_path(job.get("target_path"))
-    payload = {
-        "schema_version": 1,
-        "job_id": job_id,
-        "kind": "character_reference",
-        "character_name": _text(job.get("character_name")),
-        "appearance_state": _text(job.get("appearance_state")),
-        "appearance_description": _text(job.get("appearance_description")),
-        "target_path": target_path,
-        "prompt": _text(job.get("prompt")),
-        "status": "deferred",
-        "reason": "asset_worker_not_configured",
-    }
-    if _image_settings_ready(settings) and run_command is not None:
-        payload["command"] = _run_job_command(
-            card,
-            job_id,
-            payload["prompt"],
-            "character_reference",
-            target_path,
-            [],
-            run_command,
-            output_path=target_path,
-            characters=[payload["character_name"]] if payload["character_name"] else [],
-        )
-        if payload["command"]["returncode"] == 0:
-            payload["status"] = "queued"
-            payload.pop("reason", None)
-        else:
-            payload["reason"] = "asset_worker_start_failed"
-    _write_job(card, run_dir, job_id, payload)
-    return payload
-
-
-def _materialize_scene_job(
-    card: Path,
-    run_dir: Path,
-    settings: dict[str, Any],
-    job: dict[str, Any],
-    run_command: Callable[..., Any] | None,
-) -> dict[str, Any]:
-    job_id = _text(job.get("job_id")) or f"scene-{run_dir.name}"
-    references = _normalize_reference_list(job.get("reference_candidates"))
-    existing_references: list[str] = []
-    missing_references: list[str] = []
-    for item in references:
-        if (card / Path(item)).exists():
-            existing_references.append(item)
-        else:
-            missing_references.append(item)
-
-    payload = {
-        "schema_version": 1,
-        "job_id": job_id,
-        "kind": _text(job.get("kind")) or "scene_illustration",
-        "target": _text(job.get("target")) or "scene_illustration",
-        "prompt": _text(job.get("prompt")),
-        "characters": _safe_character_names(job.get("characters")),
-        "art_style": _text(job.get("art_style")),
-        "character_appearances": _normalize_job_appearances(job.get("character_appearances")),
-        "reference_policy": _text(job.get("reference_policy")) or "optional",
-        "reference_candidates": references,
-        "resolved_references": existing_references,
-        "status": "deferred",
-        "reason": "asset_worker_not_configured",
-    }
-
-    if payload["reference_policy"] == "required" and missing_references:
-        payload["status"] = "waiting_on_references"
-        payload["reason"] = "missing_character_reference"
-        payload["missing_references"] = missing_references
-    elif _image_settings_ready(settings) and run_command is not None:
-        worker_references = existing_references if payload["reference_policy"] == "required" else []
-        payload["command"] = _run_job_command(
-            card,
-            job_id,
-            payload["prompt"],
-            payload["kind"],
-            payload["target"],
-            worker_references,
-            run_command,
-            characters=payload["characters"],
-        )
-        _apply_worker_result(payload, payload["command"])
-    _write_job(card, run_dir, job_id, payload)
-    return payload
-
-
-def _apply_worker_result(payload: dict[str, Any], command: dict[str, Any]) -> None:
-    if command["returncode"] == 0:
-        payload["status"] = "queued"
-        payload.pop("reason", None)
-        return
-
-    child = _parse_worker_stdout(command.get("stdout"))
-    child_status = _text(child.get("status"))
-    child_reason = _text(child.get("reason")) or _text(child.get("error"))
-    if child_status in {"deferred", "failed"}:
-        payload["status"] = "failed" if child_reason == "invalid_asset_path" else "deferred"
-        payload["reason"] = child_reason or child_status
-        if isinstance(child.get("references"), list):
-            payload["worker_references"] = child.get("references")
-        return
-    payload["reason"] = "asset_worker_start_failed"
-
-
-def _parse_worker_stdout(stdout: Any) -> dict[str, Any]:
-    text = _text(stdout)
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        return {}
-
-
-def _run_job_command(
-    card: Path,
-    job_id: str,
-    prompt: str,
-    kind: str,
-    target: str,
-    references: list[str],
-    run_command: Callable[..., Any],
-    *,
-    output_path: str = "",
-    characters: list[str] | None = None,
-) -> dict[str, Any]:
-    command = [
-        sys.executable,
-        str(Path(__file__).resolve().parent / "image_generate.py"),
-        str(card),
-        "--prompt",
-        prompt,
-        "--kind",
-        kind,
-        "--target",
-        target,
-        "--job-id",
-        job_id,
-    ]
-    if output_path:
-        command.extend(["--output-path", output_path])
-    for reference in references:
-        command.extend(["--reference", reference])
-    for character in characters or []:
-        command.extend(["--character", character])
-    command.append("--async")
-    result = run_command(
-        command,
-        cwd=str(Path(__file__).resolve().parent.parent),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return {
-        "command": command,
-        "returncode": getattr(result, "returncode", 1),
-        "stdout": _text(getattr(result, "stdout", "")),
-        "stderr": _text(getattr(result, "stderr", "")),
-    }
-
-
-def _resume_waiting_scene_jobs(
-    card: Path,
-    run_dir: Path,
-    settings: dict[str, Any],
-    run_command: Callable[..., Any] | None,
-) -> list[dict[str, Any]]:
-    jobs_dir = card / "generated" / "jobs"
-    if not jobs_dir.exists():
-        return []
-    resumed: list[dict[str, Any]] = []
-    for job_path in sorted(jobs_dir.glob("*.json")):
-        job = _read_json(job_path, {})
-        if not isinstance(job, dict) or job.get("status") != "waiting_on_references":
-            continue
-        try:
-            missing = _normalize_reference_list(job.get("missing_references"))
-            references = _normalize_reference_list(job.get("reference_candidates"))
-        except InvalidAssetPathError as exc:
-            failed = dict(job)
-            failed["status"] = "failed"
-            failed["reason"] = "invalid_asset_path"
-            failed["invalid_path"] = exc.path_text
-            _write_job(card, run_dir, _text(failed.get("job_id")) or job_path.stem, failed)
-            resumed.append(failed)
-            continue
-        if not missing or any(not (card / Path(item)).exists() for item in missing):
-            continue
-        resume_job = dict(job)
-        resume_job["reference_candidates"] = references or missing
-        resume_job.pop("missing_references", None)
-        resume_job.pop("reason", None)
-        resumed.append(_materialize_scene_job(card, run_dir, settings, resume_job, run_command))
-    return resumed
 
 
 def _apply_asset_requirement_update(card: Path, payload: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:

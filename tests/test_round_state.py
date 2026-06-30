@@ -15,7 +15,7 @@ def _load_round_state():
         sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location(
         "round_state",
-        ROOT / "skills" / "round_state.py",
+        ROOT / "skills" / "runtime" / "round_state.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

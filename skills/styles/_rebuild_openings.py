@@ -1,7 +1,7 @@
 import json, re, sys, copy
 
 sys.path.insert(0, r'D:\ds4\skills')
-from import_card import _extract_per_greeting_initvar, _parse_mvu_content, _deep_merge, extract_initvar_from_first_mes
+from importing.card import _extract_per_greeting_initvar, _parse_mvu_content, _deep_merge, extract_initvar_from_first_mes
 
 with open(r'D:\ds4\test\.card_data.json', 'r', encoding='utf-8') as f:
     data = json.load(f)

@@ -5,14 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-import assets_ui_runtime
-import agent_run
-import actor_memory_store
-import character_registry
-import replay_capabilities
-import replay_executor
-
-
+from agents.assets_ui import runtime as assets_ui_runtime
+from runtime import agent_run as agent_run
+from agents.actor import memory_store as actor_memory_store
+from domain import character_registry as character_registry
+from capabilities import replay as replay_capabilities
+from capabilities import replay_executor as replay_executor
 class CapabilityExecutorError(RuntimeError):
     """Raised when an intent executor cannot produce a structured result."""
 

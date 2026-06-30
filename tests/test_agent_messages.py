@@ -14,7 +14,7 @@ def _load_agent_messages():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_messages", ROOT / "skills" / "agent_messages.py")
+    spec = importlib.util.spec_from_file_location("agent_messages", ROOT / "skills" / "runtime" / "agent_messages.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -223,8 +223,7 @@ run_dir = Path(sys.argv[1])
 skills_dir = sys.argv[2]
 index = sys.argv[3]
 sys.path.insert(0, skills_dir)
-import agent_messages
-
+from runtime import agent_messages as agent_messages
 start_file = run_dir / "start.signal"
 deadline = time.time() + 10
 while not start_file.exists():

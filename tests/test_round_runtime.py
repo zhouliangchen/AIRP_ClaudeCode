@@ -16,10 +16,8 @@ def _load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def _write_json(path, data):
@@ -160,6 +158,8 @@ class RoundRuntimeTest(unittest.TestCase):
 
     def test_run_round_writes_thin_runtime_artifacts_and_delivers(self):
         original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        original_progress = getattr(self.round_runtime, "_write_progress", None)
+        progress_states = []
         self.round_runtime.input_analysis_apply.apply_current_run = lambda *_args, **_kwargs: {
             "ok": True,
             "capability_requests": [],
@@ -168,6 +168,7 @@ class RoundRuntimeTest(unittest.TestCase):
                 "style_profile": {},
             },
         }
+        self.round_runtime._write_progress = lambda state, **_kwargs: progress_states.append(state)
         try:
             result = self.round_runtime.run_round(
                 self.card,
@@ -177,6 +178,10 @@ class RoundRuntimeTest(unittest.TestCase):
             )
         finally:
             self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+            if original_progress is None:
+                delattr(self.round_runtime, "_write_progress")
+            else:
+                self.round_runtime._write_progress = original_progress
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "generated")
@@ -195,6 +200,127 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertTrue((artifacts / "delivery.result.json").exists())
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["stage"], "delivered")
+        self.assertIn("story.running", progress_states)
+        self.assertIn("critic.running", progress_states)
+
+    def test_run_round_applies_instruction_only_input_without_story_delivery(self):
+        (self.card / "chat_log.json").write_text("[]", encoding="utf-8")
+        (self.card / ".pending_user_turn.json").write_text(
+            json.dumps(
+                {
+                    "id": "instruction-only-1",
+                    "input_schema": "dual_channel_v1",
+                    "raw_text": "[USER_INSTRUCTION]\n以后每轮都给我画两张图",
+                    "display_text": "",
+                    "role_text": "",
+                    "user_instruction_text": "以后每轮都给我画两张图",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        _write_json(
+            self.run_dir / "input_analysis.output.json",
+            {
+                "schema_version": 1,
+                "round_id": "round-000001",
+                "analysis_mode": "fixture",
+                "source_integrity": {},
+                "semantic_units": [],
+                "routed_input": {
+                    "role_channel": "",
+                    "role_action_channel": "",
+                    "narrative_guidance_channel": "",
+                    "user_instruction_channel": "以后每轮都给我画两张图",
+                },
+                "world_updates": {},
+                "narrative_directives": {},
+                "routing_requests": [],
+                "capability_requests": [],
+                "risks": [],
+            },
+        )
+        styles = self.root / "skills" / "styles"
+        styles.mkdir(parents=True)
+        (styles / ".pending").write_text("", encoding="utf-8")
+        (styles / "input.txt").write_text("[USER_INSTRUCTION]\n以后每轮都给我画两张图", encoding="utf-8")
+        original_apply = self.round_runtime.input_analysis_apply.apply_current_run
+        original_process = self.round_runtime.input_routing_requests.process_capability_requests
+        original_pump = self.round_runtime.agent_runtime_pump.run_pending_intents
+
+        def apply_current_run(*_args, **_kwargs):
+            return {
+                "ok": True,
+                "routed_input": {
+                    "role_channel": "",
+                    "role_action_channel": "",
+                    "narrative_guidance_channel": "",
+                    "user_instruction_channel": "以后每轮都给我画两张图",
+                },
+                "capability_requests": [
+                    {
+                        "id": "story-asset_1",
+                        "capability": "assets.generate_image",
+                        "payload": {
+                            "asset_requirement": {
+                                "scene_illustration_each_round": True,
+                                "reason": "用户要求每轮插图",
+                            },
+                            "kind": "scene",
+                            "target": "scene_illustration",
+                            "prompt": "每轮剧情插图",
+                        },
+                    }
+                ],
+                "manifest": {
+                    "runtime_settings": {"style": "default", "wordCount": 800, "nsfw": False},
+                    "style_profile": {},
+                },
+            }
+
+        def fake_process(run_dir, capability_requests, **kwargs):
+            agent_intents = _load_module("agent_intents")
+            agent_intents.create_intent(
+                run_dir,
+                {
+                    "requested_by": "input_analyst",
+                    "type": "assets_task",
+                    "payload": capability_requests[0]["payload"],
+                },
+            )
+            return {"ok": True, "created": 1}
+
+        self.round_runtime.input_analysis_apply.apply_current_run = apply_current_run
+        self.round_runtime.input_routing_requests.process_capability_requests = fake_process
+        self.round_runtime.agent_runtime_pump.run_pending_intents = lambda *_args, **_kwargs: {
+            "ok": True,
+            "phase": _kwargs.get("phase", ""),
+            "processed": [{"intent_id": "intent_000001", "type": "assets_task", "status": "completed"}],
+            "blocked": [],
+            "rejected": [],
+            "deferred": [],
+            "skipped": [],
+        }
+        try:
+            result = self.round_runtime.run_round(
+                self.card,
+                self.root,
+                run_claude=lambda agent_key, prompt, cwd: (_ for _ in ()).throw(
+                    AssertionError(f"{agent_key} should not run for instruction-only input")
+                ),
+                run_command=_fake_run_command,
+            )
+        finally:
+            self.round_runtime.input_analysis_apply.apply_current_run = original_apply
+            self.round_runtime.input_routing_requests.process_capability_requests = original_process
+            self.round_runtime.agent_runtime_pump.run_pending_intents = original_pump
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "control_only")
+        self.assertEqual(result["runtime"]["stages"], ["input_analysis", "assets"])
+        self.assertEqual(json.loads((self.card / "chat_log.json").read_text(encoding="utf-8")), [])
+        self.assertFalse((self.card / ".pending_user_turn.json").exists())
+        self.assertFalse((styles / ".pending").exists())
 
     def test_story_and_critic_asset_requests_are_routed_to_pending_intents(self):
         manifest = json.loads((self.run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -496,8 +622,7 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertTrue((replay_dir / "artifacts" / "gm.output.json").exists())
 
     def test_run_round_processes_persistent_assets_requirement_after_critic(self):
-        import assets_ui_runtime
-
+        from agents.assets_ui import runtime as assets_ui_runtime
         (self.card / "ui_manifest.json").write_text(
             json.dumps(
                 {
@@ -550,8 +675,7 @@ class RoundRuntimeTest(unittest.TestCase):
         self.assertIn("persistent_assets", result["runtime_pump"])
 
     def test_run_round_persistent_assets_error_does_not_block_delivery(self):
-        import assets_ui_runtime
-
+        from agents.assets_ui import runtime as assets_ui_runtime
         original = assets_ui_runtime.process_persistent_requirements
 
         def fake_process(*_args, **_kwargs):

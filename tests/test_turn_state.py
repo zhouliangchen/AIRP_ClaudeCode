@@ -20,7 +20,7 @@ def _load_handler():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("handler", ROOT / "skills" / "handler.py")
+    spec = importlib.util.spec_from_file_location("handler", ROOT / "skills" / "frontend" / "handler.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -30,7 +30,7 @@ def _load_response_parser():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("response_parser", ROOT / "skills" / "response_parser.py")
+    spec = importlib.util.spec_from_file_location("response_parser", ROOT / "skills" / "runtime" / "response_parser.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -40,7 +40,7 @@ def _load_round_state():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("round_state", ROOT / "skills" / "round_state.py")
+    spec = importlib.util.spec_from_file_location("round_state", ROOT / "skills" / "runtime" / "round_state.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -92,12 +92,10 @@ class TurnStateTest(unittest.TestCase):
     def test_rp_skill_is_split_into_stage_skills(self):
         skills_dir = ROOT / ".claude" / "skills"
         expected = [
+            "rp.md",
             "rp-orchestrator.md",
             "rp-input-router.md",
             "rp-context-projector.md",
-            "rp-gm-agent.md",
-            "rp-story-agent.md",
-            "rp-critic-agent.md",
             "rp-delivery.md",
             "rp-assets-ui.md",
         ]
@@ -113,14 +111,15 @@ class TurnStateTest(unittest.TestCase):
 
         self.assertIn("rp-orchestrator", claude)
         self.assertIn("rp-input-router", claude)
-        self.assertIn("rp-critic-agent", claude)
+        self.assertIn("skills/agents/**/prompts/", claude)
+        self.assertIn("critic", claude)
         self.assertIn("Claude Code", claude)
         self.assertIn("response.txt", claude)
 
     def test_orchestrator_skill_references_agent_run_artifacts(self):
         orchestrator = (ROOT / ".claude" / "skills" / "rp-orchestrator.md").read_text(encoding="utf-8")
-        story = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
-        critic = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        story = (ROOT / "skills" / "agents" / "story" / "prompts" / "contract.md").read_text(encoding="utf-8")
+        critic = (ROOT / "skills" / "agents" / "critic" / "prompts" / "contract.md").read_text(encoding="utf-8")
         delivery = (ROOT / ".claude" / "skills" / "rp-delivery.md").read_text(encoding="utf-8")
 
         self.assertIn(".agent_runs", orchestrator)
@@ -157,7 +156,8 @@ class TurnStateTest(unittest.TestCase):
         self.assertIn("rp_generate_cli.py", command)
         self.assertIn("turn_generated", command)
         self.assertIn("Do not generate this turn again", command)
-        self.assertIn("Native subagent dispatch uses the Agent tool", command)
+        self.assertIn("Runtime agent dispatch uses local Python code", command)
+        self.assertIn("llm_runner.run_llm_agent()", command)
         self.assertIn("Do not describe a tooling mismatch", command)
         self.assertIn("gm.output.json", command)
         self.assertIn("actor.outputs.json", command)
@@ -192,10 +192,10 @@ class TurnStateTest(unittest.TestCase):
         orchestrator = (skills_dir / "rp-orchestrator.md").read_text(encoding="utf-8")
         router = (skills_dir / "rp-input-router.md").read_text(encoding="utf-8")
         projector = (skills_dir / "rp-context-projector.md").read_text(encoding="utf-8")
-        gm = (skills_dir / "rp-gm-agent.md").read_text(encoding="utf-8")
-        actor_prompt_source = (ROOT / "skills" / "agent_prompts.py").read_text(encoding="utf-8")
-        story = (skills_dir / "rp-story-agent.md").read_text(encoding="utf-8")
-        critic = (skills_dir / "rp-critic-agent.md").read_text(encoding="utf-8")
+        gm = (ROOT / "skills" / "agents" / "gm" / "prompts" / "contract.md").read_text(encoding="utf-8")
+        actor_prompt_source = (ROOT / "skills" / "agents" / "shared" / "prompts.py").read_text(encoding="utf-8")
+        story = (ROOT / "skills" / "agents" / "story" / "prompts" / "contract.md").read_text(encoding="utf-8")
+        critic = (ROOT / "skills" / "agents" / "critic" / "prompts" / "contract.md").read_text(encoding="utf-8")
         delivery = (skills_dir / "rp-delivery.md").read_text(encoding="utf-8")
         assets = (skills_dir / "rp-assets-ui.md").read_text(encoding="utf-8")
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
@@ -1023,6 +1023,8 @@ class TurnStateTest(unittest.TestCase):
         self.assertNotIn("generated-asset-notice", html)
         self.assertIn("function renderGeneratedAssets", html)
         self.assertIn("a.display_policy === 'story_inline'", html)
+        self.assertIn("data-round-id", html)
+        self.assertIn("turn.getAttribute('data-round-id')", html)
 
     def test_frontend_renders_compact_schema_v2_progress_status(self):
         html = (ROOT / "skills" / "styles" / "index.html").read_text(encoding="utf-8")
@@ -2499,6 +2501,45 @@ round_total: 7
         self.assertEqual(len(assets["jobs"]), 8)
         self.assertEqual(assets["pending_job_count"], 9)
 
+    def test_card_assets_job_preview_prioritizes_recent_failed_jobs(self):
+        jobs_dir = self.card / "generated" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        for index in range(8):
+            (jobs_dir / f"aaa-old-{index}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": f"old-{index}",
+                        "queue_type": "scene_illustration",
+                        "target": "scene_illustration",
+                        "status": "queued",
+                        "updated_at": index,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        (jobs_dir / "zzz-recent-failed.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "job_id": "recent-failed",
+                    "queue_type": "scene_illustration",
+                    "target": "scene_illustration",
+                    "status": "failed",
+                    "reason": "asset_worker_start_failed",
+                    "updated_at": 999,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        assets = self.handler._load_card_assets(self.card)
+
+        self.assertEqual(assets["jobs"][0]["job_id"], "recent-failed")
+        self.assertEqual(assets["jobs"][0]["status"], "failed")
+
     def test_content_js_exposes_current_round_id_for_story_inline_assets(self):
         run_dir = self.card / ".agent_runs" / "round-000004"
         run_dir.mkdir(parents=True)
@@ -2507,6 +2548,21 @@ round_total: 7
         self.handler.write_content_js(str(self.card))
 
         self.assertEqual(self._content_window_var("CURRENT_ROUND_ID"), "round-000004")
+
+    def test_content_js_marks_delivered_turns_with_round_ids_for_assets(self):
+        self.handler.write_chat_log(
+            str(self.card),
+            [
+                {"index": 0, "user": "我按铃。", "ai": "你听见铃声。"},
+                {"index": 1, "user": "我看小票。", "ai": "你看见人影。"},
+            ],
+        )
+
+        self.handler.write_content_js(str(self.card))
+        content_html = self._content_window_var("CONTENT_HTML")
+
+        self.assertIn('data-round-id="round-000001"', content_html)
+        self.assertIn('data-round-id="round-000002"', content_html)
 
     def test_append_turn_applies_postprocess_state_patch_quest(self):
         self._write_postprocess_output(
@@ -2602,8 +2658,8 @@ round_total: 7
 
     def test_docs_describe_character_dialogues_contract(self):
         claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        archive_guide = (ROOT / "docs" / "存档文件指南.md").read_text(encoding="utf-8")
 
         self.assertIn("<character_dialogues>", claude)
         self.assertIn("source=\"subagent\"", claude)
-        self.assertIn("独立对话框", readme)
+        self.assertIn("独立对话框", archive_guide)

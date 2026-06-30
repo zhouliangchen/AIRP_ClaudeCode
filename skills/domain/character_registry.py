@@ -6,9 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-import actor_memory_store
-
-
+from agents.actor import memory_store as actor_memory_store
 def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
 

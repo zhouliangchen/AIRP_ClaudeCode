@@ -2,6 +2,7 @@ import importlib
 import sys
 import traceback
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 
 
@@ -13,8 +14,8 @@ if str(SKILLS) not in sys.path:
 
 class LlmRunnerTest(unittest.TestCase):
     def setUp(self):
-        sys.modules.pop("llm_runner", None)
-        self.mod = importlib.import_module("llm_runner")
+        sys.modules.pop("llm.runner", None)
+        self.mod = load_repo_module("llm_runner")
         self.original_read_settings = self.mod.llm_settings.read_effective_settings
         self.original_resolve_model = self.mod.llm_settings.resolve_claude_code_model_tier
         self.original_auth_headers = self.mod.llm_settings.claude_code_auth_headers

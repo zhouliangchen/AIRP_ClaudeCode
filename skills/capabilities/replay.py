@@ -7,9 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-import agent_run as agent_run_io
-
-
+from runtime import agent_run as agent_run_io
 class ReplayCapabilityError(ValueError):
     """Raised when a replay plan is unsafe or structurally invalid."""
 

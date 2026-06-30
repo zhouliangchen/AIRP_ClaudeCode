@@ -90,6 +90,8 @@ http://localhost:8765
 - OpenAI-compatible 文本 API。
 - 图片生成 API。
 
+前端 API 设置会保存到 `skills/styles/llm_settings.frontend.json`；本地兜底 API 配置文件是 `skills/styles/llm_settings.local.json`。配置优先级为：前端设置 > 环境变量 > 本地配置文件。
+
 也可以使用环境变量配置。常用变量包括：
 
 ```powershell

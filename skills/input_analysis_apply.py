@@ -9,15 +9,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-import agent_packets
-import agent_run
-import actor_memory_store
-import capability_registry
-import character_registry
-import hidden_settings
-import input_analysis
-
-
+from runtime import agent_packets as agent_packets
+from runtime import agent_run as agent_run
+from agents.actor import memory_store as actor_memory_store
+from capabilities import registry as capability_registry
+from domain import character_registry as character_registry
+from runtime import hidden_settings as hidden_settings
+from agents.input_analyst import analysis as input_analysis
 _ANALYSIS_APPLY_ALLOWED_STAGES = {
     "",
     "prepared",
@@ -511,38 +509,6 @@ def _normalize_source_integrity(
     return normalized, True
 
 
-def _normalize_legacy_routing_requests(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
-    normalized = dict(analysis)
-    changed = False
-
-    if "routing_requests" not in normalized:
-        normalized["routing_requests"] = []
-        changed = True
-
-    if "capability_requests" not in normalized:
-        routing_requests = normalized.get("routing_requests")
-        capability_requests = []
-        if isinstance(routing_requests, list):
-            for index, request in enumerate(routing_requests):
-                try:
-                    capability_requests.append(
-                        capability_registry.legacy_routing_request_to_capability(request)
-                    )
-                except capability_registry.CapabilityRegistryError as exc:
-                    message = str(exc).replace(
-                        "routing_request",
-                        f"routing_requests[{index}]",
-                        1,
-                    )
-                    raise input_analysis.InputAnalysisError(message) from exc
-        normalized["capability_requests"] = capability_requests
-        changed = True
-
-    if not changed:
-        return analysis, False
-    return normalized, True
-
-
 def _normalize_routing_channel_aliases(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
     routing = analysis.get("routing")
     if not isinstance(routing, dict):
@@ -558,6 +524,18 @@ def _normalize_routing_channel_aliases(analysis: Dict[str, Any]) -> tuple[Dict[s
     normalized_routing.pop("user_instruction_text", None)
     normalized = dict(analysis)
     normalized["routing"] = normalized_routing
+    return normalized, True
+
+
+def _normalize_request_lists(analysis: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    changed = False
+    normalized = dict(analysis)
+    for key in ("routing_requests", "capability_requests"):
+        if key not in normalized:
+            normalized[key] = []
+            changed = True
+    if not changed:
+        return analysis, False
     return normalized, True
 
 
@@ -1068,11 +1046,11 @@ def apply_current_run(card_folder, root_dir=None):
     analysis, normalized_integrity = _normalize_source_integrity(analysis, raw_request)
     analysis, normalized = _normalize_legacy_semantic_units(analysis, raw_request)
     analysis, normalized_channel_aliases = _normalize_routing_channel_aliases(analysis)
+    analysis, normalized_request_lists = _normalize_request_lists(analysis)
     analysis, normalized_explicit_routing = _normalize_explicit_dual_channel_routing(
         analysis,
         raw_request,
     )
-    analysis, normalized_routing_requests = _normalize_legacy_routing_requests(analysis)
     analysis, normalized_capability_sources = _normalize_capability_request_source_channels(
         analysis,
         raw_request,
@@ -1085,8 +1063,8 @@ def apply_current_run(card_folder, root_dir=None):
         normalized
         or normalized_integrity
         or normalized_channel_aliases
+        or normalized_request_lists
         or normalized_explicit_routing
-        or normalized_routing_requests
         or normalized_capability_sources
         or normalized_replay_retcon
     )

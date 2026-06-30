@@ -3,9 +3,7 @@ import json
 import math
 from pathlib import Path
 
-import capability_registry
-
-
+from capabilities import registry as capability_registry
 SCHEMA_VERSION = 1
 ANALYSIS_MODES = {"ai", "fallback", "fixture"}
 SEMANTIC_UNIT_TYPES = {

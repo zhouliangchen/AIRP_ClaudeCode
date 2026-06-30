@@ -7,10 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-import llm_provider
-import llm_settings
-
-
+from llm import provider as llm_provider
+from llm import settings as llm_settings
 class LlmRunnerError(RuntimeError):
     """Raised when no configured LLM runner can return agent text."""
 

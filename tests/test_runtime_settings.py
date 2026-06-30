@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 
 
@@ -14,7 +15,7 @@ if str(SKILLS) not in sys.path:
 class RuntimeSettingsTest(unittest.TestCase):
     def setUp(self):
         import importlib
-        self.mod = importlib.import_module("runtime_settings")
+        self.mod = load_repo_module("runtime_settings")
 
     def test_normalize_settings_keeps_only_supported_keys(self):
         raw = {

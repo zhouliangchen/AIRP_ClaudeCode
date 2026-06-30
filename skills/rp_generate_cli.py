@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministically drive one prepared RP round through Claude Code subagents."""
+"""Deterministically drive one prepared RP round through runtime agents."""
 
 from __future__ import annotations
 
@@ -13,21 +13,20 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable
 
-import agent_outputs
-import agent_prompts
-import agent_run
-import actor_recall_artifacts
-import actor_memory_store
-import agent_memory
-import agent_schemas
+from runtime import agent_outputs as agent_outputs
+from agents.shared import prompts as agent_prompts
+from runtime import agent_run as agent_run
+from agents.actor import recall_artifacts as actor_recall_artifacts
+from agents.actor import memory_store as actor_memory_store
+from agents.actor import memory as agent_memory
+from agents.shared import schemas as agent_schemas
 import input_analysis_apply
-import llm_runner
-import model_debug
-import projection_agent
-import runtime_settings
-
+from llm import runner as llm_runner
+from llm import model_debug as model_debug
+from agents.projection import agent as projection_agent
+from runtime import runtime_settings as runtime_settings
 try:
-    from handler import write_progress
+    from frontend.handler import write_progress
 except Exception:
     def write_progress(stage, label, percent=None, detail=None):
         return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}
@@ -41,7 +40,7 @@ def _write_progress_safe(stage, label, percent=None, detail=None):
 
 
 class AgentExecutionError(RuntimeError):
-    """Raised when a Claude Code subagent run is missing, invalid, or unusable."""
+    """Raised when a runtime agent run is missing, invalid, or unusable."""
 
 
 _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
@@ -1063,9 +1062,7 @@ def _delivery_complete(delivery: Dict[str, Any]) -> bool:
     return complete
 
 
-import round_runtime
-
-
+from runtime import round_runtime as round_runtime
 def _extract_tag(text: str, tag: str) -> str:
     match = re.search(rf"<{tag}>(.*?)</{tag}>", str(text or ""), re.DOTALL)
     return match.group(1).strip() if match else ""

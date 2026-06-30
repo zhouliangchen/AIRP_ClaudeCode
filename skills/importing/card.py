@@ -22,9 +22,7 @@ import base64
 from datetime import date, datetime
 from pathlib import Path
 
-import actor_memory_store
-
-
+from agents.actor import memory_store as actor_memory_store
 def _json_dumps(obj, **kwargs):
     """JSON serializer that handles date/datetime objects."""
     def _default(o):

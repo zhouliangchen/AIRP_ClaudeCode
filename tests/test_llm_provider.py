@@ -2,6 +2,7 @@ import json
 import http.client
 import sys
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -87,7 +88,7 @@ class HttpExceptionUrlopen:
 class LlmProviderTest(unittest.TestCase):
     def setUp(self):
         import importlib
-        self.mod = importlib.import_module("llm_provider")
+        self.mod = load_repo_module("llm_provider")
 
     def _request_json(self, capture: CapturingUrlopen) -> dict:
         request, _timeout = capture.requests[-1]

@@ -5,10 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import actor_memory_store
-import agent_visibility
-
-
+from agents.actor import memory_store as actor_memory_store
+from agents.projection import visibility as agent_visibility
 PROJECTION_CONTROL_MARKERS = {
     "misconceptions",
     "objective_truth",

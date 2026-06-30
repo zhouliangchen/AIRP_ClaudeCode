@@ -12,7 +12,7 @@ def _load_agent_interactions():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_interactions", ROOT / "skills" / "agent_interactions.py")
+    spec = importlib.util.spec_from_file_location("agent_interactions", ROOT / "skills" / "agents" / "shared" / "interactions.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

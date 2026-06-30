@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ def _load_agent_run():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_run", ROOT / "skills" / "agent_run.py")
+    spec = importlib.util.spec_from_file_location("agent_run", ROOT / "skills" / "runtime" / "agent_run.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -27,7 +28,7 @@ def _load_agent_packets():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_packets", ROOT / "skills" / "agent_packets.py")
+    spec = importlib.util.spec_from_file_location("agent_packets", ROOT / "skills" / "runtime" / "agent_packets.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -37,7 +38,7 @@ def _load_agent_memory():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_memory", ROOT / "skills" / "agent_memory.py")
+    spec = importlib.util.spec_from_file_location("agent_memory", ROOT / "skills" / "agents" / "actor" / "memory.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -67,7 +68,7 @@ def _load_write_memory():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("write_memory", ROOT / "skills" / "write_memory.py")
+    spec = importlib.util.spec_from_file_location("write_memory", ROOT / "skills" / "runtime" / "write_memory.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -95,13 +96,13 @@ class CriticGateSourceTest(unittest.TestCase):
     def test_round_deliver_ingests_agent_memory_deltas(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
 
-        self.assertIn("import agent_memory", source)
+        self.assertIn("from agents.actor import memory as agent_memory", source)
         self.assertIn("ingest_memory_deltas", source)
 
     def test_round_deliver_ingests_post_round_memory_jobs(self):
         source = (ROOT / "skills" / "round_deliver.py").read_text(encoding="utf-8")
 
-        self.assertIn("import agent_memory", source)
+        self.assertIn("from agents.actor import memory as agent_memory", source)
         self.assertIn("schedule_post_round_memory_jobs", source)
         self.assertIn("ingest_post_round_memory_jobs", source)
         self.assertNotIn("ingest_memory_summaries", source)
@@ -151,7 +152,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         if gate_result is not None:
             self.round_deliver.agent_outputs.prepare_delivery = lambda card_folder, styles_dir: gate_result
 
-        token_stats = importlib.import_module("token_stats")
+        token_stats = load_repo_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
         original_load_checkpoint = token_stats.load_checkpoint
         original_compute_delta = token_stats.compute_delta
@@ -325,6 +326,21 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["action"], "already_done")
         self.assertEqual(payload["agent_delivery"]["mode"], "already_delivered")
 
+    def test_prepare_delivery_blocks_missing_agent_run_or_manifest(self):
+        agent_outputs = load_repo_module("agent_outputs")
+
+        no_run = agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        self.assertFalse(no_run["ok"])
+        self.assertEqual(no_run["reason"], "agent_run_missing")
+
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+
+        no_manifest = agent_outputs.prepare_delivery(self.card, self.styles_dir)
+        self.assertFalse(no_manifest["ok"])
+        self.assertEqual(no_manifest["reason"], "manifest_missing")
+
     def test_round_deliver_reports_post_round_memory_status(self):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
@@ -354,7 +370,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
 
         original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
         original_subprocess_run = self.round_deliver.subprocess.run
-        token_stats = importlib.import_module("token_stats")
+        token_stats = load_repo_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
         original_load_checkpoint = token_stats.load_checkpoint
         original_compute_delta = token_stats.compute_delta
@@ -451,6 +467,101 @@ class CriticGateRuntimeTest(unittest.TestCase):
         self.assertFalse((self.card / "characters" / "Ada" / "key_memories.json").exists())
         self.assertFalse((self.card / "characters" / "Ada" / "short_term_memories.md").exists())
 
+    def test_write_memory_reads_response_from_served_styles_directory(self):
+        module = _load_write_memory()
+        original_file = module.__file__
+        runtime_file = self.root / "skills" / "runtime" / "write_memory.py"
+        served_styles = self.root / "skills" / "styles"
+        served_styles.mkdir(parents=True, exist_ok=True)
+        runtime_file.parent.mkdir(parents=True)
+        (served_styles / "response.txt").write_text(
+            "<summary>Served response summary.</summary>",
+            encoding="utf-8",
+        )
+        (self.card / "memory").mkdir()
+        _write_json(
+            self.card / "chat_log.json",
+            [{"user": "fallback", "summary": "Fallback summary."}],
+        )
+
+        try:
+            module.__file__ = str(runtime_file)
+            result = module.write_memory(str(self.card))
+        finally:
+            module.__file__ = original_file
+
+        self.assertTrue(result["ok"])
+        project = (self.card / "memory" / "project.md").read_text(encoding="utf-8")
+        self.assertIn("Served response summary.", project)
+        self.assertNotIn("Fallback summary.", project)
+
+    def test_round_deliver_reports_write_memory_failure_details(self):
+        progress_calls = []
+        self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
+        (self.styles_dir / "settings.json").write_text(json.dumps({"wordCount": 1}), encoding="utf-8")
+        (self.styles_dir / "response.txt").write_text("<content>long enough</content>", encoding="utf-8")
+        run_dir = self.card / ".agent_runs" / "round-000001"
+        run_dir.mkdir(parents=True)
+        (self.card / ".agent_runs" / "current").write_text(str(run_dir.resolve()), encoding="utf-8")
+
+        original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
+        original_subprocess_run = self.round_deliver.subprocess.run
+        token_stats = load_repo_module("token_stats")
+        original_locate_transcript = token_stats.locate_transcript
+        original_load_checkpoint = token_stats.load_checkpoint
+        original_compute_delta = token_stats.compute_delta
+        original_read_usage_since = token_stats.read_usage_since
+        original_save_checkpoint = token_stats.save_checkpoint
+
+        self.round_deliver.agent_outputs.prepare_delivery = lambda card_folder, styles_dir: {
+            "ok": True,
+            "mode": "agent_run",
+            "run_dir": str(run_dir),
+        }
+
+        def fake_subprocess_run(command, **kwargs):
+            command_text = " ".join(str(item) for item in command)
+            if "write_memory.py" in command_text:
+                return SimpleNamespace(returncode=1, stdout="", stderr="memory boom")
+            return SimpleNamespace(returncode=0, stdout="handler ok", stderr="")
+
+        self.round_deliver.subprocess.run = fake_subprocess_run
+        try:
+            token_stats.locate_transcript = lambda: None
+            token_stats.load_checkpoint = lambda card_folder: {}
+            token_stats.read_usage_since = lambda transcript_path, byte_offset=0: []
+            token_stats.compute_delta = lambda entries: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read": 0,
+                "cache_creation": 0,
+                "request_count": 0,
+                "cache_hit_pct": 0.0,
+            }
+            token_stats.save_checkpoint = lambda *args, **kwargs: None
+
+            old_argv = sys.argv
+            stdout = io.StringIO()
+            try:
+                sys.argv = ["round_deliver.py", str(self.card), str(self.root)]
+                with contextlib.redirect_stdout(stdout):
+                    self.round_deliver.main()
+            finally:
+                sys.argv = old_argv
+        finally:
+            self.round_deliver.agent_outputs.prepare_delivery = original_prepare_delivery
+            self.round_deliver.subprocess.run = original_subprocess_run
+            token_stats.locate_transcript = original_locate_transcript
+            token_stats.load_checkpoint = original_load_checkpoint
+            token_stats.compute_delta = original_compute_delta
+            token_stats.read_usage_since = original_read_usage_since
+            token_stats.save_checkpoint = original_save_checkpoint
+
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertFalse(payload["memory_updated"])
+        self.assertEqual(payload["memory_error"]["returncode"], 1)
+        self.assertIn("memory boom", payload["memory_error"]["stderr"])
+
     def test_round_deliver_reports_delivery_failed_when_handler_fails(self):
         progress_calls = []
         self.round_deliver.write_progress = lambda *args, **kwargs: progress_calls.append((args, kwargs))
@@ -462,7 +573,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
 
         original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
         original_subprocess_run = self.round_deliver.subprocess.run
-        token_stats = importlib.import_module("token_stats")
+        token_stats = load_repo_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
         original_load_checkpoint = token_stats.load_checkpoint
         original_compute_delta = token_stats.compute_delta
@@ -549,7 +660,7 @@ class CriticGateRuntimeTest(unittest.TestCase):
         original_prepare_delivery = self.round_deliver.agent_outputs.prepare_delivery
         original_subprocess_run = self.round_deliver.subprocess.run
         original_cleanup = self.round_deliver.agent_lifecycle.cleanup_round_agents
-        token_stats = importlib.import_module("token_stats")
+        token_stats = load_repo_module("token_stats")
         original_locate_transcript = token_stats.locate_transcript
         original_load_checkpoint = token_stats.load_checkpoint
         original_compute_delta = token_stats.compute_delta
@@ -621,7 +732,7 @@ class AgentRunTest(unittest.TestCase):
         # normally imported agent_packets module.  Keep those stubs local to
         # this test class so later integration-style tests import a fresh
         # module instead of reusing patched process state.
-        sys.modules.pop("agent_packets", None)
+        sys.modules.pop("runtime.agent_packets", None)
         sys.modules.pop("round_prepare", None)
         self.tmp.cleanup()
 
@@ -709,12 +820,12 @@ class SemanticInputPolicyTest(unittest.TestCase):
                 "def _input_matches",
                 "name in user_text",
             ],
-            "skills/agent_packets.py": [
+            "skills/runtime/agent_packets.py": [
                 "INSTRUCTION_PREFIXES",
                 "omniscient:",
                 "important character:",
             ],
-            "skills/hidden_settings.py": [
+            "skills/runtime/hidden_settings.py": [
                 "HIDDEN_SETTING_CUES",
                 "is_hidden_setting_instruction",
                 "def persist_hidden_setting(",
@@ -1367,7 +1478,7 @@ class AgentPacketTest(unittest.TestCase):
             self.assertEqual(actor_payload["context_version"]["algorithm"], "sha256")
             self.assertTrue(actor_payload["context_version"]["hash"].startswith("sha256:"))
 
-        self.assertIn(".claude/skills/rp-gm-agent.md", gm_prompt)
+        self.assertIn("skills/agents/gm/prompts/contract.md", gm_prompt)
         self.assertIn("gm.output.json", gm_prompt)
         self.assertIn("dream echo", gm_prompt)
         self.assertIn("我直接用自然语言对刚刚与我说话的人回应", player_prompt)
@@ -1770,7 +1881,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("raw_text_sha256", request)
         self.assertIn("设定：今天是梦境。", request)
         prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
-        self.assertIn(".claude/skills/rp-input-analyst.md", prompt)
+        self.assertIn("skills/agents/input_analyst/prompts/contract.md", prompt)
         self.assertIn("input_analysis.output.json", prompt)
         self.assertNotIn(json.dumps(input_payload["raw_text"], ensure_ascii=False)[1:-1], prompt)
         self.assertNotIn('"raw_text"', prompt)
@@ -2201,8 +2312,8 @@ class AgentPacketTest(unittest.TestCase):
         )
         run_dir = Path(result["run_dir"])
         prompt = (run_dir / "prompts" / "input_analyst.prompt.md").read_text(encoding="utf-8")
-        generated_prompt_contract = prompt.split("## Skill Body", 1)[0]
-        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+        generated_prompt_contract = prompt
+        contract = (ROOT / "skills" / "agents" / "input_analyst" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         required_fragments = (
             'world_updates.hidden_facts[]: required `id`, `text`, `visibility: "gm_only"`, `status: "active|superseded|retracted"`',
@@ -2211,13 +2322,13 @@ class AgentPacketTest(unittest.TestCase):
             'world_updates.retcon_requests[]: required `id`, `text`, optional `visibility: "gm_only|public_world"`, `status: "active|superseded|retracted"`',
             "If a world update cannot satisfy the record schema, omit it and keep the semantic unit only.",
         )
-        for text in (generated_prompt_contract, skill):
+        for text in (generated_prompt_contract, contract):
             for fragment in required_fragments:
                 with self.subTest(fragment=fragment):
                     self.assertIn(fragment, text)
 
     def test_input_analyst_skill_requires_dream_rewind_retcon_detection(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "input_analyst" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("dream/rewind/false-branch", skill)
         self.assertIn("rewrite_previous_output", skill)
@@ -2227,7 +2338,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertIn("醒来", skill)
 
     def test_input_analyst_skill_advertises_replay_execute_capability(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "input_analyst" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("`replay.execute`", skill)
         self.assertIn("`replay.execute -> replay`", skill)
@@ -2247,7 +2358,7 @@ class AgentPacketTest(unittest.TestCase):
         self.assertNotIn("blocked/not-wired", skill)
 
     def test_input_analyst_skill_keeps_important_character_hidden_identity_private(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-input-analyst.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "input_analyst" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("Important Character Hidden Identity Split", skill)
         self.assertIn("真实身份", skill)

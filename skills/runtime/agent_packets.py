@@ -8,19 +8,17 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-import agent_projection
-import agent_run
-import agent_prompts
-import agent_memory
-import agent_lifecycle
-import agent_messages
-import actor_memory_store
-import objective_world
-import input_analysis
-import postprocess_outputs
-import runtime_settings
-
-
+from agents.projection import context as agent_projection
+from runtime import agent_run as agent_run
+from agents.shared import prompts as agent_prompts
+from agents.actor import memory as agent_memory
+from runtime import agent_lifecycle as agent_lifecycle
+from runtime import agent_messages as agent_messages
+from agents.actor import memory_store as actor_memory_store
+from domain import objective_world as objective_world
+from agents.input_analyst import analysis as input_analysis
+from agents.postprocess import outputs as postprocess_outputs
+from runtime import runtime_settings as runtime_settings
 def _to_text(value: Any) -> str:
     return "" if value is None else str(value)
 

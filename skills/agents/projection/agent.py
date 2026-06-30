@@ -10,9 +10,7 @@ import copy
 import json
 from typing import Any
 
-import actor_memory_store
-
-
+from agents.actor import memory_store as actor_memory_store
 ALLOWED_DECISIONS = {"pass", "edited", "needs_rewrite", "blocked"}
 STRUCTURED_REVIEW_KEYS = {
     "self_knowledge",

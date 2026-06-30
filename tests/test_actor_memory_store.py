@@ -35,7 +35,7 @@ def _load_actor_memory_store():
         sys.path.insert(0, skills_dir)
     spec = importlib.util.spec_from_file_location(
         "actor_memory_store",
-        ROOT / "skills" / "actor_memory_store.py",
+        ROOT / "skills" / "agents" / "actor" / "memory_store.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -405,7 +405,7 @@ class ActorMemoryStoreTest(unittest.TestCase):
             chr(0x97EA),
             chr(0x20AC),
         )
-        for relative_path in ("skills/actor_memory_store.py", "tests/test_actor_memory_store.py"):
+        for relative_path in ("skills/agents/actor/memory_store.py", "tests/test_actor_memory_store.py"):
             with self.subTest(relative_path=relative_path):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
                 for marker in mojibake_markers:

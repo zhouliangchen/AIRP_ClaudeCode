@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 
 
@@ -14,7 +15,20 @@ if str(SKILLS) not in sys.path:
 class LlmSettingsTest(unittest.TestCase):
     def setUp(self):
         import importlib
-        self.mod = importlib.import_module("llm_settings")
+        self.mod = load_repo_module("llm_settings")
+
+    def test_default_settings_paths_point_to_served_styles_directory(self):
+        expected = ROOT / "skills" / "styles"
+
+        self.assertEqual(self.mod.SETTINGS_DIR, expected)
+        self.assertEqual(
+            self.mod.DEFAULT_FRONTEND_SETTINGS_PATH,
+            expected / "llm_settings.frontend.json",
+        )
+        self.assertEqual(
+            self.mod.DEFAULT_LOCAL_SETTINGS_PATH,
+            expected / "llm_settings.local.json",
+        )
 
     def _openai_levels(self, *, enabled=False, core=None, review=None, actor=None):
         return {

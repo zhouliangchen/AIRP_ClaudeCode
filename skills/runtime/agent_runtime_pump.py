@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import Any, Callable
 
-import agent_intents
-import agent_run
-import capability_executors
-
-
+from runtime import agent_intents as agent_intents
+from runtime import agent_run as agent_run
+from capabilities import executors as capability_executors
 class AgentRuntimePumpError(RuntimeError):
     """Raised when the runtime pump cannot persist its own state."""
 
@@ -112,29 +109,6 @@ def _process_intent(
             "outputs": accepted.get("result", {}),
         }
 
-    if async_asset_tasks and intent_type == "assets_task":
-        outputs = {"status": "started", "phase": phase, "nonblocking": True}
-        thread = threading.Thread(
-            target=_execute_accepted_intent_background,
-            args=(card_folder, run_dir, intent),
-            kwargs={
-                "phase": phase,
-                "runtime_settings": runtime_settings,
-                "run_command": run_command,
-            },
-            name=f"airp-assets-{intent_id}",
-            daemon=True,
-        )
-        thread.start()
-        return {
-            "intent_id": intent_id,
-            "type": intent_type,
-            "status": "started",
-            "reason": "",
-            "outputs": outputs,
-            "transition_ok": True,
-        }
-
     try:
         result = execute_intent(
             card_folder,
@@ -183,48 +157,6 @@ def _process_intent(
         "outputs": outputs,
         "transition_ok": bool(transitioned.get("ok")),
     }
-
-
-def _execute_accepted_intent_background(
-    card_folder: str | Path,
-    run_dir: Path,
-    intent: dict[str, Any],
-    *,
-    phase: str,
-    runtime_settings: dict[str, Any] | None,
-    run_command: Callable[..., Any] | None,
-) -> None:
-    intent_id = str(intent.get("id") or "")
-    intent_type = str(intent.get("type") or "")
-    try:
-        result = execute_intent(
-            card_folder,
-            run_dir,
-            intent,
-            phase=phase,
-            runtime_settings=runtime_settings,
-            run_command=run_command,
-        )
-    except Exception as exc:
-        result = {
-            "status": "rejected",
-            "reason": "executor_error",
-            "outputs": {"error": str(exc), "intent_type": intent_type, "nonblocking": True},
-        }
-    status = str(result.get("status") or "blocked")
-    outputs = result.get("outputs")
-    if not isinstance(outputs, dict):
-        outputs = {}
-    outputs = dict(outputs)
-    outputs["nonblocking"] = True
-    reason = str(result.get("reason") or "")
-    if status == "completed":
-        agent_intents.complete_intent(run_dir, intent_id, outputs=outputs)
-    elif status == "rejected":
-        agent_intents.reject_intent(run_dir, intent_id, reason or "executor_rejected", outputs=outputs)
-    else:
-        agent_intents.block_intent(run_dir, intent_id, reason or "executor_blocked", outputs=outputs)
-
 
 def _safe_phase(phase: str) -> str:
     value = agent_run.safe_name(str(phase or "runtime_pump"))

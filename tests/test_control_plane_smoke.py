@@ -1,3 +1,4 @@
+import importlib
 import json
 import subprocess
 import sys
@@ -10,8 +11,13 @@ SKILLS = ROOT / "skills"
 if str(SKILLS) not in sys.path:
     sys.path.insert(0, str(SKILLS))
 
-import agent_lifecycle
 import control_plane_smoke
+
+
+def _fresh_module(name):
+    if name in sys.modules:
+        return importlib.reload(sys.modules[name])
+    return importlib.import_module(name)
 
 
 class ControlPlaneSmokeTest(unittest.TestCase):
@@ -135,6 +141,10 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         critic_pump = payload["runtime_pump"]["after_critic"]
         self.assertEqual(critic_pump["processed"][0]["type"], "assets_task")
         self.assertIn(critic_pump["processed"][0]["outputs"]["status"], {"started", "queued", "deferred"})
+        self.assertNotEqual(critic_pump["processed"][0]["outputs"].get("reason"), "assets_ui_agent_failed")
+        self.assertNotEqual(critic_pump["processed"][0]["outputs"].get("error"), "invalid_queue_type")
+        if critic_pump["processed"][0]["outputs"]["jobs"]:
+            self.assertEqual(critic_pump["processed"][0]["outputs"]["jobs"][0]["queue_type"], "scene_illustration")
         if critic_pump["processed"][0]["outputs"]["status"] == "deferred":
             self.assertEqual(critic_pump["deferred"][0]["type"], "assets_task")
         self.assertEqual(
@@ -164,6 +174,10 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         self.assertTrue(payload["snapshot"]["ok"])
 
     def test_control_plane_smoke_rejects_lifecycle_cleanup_failure(self):
+        _fresh_module("runtime.agent_run")
+        _fresh_module("runtime.agent_packets")
+        agent_lifecycle = _fresh_module("runtime.agent_lifecycle")
+        smoke = importlib.reload(control_plane_smoke)
         original_cleanup = agent_lifecycle.cleanup_round_agents
 
         def fail_cleanup(*args, **kwargs):
@@ -176,7 +190,7 @@ class ControlPlaneSmokeTest(unittest.TestCase):
         agent_lifecycle.cleanup_round_agents = fail_cleanup
         try:
             with self.assertRaisesRegex(RuntimeError, "lifecycle cleanup failed"):
-                control_plane_smoke.run_smoke(ROOT)
+                smoke.run_smoke(ROOT)
         finally:
             agent_lifecycle.cleanup_round_agents = original_cleanup
 

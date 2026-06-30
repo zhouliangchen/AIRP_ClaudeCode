@@ -42,7 +42,7 @@ When a message contains both channels, keep order but split responsibility:
 ## Classification Notes
 
 - Explicit dual-channel UI fields are authoritative.
-- When text is mixed or ambiguous, use `rp-input-analyst`; do not rely on keyword lists.
+- When text is mixed or ambiguous, route it to the input analyst runtime agent; do not rely on keyword lists.
 - Parentheses, genre labels, and casual phrases are not sufficient by themselves to classify a sentence.
 - For a first-person synopsis, story must expand the synopsis before advancing beyond it.
 - For an action, story briefly reflects the action's immediate consequence before moving forward.

@@ -7,10 +7,8 @@ import functools
 import re
 from typing import Any, Iterable
 
-import agent_schemas
-import agent_visibility
-
-
+from agents.shared import schemas as agent_schemas
+from agents.projection import visibility as agent_visibility
 HIDDEN_TEXT_KEYS = {
     "ai",
     "gm",

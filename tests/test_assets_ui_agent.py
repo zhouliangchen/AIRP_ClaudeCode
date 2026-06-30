@@ -13,10 +13,8 @@ def _load(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 class AssetsUiAgentTest(unittest.TestCase):
@@ -207,6 +205,33 @@ class AssetsUiAgentTest(unittest.TestCase):
         )
 
         self.assertEqual(plan["schema_version"], 1)
+
+    def test_plan_assets_task_normalizes_scene_alias_when_queue_type_is_missing(self):
+        raw = {
+            "schema_version": 1,
+            "plan_id": "assets-round-000004",
+            "jobs": [
+                {
+                    "kind": "scene",
+                    "target": "scene_illustration",
+                    "job_id": "story-asset_1",
+                    "prompt": "画面目标：临时站问询处；镜头：第三人称摄像机视角；无文字水印。",
+                }
+            ],
+            "ui_patch_requests": [],
+            "rename_operations": [],
+        }
+
+        plan = self.mod.plan_assets_task(
+            {"run_dir": self.run_dir, "payload": {"kind": "scene", "target": "story-asset_1"}},
+            llm_run=lambda agent_key, prompt, cwd: json.dumps(raw, ensure_ascii=False),
+        )
+
+        job = plan["jobs"][0]
+        self.assertEqual(job["queue_type"], "scene_illustration")
+        self.assertEqual(job["display_policy"], "story_inline")
+        self.assertEqual(job["camera_perspective"], "third_person_camera")
+        self.assertEqual(job["scene_mode"], "story_scene")
 
     def test_validate_plan_rejects_non_string_queue_type(self):
         class FakeQueueType:

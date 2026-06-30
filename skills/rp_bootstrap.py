@@ -90,7 +90,7 @@ def bootstrap(card_dir=None, root_dir=None, run_command=subprocess.call):
     if pending_path.exists() and not active_card:
         _remove_stale_pending(styles)
     if response_path.exists() and chat_count == 0 and active_card and has_prefilled_opening:
-        return_codes.append(_run_python(root, "handler.py", card, "--opening", run_command=run_command))
+        return_codes.append(_run_python(root, Path("frontend") / "handler.py", card, "--opening", run_command=run_command))
         action = "opening_delivered"
         instruction = "Opening has already been delivered. Do not run handler.py --opening again; wait for player input."
     elif pending_for_active_card:
@@ -105,7 +105,7 @@ def bootstrap(card_dir=None, root_dir=None, run_command=subprocess.call):
             instruction = "The pending player input could not be generated automatically. Inspect progress.json and the current .agent_runs directory before retrying."
     else:
         if chat_count > 0:
-            return_codes.append(_run_python(root, "handler.py", card, "--rebuild", run_command=run_command))
+            return_codes.append(_run_python(root, Path("frontend") / "handler.py", card, "--rebuild", run_command=run_command))
         else:
             if response_path.exists():
                 _remove_stale_response(response_path)

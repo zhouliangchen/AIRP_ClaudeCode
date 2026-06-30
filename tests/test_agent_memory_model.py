@@ -11,7 +11,7 @@ def _load_agent_memory_model():
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location("agent_memory_model", ROOT / "skills" / "agent_memory_model.py")
+    spec = importlib.util.spec_from_file_location("agent_memory_model", ROOT / "skills" / "agents" / "actor" / "memory_model.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

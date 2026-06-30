@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -307,7 +308,7 @@ class RpGenerateCliTest(unittest.TestCase):
             },
         )
         self.module = _load_rp_generate_cli()
-        self.agent_intents = importlib.import_module("agent_intents")
+        self.agent_intents = load_repo_module("agent_intents")
 
     def _write_player_context_packet(self):
         _write_json(
@@ -466,7 +467,7 @@ class RpGenerateCliTest(unittest.TestCase):
         )
 
         self.assertIn("side_a", prompt)
-        self.assertIn(".claude/skills/rp-subgm-agent.md", prompt)
+        self.assertIn("skills/agents/subgm/prompts/contract.md", prompt)
         self.assertIn("no player participation", prompt)
 
     def test_read_loop_prompt_generates_projection_prompt(self):
@@ -1933,7 +1934,7 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertEqual(self.module._player_character_names_from_story_input(story_input), [])
 
     def test_critic_skill_does_not_require_story_agent_tokens(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "critic" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("Do not hard-fail", skill)
         self.assertIn("missing `<tokens>`", skill)
@@ -1941,14 +1942,14 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertIn("Do not report token failures from historical rejected drafts", skill)
 
     def test_critic_skill_does_not_treat_redacted_markers_as_mojibake(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "critic" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("`[redacted]`", skill)
         self.assertIn("not mojibake", skill)
         self.assertIn("story_output.content", skill)
 
     def test_critic_skill_routes_length_as_story_quality_not_delivery_gate(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-critic-agent.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "critic" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("Length", skill)
         self.assertIn("quality_checks", skill)
@@ -1957,13 +1958,13 @@ class RpGenerateCliTest(unittest.TestCase):
         self.assertNotIn("mechanical delivery contract such as word count", skill)
 
     def test_story_skill_forbids_story_agent_tokens(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "story" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("Do not emit `<tokens>`", skill)
         self.assertIn("delivery/handler appends the real token block", skill)
 
     def test_story_skill_assigns_mvu_commands_to_postprocess(self):
-        skill = (ROOT / ".claude" / "skills" / "rp-story-agent.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "agents" / "story" / "prompts" / "contract.md").read_text(encoding="utf-8")
 
         self.assertIn("Do not emit `<UpdateVariable>`", skill)
         self.assertIn("postprocess owns MVU variable update commands", skill)

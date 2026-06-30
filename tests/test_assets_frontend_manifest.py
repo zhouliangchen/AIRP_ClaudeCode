@@ -20,11 +20,13 @@ class AssetsFrontendManifestTests(unittest.TestCase):
         self.assertIn("asset-pending-count", self.index)
         self.assertIn("assets.pending_job_count", self.index)
 
-    def test_story_inline_assets_are_filtered_by_current_round(self):
+    def test_story_inline_assets_are_filtered_by_turn_round_id(self):
         self.assertIn("function getCurrentRoundId", self.index)
         self.assertIn("window.CURRENT_ROUND_ID", self.index)
+        self.assertIn(".turn-wrap[data-round-id]", self.index)
+        self.assertIn("turn.getAttribute('data-round-id')", self.index)
+        self.assertIn("renderGeneratedAssetStrip(target, roundId, assets)", self.index)
         self.assertIn("a.display_policy === 'story_inline'", self.index)
-        self.assertIn("roundId &&", self.index)
         self.assertIn("a.round_id === roundId", self.index)
         self.assertNotIn("!roundId ||", self.index)
 

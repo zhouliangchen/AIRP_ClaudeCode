@@ -1,5 +1,6 @@
 import sys
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 
 
@@ -13,7 +14,7 @@ class PlayerDecisionEvidenceTest(unittest.TestCase):
     def setUp(self):
         import importlib
 
-        self.mod = importlib.import_module("player_decision_evidence")
+        self.mod = load_repo_module("player_decision_evidence")
 
     def test_rejects_player_decision_without_prior_player_reply(self):
         result = self.mod.valid_gm_player_decision(

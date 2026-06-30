@@ -24,7 +24,7 @@ def _load_import_card():
     skills_dir = ROOT / "skills"
     if str(skills_dir) not in sys.path:
         sys.path.insert(0, str(skills_dir))
-    spec = importlib.util.spec_from_file_location("import_card", skills_dir / "import_card.py")
+    spec = importlib.util.spec_from_file_location("import_card", skills_dir / "importing" / "card.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules["import_card"] = module
     spec.loader.exec_module(module)

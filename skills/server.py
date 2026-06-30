@@ -32,12 +32,11 @@ SESSION_FILE = ROOT / ".session_init"
 
 # Allow importing handler from skills/
 sys.path.insert(0, str(SKILLS))
-import handler
-import runtime_settings
-import llm_provider
-import llm_settings
-import agent_memory
-
+from frontend import handler as handler
+from runtime import runtime_settings as runtime_settings
+from llm import provider as llm_provider
+from llm import settings as llm_settings
+from agents.actor import memory as agent_memory
 DEFAULT_SETTINGS = dict(runtime_settings.DEFAULT_SETTINGS, modelDebugMode=False)
 
 os.chdir(str(ROOT))

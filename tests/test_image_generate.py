@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from tests.module_aliases import load_repo_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -18,7 +19,7 @@ if str(SKILLS) not in sys.path:
 class ImageGenerateConfigTest(unittest.TestCase):
     def setUp(self):
         self.mod = importlib.import_module("image_generate")
-        self.llm_settings = importlib.import_module("llm_settings")
+        self.llm_settings = load_repo_module("llm_settings")
         self.original_frontend_settings_path = self.mod.FRONTEND_SETTINGS_PATH
         self.original_local_settings_path = self.mod.LOCAL_SETTINGS_PATH
         self.original_image_generate_file = self.mod.__file__
@@ -390,6 +391,60 @@ class ImageGenerateConfigTest(unittest.TestCase):
             self.assertIn("character-苏黎-reference", ids)
             self.assertIn("scene-0001", ids)
 
+    def test_refresh_frontend_assets_rebuilds_served_content_js_with_completed_image(self):
+        served_content = SKILLS / "styles" / "content.js"
+        original_content = served_content.read_text(encoding="utf-8") if served_content.exists() else None
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                card = Path(tmp) / "card"
+                jobs = card / "generated" / "jobs"
+                jobs.mkdir(parents=True)
+                (card / "chat_log.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "index": 2,
+                                "ai": "<content><p>Round three text.</p></content>",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                (jobs / "scene-round-000003.json").write_text(
+                    json.dumps(
+                        {
+                            "job_id": "scene-round-000003",
+                            "status": "completed",
+                            "asset": {
+                                "id": "scene-0001",
+                                "kind": "scene_illustration",
+                                "path": "generated/images/scene-0001.png",
+                                "display_policy": "story_inline",
+                                "round_id": "round-000003",
+                                "status": "completed",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                result = self.mod._refresh_frontend_assets(card)
+
+                self.assertTrue(result["content_js"], result)
+                content_js = served_content.read_text(encoding="utf-8")
+                self.assertIn("generated/images/scene-0001.png", content_js)
+                self.assertIn("/api/card_asset/generated/images/scene-0001.png", content_js)
+        finally:
+            if original_content is None:
+                try:
+                    served_content.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                served_content.write_text(original_content, encoding="utf-8")
+
     def test_spawn_async_propagates_reference_output_path_job_id_and_character(self):
         args = SimpleNamespace(
             card_folder="card-folder",
@@ -428,6 +483,35 @@ class ImageGenerateConfigTest(unittest.TestCase):
         self.assertIn("--character", cmd)
         self.assertIn("苏黎", cmd)
         self.assertIn("旁白", cmd)
+
+    def test_spawn_async_uses_unique_log_paths_for_same_second_jobs(self):
+        args = SimpleNamespace(
+            card_folder="card-folder",
+            prompt="draw scene",
+            kind="scene",
+            target="scene_illustration",
+            size="1024x1024",
+            model="test-model",
+            dry_run=True,
+            reference=[],
+            output_path=None,
+            job_id="scene-round-000004",
+            round_id="round-000004",
+            character=[],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card-folder"
+            card.mkdir()
+            args.card_folder = str(card)
+            with mock.patch.object(self.mod.subprocess, "Popen"):
+                with mock.patch.object(self.mod.time, "time", return_value=1234567890):
+                    first = self.mod._spawn_async(args)
+                    second = self.mod._spawn_async(args)
+
+        self.assertNotEqual(first["log"], second["log"])
+        self.assertTrue(Path(first["log"]).name.startswith("image-job-scene-round-000004-"))
+        self.assertTrue(Path(second["log"]).name.startswith("image-job-scene-round-000004-"))
 
     def test_main_async_invalid_output_path_exits_with_error_without_spawning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -570,6 +654,40 @@ class ImageGenerateConfigTest(unittest.TestCase):
             payload = json.loads(job_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["asset"]["display_policy"], "story_inline")
             self.assertEqual(payload["asset"]["round_id"], "round-000003")
+
+    def test_main_persists_frontend_refresh_error_on_completed_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = Path(tmp) / "card"
+            card.mkdir()
+            job_path = card / "generated" / "jobs" / "scene-round-000003.json"
+            argv = [
+                "image_generate.py",
+                str(card),
+                "--prompt",
+                "draw scene",
+                "--kind",
+                "scene_illustration",
+                "--target",
+                "scene_illustration",
+                "--dry-run",
+                "--job-id",
+                "scene-round-000003",
+            ]
+
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(
+                    self.mod,
+                    "_refresh_frontend_assets",
+                    return_value={"content_js": False, "error": "content rebuild failed"},
+                ):
+                    with self.assertRaises(SystemExit) as exc:
+                        self.mod.main()
+
+            self.assertEqual(exc.exception.code, 0)
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["frontend"], {"content_js": False, "error": "content rebuild failed"})
+            self.assertEqual(payload["frontend_sync_error"], "content rebuild failed")
 
     def test_call_openai_images_rejects_missing_base_url_without_default(self):
         with self.assertRaisesRegex(RuntimeError, "image_generation.base_url"):

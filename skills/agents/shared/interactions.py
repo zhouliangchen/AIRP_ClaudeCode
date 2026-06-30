@@ -8,8 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-import agent_visibility
-
+from agents.projection import visibility as agent_visibility
 CST = timezone(timedelta(hours=8))
 SAFE_ID_PATTERNS = (
     re.compile(r"^player$"),

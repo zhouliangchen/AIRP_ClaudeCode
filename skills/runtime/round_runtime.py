@@ -8,24 +8,41 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
-import agent_messages
-import agent_memory
-import agent_outputs
-import agent_prompts
-import agent_run
-import agent_runtime_pump
-import agent_snapshots
-import agent_turn_loop
-import assets_ui_runtime
+from runtime import agent_messages as agent_messages
+from agents.actor import memory as agent_memory
+from runtime import agent_outputs as agent_outputs
+from agents.shared import prompts as agent_prompts
+from runtime import agent_run as agent_run
+from runtime import agent_runtime_pump as agent_runtime_pump
+from runtime import agent_snapshots as agent_snapshots
+from runtime import agent_turn_loop as agent_turn_loop
+from agents.assets_ui import runtime as assets_ui_runtime
 import input_analysis_apply
-import input_routing_requests
-import postprocess_outputs
-import retcon_replay
+from capabilities import input_routing_requests as input_routing_requests
+from agents.postprocess import outputs as postprocess_outputs
+from capabilities import retcon as retcon_replay
 import rp_generate_cli
 
 
 class RoundRuntimeError(RuntimeError):
     """Raised when the thin runtime cannot continue."""
+
+
+_PROGRESS_LABELS = {
+    "story.running": "正文生成中",
+    "critic.running": "质量检查中",
+    "critic.revise": "正文修订中",
+    "delivery.validating": "交付校验中",
+    "delivery.delivering": "交付前端中",
+}
+
+
+def _write_progress(state: str, *, label: str | None = None, percent: int | None = None, detail: Any = None) -> None:
+    try:
+        from frontend import handler as handler
+        handler.write_progress(state, label or _PROGRESS_LABELS.get(state, state), percent=percent, detail=detail)
+    except Exception:
+        pass
 
 
 _INPUT_ANALYSIS_APPLY_ALLOWED_STAGES = {
@@ -86,14 +103,38 @@ def run_round(
                 {"ok": True, "phase": "after_input_analysis", "processed": [], "blocked": [], "rejected": [], "deferred": []},
             )
         }
+        if _is_control_only_input(input_analysis_result):
+            runtime_settings = _runtime_settings_from_applied(input_analysis_result)
+            runtime_pump["after_critic"] = agent_runtime_pump.run_pending_intents(
+                card,
+                run_dir,
+                phase="after_critic",
+                runtime_settings=runtime_settings,
+                run_command=run_command,
+            )
+            stages.append("assets")
+            _finalize_control_only_input(card, root)
+            result = {
+                "ok": True,
+                "action": "control_only",
+                "run_dir": str(run_dir),
+                "runtime": {"mode": "thin", "stages": stages},
+                "input_analysis": input_analysis_result,
+                "runtime_pump": runtime_pump,
+            }
+            _write_artifact(run_dir, "runtime.result.json", result)
+            agent_run.update_manifest_stage(run_dir, "control_applied", "Control-only input applied without story delivery.")
+            return result
 
         loop_result = _run_gm_collaboration(card, root, run_dir, manifest, run_claude)
         stages.append("gm_collaboration")
 
         story_input = agent_outputs.build_relaxed_story_input(run_dir)
+        _write_progress("story.running")
         story_output = _run_story(root, run_dir, manifest, run_claude, story_input)
         stages.append("story")
 
+        _write_progress("critic.running")
         critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
         stages.append("critic")
         repair_attempts = 0
@@ -101,7 +142,9 @@ def run_round(
             if repair_attempts >= 1:
                 break
             repair_attempts += 1
+            _write_progress("critic.revise")
             _record_story_repair_attempt(run_dir, critic, repair_attempts)
+            _write_progress("story.running")
             story_output = _run_story(
                 root,
                 run_dir,
@@ -115,6 +158,7 @@ def run_round(
                 },
             )
             stages.append("story_repair")
+            _write_progress("critic.running")
             critic = _run_critic(root, run_dir, manifest, run_claude, story_input, story_output)
             stages.append("critic_repair")
 
@@ -149,9 +193,11 @@ def run_round(
             runtime_settings=runtime_settings,
         )
 
+        _write_progress("delivery.validating")
         _run_postprocess(card, root, run_dir, run_claude, story_input, story_output)
         stages.append("postprocess")
 
+        _write_progress("delivery.delivering")
         delivery = _run_delivery(card, root, run_dir, run_command)
         stages.append("delivery")
         ok = rp_generate_cli._delivery_complete(delivery)
@@ -211,6 +257,41 @@ def _run_persistent_assets(
             "jobs": [],
             "error": str(exc),
         }
+
+
+def _is_control_only_input(input_analysis_result: dict[str, Any]) -> bool:
+    routed = input_analysis_result.get("routed_input")
+    if not isinstance(routed, dict):
+        return False
+    role_fields = (
+        "role_channel",
+        "role_action_channel",
+        "narrative_guidance_channel",
+    )
+    if any(str(routed.get(field) or "").strip() for field in role_fields):
+        return False
+    if str(routed.get("user_instruction_channel") or "").strip():
+        return True
+    capability_requests = input_analysis_result.get("capability_requests")
+    return isinstance(capability_requests, list) and bool(capability_requests)
+
+
+def _finalize_control_only_input(card: Path, root: Path) -> None:
+    try:
+        from frontend import handler as handler
+        handler.clear_pending_user_turn(card)
+        styles_dir = root / "skills" / "styles"
+        try:
+            (styles_dir / ".pending").unlink(missing_ok=True)
+            (styles_dir / "input.txt").write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        handler_styles = getattr(handler, "STYLES", None)
+        if handler_styles is not None and Path(handler_styles).resolve() == styles_dir.resolve():
+            handler.write_content_js(card)
+            handler.write_progress("complete", "系统指令已应用", percent=100)
+    except Exception:
+        pass
 
 
 def _load_manifest(run_dir: Path) -> dict[str, Any]:

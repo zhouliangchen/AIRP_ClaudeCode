@@ -7,9 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-import player_decision_evidence
-
-
+from agents.gm import player_decision_evidence as player_decision_evidence
 SUPPORTED_SETTING_KEYS = {
     "style",
     "wordCount",

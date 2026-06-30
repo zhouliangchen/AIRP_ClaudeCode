@@ -14,10 +14,8 @@ def _load(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def _read_json(path):
@@ -87,9 +85,11 @@ class AssetJobQueueTest(unittest.TestCase):
 
     def test_ready_jobs_are_submitted_in_one_batch(self):
         commands = []
+        cwds = []
 
         def fake_run(command, **kwargs):
             commands.append(command)
+            cwds.append(kwargs.get("cwd"))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         plan = {
@@ -127,6 +127,8 @@ class AssetJobQueueTest(unittest.TestCase):
         self.assertEqual(result["status"], "queued")
         self.assertEqual(len(commands), 2)
         self.assertTrue(all("--async" in cmd for cmd in commands))
+        self.assertTrue(all(Path(cmd[1]).resolve() == (ROOT / "skills" / "image_generate.py").resolve() for cmd in commands))
+        self.assertTrue(all(Path(cwd).resolve() == ROOT.resolve() for cwd in cwds))
         scene_command = commands[0]
         self.assertIn("--round-id", scene_command)
         self.assertEqual(scene_command[scene_command.index("--round-id") + 1], "round-000003")

@@ -17,10 +17,8 @@ def _load(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def _read_json(path):
@@ -36,7 +34,7 @@ class AgentRuntimePumpTest(unittest.TestCase):
         self.intents = _load("agent_intents")
         self.pump = _load("agent_runtime_pump")
         self.capability_executors = _load("capability_executors")
-        self.llm_settings = importlib.import_module("llm_settings")
+        self.llm_settings = _load("llm_settings")
         self.original_frontend_settings_path = self.llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
         self.original_local_settings_path = self.llm_settings.DEFAULT_LOCAL_SETTINGS_PATH
         self.original_environ = os.environ.copy()
@@ -140,7 +138,7 @@ class AgentRuntimePumpTest(unittest.TestCase):
         artifact = _read_json(self.run_dir / "artifacts" / "runtime_pump" / "after_critic.json")
         self.assertEqual(artifact["processed"][0]["intent_id"], created["id"])
 
-    def test_run_pending_intents_starts_assets_task_without_waiting_when_async_enabled(self):
+    def test_run_pending_intents_reports_assets_task_actual_status_when_async_enabled(self):
         created = self.intents.create_intent(
             self.run_dir,
             {
@@ -155,33 +153,23 @@ class AgentRuntimePumpTest(unittest.TestCase):
         )["intent"]
         original_execute = self.pump.execute_intent
 
-        def slow_execute(*args, **kwargs):
-            time.sleep(0.2)
+        def execute(*args, **kwargs):
             return {"status": "completed", "outputs": {"status": "deferred", "jobs": []}}
 
-        self.pump.execute_intent = slow_execute
+        self.pump.execute_intent = execute
         try:
-            started_at = time.perf_counter()
             result = self.pump.run_pending_intents(
                 self.card,
                 self.run_dir,
                 phase="after_critic",
                 async_asset_tasks=True,
             )
-            elapsed = time.perf_counter() - started_at
 
-            self.assertLess(elapsed, 0.15)
             self.assertEqual(result["processed"][0]["intent_id"], created["id"])
-            self.assertEqual(result["processed"][0]["status"], "started")
-            self.assertTrue(result["processed"][0]["outputs"]["nonblocking"])
-
-            deadline = time.time() + 2
-            completed = []
-            while time.time() < deadline:
-                completed = self.intents.list_intents(self.run_dir, "completed")
-                if completed:
-                    break
-                time.sleep(0.02)
+            self.assertEqual(result["processed"][0]["status"], "completed")
+            self.assertEqual(result["processed"][0]["outputs"]["status"], "deferred")
+            self.assertEqual(result["deferred"][0]["intent_id"], created["id"])
+            completed = self.intents.list_intents(self.run_dir, "completed")
             self.assertEqual(completed[0]["id"], created["id"])
             self.assertEqual(completed[0]["result"]["outputs"]["status"], "deferred")
         finally:

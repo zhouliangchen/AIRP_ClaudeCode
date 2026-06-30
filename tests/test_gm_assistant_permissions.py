@@ -11,12 +11,11 @@ SKILLS_DIR = str(ROOT / "skills")
 
 
 def load_module(name):
-    if SKILLS_DIR not in sys.path:
-        sys.path.insert(0, SKILLS_DIR)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    skills_dir = str(ROOT / "skills")
+    if skills_dir not in sys.path:
+        sys.path.insert(0, skills_dir)
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def promotion(source_agent):
@@ -111,7 +110,7 @@ class LegacyGmAssistantPermissionsTest(unittest.TestCase):
             self.agent_schemas.validate_gm_output(gm_output("preprocess"))
 
     def test_policy_documents_subgm_request_only_record_and_legacy_rejection(self):
-        policy = (ROOT / ".claude" / "skills" / "rp-gm-promotion-policy.md").read_text(encoding="utf-8")
+        policy = (ROOT / "skills" / "agents" / "gm" / "prompts" / "promotion_policy.md").read_text(encoding="utf-8")
 
         self.assertIn('"type": "promotion_request"', policy)
         self.assertIn('"candidate_name": "Side NPC"', policy)

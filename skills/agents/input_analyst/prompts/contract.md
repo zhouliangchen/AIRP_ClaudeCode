@@ -42,10 +42,11 @@ Concrete example: if `recent_chat` contains a delivered classroom scene, and the
 
 ## Important Character Hidden Identity Split
 
-When a user instruction declares an important character and also gives secret truths, hidden identity, future reveal material, or phrases such as `真实身份`, `前魔法少女`, forgotten past, hidden gender/memory history, transformation cost, or private abilities:
+When a user instruction declares an important character and also gives secret truths, hidden identity, future reveal material, or phrases such as `真实身份`, forgotten past, hidden gender/memory history, transformation cost, or private abilities:
 
 - Split public-facing profile from hidden truth. Do not put secret identity or GM-only cosmology in `public_world`.
 - Put ordinary visible traits (classmate, height, public demeanor, known interests) in `world_updates.important_characters[]`.
+- Example: if the public classmate is secretly a `前魔法少女`, keep the public classmate traits public, but keep the `前魔法少女` identity private unless the player text explicitly says other characters know it.
 - Use `visibility: "character_private_and_gm"` for important-character records that include private profile material known only to that character and GM.
 - If the instruction says the character personally retains, remembers, knows, or can use a hidden identity, past, ability, or self-concept, you MUST emit a second `world_updates.important_characters[]` record for the same `name` with `visibility: "character_private_and_gm"` containing exactly what the character personally retains, remembers, knows, or can use. A public facade record alone is insufficient.
 - Put setting-level secrets and future reveals in `world_updates.hidden_facts[]` with `visibility: "gm_only"`.

@@ -13,14 +13,8 @@ def _load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(
-        name, ROOT / "skills" / f"{name}.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 def _load_input_analysis():
     return _load_module("input_analysis")
 
@@ -1256,7 +1250,7 @@ class InputAnalysisApplyTest(unittest.TestCase):
             self.input_payload["user_instruction_text"],
         )
 
-    def test_apply_current_run_maps_legacy_routing_requests_to_capability_requests(self):
+    def test_apply_current_run_does_not_map_routing_requests_to_capability_requests(self):
         analysis = self._analysis()
         analysis.pop("capability_requests", None)
         analysis["routing_requests"] = [
@@ -1284,15 +1278,9 @@ class InputAnalysisApplyTest(unittest.TestCase):
         result = self.apply_mod.apply_current_run(self.card, self.root)
 
         normalized = json.loads((self.run_dir / "input_analysis.output.json").read_text(encoding="utf-8"))
-        self.assertEqual(
-            normalized["capability_requests"][0]["capability"],
-            "assets.generate_image",
-        )
-        self.assertEqual(
-            normalized["capability_requests"][0]["legacy_type"],
-            "assets_ui_task",
-        )
-        self.assertEqual(result["capability_requests"], normalized["capability_requests"])
+        self.assertEqual(normalized["capability_requests"], [])
+        self.assertEqual(result["capability_requests"], [])
+        self.assertEqual(result["routing_requests"], analysis["routing_requests"])
 
     def test_apply_current_run_wraps_malformed_legacy_routing_request_error_without_rewrite(self):
         analysis = self._analysis()

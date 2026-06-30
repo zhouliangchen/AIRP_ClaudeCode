@@ -8,9 +8,7 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
-import agent_run
-
-
+from runtime import agent_run as agent_run
 SUPPORTED_QUEUE_TYPES = {
     "asset_rename",
     "character_reference",
@@ -768,7 +766,7 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
     target = str(job.get("target_path") or job.get("target") or "scene_illustration")
     command = [
         sys.executable,
-        str(Path(__file__).resolve().parent / "image_generate.py"),
+        str(Path(__file__).resolve().parents[2] / "image_generate.py"),
         str(card),
         "--prompt",
         str(job.get("prompt") or ""),
@@ -790,7 +788,7 @@ def _run_image_job(card: Path, job: dict[str, Any], run_command: Callable[..., A
     command.append("--async")
     result = run_command(
         command,
-        cwd=str(Path(__file__).resolve().parent.parent),
+        cwd=str(Path(__file__).resolve().parents[3]),
         capture_output=True,
         text=True,
         encoding="utf-8",

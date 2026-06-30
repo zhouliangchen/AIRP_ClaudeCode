@@ -11,13 +11,42 @@ def _load_module(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 class AgentPromptsContractTest(unittest.TestCase):
+    def test_runtime_prompt_contracts_live_under_agent_packages(self):
+        prompts = _load_module("agent_prompts")
+
+        self.assertFalse(hasattr(prompts, "SKILL_PATHS"))
+        contract_paths = prompts.PROMPT_CONTRACT_PATHS
+        for agent_key in ("input_analyst", "gm", "subgm", "projection", "story", "critic", "postprocess"):
+            with self.subTest(agent_key=agent_key):
+                relative = contract_paths[agent_key]
+                self.assertTrue(relative.startswith("skills/agents/"), relative)
+                self.assertNotIn(".claude/skills", relative)
+                self.assertTrue((ROOT / relative).exists(), relative)
+
+        self.assertTrue((ROOT / ".claude" / "skills" / "rp.md").exists())
+        self.assertTrue((ROOT / ".claude" / "skills" / "rp-orchestrator.md").exists())
+        self.assertFalse((ROOT / ".claude" / "skills" / "rp-gm-agent.md").exists())
+        self.assertFalse((ROOT / ".claude" / "skills" / "rp-story-agent.md").exists())
+
+    def test_gm_prompt_explicitly_includes_policy_contracts(self):
+        prompts = _load_module("agent_prompts")
+
+        text = prompts._gm_prompt({})
+
+        self.assertIn("Prompt contract reference: `skills/agents/gm/prompts/contract.md`", text)
+        self.assertIn("## Prompt Contract", text)
+        self.assertIn("## Additional GM Policy Contracts", text)
+        self.assertIn("appearance-level or belief-level label", text)
+        self.assertIn("Executable Parallel Groups", text)
+        self.assertIn("subGM agents must not create or promote important characters", text)
+        self.assertNotIn("## Skill Body", text)
+        self.assertNotIn("You are a Claude Code subagent", text)
+
     def test_input_analyst_prompt_requires_player_self_name_declaration_and_rename(self):
         prompts = _load_module("agent_prompts")
 

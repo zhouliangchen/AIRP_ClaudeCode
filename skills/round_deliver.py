@@ -15,12 +15,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import agent_lifecycle
-import agent_memory
-import agent_outputs
-import agent_run
-from handler import write_progress
-from io_utils import read_file
+from runtime import agent_lifecycle as agent_lifecycle
+from agents.actor import memory as agent_memory
+from runtime import agent_outputs as agent_outputs
+from runtime import agent_run as agent_run
+from frontend.handler import write_progress
+from runtime.io_utils import read_file
 
 
 def _write_progress_safe(stage, label, percent=None, detail=None):
@@ -81,8 +81,7 @@ def main():
     edit_only = _extract_tag(response_text, "edit_only") and "<derived_content_edits>" in response_text
 
     # ── 1. Token Collection (checkpoint-based delta) ──
-    import token_stats
-
+    from runtime import token_stats as token_stats
     transcript_path = token_stats.locate_transcript()
     cp = token_stats.load_checkpoint(card_folder) if transcript_path else {}
     byte_offset = cp.get("last_byte_offset", 0)
@@ -132,7 +131,7 @@ def main():
     handler_ok = False
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(root) / "skills" / "handler.py"), card_folder],
+            [sys.executable, str(Path(root) / "skills" / "frontend" / "handler.py"), card_folder],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -179,9 +178,10 @@ def main():
     # ── 3. Memory Update ──
     _write_progress_safe("memory.finalizing", "正在更新记忆", percent=95)
     memory_ok = False
+    memory_error = {}
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(root) / "skills" / "write_memory.py"), card_folder],
+            [sys.executable, str(Path(root) / "skills" / "runtime" / "write_memory.py"), card_folder],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -189,8 +189,17 @@ def main():
             timeout=15,
         )
         memory_ok = result.returncode == 0
-    except Exception:
-        pass
+        if not memory_ok:
+            memory_error = {
+                "returncode": result.returncode,
+                "stdout": (result.stdout or "")[:1000],
+                "stderr": (result.stderr or "")[:1000],
+            }
+    except Exception as exc:
+        memory_error = {
+            "exception_type": type(exc).__name__,
+            "error": str(exc),
+        }
 
     agent_memory_ok = False
     agent_memory_error = ""
@@ -275,6 +284,7 @@ def main():
         "story_plan_due": story_plan_due,
         "tokens": token_data,
         "memory_updated": memory_ok,
+        "memory_error": memory_error,
         "agent_memory_updated": agent_memory_ok,
         "agent_memory_error": agent_memory_error,
         "agent_delivery": agent_delivery,

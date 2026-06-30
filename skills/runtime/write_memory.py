@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from response_parser import parse_response
+from runtime.response_parser import parse_response
 
 
 CST = timezone(timedelta(hours=8))
@@ -44,7 +44,7 @@ def write_memory(card_folder: str) -> dict:
     memory_dir = card / "memory"
     project_path = memory_dir / "project.md"
     mem_index_path = memory_dir / "MEMORY.md"
-    styles_dir = Path(__file__).parent / "styles"
+    styles_dir = Path(__file__).resolve().parents[1] / "styles"
 
     # 1. Read response.txt (may already be cleaned up by handler.py)
     resp_path = styles_dir / "response.txt"

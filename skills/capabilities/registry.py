@@ -81,14 +81,6 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
     },
 }
 
-LEGACY_TYPE_MAP = {
-    "assets_ui_task": "assets.generate_image",
-    "source_feature_request": "source.change_request",
-    "story_retcon_consult": "retcon.consult",
-    "card_data_edit": "card.patch_data",
-}
-
-
 def normalize_capability_request(request: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized capability request without mutating caller data."""
 
@@ -162,29 +154,6 @@ def normalize_capability_request(request: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def legacy_routing_request_to_capability(route: dict[str, Any]) -> dict[str, Any]:
-    """Map a legacy routing request into the current capability request shape."""
-
-    data = _require_dict(route, "routing_request")
-    legacy_type = _require_nonempty_str(data, "type", "routing_request")
-    capability = LEGACY_TYPE_MAP.get(legacy_type, f"legacy.{legacy_type}")
-    definition = CAPABILITIES.get(capability, {})
-    return {
-        "id": _require_nonempty_str(data, "id", "routing_request"),
-        "requested_by": "input_analyst",
-        "target": str(definition.get("target") or data.get("target") or "legacy"),
-        "capability": capability,
-        "summary": _require_nonempty_str(data, "summary", "routing_request"),
-        "reason": str(data.get("reason") or data.get("summary") or "").strip(),
-        "source_channel": _require_nonempty_str(data, "source_channel", "routing_request"),
-        "risk": str(data.get("risk") or _default_risk(capability)).strip(),
-        "authorization_gate": str(definition.get("authorization_gate") or data.get("authorization_gate") or "none").strip(),
-        "payload": _optional_dict(data, "payload", "routing_request"),
-        "evidence": _optional_dict(data, "evidence", "routing_request"),
-        "legacy_type": legacy_type,
-    }
-
-
 def authorize_capability(
     normalized: dict[str, Any],
     runtime_settings: dict[str, Any] | None = None,
@@ -221,8 +190,6 @@ def authorize_capability(
 def _default_risk(capability: str) -> str:
     if capability == "source.change_request":
         return "high"
-    if capability.startswith("legacy."):
-        return "low"
     return "medium"
 
 

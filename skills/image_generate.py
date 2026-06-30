@@ -30,8 +30,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-import llm_settings
-
+from llm import settings as llm_settings
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 FRONTEND_SETTINGS_PATH = llm_settings.DEFAULT_FRONTEND_SETTINGS_PATH
@@ -436,7 +435,9 @@ def _spawn_async(args) -> dict:
     card = Path(args.card_folder).resolve()
     log_dir = card / "generated" / "jobs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / ("image-job-" + str(int(time.time())) + ".log")
+    job_slug = _safe_slug(str(getattr(args, "job_id", "") or "asset-job"))
+    log_name = f"image-job-{job_slug}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.log"
+    log_path = log_dir / log_name
     flags = 0
     if os.name == "nt":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -460,8 +461,7 @@ def _refresh_frontend_assets(card: Path) -> dict:
         skills_dir = Path(__file__).resolve().parent
         if str(skills_dir) not in sys.path:
             sys.path.insert(0, str(skills_dir))
-        import handler
-
+        from frontend import handler as handler
         handler.write_content_js(str(card))
         result["content_js"] = True
     except Exception as exc:
@@ -605,6 +605,10 @@ def main():
         job_payload["round_id"] = args.round_id
     _write_job_status(card, args.job_id, job_payload)
     frontend = _refresh_frontend_assets(card)
+    job_payload["frontend"] = frontend
+    if not frontend.get("content_js") and frontend.get("error"):
+        job_payload["frontend_sync_error"] = str(frontend.get("error"))
+    _write_job_status(card, args.job_id, job_payload)
 
     _json_out({
         "ok": True,

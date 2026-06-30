@@ -15,10 +15,8 @@ def _load(name):
     skills_dir = str(ROOT / "skills")
     if skills_dir not in sys.path:
         sys.path.insert(0, skills_dir)
-    spec = importlib.util.spec_from_file_location(name, ROOT / "skills" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from tests.module_aliases import load_repo_module
+    return load_repo_module(name)
 
 
 def _read_json(path):
@@ -110,6 +108,47 @@ class AssetsUiRuntimeTest(unittest.TestCase):
         self.assertEqual(result["outputs"]["plan"], plan)
         audit = _read_json(self.run_dir / "artifacts" / "assets_ui" / "intent-agent-required.json")
         self.assertEqual(audit["plan"], plan)
+
+    def test_process_assets_task_defaults_scene_job_round_id_to_current_run(self):
+        self._configure_image_settings()
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_planner(_context):
+            return {
+                "schema_version": 1,
+                "plan_id": "custom-plan",
+                "jobs": [
+                    {
+                        "queue_type": "scene_illustration",
+                        "job_id": "custom-scene-without-round",
+                        "prompt": "custom scene prompt",
+                        "display_policy": "story_inline",
+                    }
+                ],
+                "ui_patch_requests": [],
+                "rename_operations": [],
+            }
+
+        result = self.mod.process_assets_task(
+            self.card,
+            self.run_dir,
+            {
+                "id": "intent-custom-scene",
+                "type": "assets_task",
+                "payload": {"kind": "scene_illustration", "target": "scene_illustration", "prompt": "scene"},
+            },
+            phase="after_critic",
+            run_command=fake_run,
+            planner=fake_planner,
+        )
+
+        self.assertEqual(result["outputs"]["jobs"][0]["round_id"], "round-000004")
+        self.assertIn("--round-id", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--round-id") + 1], "round-000004")
 
     def test_process_assets_task_does_not_default_plan_when_agent_fails(self):
         original_planner = self.mod.assets_ui_agent.plan_assets_task

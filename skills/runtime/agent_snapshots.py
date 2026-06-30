@@ -10,9 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-import objective_world
-import actor_memory_store
-
+from domain import objective_world as objective_world
+from agents.actor import memory_store as actor_memory_store
 EXCLUDED_BACKUP_ROOT_ITEMS = {"debug", ".agent_runs", "backup"}
 BACKUP_METADATA_FILENAME = "backup.json"
 

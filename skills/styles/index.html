@@ -1849,11 +1849,22 @@ function getCurrentRoundId() {
 function renderGeneratedAssets(contentEl) {
   var assets = (window.CARD_ASSETS && window.CARD_ASSETS.images) || [];
   if (!contentEl || !assets.length) return;
-  var roundId = getCurrentRoundId();
+  var rendered = false;
+  var turns = contentEl.querySelectorAll('.turn-wrap[data-round-id]');
+  turns.forEach(function(turn) {
+    var roundId = turn.getAttribute('data-round-id');
+    var target = turn.querySelector('.turn-ai .turn-text') || turn.querySelector('.turn-ai') || turn;
+    if (renderGeneratedAssetStrip(target, roundId, assets)) rendered = true;
+  });
+  if (!rendered) renderGeneratedAssetStrip(contentEl, getCurrentRoundId(), assets);
+}
+
+function renderGeneratedAssetStrip(targetEl, roundId, assets) {
+  if (!targetEl || !roundId) return false;
   var display = assets.filter(function(a) {
-    return a && a.url && roundId && a.display_policy === 'story_inline' && a.round_id === roundId;
+    return a && a.url && a.display_policy === 'story_inline' && a.round_id === roundId;
   }).slice(-3);
-  if (!display.length) return;
+  if (!display.length) return false;
   var strip = document.createElement('div');
   strip.className = 'generated-asset-strip';
   display.forEach(function(a) {
@@ -1870,7 +1881,8 @@ function renderGeneratedAssets(contentEl) {
     card.appendChild(cap);
     strip.appendChild(card);
   });
-  contentEl.appendChild(strip);
+  targetEl.appendChild(strip);
+  return true;
 }
 
 function updateOpeningsCard(S) {

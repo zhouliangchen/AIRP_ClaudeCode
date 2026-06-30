@@ -5,9 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-import character_registry
-
-
+from domain import character_registry as character_registry
 class CharacterPromotionError(RuntimeError):
     """Raised when a character promotion record is unsafe or malformed."""
 

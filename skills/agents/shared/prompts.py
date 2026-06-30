@@ -1,4 +1,4 @@
-"""Prompt materialization for Claude Code RP subagents."""
+"""Prompt materialization for AIRP runtime agents."""
 
 from __future__ import annotations
 
@@ -6,25 +6,29 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-import actor_memory_store
-import actor_context_renderer
-import agent_run
-import runtime_settings
+from agents.actor import memory_store as actor_memory_store
+from agents.actor import context_renderer as actor_context_renderer
+from runtime import agent_run as agent_run
+from runtime import runtime_settings as runtime_settings
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-SKILL_PATHS = {
-    "input_analyst": ".claude/skills/rp-input-analyst.md",
-    "gm": ".claude/skills/rp-gm-agent.md",
-    "subgm": ".claude/skills/rp-subgm-agent.md",
-    "projection": ".claude/skills/rp-projection-agent.md",
-    "story": ".claude/skills/rp-story-agent.md",
-    "critic": ".claude/skills/rp-critic-agent.md",
-    "postprocess": ".claude/skills/rp-postprocess-agent.md",
+PROMPT_CONTRACT_PATHS = {
+    "input_analyst": "skills/agents/input_analyst/prompts/contract.md",
+    "gm": "skills/agents/gm/prompts/contract.md",
+    "subgm": "skills/agents/subgm/prompts/contract.md",
+    "projection": "skills/agents/projection/prompts/contract.md",
+    "story": "skills/agents/story/prompts/contract.md",
+    "critic": "skills/agents/critic/prompts/contract.md",
+    "postprocess": "skills/agents/postprocess/prompts/contract.md",
 }
 
-AUTHORITATIVE_CONTRACT_SKILLS = {"gm", "subgm"}
+GM_POLICY_CONTRACT_PATHS = (
+    "skills/agents/gm/prompts/visibility_policy.md",
+    "skills/agents/gm/prompts/actor_routing.md",
+    "skills/agents/gm/prompts/promotion_policy.md",
+)
+
+AUTHORITATIVE_CONTRACT_PROMPTS = {"gm", "subgm"}
 
 _GM_PROMPT_TOP_LEVEL_DUPLICATE_KEYS = {"components"}
 _GM_PROMPT_WORLD_DUPLICATE_KEYS = {
@@ -134,15 +138,31 @@ def _strip_embedded_output_schema(text: str) -> str:
     )
 
 
-def _skill_excerpt(skill_key: str, limit: int = 6000) -> str:
-    relative = SKILL_PATHS[skill_key]
+def _prompt_contract_excerpt(agent_key: str, limit: int = 6000) -> str:
+    relative = PROMPT_CONTRACT_PATHS[agent_key]
     path = REPO_ROOT / relative
     if not path.exists():
-        return f"(missing skill file: {relative})"
+        return f"(missing prompt contract file: {relative})"
     text = path.read_text(encoding="utf-8")
-    if skill_key in AUTHORITATIVE_CONTRACT_SKILLS:
-        text = _strip_embedded_output_schema(text)
+    if agent_key in AUTHORITATIVE_CONTRACT_PROMPTS:
+        return _strip_embedded_output_schema(text)
     return text[:limit]
+
+
+def _prompt_contract_file_excerpt(relative: str, limit: int = 6000) -> str:
+    path = REPO_ROOT / relative
+    if not path.exists():
+        return f"(missing prompt contract file: {relative})"
+    return path.read_text(encoding="utf-8")[:limit]
+
+
+def _gm_policy_contracts_text() -> str:
+    sections = []
+    for relative in GM_POLICY_CONTRACT_PATHS:
+        sections.append(
+            f"### `{relative}`\n\n```markdown\n{_prompt_contract_file_excerpt(relative)}\n```"
+        )
+    return "\n\n".join(sections)
 
 
 def _strip_prompt_duplicate_keys(value: Any, duplicate_keys: set[str]) -> Any:
@@ -252,25 +272,25 @@ def _critic_style_guidance(context: Dict[str, Any]) -> str:
 
 def _base_prompt(
     title: str,
-    skill_key: str,
+    agent_key: str,
     output_path: str,
     contract: str,
     context: Dict[str, Any],
     output_instruction: str | None = None,
     contract_notes: str | None = None,
 ) -> str:
-    skill_path = SKILL_PATHS[skill_key]
+    contract_path = PROMPT_CONTRACT_PATHS[agent_key]
     if output_instruction is None:
         output_instruction = f"Use only the allowed context below and write the required JSON artifact to `{output_path}`."
     notes = f"\n\n{contract_notes.strip()}" if contract_notes else ""
     return f"""
 # {title}
 
-Skill reference: `{skill_path}`
+Prompt contract reference: `{contract_path}`
 
 ## Operating Rule
 
-You are a Claude Code subagent working through the file mailbox for this RP round.
+You are an AIRP runtime agent called by the Python runtime through the LLM provider.
 {output_instruction}
 Do not write final prose unless this is the story agent.
 
@@ -287,10 +307,10 @@ Do not write final prose unless this is the story agent.
 {_json_block(context)}
 ```
 
-## Skill Body
+## Prompt Contract
 
 ```markdown
-{_skill_excerpt(skill_key)}
+{_prompt_contract_excerpt(agent_key)}
 ```
 """
 
@@ -545,12 +565,16 @@ def _gm_prompt(context: Dict[str, Any]) -> str:
         "decision_point": None,
         "stop_reason": "continue",
     })
-    return _base_prompt(
+    base = _base_prompt(
         "GM Agent Prompt",
         "gm",
         "gm.output.json",
         contract,
         context,
+    )
+    return base + (
+        "\n\n## Additional GM Policy Contracts\n\n"
+        f"{_gm_policy_contracts_text()}"
     ) + _gm_runtime_guidance(context) + (
         "\n\nAllowed `stop_reason` values: `continue`, `player_decision`, "
         "`word_target`, `complete`, `max_steps`. For the main live GM loop, use "
@@ -897,7 +921,7 @@ def build_postprocess_prompt(run_summary: Dict[str, Any]) -> str:
     return f"""
 # Postprocess Agent Prompt
 
-Skill reference: `{SKILL_PATHS["postprocess"]}`
+Prompt contract reference: `{PROMPT_CONTRACT_PATHS["postprocess"]}`
 
 Write `postprocess.output.json`.
 
@@ -930,10 +954,10 @@ Write MVU variable update commands only in `mvu.commands`; do not append `<Updat
 {_json_block(runtime_input)}
 ```
 
-## Skill Body
+## Prompt Contract
 
 ```markdown
-{_skill_excerpt("postprocess")}
+{_prompt_contract_excerpt("postprocess")}
 ```
 """.strip()
 
@@ -1022,6 +1046,6 @@ def write_round_prompts(
     }
     agent_run.append_manifest_stage(manifest, "prepared", "Agent run directory and context packets are prepared.")
     agent_run.append_manifest_stage(manifest, "prompts_ready", "Subagent prompts are materialized.")
-    agent_run.append_manifest_stage(manifest, "awaiting_agent_outputs", "Waiting for Claude Code subagent output artifacts.")
+    agent_run.append_manifest_stage(manifest, "awaiting_agent_outputs", "Waiting for runtime agent output artifacts.")
     agent_run.write_json(root / "manifest.json", manifest)
     return manifest

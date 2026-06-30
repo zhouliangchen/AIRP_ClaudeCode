@@ -9,26 +9,25 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Deque, Iterable
 
-import agent_actor_runtime
-import agent_actor_batches
-import agent_interactions
-import agent_lifecycle
-import agent_projection
-import agent_run
-import agent_schemas
-import agent_visibility
-import agent_visibility_guard
-import actor_recall_artifacts
-import actor_memory_store
-import character_promotions
-import input_routing_requests
-import player_decision_evidence
-import projection_agent
-import subgm_threads
-import subgm_turn_loop
-
+from agents.actor import runtime as agent_actor_runtime
+from agents.actor import batches as agent_actor_batches
+from agents.shared import interactions as agent_interactions
+from runtime import agent_lifecycle as agent_lifecycle
+from agents.projection import context as agent_projection
+from runtime import agent_run as agent_run
+from agents.shared import schemas as agent_schemas
+from agents.projection import visibility as agent_visibility
+from agents.projection import visibility_guard as agent_visibility_guard
+from agents.actor import recall_artifacts as actor_recall_artifacts
+from agents.actor import memory_store as actor_memory_store
+from domain import character_promotions as character_promotions
+from capabilities import input_routing_requests as input_routing_requests
+from agents.gm import player_decision_evidence as player_decision_evidence
+from agents.projection import agent as projection_agent
+from agents.subgm import threads as subgm_threads
+from agents.subgm import turn_loop as subgm_turn_loop
 try:
-    from handler import write_progress
+    from frontend.handler import write_progress
 except Exception:
     def write_progress(stage, label, percent=None, detail=None):
         return {"stage": stage, "label": label, "percent": percent, "detail": detail or {}}

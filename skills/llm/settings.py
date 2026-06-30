@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SETTINGS_DIR = Path(__file__).resolve().parent / "styles"
+SETTINGS_DIR = Path(__file__).resolve().parents[1] / "styles"
 DEFAULT_FRONTEND_SETTINGS_PATH = SETTINGS_DIR / "llm_settings.frontend.json"
 DEFAULT_LOCAL_SETTINGS_PATH = SETTINGS_DIR / "llm_settings.local.json"
 DEFAULT_SETTINGS_PATH = DEFAULT_FRONTEND_SETTINGS_PATH
